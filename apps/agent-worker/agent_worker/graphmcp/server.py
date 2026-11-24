@@ -101,7 +101,7 @@ class GraphServer:
             else:
                 try:
                     response = self.handle(message)
-                except Exception as exc:  # one bad question must not end the session
+                except Exception as exc:  # one bad question must not end the session  # noqa: BLE001
                     print(f"swarm-graph: {type(exc).__name__} answering a request",
                           file=sys.stderr)
                     ident = message.get("id") if isinstance(message, dict) else None

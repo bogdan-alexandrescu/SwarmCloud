@@ -200,7 +200,7 @@ class SecretManagerSetupSecrets:
                 "parent": self._name(secret_id),
                 "payload": {"data": value.encode("utf-8")},
             })
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # The type only: an exception's text could quote the request.
             raise UpstreamUnavailable(
                 f"{secret_id} could not be written ({type(exc).__name__})") from None
@@ -216,7 +216,7 @@ class SecretManagerSetupSecrets:
             })
         except gexc.AlreadyExists:
             pass
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             raise UpstreamUnavailable(
                 f"{secret_id} could not be created ({type(exc).__name__})") from None
 
@@ -227,7 +227,7 @@ class SecretManagerSetupSecrets:
             versions = self._secret_client().list_secret_versions(
                 request={"parent": self._name(secret_id), "filter": "state:ENABLED"})
             return any(v.state == secretmanager.SecretVersion.State.ENABLED for v in versions)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             raise UpstreamUnavailable(
                 f"{secret_id}'s versions could not be listed ({type(exc).__name__})") from None
 
@@ -256,7 +256,7 @@ class GitHubSetupApi:
             data = json.dumps(body).encode("utf-8")
         try:
             answer = self._send(method, API + path, headers, data, TIMEOUT_SECONDS)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             raise GitHubRefused(f"GitHub did not answer ({type(exc).__name__})") from None
         if not 200 <= answer.status < 300:
             # The status only: GitHub's body is not repeated anywhere.
@@ -355,7 +355,7 @@ class ManifestFlow:
             return app_jwt(str(app_id), self._secrets.private_key(), self._now())
         except ApiError:
             raise
-        except Exception:
+        except Exception:  # noqa: BLE001
             raise SetupUnconfigured("the App's private key could not sign") from None
 
     def installation(self, org: str) -> dict[str, Any]:

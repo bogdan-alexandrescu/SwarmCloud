@@ -536,7 +536,7 @@ class Uninstall:
         except (UninstallRefused, LeaseHeld, LeaseRefused) as exc:
             self.say(f"swarm uninstall: refused: {exc}")
             return ExitCode.REFUSED
-        except Exception as exc:  # a failed call: said (redacted), and the next run continues at this step
+        except Exception as exc:  # a failed call: said (redacted), and the next run continues at this step  # noqa: BLE001
             message = redact(f"{type(exc).__name__}: {exc}").text
             self.events.emit("step_failed", step=step.id, detail=message)
             self.say(f"swarm uninstall: step {step.number} ({step.title}) failed: {message}. "
@@ -546,7 +546,7 @@ class Uninstall:
             if self.lease is not None:
                 try:
                     self.lease.release()
-                except Exception as exc:  # the lease expires by itself; say so, never mask the outcome
+                except Exception as exc:  # the lease expires by itself; say so, never mask the outcome  # noqa: BLE001
                     self.say(f"swarm uninstall: the lease was not released ({type(exc).__name__}); it expires")
         self.events.emit("run_end", outcome="ok", exit_code=int(ExitCode.OK), message="uninstalled")
         return ExitCode.OK
@@ -682,7 +682,7 @@ class Uninstall:
         page = f"https://console.cloud.google.com/billing/{account}/budgets"
         try:
             self.world.delete_budgets(account, name)
-        except Exception as exc:  # a refusal on the billing account is a remain, not a stop
+        except Exception as exc:  # a refusal on the billing account is a remain, not a stop  # noqa: BLE001
             return remains_mod.Remain(
                 kind="budget", name=f"billingAccounts/{account}: {name}",
                 why=redact(f"the billing account refused its deletion ({type(exc).__name__}: {exc})").text[:400],
@@ -725,7 +725,7 @@ class Uninstall:
         refuse_denied("the Cloud DNS zone", [zone], self.state.deny_list)
         try:
             done = self.world.delete_dns_record(zone, hostname, address)
-        except Exception as exc:  # the record is listed with its console page instead
+        except Exception as exc:  # the record is listed with its console page instead  # noqa: BLE001
             self.say(redact(f"swarm uninstall: the A record for {hostname} in Cloud DNS zone {zone} was not "
                             f"deleted ({type(exc).__name__}: {exc})").text[:400])
             done = remains_mod.DNS_FAILED

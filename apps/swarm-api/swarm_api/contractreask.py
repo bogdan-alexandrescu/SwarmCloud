@@ -409,7 +409,7 @@ class ContractReask:
         self.report["asked"] += 1
         try:
             result = self.judge(task, contract, acc)
-        except Exception as exc:  # a judge's fault is a try without a verdict, never a pass
+        except Exception as exc:  # a judge's fault is a try without a verdict, never a pass  # noqa: BLE001
             log.warning("contract re-ask task=%s judge raised %s", task_id, type(exc).__name__)
             result = ReaskResult(OUTCOME_NOT_RUN, reason="judge_error")
         self._settle(task_id, acc, contract, result)
@@ -605,7 +605,7 @@ class ForgeJudge:
                                                tokens=ctx.forge_tokens, now=ctx.now())
             diff = read_diff(record, ImpactRequest(base=base, head=head), token,
                              forge=ctx.forge)
-        except Exception as exc:  # the forge's fault is a try without a verdict
+        except Exception as exc:  # the forge's fault is a try without a verdict  # noqa: BLE001
             return ReaskResult(OUTCOME_NOT_RUN, reason=f"forge_{type(exc).__name__}"[:64])
         finally:
             token = ""

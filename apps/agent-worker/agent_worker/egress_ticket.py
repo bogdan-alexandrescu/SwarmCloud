@@ -123,7 +123,7 @@ def mint(cfg: Any, key: Any, api: Any, *, now: float) -> tuple[str, int]:
     try:
         headers = sign_headers(key, EGRESS_TICKET_PURPOSE, "POST", path, body, now=now)
         _, payload = api.call("POST", path, body=body, headers=headers)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         code = str(getattr(exc, "code", "") or "")
         if code in _PERMANENT:
             raise TicketRefused(_PERMANENT[code], retryable=False) from None
@@ -171,7 +171,7 @@ class BrowserEgress:
         if self.proxied is None:
             try:
                 status = gate.call("status", {})
-            except Exception:  # a gate that cannot answer gives no ticket anywhere
+            except Exception:  # a gate that cannot answer gives no ticket anywhere  # noqa: BLE001
                 return False
             egress = status.get("egress") if isinstance(status, Mapping) else None
             self.proxied = isinstance(egress, Mapping) and egress.get("route") == PROXY
@@ -230,7 +230,7 @@ class BrowserEgress:
             return
         try:
             answer = gate.call("egress_ticket", {"ticket": ticket, "expires_in": seconds})
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning("the gate did not take the egress ticket", error=type(exc).__name__)
             self._retry_later(type(exc).__name__)
             return
@@ -259,7 +259,7 @@ class BrowserEgress:
                          cause=cause)
         try:
             gate.call("egress_ticket", {"failed": cause})
-        except Exception as exc:  # the gate refuses CONNECTs without a ticket either way
+        except Exception as exc:  # the gate refuses CONNECTs without a ticket either way  # noqa: BLE001
             self.log.warning("the gate was not told egress failed", error=type(exc).__name__)
 
     def _retry_later(self, cause: str) -> None:

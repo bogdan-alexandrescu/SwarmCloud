@@ -333,12 +333,12 @@ class SecretManagerKey:
             raise KeyUnavailable(f"{self.secret} has no enabled version", kind=KEY_MISSING) from None
         except gexc.PermissionDenied:
             raise KeyUnavailable(f"swarm-api may not read {self.secret}", kind=KEY_DENIED) from None
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             raise KeyUnavailable(f"{self.secret} could not be read ({type(exc).__name__})",
                                  kind=KEY_ERROR) from None
         try:
             value = bytes(version.payload.data).decode("utf-8").strip()
-        except Exception:
+        except Exception:  # noqa: BLE001
             value = ""
         if not value:
             raise KeyUnavailable(f"{self.secret} is empty", kind=KEY_EMPTY)
@@ -560,7 +560,7 @@ class SearchTool:
         try:
             self.db.collection(AUDIT).document(audit_id(call.attempt.attempt_id, now)).set(
                 call.row(result, code, now))
-        except Exception as exc:  # the call's answer still returns, as the git tools'
+        except Exception as exc:  # the call's answer still returns, as the git tools'  # noqa: BLE001
             log.error("search_audit_write_failed tenant=%s task=%s attempt=%s (%s)",
                       call.attempt.tenant_id, call.attempt.task_id, call.attempt.attempt_id,
                       type(exc).__name__)

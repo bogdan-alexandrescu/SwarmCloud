@@ -939,7 +939,7 @@ class GitTools:
         try:
             self.db.collection(AUDIT).document(audit_id(call.attempt.attempt_id, now)).set(
                 call.row(result, code, now))
-        except Exception as exc:  # the call's answer still returns (§4)
+        except Exception as exc:  # the call's answer still returns (§4)  # noqa: BLE001
             log.error("git_audit_write_failed tenant=%s task=%s attempt=%s tool=%s (%s)",
                       call.attempt.tenant_id, call.attempt.task_id, call.attempt.attempt_id,
                       call.tool, type(exc).__name__)
@@ -957,7 +957,7 @@ class GitTools:
         call.fields["slot"] = suffix
         try:
             value = self.forge_tokens.read_slot(tenant, suffix).value
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
             raise GitToolRefused("no_credential", f"{secret_name_for(tenant.tenant_id, suffix)} "
                                                   f"could not be read ({code})") from None
@@ -1007,7 +1007,7 @@ class GitTools:
                 "sha": sha, "attempt_id": attempt.attempt_id, "generation": attempt.generation,
                 "at": self.now(), "attestation": self._attest(key, attempt, branch, sha),
             })
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # Without the record the next push is a fast-forward only: safe.
             log.error("git_tip_write_failed tenant=%s task=%s (%s)", attempt.tenant_id,
                       attempt.task_id, type(exc).__name__)
@@ -1129,7 +1129,7 @@ class GitTools:
                                                         f"{task.get('forge_access')!r}, not write")
         try:
             refused = grant_refusal(self.db, attempt.tenant_id, suffix, ref)
-        except Exception as exc:  # unreadable is not revoked, but it is not a grant either
+        except Exception as exc:  # unreadable is not revoked, but it is not a grant either  # noqa: BLE001
             raise GitToolRefused("forge_write_refused", f"the submitter's grant could not be "
                                                         f"read ({type(exc).__name__})") from None
         if refused:
@@ -1209,7 +1209,7 @@ class GitTools:
                 size = self.bundles.download(expected, dest, max_bytes=cap)
             except OverflowError:
                 raise GitToolRefused("too_large", f"a bundle is at most {cap} bytes") from None
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 raise GitToolRefused("bad_bundle", f"the bundle object could not be read "
                                                    f"({type(exc).__name__})") from None
             if size != body.bundle_bytes or _sha256_file(dest) != body.bundle_sha256:

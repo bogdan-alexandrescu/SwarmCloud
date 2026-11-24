@@ -412,7 +412,7 @@ class CloudLogsReader:
                 "orderBy": "timestamp desc", "pageSize": limit}
         try:
             response = self._authorized().post(self.URL, json=body, timeout=20)
-        except Exception as exc:  # the transport's own error types vary
+        except Exception as exc:  # the transport's own error types vary  # noqa: BLE001
             raise LogsReadFailed(f"Cloud Logging did not answer ({type(exc).__name__})") from None
         if response.status_code != 200:
             raise LogsReadFailed(f"Cloud Logging answered {response.status_code}")

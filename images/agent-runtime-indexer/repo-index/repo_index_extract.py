@@ -3190,7 +3190,7 @@ def extract(root: Path, budget: Budget | None = None,
             record.update(status="timed_out",
                           reason=f"over the {budget.file_timeout_seconds:g}-second per-file timeout")
             continue
-        except Exception as exc:  # one bad file never fails the run
+        except Exception as exc:  # one bad file never fails the run  # noqa: BLE001
             record.update(status="failed", reason=f"extraction failed: {type(exc).__name__}")
             continue
         record["status"] = "parsed"

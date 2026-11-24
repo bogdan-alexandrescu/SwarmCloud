@@ -126,7 +126,7 @@ def read_pools(db: Any, names: Iterable[str]) -> tuple[dict[str, dict[str, Any] 
     collection = db.collection(POOLS)
     try:
         snaps = list(db.get_all([collection.document(name) for name in wanted]))
-    except Exception as exc:  # the task itself was read; only this reading failed
+    except Exception as exc:  # the task itself was read; only this reading failed  # noqa: BLE001
         log.warning("waiting_for: pool read failed: %s", type(exc).__name__)
         return {}, False
     raw: dict[str, dict[str, Any] | None] = {}
@@ -297,6 +297,6 @@ def _sizes(db: Any) -> Mapping[str, ResourceSize] | None:
     the task GET it rides on, as a failed pool read does."""
     try:
         return current_sizes(db)
-    except Exception as exc:  # the task itself was read; only this reading failed
+    except Exception as exc:  # the task itself was read; only this reading failed  # noqa: BLE001
         log.warning("waiting_for: runner size read failed: %s", type(exc).__name__)
         return None
