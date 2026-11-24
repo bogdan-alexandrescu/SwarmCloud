@@ -3,7 +3,8 @@
 
 WHY THIS IS A TEST. A unit test that opens docs prose, CI YAML, a root *.md
 or the Makefile turns red on an edit to a tree it does not test.
-scripts/check_test_reads.py lists every such read. Issue 71's steps deleted
+scripts/check_test_reads.py lists every such read, in a .py file under tests/
+or in a JS/TS test (apps/swarm-ui's console tests included). Issue 71's steps deleted
 them; step 8 removed the baselines and the --baseline-dir option, so the
 scanner holds the whole tree with no exception. The whole-tree run below sits in
 changed-guards.sh's GUARD_TESTS: a new read lands in a file no diff names, so
@@ -212,7 +213,7 @@ def test_a_docs_read_added_to_a_clean_tree_is_red(tmp_path, capsys):
 
 def test_the_tree_holds_no_read(capsys):
     # The whole tree: a read of docs prose, CI YAML, a root *.md or the
-    # Makefile anywhere under tests/ is red here.
+    # Makefile anywhere under tests/, or in a JS/TS test, is red here.
     # MUTATION: open docs/schedules.md in tests/unit/control_plane.
     code = ctr.main(["--root", str(ROOT)])
     assert code == 0, capsys.readouterr().out
@@ -243,3 +244,52 @@ def test_a_helper_that_reads_or_hands_its_parameter_on_is_followed(tmp_path, cap
     mine = sorted(int(line.split(":")[1]) for line in out.splitlines() if line.startswith(WHERE))
     # The name of a path alone reads nothing (line 10).
     assert mine == [8, 9], out
+
+
+# JavaScript and TypeScript tests: a console test reads only its own tree too.
+UI_TEST = "apps/swarm-ui/src/__tests__/planted.test.tsx"
+UI_HEAD = ("import { readFileSync } from 'node:fs'\nimport { dirname, join, resolve } from 'node:path'\n"
+           "import { fileURLToPath } from 'node:url'\n\nconst REPO = join(__dirname, '..', '..', '..', '..')\n")
+
+
+@pytest.mark.parametrize("where,body", [
+    (UI_TEST, "const DOC = join(REPO, 'docs', 'web-ui', 'x.md')"),
+    (UI_TEST, "const doc = readFileSync(join(__dirname, '..', '..', '..', '..', 'docs', 'x.md'), 'utf8')"),
+    (UI_TEST, "readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../../../.github/workflows/ci.yml'))"),
+    (UI_TEST, "readFileSync(new URL('../../../../CLAUDE.md', import.meta.url))"),
+    (UI_TEST, "readFileSync(`${REPO}/Makefile`, 'utf8')"),
+    (UI_TEST, "for (const f of readdirSync(join(REPO, 'docs', 'user-guide'))) readFileSync(f)"),
+    ("apps/swarm-ui/tests/planted.test.ts", "readFileSync(resolve(__dirname, '..', '..', '..', 'docs', 'web-ui', 'x.md'))"),
+    ("tests/browser/planted.mjs", "readFileSync(join(import.meta.dirname, '..', '..', 'CONTRACT.md'))"),
+])
+def test_a_js_or_ts_test_that_builds_a_docs_path_is_found(tmp_path, capsys, where, body):
+    # MUTATION: drop is_js_test's __tests__ directory, or JsScan's join call.
+    code, out = _scan(tmp_path, capsys, {where: UI_HEAD + "// a comment's 'docs' is no path\n" + body + "\n"})
+    assert code == 1, out
+    assert out.startswith(f"{where}:7:"), out
+
+
+@pytest.mark.parametrize("body", [
+    # The console's own tree, a sibling app and the repository's tests.
+    "readFileSync(join(__dirname, '..', 'styles', 'x.css'), 'utf8')",
+    "readFileSync(join(REPO, 'apps', 'swarm-api', 'swarm_api', 'routes.py'), 'utf8')",
+    "readFileSync(join(REPO, 'plugin', 'skills', 'sc', 'SKILL.md'), 'utf8')",
+    # A JSON data file under docs/ is data.
+    "JSON.parse(readFileSync(join(REPO, 'docs', 'x.json'), 'utf8'))",
+    # A doc's path as data, and a directory short of the root.
+    "expect(text).toContain('docs/workspaces.md §10')",
+    "const NEAR = join(__dirname, '..', '..', 'docs')",
+    # A regex literal holding a quote does not swallow what follows it.
+    "const RE = /\"([a-z]+)'/\nconst X = join(__dirname, '..', 'x.css')",
+])
+def test_what_a_js_or_ts_test_may_read(tmp_path, capsys, body):
+    code, out = _scan(tmp_path, capsys, {UI_TEST: UI_HEAD + body + "\n"})
+    assert code == 0, out
+
+
+def test_a_js_file_that_is_not_a_test_is_not_scanned(tmp_path, capsys):
+    # apps/swarm-ui/guide-sync.mjs reads docs/user-guide to write the copy.
+    code, out = _scan(tmp_path, capsys, {
+        "apps/swarm-ui/guide-sync.mjs": UI_HEAD.replace("'..', '..', '..', '..'", "'..', '..'")
+        + "readFileSync(join(REPO, 'docs', 'user-guide', 'index.md'))\n"})
+    assert code == 0, out

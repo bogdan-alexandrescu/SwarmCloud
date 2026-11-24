@@ -1215,6 +1215,17 @@ jobs:
         if: ${{ !cancelled() && needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'workflows') }}
         run: uv run --frozen python scripts/gen_ci_run_blocks.py --check
 
+      - name: release workflow wiring (actionlint) · the console's user guide copy is current
+        # apps/swarm-ui/src/guidePages.ts is generated from docs/user-guide/*.md
+        # by apps/swarm-ui/guide-sync.mjs (the image build sees only
+        # apps/swarm-ui/). A command, not a console test: a test reading docs/
+        # would turn the UI's unit tests red on a docs edit (issue 71). It runs
+        # on a docs-only change too, where the ui jobs do not; node builtins
+        # only, no npm install.
+        id: workflows-guide-copy
+        if: ${{ !cancelled() && needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'workflows') }}
+        run: node apps/swarm-ui/guide-sync.mjs --check
+
       # --- ruff check ----------------------------------------------------------
       # Why: the `ruff` name-keeper's comment.
       - name: ruff check · ruff check

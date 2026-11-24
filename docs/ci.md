@@ -4912,8 +4912,8 @@ refresh of PR 1279.
 
 ## A test reads only its own tree
 
-**Issue 71.** A unit test reads only the tree it tests. Nothing under `tests/`
-opens docs prose (`docs/`, but for a `.json` data file), anything under
+**Issue 71.** A unit test reads only the tree it tests. Nothing under `tests/`,
+and no console (JS/TS) test, opens docs prose (`docs/`, but for a `.json` data file), anything under
 `.github/`, a root-level `*.md` (`CLAUDE.md`, `CONTRACT.md`, `README.md`, ...)
 or the `Makefile`'s text. **Why:** a test that pins a sentence of
 `docs/ci.md` or a line of a workflow turns red on an edit to a tree it does not
@@ -4935,8 +4935,16 @@ was edited without regenerating; `scripts/changed-guards.sh` runs it as a
 command, not as a test, when a workflow, a composite action, the generator or
 the JSON changes.
 
-**The guard.** `scripts/check_test_reads.py` finds every such read under
-`tests/` and holds the whole tree with no baseline; its whole-tree test sits in
+The console's user guide crosses trees the same way: `apps/swarm-ui/src/guidePages.ts`
+is generated from `docs/user-guide/*.md` by `node apps/swarm-ui/guide-sync.mjs`
+(the image build sees only `apps/swarm-ui/`), and
+`node apps/swarm-ui/guide-sync.mjs --check` exits 1 when the copy is stale. It
+runs in `quick-checks` on every change that reaches the workflow, a docs-only
+one included; no console test opens `docs/`.
+
+**The guard.** `scripts/check_test_reads.py` finds every such read in a
+`.py` file under `tests/` and in a JS/TS test (`apps/swarm-ui`'s vitest and
+node:test files, `tests/browser`), and holds the whole tree with no baseline; its whole-tree test sits in
 `GUARD_TESTS`, so a new read is red on every pull request. With no test reading
 docs, the selector no longer follows a doc that cites a changed path to the
 tests that name it.

@@ -9,7 +9,8 @@ or the Makefile turns red on an edit to a tree it does not test: a docs pull
 request breaks the unit tests of code nobody touched, and a code pull request
 inherits a red it did not cause. Issue 71 deletes those pins; this scanner is
 its guard: it holds the whole tree with no baseline, so a read anywhere
-under tests/ is red (the rule: docs/ci.md#a-test-reads-only-its-own-tree).
+under tests/ or in a JS/TS test is red (the rule:
+docs/ci.md#a-test-reads-only-its-own-tree).
 
 AN OUT-OF-TREE READ is an expression in a .py file under tests/ (test
 modules, conftest.py, helper modules) that builds a path of THIS repository,
@@ -52,6 +53,15 @@ names it cannot resolve; an attribute of an object (self.root); a helper
 module outside tests/; a subprocess (`grep`, `git show`) that reads the file;
 a read through a function of another module whose body builds the path. A
 clean run means no read it can see, not no read at all.
+
+A JS/TS TEST (a .js/.mjs/.cjs/.jsx/.ts/.mts/.cts/.tsx file under a tests/,
+test/ or __tests__/ directory, or named *.test.* or *.spec.*, anywhere but
+node_modules: apps/swarm-ui's vitest and node:test files, tests/browser)
+is held to the same trees. Its paths are evaluated from __dirname,
+import.meta.dirname/url, dirname(fileURLToPath(...)), new URL(rel, ...),
+join/resolve with string parts, a `${NAME}/...` template and a name bound by
+const/let/var to one of those, and a path is reported where it is built
+(JsScan, below, says what it does not follow).
 
 NOT A READ: a file the test writes under tmp_path; "docs/x.md" as data; a
 read of apps/, scripts/, terraform/, kubernetes/, plugin/, install/ or
@@ -800,36 +810,378 @@ class FileScan:
 
 
 # ---------------------------------------------------------------------------
+# JavaScript and TypeScript tests. The same rule holds a console test
+# (apps/swarm-ui's vitest and node:test files, tests/**/*.mjs): it may not
+# build a path of this repository to docs prose, .github/, a root *.md or the
+# Makefile. A JS/TS file is tokenized (strings, templates, regex literals and
+# comments told apart) and its path expressions are evaluated from the file's
+# own place: __dirname, import.meta.dirname, import.meta.url (and
+# dirname(fileURLToPath(import.meta.url)), new URL(rel, import.meta.url)),
+# join/resolve (bare, path. or posix.) of those with string parts, a template
+# that starts with ${NAME}, and a name bound once by const/let/var to such an
+# expression. A JS/TS path is reported where it is BUILT, not where it is read:
+# a test that names a doc's path in a message spells it as a string instead.
+# It is a lower bound too: an imported name, process.cwd() or a path handed
+# in by a fixture is not followed.
+
+JS_SUFFIXES = (".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx")
+JS_TEST_DIRS = frozenset({"tests", "test", "__tests__"})
+JS_PATH_CALLS = {"join", "resolve", "path.join", "path.resolve", "posix.join", "posix.resolve",
+                 "path.posix.join", "path.posix.resolve", "pathJoin", "pathResolve"}
+JS_DIRNAME_CALLS = {"dirname", "path.dirname", "posix.dirname", "path.posix.dirname"}
+JS_SAME_CALLS = {"fileURLToPath", "url.fileURLToPath", "normalize", "path.normalize", "String"}
+JS_SAME_ATTRS = {"pathname", "href"}
+# A '/' after one of these starts a regex literal, not a division.
+JS_REGEX_AFTER_WORDS = frozenset({"return", "typeof", "case", "do", "else", "in", "of", "new",
+                                  "delete", "void", "throw", "instanceof", "yield", "await"})
+# A JS/TS file that names none of the trees and no root anchor is not tokenized.
+JS_TOKENS = re.compile(r"""docs|\.github|Makefile|\.md\b""")
+JS_ANCHOR = re.compile(r"__dirname|__filename|import\.meta")
+JS_ID_START = re.compile(r"[A-Za-z_$]")
+JS_ID = re.compile(r"[A-Za-z0-9_$]*")
+
+
+def is_js_test(rel: str) -> bool:
+    """A JS/TS test file: under a tests/, test/ or __tests__/ directory, or
+    named *.test.* / *.spec.*, and not under node_modules."""
+    if not rel.endswith(JS_SUFFIXES):
+        return False
+    parts = PurePosixPath(rel).parts
+    if "node_modules" in parts:
+        return False
+    name = parts[-1]
+    return bool(JS_TEST_DIRS.intersection(parts[:-1])) or ".test." in name or ".spec." in name
+
+
+class JsPath:
+    """A path of the repository: its parts from the root, whether unknown
+    parts follow (`open`) and whether it names a directory (`dir`, for a URL
+    that a further `new URL(rel, it)` resolves against)."""
+    __slots__ = ("parts", "open", "dir")
+
+    def __init__(self, parts: tuple[str, ...], open_: bool = False, dir_: bool = True):
+        self.parts = parts
+        self.open = open_
+        self.dir = dir_
+
+
+def js_tokens(text: str) -> list[tuple[str, str, int]]:
+    """(kind, value, line) for each token: id, str (its text, escapes kept),
+    tpl (its raw text between the backticks), num, re and p (punctuation)."""
+    out: list[tuple[str, str, int]] = []
+    i, n, line = 0, len(text), 1
+
+    def regex_ok() -> bool:
+        if not out:
+            return True
+        kind, value, _ = out[-1]
+        if kind in ("str", "tpl", "num", "re"):
+            return False
+        if kind == "id":
+            return value in JS_REGEX_AFTER_WORDS
+        return value not in (")", "]", "}")
+
+    while i < n:
+        c = text[i]
+        if c == "\n":
+            line += 1
+            i += 1
+        elif c in " \t\r\f\v":
+            i += 1
+        elif text.startswith("//", i):
+            end = text.find("\n", i)
+            i = n if end < 0 else end
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            end = n if end < 0 else end + 2
+            line += text.count("\n", i, end)
+            i = end
+        elif c in "'\"":
+            start, j = line, i + 1
+            while j < n and text[j] != c and text[j] != "\n":
+                j += 2 if text[j] == "\\" else 1
+            out.append(("str", text[i + 1:j], start))
+            i = j + 1
+        elif c == "`":
+            start, j, depth = line, i + 1, 0
+            while j < n:
+                ch = text[j]
+                if ch == "\\":
+                    j += 2
+                    continue
+                if depth == 0 and ch == "`":
+                    break
+                if text.startswith("${", j):
+                    depth += 1
+                    j += 2
+                    continue
+                if depth and ch == "}":
+                    depth -= 1
+                elif depth and ch == "{":
+                    depth += 1
+                j += 1
+            raw = text[i + 1:j]
+            line += raw.count("\n")
+            out.append(("tpl", raw, start))
+            i = j + 1
+        elif c == "/" and regex_ok():
+            j, in_class = i + 1, False
+            while j < n and text[j] != "\n":
+                ch = text[j]
+                if ch == "\\":
+                    j += 2
+                    continue
+                if ch == "[":
+                    in_class = True
+                elif ch == "]":
+                    in_class = False
+                elif ch == "/" and not in_class:
+                    break
+                j += 1
+            j += 1
+            while j < n and text[j].isalpha():
+                j += 1
+            out.append(("re", text[i:j], line))
+            i = j
+        elif JS_ID_START.match(c):
+            m = JS_ID.match(text, i + 1)
+            end = m.end() if m else i + 1
+            out.append(("id", text[i:end], line))
+            i = end
+        elif c.isdigit():
+            j = i + 1
+            while j < n and (text[j].isalnum() or text[j] in "._"):
+                j += 1
+            out.append(("num", text[i:j], line))
+            i = j
+        elif text.startswith("?.", i) and not text[i + 2:i + 3].isdigit():
+            out.append(("p", ".", line))
+            i += 2
+        elif text.startswith("...", i):
+            out.append(("p", "...", line))
+            i += 3
+        else:
+            out.append(("p", c, line))
+            i += 1
+    return out
+
+
+class JsScan:
+    def __init__(self, rel: str, text: str):
+        self.toks = js_tokens(text)
+        here = PurePosixPath(rel)
+        self.file = JsPath(tuple(here.parts), dir_=False)
+        self.dir = JsPath(tuple(here.parent.parts))
+        self.env: dict[str, object] = {}
+        self.found: set[int] = set()
+
+    # -- values ---------------------------------------------------------------
+    @staticmethod
+    def walk(base, text: str):
+        """base joined with the relative path text; None above the root."""
+        if not isinstance(base, JsPath) or text.startswith("/"):
+            return None
+        if base.open:
+            return JsPath(base.parts, True)
+        parts = list(base.parts)
+        for part in text.split("/"):
+            if part in ("", "."):
+                continue
+            if part == "..":
+                if not parts:
+                    return None
+                parts.pop()
+            else:
+                parts.append(part)
+        return JsPath(tuple(parts), dir_=text.endswith("/") or text in ("", ".", ".."))
+
+    def dotted(self, i: int) -> tuple[str, int]:
+        """The dotted name starting at token i, and the index after it."""
+        names = [self.toks[i][1]]
+        j = i + 1
+        while (j + 1 < len(self.toks) and self.toks[j] == ("p", ".", self.toks[j][2])
+               and self.toks[j + 1][0] == "id"):
+            names.append(self.toks[j + 1][1])
+            j += 2
+        return ".".join(names), j
+
+    def args(self, i: int) -> tuple[list[list[int]], int]:
+        """Token index ranges of the call's top-level arguments, the '(' at
+        i; and the index after the ')'."""
+        depth, j, start, ranges = 0, i, i + 1, []
+        while j < len(self.toks):
+            kind, value, _ = self.toks[j]
+            if kind == "p" and value in "([{":
+                depth += 1
+            elif kind == "p" and value in ")]}":
+                depth -= 1
+                if depth == 0:
+                    if j > start:
+                        ranges.append([start, j])
+                    return ranges, j + 1
+            elif kind == "p" and value == "," and depth == 1:
+                ranges.append([start, j])
+                start = j + 1
+            j += 1
+        return ranges, j
+
+    def arg_value(self, span: list[int]):
+        value, end = self.primary(span[0])
+        return value if end == span[1] else None
+
+    def template(self, raw: str):
+        if "${" not in raw:
+            return raw
+        if not raw.startswith("${"):
+            return None
+        close = raw.find("}")
+        name = raw[2:close].strip()
+        rest = raw[close + 1:].lstrip("/")
+        base = self.env.get(name) if re.fullmatch(r"[A-Za-z_$][\w$]*", name) else None
+        if not isinstance(base, JsPath):
+            return None
+        if "${" in rest:
+            tail = rest[:rest.find("${")]
+            known = self.walk(base, tail.rsplit("/", 1)[0]) if "/" in tail else base
+            return JsPath(known.parts, True) if isinstance(known, JsPath) else None
+        return self.walk(base, rest)
+
+    def call(self, name: str, values: list):
+        if name in JS_PATH_CALLS:
+            if not values or not isinstance(values[0], JsPath):
+                return None
+            path = values[0]
+            for value in values[1:]:
+                if isinstance(value, JsPath) and name.endswith("resolve"):
+                    path = value
+                elif isinstance(value, str):
+                    path = self.walk(path, value)
+                    if path is None:
+                        return None
+                    path = JsPath(path.parts, path.open)
+                else:
+                    return JsPath(path.parts, True)
+            return path
+        if name in JS_DIRNAME_CALLS:
+            value = values[0] if values else None
+            if isinstance(value, JsPath) and value.parts and not value.open:
+                return JsPath(value.parts[:-1])
+            return None
+        if name in JS_SAME_CALLS:
+            return values[0] if values else None
+        return None
+
+    def primary(self, i: int):
+        """The value of the expression starting at token i, and the index
+        after it (i + 1 for anything it does not know)."""
+        if i >= len(self.toks):
+            return None, i + 1
+        kind, value, _ = self.toks[i]
+        if kind == "str":
+            return value, i + 1
+        if kind == "tpl":
+            return self.template(value), i + 1
+        if kind != "id":
+            return None, i + 1
+        if value == "new" and i + 1 < len(self.toks) and self.toks[i + 1][1] in ("URL", "url.URL"):
+            name, j = self.dotted(i + 1)
+            if name == "URL" and j < len(self.toks) and self.toks[j][1] == "(":
+                spans, end = self.args(j)
+                values = [self.arg_value(s) for s in spans]
+                result = None
+                if len(values) == 2 and isinstance(values[0], str) and isinstance(values[1], JsPath):
+                    base = values[1] if values[1].dir else JsPath(values[1].parts[:-1])
+                    result = self.walk(base, values[0])
+                return self.suffix(result, end)
+        name, j = self.dotted(i)
+        if j < len(self.toks) and self.toks[j][1] == "(":
+            spans, end = self.args(j)
+            values = [self.arg_value(s) for s in spans]
+            return self.suffix(self.call(name, values), end)
+        if name in ("__dirname", "import.meta.dirname"):
+            return self.dir, j
+        if name in ("__filename", "import.meta.url", "import.meta.filename"):
+            return self.file, j
+        head, _, attr = name.rpartition(".")
+        if head and attr in JS_SAME_ATTRS:
+            value = self.env.get(head)
+            return (value if isinstance(value, JsPath) else None), j
+        return self.env.get(name), j
+
+    def suffix(self, value, j: int):
+        """A trailing .pathname or .href keeps a URL's path."""
+        while (j + 1 < len(self.toks) and self.toks[j][1] == "." and self.toks[j + 1][1] in JS_SAME_ATTRS):
+            j += 2
+        return value, j
+
+    # -- a file ---------------------------------------------------------------
+    def run(self) -> set[int]:
+        toks = self.toks
+        for i, (kind, value, line) in enumerate(toks):
+            if kind == "id" and value in ("const", "let", "var") and i + 3 < len(toks) \
+                    and toks[i + 1][0] == "id" and toks[i + 2][1] == "=":
+                bound, end = self.primary(i + 3)
+                follows = toks[end][1] if end < len(toks) else ";"
+                if follows in (";", ")", "}", ",") or (end < len(toks) and toks[end][0] == "id"):
+                    self.env[toks[i + 1][1]] = bound
+                else:
+                    self.env.pop(toks[i + 1][1], None)
+            if kind == "tpl" or (kind == "id" and (value == "new" or (
+                    i + 1 < len(toks) and toks[i + 1][1] in ("(", ".")))):
+                built, _ = self.primary(i)
+                if isinstance(built, JsPath) and in_scope(Rel(built.parts, built.open)):
+                    self.found.add(line)
+        return self.found
+
+
+def js_scan(root: Path, rel: str) -> list[tuple[int, str]]:
+    try:
+        text = (root / rel).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+    if not (JS_TOKENS.search(text) and JS_ANCHOR.search(text)):
+        return []
+    lines = text.splitlines()
+    return sorted({(n, lines[n - 1].strip() if n <= len(lines) else "") for n in JsScan(rel, text).run()})
+
+
+# ---------------------------------------------------------------------------
+
+
+def wanted(rel: str) -> bool:
+    """A .py file under tests/, or a JS/TS test file anywhere."""
+    return (rel.startswith("tests/") and rel.endswith(".py")) or is_js_test(rel)
 
 
 def test_files(root: Path) -> list[str]:
-    """Tracked and untracked-but-not-ignored .py files under tests/ (the gate
-    runs before the publish's `git add --all`); outside a git work tree,
-    every .py file under tests/."""
+    """Tracked and untracked-but-not-ignored .py files under tests/ and JS/TS
+    test files anywhere (the gate runs before the publish's `git add --all`);
+    outside a git work tree, the same files found by walking the tree."""
     names: list[str] = []
     try:
         for extra in ((), ("--others", "--exclude-standard")):
-            out = subprocess.run(["git", "-C", str(root), "ls-files", "-z", *extra, "--", "tests"],
+            out = subprocess.run(["git", "-C", str(root), "ls-files", "-z", *extra],
                                  check=True, capture_output=True).stdout.decode()
             names.extend(p for p in out.split("\0") if p)
     except (OSError, subprocess.CalledProcessError):
-        names = [p.relative_to(root).as_posix() for p in (root / "tests").rglob("*.py")]
-    return sorted({n for n in names if n.endswith(".py") and (root / n).is_file()})
+        names = [p.relative_to(root).as_posix() for p in root.rglob("*")
+                 if ".git" not in p.relative_to(root).parts]
+    return sorted({n for n in names if wanted(n) and (root / n).is_file()})
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     parser.add_argument("--root", default=".", help="repository root (default: .)")
     parser.add_argument("--list-files", action="store_true", help="print the distinct offending files")
-    parser.add_argument("files", nargs="*", help="repo-relative files under tests/ (default: all)")
+    parser.add_argument("files", nargs="*",
+                        help="repo-relative .py files under tests/ or JS/TS test files (default: all)")
     args = parser.parse_args(argv)
     root = Path(args.root).resolve()
-    files = sorted(f for f in args.files if f.startswith("tests/") and f.endswith(".py")) \
-        if args.files else test_files(root)
+    files = sorted(f for f in args.files if wanted(f)) if args.files else test_files(root)
     scanner = Scanner(root)
     bad = 0
     for rel in files:
-        found = scanner.scan(rel)
+        found = scanner.scan(rel) if rel.endswith(".py") else js_scan(root, rel)
         if not found:
             continue
         bad += 1
@@ -839,7 +1191,7 @@ def main(argv: list[str] | None = None) -> int:
             for line, text in found:
                 print(f"{rel}:{line}: {text}")
     if bad:
-        print(f"{bad} file(s) under tests/ read docs prose, CI YAML, a root *.md or the "
+        print(f"{bad} test file(s) read docs prose, CI YAML, a root *.md or the "
               "Makefile: test the code, not the prose (issue 71; scripts/check_test_reads.py)",
               file=sys.stderr)
     return 1 if bad else 0
