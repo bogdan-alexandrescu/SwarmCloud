@@ -1,3 +1,4 @@
+# source-text: contract - the field names outcomes.ts declares and reads must be the ones GET /v1/outcomes sends and accepts
 """The Timeline reads exactly what `GET /v1/outcomes` sends, and asks only what it accepts (archived issue 185).
 
 WHY THIS FILE. The route (archived pull request 196) and the page (archived pull request 197) were written in two lanes at

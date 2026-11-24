@@ -1,3 +1,4 @@
+# source-text: contract - lifecycle.py's line count must stay at or under the ceiling the issue 68 split set, a ratchet
 """Concerns moved out of `lifecycle.py` (part of issue 68): the publish guard into
 `publish_guard.py`, then a runner's run and spend into `spend.py`.
 

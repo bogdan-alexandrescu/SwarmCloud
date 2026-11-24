@@ -1,3 +1,4 @@
+# source-text: contract - start_xvfb's argv must turn off Xvfb's tcp and local listeners, which no call observes without starting Xvfb
 """The display sidecar's process: `python -m agent_worker.livegate` (live browser L3m).
 
 Measured 2026-10-11 on swarm-autopilot: every `claude-code-browser` pod's

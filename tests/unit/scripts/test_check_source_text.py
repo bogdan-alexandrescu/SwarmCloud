@@ -13,6 +13,7 @@ the one-read-per-file engine on scratch git repositories.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import importlib.util
 import subprocess
 import sys
@@ -36,6 +37,14 @@ def _load():
 
 cst = _load()
 RULES = cst.discover_rules()
+
+
+@pytest.fixture
+def no_exemptions(monkeypatch):
+    """The real rules without their exempt paths, for a planted repository: it
+    holds none of the files they name, so each would be a stale exemption."""
+    bare = [dataclasses.replace(rule, exempt=frozenset()) for rule in RULES]
+    monkeypatch.setattr(cst, "discover_rules", lambda: bare)
 
 
 def _repo(tmp_path: Path, files: dict[str, str]) -> Path:
@@ -97,20 +106,20 @@ READER = "from pathlib import Path\nT = Path('apps/x/main.py').read_text()\n"
 PLAIN = "def test_x():\n    assert True\n"
 
 
-def test_a_good_marker_passes_and_is_listed(tmp_path, capsys):
+def test_a_good_marker_passes_and_is_listed(tmp_path, capsys, no_exemptions):
     marked = "# source-text: contract - the route table is read as written\n" + READER
     root = _repo(tmp_path, {"tests/unit/test_a.py": marked})
     assert cst.main(["--root", str(root)]) == 0
-    assert cst.main(["--root", str(root), "--require-markers"]) == 0
+    assert cst.main(["--root", str(root)]) == 0
     assert cst.main(["--root", str(root), "--list"]) == 0
     out = capsys.readouterr().out
     assert "tests/unit/test_a.py" in out and "read" in out and "marked contract" in out
 
 
-def test_a_marker_follows_a_shebang(tmp_path):
+def test_a_marker_follows_a_shebang(tmp_path, no_exemptions):
     marked = "#!/usr/bin/env python3\n# source-text: fixture - parses a sample\n" + READER
     root = _repo(tmp_path, {"apps/app/tests/helper.py": marked})
-    assert cst.main(["--root", str(root), "--require-markers"]) == 0
+    assert cst.main(["--root", str(root)]) == 0
 
 
 @pytest.mark.parametrize("first", [
@@ -145,13 +154,16 @@ def test_a_marker_on_a_file_that_reads_no_source_fails(tmp_path, capsys):
     assert "tests/unit/test_a.py:1:" in capsys.readouterr().out
 
 
-def test_a_missing_marker_warns_and_fails_only_when_required(tmp_path, capsys):
+def test_a_missing_marker_fails_the_default_run(tmp_path, capsys, no_exemptions):
+    # The default run is strict (issue 73's last step): a detected file with
+    # no marker is a failure naming its line and how it reads source, not a
+    # warning, so the next unmarked source-text test is refused.
     root = _repo(tmp_path, {"tests/unit/test_a.py": READER, "tests/unit/test_b.py": PLAIN})
-    assert cst.main(["--root", str(root)]) == 0
-    assert "tests/unit/test_a.py:1: warning" in capsys.readouterr().err
-    assert cst.main(["--root", str(root), "--require-markers"]) == 1
-    out = capsys.readouterr().out
-    assert "tests/unit/test_a.py:1:" in out and "test_b.py" not in out
+    assert cst.main(["--root", str(root)]) == 1
+    captured = capsys.readouterr()
+    assert "tests/unit/test_a.py:1: no source-text marker (reads source by read)" in captured.out
+    assert "test_b.py" not in captured.out
+    assert "warning" not in captured.err
     assert cst.main(["--root", str(root), "--list"]) == 0
     assert "UNMARKED" in capsys.readouterr().out
 
@@ -163,9 +175,9 @@ def test_list_takes_paths(tmp_path, capsys):
     assert "test_c.py" in out and "test_a.py" not in out
 
 
-def test_files_outside_the_test_trees_are_not_selected(tmp_path, capsys):
+def test_files_outside_the_test_trees_are_not_selected(tmp_path, capsys, no_exemptions):
     root = _repo(tmp_path, {"apps/app/app/main.py": READER, "scripts/x.py": READER})
-    assert cst.main(["--root", str(root), "--require-markers"]) == 0
+    assert cst.main(["--root", str(root)]) == 0
 
 
 # ------------------------------------------------------------------- rules
@@ -248,12 +260,13 @@ def tree():
     # One read of the real tree for the three tests below: the run is most of
     # this file's time.
     sources = cst.Sources(ROOT)
-    return sources, cst.check_tree(ROOT, sources, require_markers=False)
+    return sources, cst.check_tree(ROOT, sources)
 
 
 def test_the_tree_passes_the_check(tree):
-    # The single lint step: every marker and every rule over its roots, as
-    # `check_source_text.py --root .` runs it.
+    # The single lint step in its default, strict mode: every detected file
+    # marked, every marker well formed and every rule over its roots, as
+    # `check_source_text.py --root .` runs it (exit 0 is no failure).
     _, result = tree
     assert result.failures == [], "\n".join(result.failures)
 
@@ -263,8 +276,63 @@ def test_the_rules_visit_the_tree(tree):
     # vacuously.
     sources, result = tree
     assert result.rules.visited["no-bare-conftest-import"] > 100
+    # Every shipped rule's roots reach at least one file of the tree.
+    assert not [r for r, n in result.rules.visited.items() if n == 0], result.rules.visited
     assert "tests/unit/worker/conftest.py" in sources.read_paths
     assert "tests/unit/reconciler/conftest.py" in sources.read_paths
+
+
+def test_the_worker_rules_visit_the_files_their_sweeps_read(tree):
+    # The controls the moved worker sweeps carried: the forge sweep refused a
+    # walk that found fewer than three modules, and each single-file rule
+    # passes vacuously if its file moves away from its root.
+    _, result = tree
+    visited = result.rules.visited
+    assert visited["worker-no-dead-diff-credential-helper"] > 50
+    assert visited["forge-token-modules-use-the-one-opener"] > 100
+    assert visited["repo-index-imports-only-its-pins"] >= 3
+    for rule_id in ("issue-reads-github-hosts-from-forge", "gate-wait-hook-standard-library-only",
+                    "browser-runner-no-script-evaluation", "merge-no-not-mergeable-code",
+                    "render-takes-name-class-from-identity"):
+        assert visited[rule_id] == 1, rule_id
+
+
+#: The floors the service tests' own sweeps held before they became rules in
+#: scripts/source_text_rules/services.py (`visited >= 30`, `len(modules) > 5`,
+#: `len(trees) > 20`, `scanned > 100`), and one file for each rule over named
+#: files: a root that moved would otherwise leave its rule passing on nothing.
+SERVICE_RULE_FLOORS = {
+    "fix-rounds-running-only-in-the-control-plane-park": 1,
+    "no-capacity-module-reads-stored-task-totals": 30,
+    "install-reads-only-the-desktop-secret": 1,
+    "install-names-no-resume-flag": 1,
+    "install-names-no-brands-api": 3,
+    "tfvars-reads-no-committed-tfvars": 1,
+    "team-add-prompts-for-nothing": 1,
+    "hooks-receiver-compares-in-constant-time": 1,
+    "mcp-builds-its-client-in-one-place": 1,
+    "mcp-launcher-spelled-only-in-invocation": 6,
+    "mcp-no-hand-spelled-command": 6,
+    "mcp-reads-the-server-registry-and-mints-only-secret-links": 1,
+    "mcp-tail-command-only-through-follow": 2,
+    "mcp-launch-names-no-dropped-release": 1,
+    "mcp-qa-targets-never-sends-the-credential": 1,
+    "mcp-no-handler-reaches-a-role-write": 21,
+    "sc-pane-starts-no-timer-and-reaches-no-model": 2,
+    "sc-debug-report-reads-only-the-api": 1,
+    "sc-reads-no-swarm-tenant-itself": 1,
+    "no-writer-moves-failed-to-ready": 101,
+    "plugin-intake-reads-no-mount": 1,
+    "speech-watchdog-stdlib-only": 1,
+    "voice-reads-no-personal-chatgpt-sign-in": 4,
+}
+
+
+@pytest.mark.parametrize("rule_id", sorted(SERVICE_RULE_FLOORS))
+def test_the_service_rules_visit_what_their_tests_did(tree, rule_id):
+    _, result = tree
+    assert result.rules.visited[rule_id] >= SERVICE_RULE_FLOORS[rule_id], (
+        rule_id, result.rules.visited[rule_id])
 
 
 def test_the_detector_finds_the_tree_s_source_text_tests(tree):

@@ -1,3 +1,4 @@
+# source-text: contract - deps.py must build the forge reader with a slot index, and five modules must pass the resolver the person who asked
 """Every server-side forge read resolves its slot the way a task's would
 (INDEX-USER-SLOT; part of archived issue 1041).
 
@@ -228,24 +229,9 @@ def test_index_now_reads_with_the_callers_own_slot(db, tokens, group_map, object
 
 API = Path(__file__).resolve().parents[3] / "apps" / "swarm-api" / "swarm_api"
 
-#: A slot read that names the tenant `-git` slot itself, bypassing the resolver.
-_DIRECT_GIT_READ = re.compile(
-    r"read_slot\(\s*[^,()]+,\s*(?:_?forge\.)?(?:GIT_PROVIDER|[\"']git[\"'])\s*[,)]")
-
-
-def test_no_module_reads_the_tenant_git_slot_outside_the_resolver() -> None:
-    # The control: the pattern does find the read this lane removed.
-    assert _DIRECT_GIT_READ.search("self.read_slot(tenant, GIT_PROVIDER).value")
-    assert _DIRECT_GIT_READ.search('tokens.read_slot(tenant, "git")')
-    files = sorted(API.rglob("*.py"))
-    assert len(files) > 50, f"found only {len(files)} modules under {API}"
-    offenders = [
-        f"{path.relative_to(API)}:{text[:match.start()].count(chr(10)) + 1}"
-        for path in files
-        for text in [path.read_text(encoding="utf-8")]
-        for match in _DIRECT_GIT_READ.finditer(text)
-    ]
-    assert offenders == []
+# That no module reads the tenant `-git` slot outside the resolver is the lint
+# rule `git-slot-read-through-the-resolver`
+# (scripts/source_text_rules/control_plane_am.py).
 
 
 def test_the_production_reader_has_a_slot_index() -> None:

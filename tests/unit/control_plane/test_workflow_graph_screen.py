@@ -1,3 +1,4 @@
+# source-text: contract - dag.ts, Workflows.tsx and App.tsx must render the edges, node links and costs the workflow API serves; the loader-caller glob finds a caller
 """The workflow DAG: real edges, a node you can click, and a cost that is never 0.
 
 WHAT WAS MEASURED, on 2026-09-22, against `wf_5e5ad3b6f7da4299a839` -- five

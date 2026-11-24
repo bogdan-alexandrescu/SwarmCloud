@@ -1,3 +1,4 @@
+# source-text: contract - every refusal code agent_worker/merge.py raises must have a plain-language row in the plugin's progress and compact tables
 """The plugin's rows for a merge step (lane MS5, docs/merge-step.md "Revised 2026-10-06" §6).
 
 A merge step that waits for its pull request's checks is PARKED on

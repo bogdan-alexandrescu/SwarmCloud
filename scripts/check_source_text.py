@@ -2,7 +2,7 @@
 """Find the tests that read repository source as text, hold their markers, and
 run the forbidden-pattern rules once over the tree (part of issue 73).
 
-    check_source_text.py [--root DIR] [--require-markers] [--list [PATH ...]]
+    check_source_text.py [--root DIR] [--list [PATH ...]]
 
 WHY. A test that reads a .py or .ts file as text pins what the code SAYS, not
 what it does: it can hold a contract that has no other observable form, it can
@@ -37,8 +37,9 @@ sweep walked and read the tree again, once per test file. So this script:
      below), or `fixture` (the source read is a sample the test parses or
      builds, not the repository's code); the reason says why THIS file reads
      text. A malformed marker, an unknown class, a marker below the first line
-     or a marker on a file the detector does not select fails. A detected file
-     with no marker is a warning, and fails under --require-markers.
+     or a marker on a file the detector does not select fails, and so does a
+     detected file with no marker: the next source-text test is classified
+     when it is written.
 
   3. RUNS THE RULES, every module of scripts/source_text_rules/ (found by
      name; the package docstring gives a rule's shape). Each file under the
@@ -355,10 +356,8 @@ def read_marker(text: str) -> Marker:
     return Marker(None, None)
 
 
-def check_markers(sources: Sources, detected: dict[str, list[str]],
-                  require: bool) -> tuple[list[str], list[str]]:
+def check_markers(sources: Sources, detected: dict[str, list[str]]) -> list[str]:
     failures: list[str] = []
-    warnings: list[str] = []
     for rel in sources.files:
         if not in_test_tree(rel):
             continue
@@ -369,10 +368,9 @@ def check_markers(sources: Sources, detected: dict[str, list[str]],
             failures.append(f"{rel}:{marker.line}: a source-text marker on a file that "
                             "reads no source as text; remove it")
         elif marker.cls is None and rel in detected:
-            message = (f"{rel}:1: no source-text marker (reads source by "
-                       f"{', '.join(detected[rel])}); add `# source-text: <class> - <reason>`")
-            (failures if require else warnings).append(message)
-    return failures, warnings
+            failures.append(f"{rel}:1: no source-text marker (reads source by "
+                            f"{', '.join(detected[rel])}); add `# source-text: <class> - <reason>`")
+    return failures
 
 
 # -------------------------------------------------------------------- main
@@ -381,23 +379,20 @@ def check_markers(sources: Sources, detected: dict[str, list[str]],
 class TreeResult:
     detected: dict[str, list[str]]
     failures: list[str]
-    warnings: list[str]
     rules: RuleResult
 
 
-def check_tree(root: Path, sources: Sources, require_markers: bool) -> TreeResult:
+def check_tree(root: Path, sources: Sources) -> TreeResult:
     """The whole check: markers and every discovered rule, one read a file."""
     detected = detect_tree(root, sources)
-    failures, warnings = check_markers(sources, detected, require_markers)
+    failures = check_markers(sources, detected)
     rules = run_rules(root, discover_rules(), sources)
-    return TreeResult(detected, failures + rules.failures, warnings, rules)
+    return TreeResult(detected, failures + rules.failures, rules)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     parser.add_argument("--root", type=Path, default=Path.cwd())
-    parser.add_argument("--require-markers", action="store_true",
-                        help="a detected file with no marker fails instead of warning")
     parser.add_argument("--list", nargs="*", metavar="PATH", default=None,
                         help="print each detected file (of PATHs, or all) with its "
                              "techniques and marker, and exit 0")
@@ -416,9 +411,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"{rel}  {','.join(techniques)}  {state}")
         return 0
 
-    result = check_tree(root, sources, args.require_markers)
-    for line in result.warnings:
-        print(f"{line.replace(':1: ', ':1: warning: ', 1)}", file=sys.stderr)
+    result = check_tree(root, sources)
     for line in result.failures:
         print(line)
     marked = sum(1 for rel in result.detected if read_marker(sources.text(rel)).cls)

@@ -20,7 +20,6 @@ that records what it was asked.
 
 from __future__ import annotations
 
-import ast
 import io
 import json
 import re
@@ -33,7 +32,6 @@ from swarm_mcp import sc, server
 from swarm_mcp.client import SwarmError, tenant_listing
 import sc_skill_text
 
-_PACKAGE = Path(server.__file__).resolve().parent
 _REPO = Path(__file__).resolve().parents[3]
 
 #: Every route that writes a role (swarm_api/routes/roles.py's docstring):
@@ -348,60 +346,11 @@ def test_no_tool_schema_takes_a_role_to_give():
     assert "swarm_roles" in {t["name"] for t in server.TOOLS}
 
 
-def _functions_naming(tree: ast.AST, needles: tuple[str, ...]) -> set[str]:
-    """The top-level functions whose body holds a string constant containing
-    any of `needles`, and `<module>` for one outside every function."""
-    found: set[str] = set()
-    for top in getattr(tree, "body", []):
-        holder = top.name if isinstance(top, (ast.FunctionDef, ast.AsyncFunctionDef)) else "<module>"
-        for node in ast.walk(top):
-            if isinstance(node, ast.Constant) and isinstance(node.value, str) \
-                    and any(n in node.value for n in needles):
-                found.add(holder)
-    return found
-
-
-def _names_used(tree: ast.AST) -> set[str]:
-    names: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Name):
-            names.add(node.id)
-        elif isinstance(node, ast.Attribute):
-            names.add(node.attr)
-        elif isinstance(node, ast.alias):
-            names.add(node.name)
-    return names
-
-
-def test_no_handler_reaches_a_role_write_route():
-    """Read off the source: the write paths are named in ONE function of
-    `sc.py`, reached only from the three typed `sc roles` handlers, and no
-    other module -- `server.py` above all -- names that function, those
-    handlers or the paths."""
-    trees = {p.name: ast.parse(p.read_text(encoding="utf-8")) for p in _PACKAGE.glob("*.py")}
-    assert len(trees) > 20, sorted(trees)
-    holders = {name: _functions_naming(tree, _ROLE_WRITE_PATHS) for name, tree in trees.items()}
-    holders = {name: found for name, found in holders.items() if found}
-    assert holders == {"sc.py": {"<module>"}}, holders
-    # The module-level constant is read by one function, and that function by
-    # the three typed handlers only.
-    sc_tree = trees["sc.py"]
-    readers = {
-        top.name for top in sc_tree.body
-        if isinstance(top, ast.FunctionDef) and "ROLE_WRITES" in _names_used(top)
-    }
-    assert readers == {"_send_role_change"}, readers
-    callers = {
-        top.name for top in sc_tree.body
-        if isinstance(top, ast.FunctionDef) and "_send_role_change" in _names_used(top)
-    }
-    assert callers == {"cmd_roles_set", "cmd_roles_clear", "cmd_roles_default"}, callers
-    forbidden = {"ROLE_WRITES", "_send_role_change", "cmd_roles_set", "cmd_roles_clear",
-                 "cmd_roles_default"}
-    for name, tree in trees.items():
-        if name == "sc.py":
-            continue
-        assert not forbidden & _names_used(tree), (name, forbidden & _names_used(tree))
+# No handler reaches a role-write route. Read off the source: the write paths
+# are named in ONE function of `sc.py`, reached only from the three typed `sc
+# roles` handlers, and no other module -- `server.py` above all -- names that
+# function, those handlers or the paths: the rule mcp-no-handler-reaches-a-role-write
+# in scripts/source_text_rules/services.py.
 
 
 def test_the_elicitation_route_and_every_read_tool_send_no_role_write():

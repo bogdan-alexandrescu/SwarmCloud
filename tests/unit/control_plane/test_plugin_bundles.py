@@ -19,7 +19,6 @@ credentials and no network.
 
 from __future__ import annotations
 
-import ast
 import gzip
 import hashlib
 import importlib.machinery
@@ -537,20 +536,6 @@ def test_the_job_call_overrides_only_the_one_containers_arguments(monkeypatch):
     assert name == f"{JOB}/executions/swarm-plugin-bundle-abc12"
     assert sent == [(f"https://run.googleapis.com/v2/{JOB}:run",
                      {"overrides": {"containerOverrides": [{"args": ["b-0123456789ab", "gstack"]}]}})]
-
-
-def test_no_cloud_build_client_is_imported_anywhere_in_swarm_api():
-    # No Cloud Build library is imported, its API is never called and its
-    # builder images are never named: a bundle build is a Cloud Run job.
-    api = Path(pb.__file__).resolve().parent
-    for path in api.rglob("*.py"):
-        text = path.read_text()
-        for node in ast.walk(ast.parse(text)):
-            names = [a.name for a in node.names] if isinstance(node, ast.Import) else \
-                [node.module or ""] if isinstance(node, ast.ImportFrom) else []
-            assert not any("cloudbuild" in n or "cloud_build" in n for n in names), path.relative_to(api)
-        for word in ("cloudbuild.googleapis.com", "gcr.io/cloud-builders", "CloudBuild"):
-            assert word not in text, f"{path.relative_to(api)} names {word}"
 
 
 def test_the_catalogues_own_apply_starts_the_bundle_build_and_leaves_current_version(world):

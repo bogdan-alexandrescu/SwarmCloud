@@ -1,3 +1,4 @@
+# source-text: contract - every env read in the apps' Python and the console's import.meta.env, every terraform resource and render.py policy file must have an install manifest entry, and no entry may be stale
 """The test that fails on an unlisted dependency (design §3.3).
 
 Each collector reads the tree (offline: no credentials, no emulator, no

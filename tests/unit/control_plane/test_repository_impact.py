@@ -1,3 +1,4 @@
+# source-text: fixture - read_bytes copies the graph shards the indexer writer wrote for a synthetic index under tmp_path; the detector follows a `path` name that holds a synthetic .py name
 """The commit / pull-request impact query (docs/repo-index.md §4.3a, lane RI11).
 
 diff -> changed symbols (by line range) -> bounded transitive callers ->

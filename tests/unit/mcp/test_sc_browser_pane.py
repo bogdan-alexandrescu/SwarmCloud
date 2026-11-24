@@ -1,3 +1,4 @@
+# source-text: contract - pane/model.ts's frame signature and pane.tsx's timer, command and swarm_browse call counts are the pane's shape; model.ts is also run in node as a fixture
 """The sc plugin's SwarmCloud pane draws proposal B and reads only on a click (SC-BROWSER-BUILD, archived issue 2318).
 
 the owner picked proposal B, Two columns, for every frame on 2026-10-25 (PR 2328).
@@ -193,16 +194,15 @@ def test_drawing_reads_nothing_and_the_module_starts_no_timer_and_reaches_no_mod
     pane = _PANE.read_text()
     # `frame` takes no way to call anything: drawing cannot read.
     assert re.search(r"export function frame\(state: PaneState, view: View\): Line\[\]", model)
-    for source in (model, pane):
-        for forbidden in ("$.clock.after", "$.clock.sleep", "setTimeout", "setInterval",
-                          "$.model.", "$.agent.", "$.prompt.submit", "$.tool."):
-            assert forbidden not in source, f"{forbidden} would read on a timer or reach the model"  # MUTATION: a 30 s refresh timer.
+    # Neither file holds "$.clock.after", "$.clock.sleep", "setTimeout",
+    # "setInterval", "$.model.", "$.agent.", "$.prompt.submit" or "$.tool.", and
+    # the model no "$.clock.every": the rule sc-pane-starts-no-timer-and-reaches-no-model
+    # in scripts/source_text_rules/services.py.
     # THE ONE TIMER IS THE BAND'S (SC-BAND, the owner 2026-10-26: "re-reads ... every
     # 60 s ... stop when nothing runs"): the model has none, and the module's
     # one `$.clock.every` is `startMinute`'s, called only from `afterList`,
     # which returns at once unless the band is on -- so the pane layout, and
     # the rows layout, still run no timer at all (test_sc_band.py, band.test.ts).
-    assert "$.clock.every" not in model
     assert pane.count("$.clock.every(") == 1 and pane.count("startMinute(") == 2  # MUTATION: a pane refresh timer -- 2.
     after_list = pane[pane.index("async function afterList("):]
     assert after_list.index("if (!state.on) return") < after_list.index("startMinute(")

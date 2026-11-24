@@ -5957,8 +5957,10 @@ custom rules) does three things in one pass:
   | `fixture` | the source read is a sample the test writes or parses, not the repository's code | `tests/unit/scripts/test_check_source_text.py`, which parses planted snippets |
 
   A malformed marker, an unknown class, a marker below the first line or a
-  marker on a file that reads no source fails. A detected file with no marker
-  is a warning until every area is marked; `--require-markers` makes it fail.
+  marker on a file that reads no source fails, and so does a detected file
+  with no marker (`path:1: no source-text marker (reads source by ...)`):
+  every area was marked under issue 73, so the next source-text test is
+  classified in the pull request that adds it.
 * **It runs the forbidden-pattern rules** of `scripts/source_text_rules/`.
   Each file under the union of the rules' roots is read once and parsed at
   most once, then handed to every rule whose roots cover it, so a new sweep

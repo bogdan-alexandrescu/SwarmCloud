@@ -1,3 +1,4 @@
+# source-text: forbidden-pattern - every maintenance-starting git argv in gitops.py must carry *_NO_AUTO_MAINTENANCE; it stays a test because its _MEASURED table is re-measured under GIT_TRACE in this file
 """No git command `gitops` runs starts automatic maintenance in its repository
 (archived issue 2922): the whole-module guard.
 

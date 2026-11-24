@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
 
 import pytest
 
@@ -135,11 +134,10 @@ def test_two_ids_are_still_refused_and_all_with_a_suffix_too():
 
 
 def test_the_suffix_reader_and_its_release_promise_are_gone():
-    source = Path(launch.__file__).read_text(encoding="utf-8")
     assert not hasattr(launch, "ATTACH_FLAGS")  # MUTATION: keep the flag table -- present.
     assert not hasattr(launch, "attach_target")  # MUTATION: keep the suffix reader -- present.
-    # MUTATION: keep "drop it in plugin 0.5.52" beside the code -- a release named for a drop that happened.
-    assert not re.search(r"0\.5\.5[0-9]", source)
+    # launch.py names no 0.5.5x release for a drop that happened: the rule
+    # mcp-launch-names-no-dropped-release in scripts/source_text_rules/services.py.
     flat = " ".join(sc_skill_text.text().split())
     assert "is still read until" not in flat  # MUTATION: keep the skill's deprecation line -- present.
     assert '{attach: "<wf_id> --per-step"}' not in flat  # MUTATION: keep the old attach value in the skill -- present.

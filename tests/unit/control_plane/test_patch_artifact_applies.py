@@ -1,3 +1,4 @@
+# source-text: fixture - reads back the pkg/probe.py and ui/Spine.tsx samples it wrote to a scratch repository after the patch applies; the common.sh read is shell
 """A served patch still applies when it holds no secret (archived issue 370).
 
 WHAT BROKE. `swarm artifact <task> swarm-work.patch` served a patch that

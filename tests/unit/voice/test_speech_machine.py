@@ -1,3 +1,4 @@
+# source-text: contract - every SWARM_SPEECH_* name swarm_api/voice/speech_machine.py reads must be set in locals.tf's swarm-api block, guarded by voice_speech_on
 """The speech machine's lease and lifecycle (docs/design/voice-it-own-speech.md
 §4.2, §4.4-§4.8, §5.3, §11.4; swarm_api/voice/speech_machine.py).
 
