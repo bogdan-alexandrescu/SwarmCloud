@@ -15,7 +15,6 @@ import json
 import re
 import secrets
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -28,8 +27,6 @@ from swarm_api.voice import store as vstore
 
 from .conftest import auth_header
 from .test_voice_sessions import FakeVoice, _client, _start
-
-ROOT = Path(__file__).resolve().parents[3]
 
 #: §4's table, in its order: the kinds the brief names with §3.13.6's new
 #: wireframe, code, diff, document and test results after the mock-up; then
