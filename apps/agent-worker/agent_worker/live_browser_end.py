@@ -33,6 +33,21 @@ class LiveBrowserEndMixin:
     _writes_forbidden: bool
     _control_plane_down: bool
 
+    def _hand_off_tick(self, child: ChildProcess, work: Any) -> Outcome | None:
+        """One hand-off tick in the run loop: park, stop for a lost browser, or None."""
+        # Live-browser §4.1-§4.3: answer the agent's requests and
+        # watch an open hand-off's hold. Never raises.
+        with self._heartbeat_meanwhile("hand-off"):  # type: ignore[attr-defined]
+            ended = self.handoff.tick(work, self.control.fetch_task)
+            # LB-RETURN: swarm-api decides whether the hold really
+            # ran out, against a viewer who came as it did.
+            if ended == handoff_mod.HOLD_EXPIRED and not self.handoff.confirm_expired():
+                ended = None
+        stop = self._live_browser_after_tick(child, parking=ended is not None)  # issue 272
+        if ended is not None:
+            return self._park_for_human(child, cause=ended)  # type: ignore[attr-defined]
+        return stop
+
     def _live_browser_after_tick(self, child: ChildProcess, *, parking: bool) -> Outcome | None:
         """The live browser's restarts and loss, after a hand-off tick (issue 272).
 
