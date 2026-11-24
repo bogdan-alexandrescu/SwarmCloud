@@ -193,6 +193,9 @@ _PARKED_BECAUSE = {
     # Contract request 123: the cluster refused the dispatch (Job quota or an
     # admission policy). No attempt was spent; the scheduler retries it.
     "PLATFORM_REFUSED": "the cluster refused to start it (Job quota or a policy); it is retried on its own",
+    # Contract request 160 (docs/design/workflow-pause.md): a person paused
+    # the step's workflow. Nothing is spent while it waits.
+    "WORKFLOW_PAUSED": "its workflow is paused; it resumes when the workflow is resumed",
 }
 
 
