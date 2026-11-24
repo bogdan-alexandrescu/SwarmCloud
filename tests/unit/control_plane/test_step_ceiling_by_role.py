@@ -151,7 +151,7 @@ def test_every_review_role_shares_one_default():
     table = _table()
     reviews = ["review, no risk path", "review, risk path", "review, diff not read",
                "review, over the size ceiling", "security review"]
-    assert len({json.dumps(table[r], sort_keys=True) for r in reviews}) == 1
+    assert len({json.dumps(dict(table[r]), sort_keys=True) for r in reviews}) == 1
 
 
 # ---------------------------------------------------------------------------
