@@ -1473,9 +1473,9 @@ class AccountsPage(BaseModel):
 # `inspect.py`, `transcript.py` and `task_input.py`. Every key below is sent
 # on every path of its builder (ok, absent, unreadable, binary, no attempt
 # yet); the few with a default are the ones the console reads as optional
-# because an API older than the field does not send them (as `Task` does). The literal unions
-# are the builders' own closed sets; a value outside one fails the two-way
-# test in tests/unit/control_plane/test_wire_types.py.
+# because an API older than the field does not send them (as `Task` does).
+# The literal unions are the builders' own closed sets, so a value outside
+# one is a served payload that no longer matches its generated type.
 # --------------------------------------------------------------------------
 
 
