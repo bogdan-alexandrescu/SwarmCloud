@@ -32,6 +32,8 @@ import {
   ROW_OUTCOMES,
   SPANS,
   outcomesQuery,
+  rowsQuery,
+  withRows,
 } from '../outcomes'
 import { unreadableFor, type Account } from '../types'
 import { serve } from './repofixture'
@@ -64,6 +66,10 @@ const OUTCOMES_PARAMETERS = new Set([
   'profile', 'submitted_by', 'kind', 'group', 'compare', 'section',
 ])
 
+// The figure-rows read adds these three; test_outcomes_rows.py asserts the
+// route's OpenAPI parameters declare them.
+const ROWS_PARAMETERS = new Set(['rows', 'rows_at', 'rows_key'])
+
 describe('the outcomes request', () => {
   it('sends only parameters the route declares, tz always among them', () => {
     const views = [
@@ -86,6 +92,19 @@ describe('the outcomes request', () => {
     }
     const undeclared = [...sent].filter((k) => !OUTCOMES_PARAMETERS.has(k))
     expect(undeclared, 'outcomesQuery sends parameters the route does not declare').toEqual([])
+  })
+
+  it('rowsQuery sends rows, rows_at and rows_key beside the ledger query, nothing undeclared', () => {
+    expect(rowsQuery(DEFAULT_VIEW, 'UTC'), 'no figure open, no rows read').toBeNull()
+    const open = withRows({ ...DEFAULT_VIEW, platform: true, group: 'tenant_id' as const },
+      'failed', '2026-09-21T00:00:00Z', 'eng')
+    const q = rowsQuery(open, 'UTC')!
+    expect(q.get('rows')).toBe('failed')
+    expect(q.get('rows_at')).toBe('2026-09-21T00:00:00Z')
+    expect(q.get('rows_key')).toBe('eng')
+    expect(q.get('tz')).toBe('UTC')
+    const undeclared = [...q.keys()].filter((k) => !OUTCOMES_PARAMETERS.has(k) && !ROWS_PARAMETERS.has(k))
+    expect(undeclared, 'rowsQuery sends parameters the route does not declare').toEqual([])
   })
 
   it('loadOutcomes requests GET /v1/outcomes with that query and its sections', async () => {

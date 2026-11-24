@@ -5,8 +5,8 @@
 // account listing), are GENERATED from the API's OpenAPI document
 // (./generated/api-types.ts, `scripts/gen_api_types.py`, from
 // `swarm_api/wire_types.py`; part of #72). A drift check (`gen_api_types.py
-// --check`, in CI and the unit suite) fails when that file is stale, and
-// `test_wire_types.py` holds each model to what its routes serve, both
+// --check`, in CI and the unit suite) fails when that file is stale, and the
+// API's unit suite holds each model to what its routes serve, both
 // directions. Each interface here extends its generated shape and keeps only
 // the console's own narrowing and doc comments, which `tsc` holds to it;
 // change a field in wire_types.py and regenerate. The outcome ledger's shapes

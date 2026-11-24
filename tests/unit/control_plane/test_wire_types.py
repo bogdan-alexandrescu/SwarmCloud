@@ -637,6 +637,8 @@ def outcome_payloads(db, tokens, group_map) -> dict[str, dict[str, Any]]:
         "range": route_tests.ok(api, "alice", tz="UTC", since="2026-09-20", until="2026-09-24"),
         # kind=standalone: `workflows_failed` does not apply, and its counts are null.
         "standalone": route_tests.ok(api, "alice", kind="standalone", **week),
+        # A figure's rows (`rows=`): the `ended_rows` block, rows and all.
+        "rows": route_tests.ok(api, "alice", rows="failed", **week),
     }
     fresh = type(db)()
     route_tests.seed_week(fresh)

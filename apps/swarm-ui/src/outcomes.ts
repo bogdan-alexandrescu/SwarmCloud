@@ -117,8 +117,9 @@ export type OutcomesHead = Omit<Outcomes, 'coverage' | 'previous'> & Partial<Pic
 
 /**
  * WHAT A FIGURE'S ROWS MAY BE, `swarm_api.outcomes.ROW_OUTCOMES` (the generated
- * union; contract.shapes.test.ts holds the list to the generated constants). Failed is FAILED + DEAD_LETTERED, the one
- * definition the drawing and the Reliability table use.
+ * union; the list below must equal the generated constants' `row_outcomes`,
+ * or the page offers a figure the route refuses). Failed is FAILED +
+ * DEAD_LETTERED, the one definition the drawing and the Reliability table use.
  */
 export type RowOutcome = ApiRowOutcome
 export const ROW_OUTCOMES: readonly RowOutcome[] = ['failed', 'cancelled', 'succeeded']
@@ -160,8 +161,8 @@ export const GROUPS: readonly GroupBy[] = ['runner_profile', 'submitted_by', 'te
 // FOR WHAT IT REFUSES. Each is `swarm_api.outcomes`'s constant of the same
 // name, written to ./generated/constants/outcomes.json by
 // `scripts/gen_api_types.py` (part of #72), whose drift check turns CI red when
-// the file is stale. The literal lists above stay literal for their types;
-// contract.shapes.test.ts holds each equal to the same file.
+// the file is stale. The literal lists above stay literal for their types and
+// must each equal the same file, or the page offers what the route refuses.
 
 /** At most this many buckets in one read: an hourly 90 days is 2,160, which the route refuses. */
 export const MAX_BUCKETS: number = outcomesConstants.max_buckets

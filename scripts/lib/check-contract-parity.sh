@@ -707,17 +707,26 @@ else:
 compare_set("CredentialTier", ts_union("CredentialTier"),
             getattr(frozen_models, "CREDENTIAL_TIERS", ()), "export type union")
 
+# outcomes.ts aliases the generated union (part of #72); read the literal union
+# where it is written: outcomes.ts if it still spells one, else the generated file.
 outcomes_ts = Path(types_path).with_name("outcomes.ts")
 cause_union = None
-if outcomes_ts.is_file():
-    m = re.search(r"export type CancelCauseKey\s*=([^\n]*(?:\n\s*\|[^\n]*)*)", outcomes_ts.read_text())
-    cause_union = None if m is None else re.findall(r"'([^']+)'", m.group(1))
+cause_source = "outcomes.ts"
+for candidate in (outcomes_ts, Path(types_path).parent / "generated" / "api-types.ts"):
+    if not candidate.is_file():
+        continue
+    m = re.search(r"export type CancelCauseKey\s*=([^\n]*(?:\n\s*\|[^\n]*)*)", candidate.read_text())
+    members = None if m is None else re.findall(r"'([^']+)'", m.group(1))
+    if members:
+        cause_union = members
+        cause_source = candidate.name
+        break
 if cause_union is None:
-    emit("MISSING", "CancelCauseKey", "no CancelCauseKey union in outcomes.ts")
+    emit("MISSING", "CancelCauseKey", "no CancelCauseKey union in outcomes.ts or generated/api-types.ts")
 elif EndCause.CHILD_CASCADE.value in cause_union:
-    emit("OK", "CancelCauseKey", "outcomes.ts counts %s" % EndCause.CHILD_CASCADE.value)
+    emit("OK", "CancelCauseKey", "%s counts %s" % (cause_source, EndCause.CHILD_CASCADE.value))
 else:
-    emit("DRIFT", "CancelCauseKey", "outcomes.ts has no %s class" % EndCause.CHILD_CASCADE.value)
+    emit("DRIFT", "CancelCauseKey", "%s has no %s class" % (cause_source, EndCause.CHILD_CASCADE.value))
 
 print("\n".join(REPORT))
 PY
