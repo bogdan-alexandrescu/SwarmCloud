@@ -1468,6 +1468,18 @@ if args[:1] == ["api"]:
     if parts == ["commits", "main"]:
         print(json.dumps({"sha": world["main"]}))
         sys.exit(0)
+    if parts[0] == "check-runs" and parts[2:] == ["annotations"]:
+        # A check run's annotations, one page (per_page, page) at a time.
+        rows = world.get("annotations", {}).get(parts[1], [])
+        per, page = int(query.get("per_page", 30)), int(query.get("page", 1))
+        print(json.dumps(rows[(page - 1) * per:page * per]))
+        sys.exit(0)
+    if parts[0] == "pulls" and parts[2:] == ["files"]:
+        # The files a pull request changes, one page (per_page, page) at a time.
+        rows = [{"filename": f, "status": "modified"} for f in world.get("files", {}).get(parts[1], [])]
+        per, page = int(query.get("per_page", 30)), int(query.get("page", 1))
+        print(json.dumps(rows[(page - 1) * per:page * per]))
+        sys.exit(0)
     if parts[0] == "commits":
         at = world["checks"].get(parts[1], {})
         if parts[2] == "check-runs":
