@@ -92,6 +92,31 @@
     "FIX_ROUNDS_RUNNING",
     "PLATFORM_REFUSED"
   ],
+  "pool_names": {
+    "backend": "CLOUD_RUN_JOB",
+    "pools": [
+      "global",
+      "tenant:parity",
+      "resource:standard",
+      "runner:claude-code",
+      "backend:CLOUD_RUN_JOB",
+      "provider:anthropic",
+      "provider:anthropic:tenant:parity"
+    ],
+    "provider": "anthropic",
+    "resource_class": "standard",
+    "runner_profile": "claude-code",
+    "tenant_id": "parity"
+  },
+  "provider_state": [
+    "AVAILABLE",
+    "THROTTLED",
+    "EXHAUSTED",
+    "COOLDOWN",
+    "UNKNOWN",
+    "DISABLED"
+  ],
+  "quota_sweep_interval_seconds": 300,
   "resource_class_units": {
     "browser": 1,
     "builder": 2,

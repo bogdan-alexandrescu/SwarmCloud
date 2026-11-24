@@ -14,8 +14,10 @@ the same way instead of each restating it. What is held here:
   * `effective_size` gives a GKE profile the version's size and a Cloud Run
     profile the code default whatever the version says; a version missing a
     class falls back to that class's default; an unresolved AUTO is refused;
-  * check-contract-parity.sh compares the UI's bundled unit weights to the
-    code DEFAULTS, and says so.
+  * the unit weights published to the console (the `states` constants group,
+    generated into states.json, which contract.parity.test.ts holds the
+    console's bundled RESOURCE_UNITS to) are the code DEFAULTS, and the group
+    says so.
 
 MUTATION: return the version's size for `CLOUD_RUN_JOB` and
 `test_a_cloud_run_profile_keeps_the_default` fails; store `units` as a field
@@ -27,6 +29,7 @@ fails.
 from __future__ import annotations
 
 import dataclasses
+import importlib.util
 import re
 from pathlib import Path
 
@@ -45,7 +48,7 @@ from swarm_common.profiles import (
 
 REPO = Path(__file__).resolve().parents[3]
 REQUESTS = REPO / "docs" / "contract-change-requests.md"
-PARITY = REPO / "scripts" / "lib" / "check-contract-parity.sh"
+STATES_GROUP = REPO / "scripts" / "api_constants" / "states.py"
 
 #: Version 2 of the design's SIZES-SCHED-2 example: `standard` at 6 / 12 GiB.
 RESIZED = ResourceSize(cpu_request=6, cpu_limit=12, memory_gib=12, disk_gib=6)
@@ -163,14 +166,21 @@ def test_an_unknown_class_is_refused():
         effective_size("huge", None, Backend.GKE_AUTOPILOT)
 
 
-def test_the_parity_check_compares_the_ui_units_to_the_code_defaults():
-    text = PARITY.read_text(encoding="utf-8")
-    # MUTATION: leave the section reading `RESOURCE_CLASSES[...].units` under
-    # its old name and this fails: once an admin can resize a class the bundled
-    # copy can only match the defaults, and the check must say that is all it holds.
-    assert "default_sizes" in text
-    assert "units_py = dict((name, size.units) for name, size in default_sizes().items())" in text
-    assert "RESOURCE_UNITS (code defaults)" in text
+def test_the_published_ui_units_are_the_code_defaults():
+    """The console's bundled weights were held to the defaults by
+    check-contract-parity.sh section 5, reading types.ts; since part of #72
+    they are held to the generated states.json, which this group writes."""
+    spec = importlib.util.spec_from_file_location("runner_size_states_group", STATES_GROUP)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    # MUTATION: publish `RESOURCE_CLASSES[...].units` (or a resized version's)
+    # and this fails: once an admin can resize a class the bundled copy can only
+    # match the defaults, and the group must say that is all it publishes.
+    assert module.build()["resource_class_units"] == {
+        name: size.units for name, size in default_sizes().items()}
+    text = STATES_GROUP.read_text(encoding="utf-8")
+    assert "size.units for name, size in default_sizes().items()" in text
+    assert "DEFAULT sizes" in text
 
 
 def test_request_rs_3_is_filed_as_entry_110():
