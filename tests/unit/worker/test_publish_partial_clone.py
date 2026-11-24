@@ -266,3 +266,23 @@ def test_the_completion_makes_no_lazy_fetch_from_the_clone(
                if "run_command:" in line and "upload-pack" in line and str(pr.clone) in line]
     assert spawned
     assert all("GIT_NO_LAZY_FETCH=1" in line for line in spawned)
+
+
+def test_an_origin_commit_on_the_first_parent_side_is_completed_too(
+    tmp_path: Path, local_urls,
+):
+    """The agent stood on the contributor branch it fetched with a filter and
+    merged its own base into it: the commit only origin's history completes
+    is the merge's FIRST parent. It is asked about and completed the same way."""
+    pr = PartialMerge(tmp_path)
+    _git(pr.clone, "checkout", "-q", "--detach", pr.contrib)
+    _git(pr.clone, "merge", "-q", "--no-edit", pr.base)
+    _write(pr.clone, "f3", "the agent's, the other way round\n")
+    _git(pr.clone, "commit", "-q", "-am", "the agent's work on contrib")
+    head = _git(pr.clone, "rev-parse", "HEAD")
+    asked: list[list[str]] = []
+    repo = pr.prepare(fetch_on_origin=pr.fetcher(asked))
+    assert _git(repo, "rev-parse", "HEAD") == head
+    assert not [line for line in _git(repo, "rev-list", "--objects", "--missing=print",
+                                      "HEAD").splitlines() if line.startswith("?")]
+    assert any(pr.contrib in shas for shas in asked)
