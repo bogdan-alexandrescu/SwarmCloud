@@ -142,6 +142,7 @@ const FIXTURE_PERSONA: FixturePersona = USE_FIXTURES ? readFixturePersona() : 'm
  */
 const EXAMPLE_PLANS_COOKIE = 'swarm_fixture_example_plans'
 const FIXTURE_EXAMPLE_PLANS = USE_FIXTURES && readFixtureCookie(EXAMPLE_PLANS_COOKIE) === 'on'
+const FIXTURE_COST_HOLD_RUNS = USE_FIXTURES && readFixtureCookie('swarm_fixture_cost_hold') === 'on'
 /**
  * THE PROPOSING SOURCES' SWITCH, as the example plans' is: the two proposing
  * fixture schedules (`?proposes=1`) and the catalogue's `proposes` flags load
@@ -2021,6 +2022,39 @@ function fixtureExampleRuns(): IssueRun[] {
 const fixtureRunsMade: IssueRun[] = []
 const fixtureRunsDecided = new Map<string, Partial<IssueRun>>()
 
+/**
+ * The cost-hold run and the pre-pass NOT_READY run (owner, 2026-11-24). Served
+ * only when the page carries `swarm_fixture_cost_hold=on`, so the default
+ * fixture build lists the same runs it always did; a dev server turns it on with
+ *   document.cookie = 'swarm_fixture_cost_hold=on'
+ */
+function fixtureCostHoldRuns(created: string, planned: string): IssueRun[] {
+  return [
+    // An `auto` plan held for its expected cost (owner, 2026-11-24).
+      fixtureIssueRun('run_c057h01d', {
+        plan_approval: 'auto', created_at: created, updated_at: planned,
+        plan_lint: {
+          replans: 0, held: true, replan_findings: [], planner_task_ids: ['task_planner_fixture'], replan_error: null,
+          findings: [{
+            code: 'EXPECTED_COST_OVER_THRESHOLD', step: null, requirement: null,
+            message: "The plan's expected cost is $41.00-$68.00, above the $30.00 an automatic approval may start (SWARM_PLAN_COST_HOLD_USD); a person approves it.",
+          }],
+        },
+      }),
+      // A run the readiness pre-pass ended NOT_READY, before any planner ran.
+      fixtureIssueRun('run_9e4d0a5b', {
+        state: 'NOT_READY', terminal: true, plan: null, plan_digest: null, plan_revision: 0,
+        created_at: created, updated_at: planned,
+        not_ready: {
+          kind: 'too_vague', reason: 'The issue does not say which export is meant or what the date should be.',
+          needs: ['Name the export (notes or invoices)', 'State the expected date format'],
+        },
+        readiness: { task_id: 'task_readiness_fixture', outcome: 'not_ready', reason: 'Read by the pre-pass: too vague to plan.', cost_usd: 0.04 },
+        history: [{ at: created, from: null, to: 'PLANNING', by: 'operator@example.com' }, { at: planned, from: 'PLANNING', to: 'NOT_READY', by: 'swarm-api' }],
+      }),
+  ]
+}
+
 function fixtureIssueRuns(): IssueRun[] {
   const planned = new Date(FIXTURE_NOW - 40 * 60_000).toISOString()
   const approved = new Date(FIXTURE_NOW - 30 * 60_000).toISOString()
@@ -2029,6 +2063,7 @@ function fixtureIssueRuns(): IssueRun[] {
     ...fixtureRunsMade,
     ...fixtureExampleRuns(),
     fixtureIssueRun('run_4c1e09d2'),
+    ...(FIXTURE_COST_HOLD_RUNS ? fixtureCostHoldRuns(created, planned) : []),
     // The workflow it started is one the workflow fixture holds (QA1-FIX-22, runs-submit-04).
     fixtureIssueRun('run_19ab77e0', {
       state: 'RUNNING', workflow_id: 'wf_audit_01', approved_by: 'operator@example.com',
