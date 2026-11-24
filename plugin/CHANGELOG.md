@@ -6,6 +6,24 @@ tags the swarm-mcp bridge `sc-v<version>` only when that version moves
 so a change to the plugin or its bridge reaches a session only with an entry
 here.
 
+## 0.5.89 (2026-11-24)
+
+Finished work is noticed in about a minute, not at the next scheduled check.
+
+* `sc await <task_id|wf_id> ...` and `sc await --mine` (this session's running
+  work in this project) are a new read-only view. Run in the background, it
+  holds one follow call at a time and exits 0 on the FIRST item to finish in
+  any end state, wait for a person (a hand-off, owner questions, a fix loop
+  stopped for one), wait on its agent's questions, or become unreadable, with
+  one line per changed item: id, title, state, pull request, and the refusal
+  code and failing checks when known. Its deadline is `--timeout` (1800 s by
+  default, at most 3600); when it passes with nothing changed it exits 4.
+* `swarm_dispatch`, `swarm_workflow` and `swarm_check` replies carry
+  `await_in_background`: the exact command to run in the background for the
+  work just started (`--mine` for the check, while something runs).
+* `/sc:check` and `/sc check` run it as their fifth step; the sc skill's
+  `reference/await.md` says what ends it and what each exit code means.
+
 ## 0.5.88 (2026-11-23)
 
 The scheduled watch stops loading the whole sc skill on every firing.
