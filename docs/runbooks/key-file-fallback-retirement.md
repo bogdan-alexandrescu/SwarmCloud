@@ -183,6 +183,17 @@ logged"; length: open decision K2).
   * A fallback read is `jev_key_resolved` with `scope` and `secret` and
     **no** `delivery` (`jevkey.prepare`).
   * A served read carries `delivery: inject` (`_shim_env`).
+  * **Every read site, and the line it emits:**
+    * `jevkey.prepare` (fallback) -> `jev_key_resolved` with `scope` and
+      `secret`, no `delivery`;
+    * `resolve_workspace`, called at `lifecycle.py:10914` and `:11092` ->
+      `jev_key_resolved` with `use=judgments` and no `delivery`;
+    * the quality gates (`qualitygates.py:332-341`) -> `jev_gates_key_resolved`
+      with `secret`. `jevkey.resolve` itself logs nothing on success, so this
+      is the only line that site writes;
+    * a gated pod that is served but has no shim -> `jev_gates_unavailable`
+      with `reason=no_shim`; read it as the sign of a served-but-unshimmed
+      gate.
 * **The resource types.** Worker logs are `cloud_run_job` and `k8s_container`
   (the filter `docs/epic-triage-2026-10-09.md` row 51 quotes from
   `terraform/modules/monitoring/metrics.tf`).
@@ -191,6 +202,7 @@ logged"; length: open decision K2).
 gcloud logging read \
   '(resource.type="cloud_run_job" OR resource.type="k8s_container")
    AND (jsonPayload.message="jev_key_unreadable"
+        OR jsonPayload.message="jev_gates_key_resolved"
         OR (jsonPayload.message="jev_key_resolved" AND NOT jsonPayload.delivery="inject"))' \
   --project <project> --freshness=<period> --format='value(timestamp,jsonPayload.labels.tenant_id,jsonPayload.message,jsonPayload.scope)' | redact
 ```
@@ -356,8 +368,9 @@ window. Nothing stored is lost. No secret version is touched at any step.
     `"code": "forwarded"` for the agent's task
     (`apps/swarm-typesafe-fwd/swarm_typesafe_fwd/forwarder.py:270`).
   * The worker shows `jev_key_resolved` with `delivery: inject`.
-* **No key reads at all.** P3's query over the 24 hours after step 3 prints
-  zero lines, and its control query still prints served lines.
+* **No key reads at all.** P3's query (it includes `jev_gates_key_resolved`) over
+  the 24 hours after step 3 prints zero lines, and so does a query for
+  `jev_gates_unavailable` with `reason=no_shim`, and its control query still prints served lines.
 * **No worker holds a key.** P4's `get-iam-policy` loop shows no
   `swarm-agent-worker-*` member on any `-typesafe` secret. P5's `state list`
   shows no `typesafe_user_key_reader`.
@@ -404,3 +417,17 @@ judge, unlisted workspaces).
 * (b) Grants first, as a live test that nothing still reads a key. Any
   `jev_key_unreadable` names the reader. Cheaper to learn, but users see
   missing Jev before the code says why.
+
+---
+
+## What the independent review changed
+
+* **P3** did not see the quality-gate fallback: `qualitygates.py` reads the
+  key through `jevkey.resolve`, which logs nothing on success, and the gate
+  then logs `jev_gates_key_resolved`, which the old filter did not match. A
+  workspace whose gates still read the key file passed with zero lines, and
+  step 3 removes the grant those gates use. The filter now includes
+  `jev_gates_key_resolved`, the post-step-3 check in §6 uses the same query,
+  and P3 lists the line each read site emits, with
+  `jev_gates_unavailable reason=no_shim` as the sign of a served-but-unshimmed
+  gate.

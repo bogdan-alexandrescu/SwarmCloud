@@ -170,15 +170,26 @@ resource `forge_slot_reader`):
 
 ```bash
 gcloud projects get-iam-policy <project> --format=json \
-  | jq -r '.bindings[] | select(.role=="roles/secretmanager.secretAccessor") | select(.condition.title // "" | startswith("swarm forge user slots ")) | .condition.title + "  " + (.members|join(","))' \
+  | jq -r '.bindings[] | select(.role=="roles/secretmanager.secretAccessor") | select(.condition.title // "" | test("^swarm forge user slots [^ ]+$")) | select(.condition.title != "swarm forge user slots api" and .condition.title != "swarm forge user slots personal") | .condition.title as $t | .members[] | select(startswith("serviceAccount:swarm-agent-worker-")) | $t + "  " + .' \
   | redact
 ```
 
-It prints titles and members, never a secret value. Expect one line per
-Terraform tenant with members (`local.forge_user_slot_tenants`), each naming
-that tenant's `swarm-agent-worker-<tenant>`. Count the lines. If it prints
-none, stop: either `enable_forge_user_slots` is off or the grant is gone, and
-either way the undo is not safe.
+The title prefix alone is not enough: swarm-api's own `forge_refresh_reader`
+grant is titled `swarm forge user slots api <tenant>`, and the personal and
+any-tenant grants share the prefix (`forge_user_slots.tf`). The filter above
+keeps only one-word-tenant titles whose member is a worker account, so it
+prints a line only for a grant that is a `forge_slot_reader`. It prints
+titles and members, never a secret value.
+
+Expect **exactly one line per tenant** in `local.forge_user_slot_tenants`
+(`forge_user_slots.tf:174`), each naming that tenant's
+`swarm-agent-worker-<tenant>`. Count the lines and compare the tenant names
+against that set. **Stop** if any tenant has no line: either
+`enable_forge_user_slots` is off or that grant is gone, and either way the
+undo is not safe.
+
+**Not checked:** that no tenant is itself named `api` or `personal`; if one
+is, read its line by eye.
 
 **P6. A live-run fixture exists.**
 
@@ -255,13 +266,49 @@ finished and none waits at `dev-iam` (the Actions page).
    credential"` before concluding there were none. An empty result from a
    query that matched no field is not "no refusals".
 
+   That query sees swarm-api only. `attempt_key_unregistered` and
+   `forge_broker_unconfigured` are the **worker's own** codes, raised before
+   anything is asked of swarm-api (`forgebroker.py:73-74`, `:119-131`), so they
+   never appear in swarm-api's logs. The worker logs them differently:
+
+   * `attempt_key_unregistered`: the worker logs `no attempt key; a person's
+     slot is not asked for` with a `reason`.
+   * `forge_broker_unconfigured`: no line of its own. The code is in the
+     refusal's message, `<secret> was not released to this attempt
+     (forge_broker_unconfigured): …`, which is wherever the failing step
+     logs the exception.
+   * swarm-api's own refusals reach the worker as `the forge broker refused
+     this attempt` with `decision=<code>` (`forgebroker.py:166`).
+
+   Worker logs are JSON with `message` at the top level; the resource types
+   are `cloud_run_job` and `k8s_container`:
+
+   ```bash
+   gcloud logging read \
+     '(resource.type="cloud_run_job" OR resource.type="k8s_container")
+      AND (jsonPayload.message:"no attempt key; a person"
+           OR jsonPayload.message:"forge_broker_unconfigured"
+           OR jsonPayload.message:"attempt_key_unregistered"
+           OR jsonPayload.message="the forge broker refused this attempt")' \
+     --project <project> --freshness=1h --format='value(timestamp,jsonPayload.labels.tenant_id,jsonPayload.message,jsonPayload.reason,jsonPayload.decision)' | redact
+   ```
+
+   * **A control first.** Run it once with `jsonPayload.message="forge
+     credential released by the broker"` as the only filter over the same
+     hour, and see served lines (it needs at least one broker-mode attempt in
+     the hour). An empty answer from a filter that matches no field is not
+     "no refusals".
+   * **Not checked:** where the exception text of `forge_broker_unconfigured`
+     is logged. If a failed broker-mode attempt shows nothing here, read that
+     attempt's failure in the console instead of concluding it was fine.
+
    **Stop and roll back** on any of these:
 
-   | in the logs | why it stops |
-   |---|---|
-   | `forge_credential_unavailable` after step 3 | swarm-api is not serving |
-   | `forge_broker_unconfigured` | a worker has no `SWARM_API_URL` |
-   | `attempt_key_unregistered` | the nonce is not reaching the worker |
+   | in the logs | which query | why it stops |
+   |---|---|---|
+   | `forge_credential_unavailable` after step 3 | swarm-api's | swarm-api is not serving |
+   | `forge_broker_unconfigured` | the worker's | a worker has no `SWARM_API_URL` |
+   | `attempt_key_unregistered` | the worker's | the nonce is not reaching the worker |
 
    A `decision=` refusal for a task whose submitter is not the slot's owner
    is the broker working.
@@ -407,3 +454,19 @@ refusal.
   :47-49);
 * the team `git` slot and the `git-r-` repository slots, which are read as
   before.
+
+---
+
+## What the independent review changed
+
+* **P5** now matches the exact `forge_slot_reader` title shape and requires a
+  `swarm-agent-worker-*` member, one line per tenant. The old prefix filter
+  also matched swarm-api's `forge_refresh_reader` grant (`swarm forge user
+  slots api <tenant>`) and the personal and any-tenant grants, so it passed
+  with every worker grant gone.
+* **Step 4** gained a worker-side query (with a control), because
+  `attempt_key_unregistered` and `forge_broker_unconfigured` are produced only
+  by the worker and never reach swarm-api's log. The query's fields were
+  checked against `forgebroker.py`: the refusal line carries `decision`, and
+  the worker's own two codes are logged as above; the stop table says which
+  query sees which code.

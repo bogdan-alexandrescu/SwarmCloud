@@ -480,15 +480,21 @@ Who: the owner (tfvars), then the release.
 1. **The change.** `state_via_api_tenants = ["<personal workspace>", "<group workspace>"]`.
    The plan, the release and the rollback are a1's, with both names as the
    rendered value.
-2. **It worked when** `SWARM_API_TENANT=<group workspace> make verify-remote`
-   is green.
-   * This one exercises the switched path, if the verify job's tenant is the
-     group workspace. Read that from the job's transcript.
-   * Its smoke, concurrency, race and e2e suites then submit, admit, fence and
-     release the group workspace's attempts through the routes. That is the
-     `make smoke concurrency-test race-test` that §6's order (and `CLAUDE.md`)
-     asks for after a dispatch change.
-3. **Stop** on a failure of any suite: roll b1 back and file it.
+2. **It worked when** a real attempt of the group workspace goes through the
+   switched path. `SWARM_API_TENANT` does **not** do this: it is read only by
+   the local `api_request` (`scripts/lib/common.sh`), and
+   `scripts/verify-remote.sh` forwards only `SWARM_VERIFY_ORIGIN` and the
+   `SWARM_ACCEPTANCE_*` settings into the cloud execution, so the verify job
+   runs as its own fixed tenant whatever it is set to.
+   * Submit one of the group workspace's own agents, and apply a1's items 1-3
+     to it: it reaches SUCCEEDED, no Firestore client was built in its
+     worker's log, and its `state/open` answered 200 in swarm-api's request
+     log (watch item 1).
+   * Watch the `PermissionDenied` and exit-code items of "What to watch".
+   * Plain `make verify-remote` is still the regression check on admission,
+     concurrency and fencing for the release, as in a1. It is not a run of
+     this workspace's path.
+3. **Stop** on a failure of any of these: roll b1 back and file it.
 
 #### b2. Its Firestore role, by plan
 
@@ -499,7 +505,7 @@ The group workspace's binding is
 which is in Terraform state. It goes by plan, never by hand: removed by hand,
 the next release would re-create it as `1 to add`.
 
-Start only after b1's verify-remote is green and watch items 1-2 are quiet.
+Start only after b1's group-workspace attempt has passed and watch items 1-2 are quiet.
 **Drain first**, as a2 says.
 
 1. **The change.** `worker_firestore_off_tenants_iam = ["<group workspace>"]`.
@@ -517,7 +523,9 @@ Start only after b1's verify-remote is green and watch items 1-2 are quiet.
      still named. Count the lines; an empty answer from a command that did
      not run is not an empty policy;
    * the probe from one of the group workspace's pods: all three PASS;
-   * `SWARM_API_TENANT=<group workspace> make verify-remote`: green.
+   * one more of the group workspace's own agents, submitted and taken to
+     SUCCEEDED (b1's item 2), with no `PermissionDenied`;
+   * `make verify-remote`: green (it does not run as this workspace).
 4. **Stop** on any `PermissionDenied` or a red check: roll b2 back.
 
 `worker_firestore_off_tenants` (swarm-api's list) is not this step. It writes
@@ -659,10 +667,13 @@ release that adds it", step 4), and then release.
   * It passes only with three `ISO-ACCEPT-RESULT` lines that say `PASS`.
   * It is green in acceptance only after c2.
   * Per workspace, run it by hand from that workspace's pod after a2 and b2.
-* **The regression gate.** `make verify-remote` after each step, and
-  `SWARM_API_TENANT=<group workspace> make verify-remote` after b1 and b2.
-  The latter is `CLAUDE.md`'s `make smoke concurrency-test race-test` for a
-  dispatch change.
+* **The regression gate.** `make verify-remote` after each step. It runs as
+  the verify job's own tenant, not a chosen workspace
+  (`scripts/verify-remote.sh` forwards no `SWARM_API_TENANT`). After b1 and b2
+  the group workspace's path is checked by submitting one of its agents (b1,
+  item 2). The deployed `make smoke concurrency-test race-test` that
+  `CLAUDE.md` asks for after a dispatch change is run separately, as that
+  file says.
 * **The live policy.** P4's command prints no `swarm-agent-worker-*` member
   after c2.
 * **Every workspace's own A9.** `scripts/register-tenant.sh --workspace
@@ -768,3 +779,16 @@ history:
 * The first a1, on 2026-10-21, was rolled back (the VPC-egress rollback PR,
   below).
 * No later record in this repository says which steps were taken again.
+
+---
+
+## What the independent review changed
+
+* **b1, b2 and §6.** `SWARM_API_TENANT=<group workspace> make verify-remote`
+  was gated on and called the equivalent of `make smoke concurrency-test
+  race-test`. It is neither: `scripts/verify-remote.sh` forwards only
+  `SWARM_VERIFY_ORIGIN` and the `SWARM_ACCEPTANCE_*` list, so the job runs as
+  its own tenant and the gate passed whether or not the switch worked. The
+  gate is now a submitted agent of the group workspace with a1's checks. Making
+  `verify-remote` carry a tenant would be a separate reviewed change to
+  `FORWARDED_SETTINGS`; this runbook does not assume it.
