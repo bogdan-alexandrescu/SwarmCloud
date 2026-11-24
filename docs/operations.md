@@ -476,7 +476,7 @@ Terraform creates these when `create_alerts = true`:
 | `front-door-down` | the front door's `/healthz` stopped giving IAP's sign-in redirect from more than one checker region for 5 minutes (only made when `enable_frontend` is on) | read the uptime check's last status: TLS/DNS is the certificate or the A record, 404 the URL map, **200 means IAP is off on the API** (an access-control incident), 5xx the load balancer |
 | `reconciler-pass-slow` | the p99 reconciliation pass took over 60 s for 15 minutes, so ticks are skipped | read `duration_seconds` and the counts on recent `reconciliation pass complete` lines; `scripts/bench-reconcile.sh` |
 | `nat-dropping-packets` | Cloud NAT (`<prefix>-nat`) dropped outbound packets in every 5-minute window for 15 minutes | read the `nat_gateway` `DROPPED` log entries for their source; raise `nat_max_ports_per_vm` or `nat_static_ip_count`, or stop a runaway attempt |
-| `browser-secret-grant-outside-slot` | a browser-session secret's IAM was written by someone other than swarm-api, or given a member that is not a personal worker or a role other than the slot's two | remove the binding or delete the secret, then find how the principal could write it |
+| `session-secret-grant-outside-slot` | a browser-session secret's IAM was written by someone other than swarm-api, or given a member that is not a personal worker or a role other than the slot's two | remove the binding or delete the secret, then find how the principal could write it |
 
 `generation-fencing` firing repeatedly deserves attention even though the system
 is behaving correctly — it means the reconciler keeps deciding live workers are
@@ -525,7 +525,7 @@ on a signal something already writes; none adds an emitter.
   gateway in its region only. The project is shared, and another team's NAT
   is not ours to page on. The only burst on record lasted 27 ms
   (`docs/incidents/2026-10-09-egress-open-delay.md`) and would not fire it.
-* `browser-secret-grant-outside-slot` reads Secret Manager's Admin Activity
+* `session-secret-grant-outside-slot` reads Secret Manager's Admin Activity
   audit entry `SetIamPolicy` on a
   `swarm-tenant-<tenant>-browser-{wf,park,login}-*` secret. The application
   logs no line of its own when it grants. swarm-api's slot grant (a personal

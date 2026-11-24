@@ -324,7 +324,7 @@ run "a_browser_secret_grant_outside_swarm_apis_slot_pages" {
   assert {
     condition = (
       length(google_monitoring_alert_policy.browser_secret_grant) == 1
-      && google_monitoring_alert_policy.browser_secret_grant[0].display_name == "swarm-dev-browser-secret-grant-outside-slot"
+      && google_monitoring_alert_policy.browser_secret_grant[0].display_name == "swarm-dev-session-secret-grant-outside-slot"
       && google_monitoring_alert_policy.browser_secret_grant[0].severity == "CRITICAL"
       && google_monitoring_alert_policy.browser_secret_grant[0].user_labels["managed-by"] == "swarm-terraform"
     )

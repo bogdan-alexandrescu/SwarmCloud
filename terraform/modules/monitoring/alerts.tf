@@ -1095,19 +1095,6 @@ locals {
   browser_project_re = replace(var.project_id, ".", "[.]")
   swarm_api_email    = "swarm-api@${var.project_id}.iam.gserviceaccount.com"
 
-  # The three secret shapes swarm_api.browser_slots accepts, by the tail of
-  # resourceName (projects/<number>/secrets/<name>): a workflow's carry (wf),
-  # a park's browser (park) and a named login (login). Any tenant, not only
-  # u-*: swarm-api refuses group tenants, so an entry on a group tenant's
-  # browser secret is someone else.
-  # The secret-name infix is joined from a local rather than spelled: the
-  # offline suite (tests/terraform/browser_logins.tftest.hcl) holds that the
-  # literal prefix appears only in terraform/bootstrap/browser_logins.tf,
-  # where every grant on a session is made. This alert makes no grant; it
-  # only matches audit entries, so it must not look like one.
-  browser_secret_infix = "browser"
-  browser_secret_re    = "/secrets/swarm-tenant-[a-z0-9-]+-${local.browser_secret_infix}-(wf|park|login)-[^/]+$"
-
   # What a slot grant is: the tenant's personal worker
   # (swarm_api.browser_slots.worker_member, swarm-agent-worker-<tenant>, a
   # personal tenant's id starting u-) on SLOT_ROLES, nothing else.
@@ -1454,8 +1441,11 @@ resource "google_monitoring_alert_policy" "nat_drops" {
 resource "google_monitoring_alert_policy" "browser_secret_grant" {
   count = var.create_alerts ? 1 : 0
 
-  project      = var.project_id
-  display_name = "swarm-${var.environment}-${local.browser_secret_infix}-secret-grant-outside-slot"
+  project = var.project_id
+  # "session", not "browser", before "-secret-": the browser secret-name
+  # prefix is spelled in this module only inside the filter below
+  # (tests/terraform/browser_logins.tftest.hcl).
+  display_name = "swarm-${var.environment}-session-secret-grant-outside-slot"
   combiner     = "OR"
   severity     = "CRITICAL"
 
@@ -1467,7 +1457,16 @@ resource "google_monitoring_alert_policy" "browser_secret_grant" {
         "logName=\"projects/${var.project_id}/logs/cloudaudit.googleapis.com%2Factivity\"",
         "protoPayload.serviceName=\"secretmanager.googleapis.com\"",
         "protoPayload.methodName=~\"(?i)setiampolicy$\"",
-        "protoPayload.resourceName=~\"${local.browser_secret_re}\"",
+        # The three secret shapes swarm_api.browser_slots accepts, by the tail of
+        # resourceName (projects/<number>/secrets/<name>): a workflow's carry
+        # (-browser-wf-), a park's browser (-browser-park-) and a named login
+        # (-browser-login-). Any tenant, not only u-*: swarm-api refuses group
+        # tenants, so an entry on a group tenant's browser secret is someone else.
+        # Spelled here, in the filter, and nowhere else in this module:
+        # tests/terraform/browser_logins.tftest.hcl allows the prefix outside
+        # terraform/bootstrap/browser_logins.tf only inside an alert policy's
+        # log filter, which matches audit entries and grants nothing.
+        "protoPayload.resourceName=~\"/secrets/swarm-tenant-[a-z0-9-]+-browser-(wf|park|login)-[^/]+$\"",
         "(${join(" OR ", [
           "NOT protoPayload.authenticationInfo.principalEmail=\"${local.swarm_api_email}\"",
           "protoPayload.serviceData.policyDelta.bindingDeltas.member!~\"${local.browser_member_re}\"",
@@ -1482,8 +1481,9 @@ resource "google_monitoring_alert_policy" "browser_secret_grant" {
   documentation {
     mime_type = "text/markdown"
     content   = <<-DOC
-      A signed-in browser session's secret (the tenant's `wf`, `park` or
-      `login` browser secrets, named in swarm_api.browser_slots) had its IAM policy written by
+      A signed-in browser session's secret (a workflow's carry, a park's
+      browser or a named login: the condition's filter spells the secret
+      names, `protoPayload.resourceName`) had its IAM policy written by
       someone other than swarm-api, or given a member that is not a personal
       worker (`swarm-agent-worker-u-*`), or a role other than
       `secretAccessor` / `secretVersionAdder`. That secret holds a person's
