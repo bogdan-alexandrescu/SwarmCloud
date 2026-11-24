@@ -149,9 +149,12 @@ def test_the_walk_reaches_ready_when_stage_0_went_without_the_directory_scopes(m
     assert not any(url.startswith("https://admin.google.com/ac/groups") for url in world.pages), world.pages
     customers = {g["parent"] for g in world.cloud.groups.values()}
     assert customers == {"customers/C0abc123"}, customers
-    # The role assignment is the one Admin console page stage 8 opens, once.
+    # identity.groups-reader-role opens the Admin console's roles page once, with
+    # its plain sentence; identity.group-read opens it as its own page, as in
+    # every walk, so the walk sees it twice and no more.
+    assert said.count("So on a first install the assignment is made here") == 1, said[-3000:]
     roles = [url for url in world.pages if url.startswith("https://admin.google.com/ac/roles")]
-    assert len(roles) == 1, world.pages
+    assert len(roles) == 2, world.pages
     reader = next(r["roleId"] for r in world.cloud.admin_roles if r["roleName"] == "_GROUPS_READER_ROLE")
     assert [a["roleId"] for a in world.cloud.role_assignments] == [reader]
 
