@@ -33,7 +33,7 @@
 // `paths` from SUGGESTED.generic, add 'patches' to DISPATCH_CARRIERS, or draw
 // a strategy validation does not accept, and a case here fails.
 
-import { render } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // The refusal cases hand postTask real 422s, so the fixture build's answer to
@@ -77,7 +77,7 @@ const DISPATCH = generated.dispatch as unknown as {
   refusals: Record<'strategy' | 'carrier' | 'repository_url', Record<string, unknown>>
 }
 
-const sorted = (xs: Iterable<string>): string[] => [...xs].sort()
+const sorted = (xs: Iterable<string>): string[] => [...xs].sort((a, b) => a.localeCompare(b))
 
 /** Profiles that start a runner: a worker action and a control-plane profile run none. */
 const RUNNER_STARTING = Object.entries(PROFILES)
@@ -198,10 +198,11 @@ describe('the input pickers read what the API serves', () => {
 describe('the dispatch choices are the ones validation accepts', () => {
   function drawnStrategies(scale: 'task' | 'workflow'): string[] {
     const draft: DispatchDraft = { strategy: DEFAULT_STRATEGY, carrier: DEFAULT_CARRIER, repositoryUrl: '' }
-    const { container, unmount } = render(
+    const { unmount } = render(
       <DispatchChoice draft={draft} onChange={() => undefined} steps={scale === 'task' ? 1 : 3} scale={scale} />,
     )
-    const values = [...container.querySelectorAll<HTMLInputElement>('input[name="dispatch-strategy"]')].map((i) => i.value)
+    const group = screen.getByRole('radiogroup', { name: 'dispatch strategy' })
+    const values = within(group).getAllByRole('radio').map((i) => (i as HTMLInputElement).value)
     unmount()
     return values
   }
@@ -244,10 +245,10 @@ describe('a dispatch refusal is attributed to the field it is about', () => {
 
   it.each(['strategy', 'carrier', 'repository_url'] as const)('pins the %s refusal on %s', async (field) => {
     const detail = DISPATCH.refusals[field]
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(
       JSON.stringify({ code: 'invalid_dispatch', message: `refused: ${field}`, detail }),
       { status: 422, headers: { 'content-type': 'application/json' } },
-    )))
+    ))))
     const out = await postTask({ runner_profile: 'mock', input: {} })
     expect(out.kind).toBe('refused')
     if (out.kind !== 'refused') return

@@ -34,7 +34,7 @@
 // REAL_STATES, add a member to END_CAUSES, or drop 'api_key' from
 // CredentialTier, and a case here (or tsc on this file) fails.
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, expectTypeOf, it } from 'vitest'
 
 import statesConstants from '../generated/constants/states.json'
 import type { Task as ApiTask, WorkflowStepCreate } from '../generated/api-types'
@@ -62,7 +62,7 @@ import {
   type WorkflowStep,
 } from '../types'
 
-const sorted = (values: Iterable<string>): string[] => [...values].sort()
+const sorted = (values: Iterable<string>): string[] => [...values].sort((a, b) => a.localeCompare(b))
 
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false
 type Has<T, K extends PropertyKey> = K extends keyof T ? true : false
@@ -81,14 +81,7 @@ const POOL_KIND: Record<PoolKind, true> = {
   global: true, tenant: true, provider: true, resource: true, runner: true, backend: true,
 }
 
-const POOLS = statesConstants.pool_names as {
-  tenant_id: string
-  provider: string
-  resource_class: string
-  runner_profile: string
-  backend: string
-  pools: string[]
-}
+const POOLS = statesConstants.pool_names
 
 describe('the unit weights', () => {
   it('RESOURCE_UNITS is the catalogue\'s code-default units, class for class', () => {
@@ -116,8 +109,7 @@ describe('the task lifecycle', () => {
 
 describe('the reason and provider enums', () => {
   it('the ParkReason union is the server\'s park reasons', () => {
-    const same: Same<ParkReason, (typeof PARK_REASONS)[number]> = true
-    expect(same).toBe(true)
+    expectTypeOf<ParkReason>().toEqualTypeOf<(typeof PARK_REASONS)[number]>()
     expect(sorted(PARK_REASONS)).toEqual(sorted(statesConstants.park_reason))
     expect(PARK_REASONS.length, 'PARK_REASONS repeats a reason').toBe(new Set(PARK_REASONS).size)
   })
@@ -127,8 +119,7 @@ describe('the reason and provider enums', () => {
   })
 
   it('END_CAUSES is the server\'s end causes, in the frozen order', () => {
-    const same: Same<EndCause, (typeof END_CAUSES)[number]> = true
-    expect(same).toBe(true)
+    expectTypeOf<EndCause>().toEqualTypeOf<(typeof END_CAUSES)[number]>()
     expect([...END_CAUSES]).toEqual(statesConstants.end_cause)
   })
 })
@@ -191,7 +182,6 @@ describe('the served shapes', () => {
 
   it('the outcome ledger counts child_cascade as its own cancel class', () => {
     expect(statesConstants.end_cause).toContain('child_cascade')
-    const counted: 'child_cascade' extends CancelCauseKey ? true : false = true
-    expect(counted).toBe(true)
+    expectTypeOf<'child_cascade'>().toExtend<CancelCauseKey>()
   })
 })

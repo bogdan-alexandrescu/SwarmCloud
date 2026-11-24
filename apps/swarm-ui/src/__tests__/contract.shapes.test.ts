@@ -53,7 +53,7 @@ async function liveApi(): Promise<typeof import('../api')> {
 /** The path and the query of each request, without the origin. */
 function requested(calls: { url: string }[]): { path: string; query: URLSearchParams }[] {
   return calls.map(({ url }) => {
-    const parsed = new URL(url, 'http://console.invalid')
+    const parsed = new URL(url, 'https://console.invalid')
     return { path: parsed.pathname, query: parsed.searchParams }
   })
 }

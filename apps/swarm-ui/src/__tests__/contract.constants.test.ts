@@ -17,8 +17,9 @@
 // screen draws tells them apart.
 
 import { createElement } from 'react'
+// eslint-disable-next-line testing-library/no-manual-cleanup -- vitest `globals` is off (vitest.config.ts), so Testing Library's own afterEach cleanup is never registered
 import { act, cleanup, render, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest'
 
 import consoleConstants from '../generated/constants/console.json'
 import statesConstants from '../generated/constants/states.json'
@@ -70,7 +71,7 @@ vi.mock('../api', async (importOriginal) => ({ ...(await importOriginal<typeof i
 const { OUTCOME_SECTIONS, loadCapacity } = await import('../api')
 const { ActivityScreen, LEDGER_LATE_SECTIONS, LEDGER_SECTIONS } = await import('../Activity')
 
-const sorted = (values: Iterable<string>): string[] => [...values].sort()
+const sorted = (values: Iterable<string>): string[] => [...values].sort((a, b) => a.localeCompare(b))
 
 const PARK: readonly string[] = statesConstants.park_reason
 const BLOCKED: readonly string[] = statesConstants.blocked_reason
@@ -111,7 +112,6 @@ describe('task states and events', () => {
 // Park reasons
 // ---------------------------------------------------------------------------
 
-type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false
 
 describe('park reasons', () => {
   it('PARK_REASONS is the server\'s park reasons', () => {
@@ -120,8 +120,7 @@ describe('park reasons', () => {
 
   it('the ParkReason union is PARK_REASONS', () => {
     // Erased at run time: `tsc` refuses this line when the union and the list differ.
-    const same: Same<ParkReason, (typeof PARK_REASONS)[number]> = true
-    expect(same).toBe(true)
+    expectTypeOf<ParkReason>().toEqualTypeOf<(typeof PARK_REASONS)[number]>()
   })
 
   it('the three park groups hold every park reason exactly once', () => {
@@ -199,7 +198,7 @@ function undecided(sources: Readonly<Record<string, string>>, ignore: Readonly<R
   return Object.keys(sources)
     .filter((path) => !isTestSource(path) && !(path in ignore))
     .filter((path) => sources[path]!.includes('HUMAN_REQUIRED') && !sources[path]!.includes('AWAITING_INPUT'))
-    .sort()
+    .sort((a, b) => a.localeCompare(b))
 }
 
 describe('every console reader of HUMAN_REQUIRED decides about AWAITING_INPUT', () => {
@@ -413,7 +412,7 @@ describe('the stalled-workflow check', () => {
 
 /** An IntersectionObserver that reports nothing until a test says what is in view. */
 class FakeObserver {
-  static all: FakeObserver[] = []
+  static readonly all: FakeObserver[] = []
   readonly targets = new Set<Element>()
   constructor(readonly callback: IntersectionObserverCallback) {
     FakeObserver.all.push(this)
@@ -446,7 +445,7 @@ const ok = <T,>(data: T): Result<T> => ({ status: 'ok', data, fetchedAt: Date.no
 
 /** The Timeline's outcomes page, its headline landed and no card in view. */
 async function outcomesPage(): Promise<HTMLElement> {
-  FakeObserver.all = []
+  FakeObserver.all.length = 0
   vi.stubGlobal('IntersectionObserver', FakeObserver)
   api.loadOutcomes.mockReset()
   api.loadOutcomes.mockImplementation(() => Promise.resolve(ok(ledgerFixture())))
@@ -456,9 +455,10 @@ async function outcomesPage(): Promise<HTMLElement> {
   api.loadTasksInState.mockResolvedValue(ok({ tasks: [], next_page_token: null }))
   api.loadTenants.mockResolvedValue(ok({ tenants: [] }))
   const { container } = render(createElement(ActivityScreen))
+  // eslint-disable-next-line testing-library/no-container, testing-library/no-node-access -- a card's only hook is its `data-card` attribute (no role or text names it)
   await waitFor(() => expect(container.querySelectorAll('[data-card]').length).toBeGreaterThan(0))
   await waitFor(() => expect(asked()).toHaveLength(2))
-  return container as HTMLElement
+  return container
 }
 
 /** Every distinct ask made so far, as one string each. */
@@ -480,6 +480,7 @@ describe('the outcome sections', () => {
 
   it('the page draws exactly the cards the server prices it by', async () => {
     const page = await outcomesPage()
+    // eslint-disable-next-line testing-library/no-node-access -- a card's only hook is its `data-card` attribute
     const cards = [...page.querySelectorAll<HTMLElement>('[data-card]')].map((el) => el.dataset.card!)
     expect(sorted(cards)).toEqual(sorted(Object.keys(asks.cards)))
     expect(asked()).toEqual(sorted([asks.headline.join(','), asks.late.join(',')]))
@@ -487,6 +488,7 @@ describe('the outcome sections', () => {
 
   it.each(Object.entries(asks.cards))('the %s card asks for the sections the server prices it by', async (id, want) => {
     const page = await outcomesPage()
+    // eslint-disable-next-line testing-library/no-node-access -- a card's only hook is its `data-card` attribute
     scrollTo(page.querySelector(`[data-card="${id}"]`)!)
     const expected = sorted(new Set([asks.headline, asks.late, want].map((s) => s.join(','))))
     await waitFor(() => expect(asked()).toEqual(expected))

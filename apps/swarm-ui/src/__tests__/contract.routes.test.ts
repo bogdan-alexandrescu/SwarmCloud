@@ -31,7 +31,7 @@ afterEach(() => {
 /** `^...$` for an OpenAPI path template: each `{param}` is one path segment. */
 function templatePattern(template: string): RegExp {
   const escape = (s: string) => s.replace(/[.*+?^$()|[\]\\]/g, '\\$&')
-  return new RegExp('^' + template.split(/\{[^}]+\}/).map(escape).join('[^/]+') + '$')
+  return new RegExp('^' + template.split(/\{[^{}]+\}/).map(escape).join('[^/]+') + '$')
 }
 
 const SERVED = routes.api_routes.map((r) => ({ ...r, pattern: templatePattern(r.path) }))
@@ -42,18 +42,25 @@ function servedRoute(method: string, path: string): { method: string; path: stri
   return hit === undefined ? null : { method: hit.method, path: hit.path }
 }
 
+/** The URL a fetch input names (a string, a URL or a Request). */
+function urlOf(input: RequestInfo | URL): string {
+  if (typeof input === 'string') return input
+  if (input instanceof URL) return input.href
+  return input.url
+}
+
 /** Every request `run` makes, against the live (not fixture) code paths. */
 async function requestsOf(run: (mod: { api: typeof import('../api') }) => Promise<unknown>): Promise<Request[]> {
   const seen: Request[] = []
   vi.stubGlobal(
     'fetch',
-    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = new URL(String(input), 'http://console.example.test')
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(urlOf(input), 'http://console.example.test')
       seen.push({ method: (init?.method ?? 'GET').toUpperCase(), path: url.pathname, query: url.searchParams })
-      return new Response(JSON.stringify({ detail: 'stubbed' }), {
+      return Promise.resolve(new Response(JSON.stringify({ detail: 'stubbed' }), {
         status: 404,
         headers: { 'content-type': 'application/json' },
-      })
+      }))
     }),
   )
   const api = await import('../api')
@@ -92,7 +99,14 @@ describe('the route matcher', () => {
   it('lists every route once, sorted by path then method', () => {
     const keys = routes.api_routes.map((r) => `${r.path} ${r.method}`)
     expect(new Set(keys).size).toBe(keys.length)
-    expect([...routes.api_routes].sort((a, b) => (a.path === b.path ? (a.method < b.method ? -1 : 1) : a.path < b.path ? -1 : 1))).toEqual(routes.api_routes)
+    // Plain code-unit order (`<`), as the generator writes it; `localeCompare` would reorder punctuation.
+    const order = (a: string, b: string): number => {
+      if (a === b) return 0
+      return a < b ? -1 : 1
+    }
+    const byPathThenMethod = (a: { path: string; method: string }, b: { path: string; method: string }): number =>
+      order(a.path, b.path) || order(a.method, b.method)
+    expect([...routes.api_routes].sort(byPathThenMethod)).toEqual(routes.api_routes)
   })
 })
 
@@ -115,7 +129,7 @@ const API_ACCOUNT_CALLS: Record<string, (api: typeof import('../api')) => Promis
   setAccountName: (a) => a.setAccountName(ACCOUNT, 'Main'),
   setAccountMaxAgents: (a) => a.setAccountMaxAgents(ACCOUNT, 3),
   loadAccountHealth: (a) => a.loadAccountHealth(ACCOUNT),
-  setAccountState: (a) => a.setAccountState(ACCOUNT, 'PAUSED' as Parameters<typeof a.setAccountState>[1], 'maintenance'),
+  setAccountState: (a) => a.setAccountState(ACCOUNT, 'PAUSED', 'maintenance'),
   refreshAccount: (a) => a.refreshAccount(ACCOUNT),
   removeAccount: (a) => a.removeAccount(ACCOUNT),
   loadAccountHealthBoard: (a) => a.loadAccountHealthBoard(),
@@ -160,7 +174,7 @@ describe('every accounts request is to a route swarm-api serves', () => {
     const exported = Object.entries(api)
       .filter(([name, v]) => typeof v === 'function' && ACCOUNTISH.test(name))
       .map(([name]) => name)
-      .sort()
+      .sort((a, b) => a.localeCompare(b))
     // MUTATION: drop a row from API_ACCOUNT_CALLS.
     const missing = exported.filter((n) => !(n in API_ACCOUNT_CALLS) && !(n in NOT_ACCOUNT_REQUESTS))
     expect(missing, 'an accounts export of api.ts this test does not drive').toEqual([])
@@ -174,8 +188,8 @@ describe('every accounts request is to a route swarm-api serves', () => {
     const exported = Object.entries(screenModule)
       .filter(([name, v]) => typeof v === 'function' && /^(load|set|begin|finish|poll|refresh|remove)Account/.test(name))
       .map(([name]) => name)
-      .sort()
-    expect(exported).toEqual(Object.keys(SCREEN_ACCOUNT_CALLS).sort())
+      .sort((a, b) => a.localeCompare(b))
+    expect(exported).toEqual(Object.keys(SCREEN_ACCOUNT_CALLS).sort((a, b) => a.localeCompare(b)))
   })
 
   for (const [name, call] of Object.entries(API_ACCOUNT_CALLS)) {
@@ -235,24 +249,24 @@ describe("the checkpoint browser's requests are to routes swarm-api serves", () 
     const seen: Request[] = []
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = new URL(String(input), 'http://console.example.test')
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(urlOf(input), 'http://console.example.test')
         seen.push({ method: (init?.method ?? 'GET').toUpperCase(), path: url.pathname, query: url.searchParams })
         const body = url.pathname.endsWith('/files') ? listing : { detail: 'stubbed' }
-        return new Response(JSON.stringify(body), {
+        return Promise.resolve(new Response(JSON.stringify(body), {
           status: url.pathname.endsWith('/files') ? 200 : 404,
           headers: { 'content-type': 'application/json' },
-        })
+        }))
       }),
     )
     const { CheckpointBrowser } = await import('../CheckpointBrowser')
-    const { container } = render(
+    render(
       createElement(CheckpointBrowser, { taskId: 'task_a', attemptId: 'att_1', checkpointId: 'ckpt-00001', onClose: () => {} }),
     )
     fireEvent.click(await screen.findByRole('button', { name: 'state.json' }))
     await waitFor(() => expect(seen.some((r) => r.path.endsWith('/files/state.json'))).toBe(true))
     // The download is a link, not a fetch: its href is a request too.
-    const links = [...container.querySelectorAll('a[href^="/v1/"]')].map((a) => {
+    const links = screen.queryAllByRole('link').filter((a) => a.getAttribute('href')?.startsWith('/v1/') === true).map((a) => {
       const url = new URL(a.getAttribute('href')!, 'http://console.example.test')
       return { method: 'GET', path: url.pathname, query: url.searchParams }
     })
@@ -277,7 +291,7 @@ describe("the outcome ledger's reads are to a served route, with served sections
     // its own; the second read asks for exactly those (archived issue 2422).
     expect(LEDGER_SECTIONS).not.toContain('coverage')
     expect(LEDGER_SECTIONS).not.toContain('previous')
-    expect([...LEDGER_LATE_SECTIONS].sort()).toEqual(['coverage', 'previous'])
+    expect([...LEDGER_LATE_SECTIONS].sort((a, b) => a.localeCompare(b))).toEqual(['coverage', 'previous'])
     for (const sections of [LEDGER_SECTIONS, LEDGER_LATE_SECTIONS]) {
       const requests = await requestsOf(({ api }) => api.loadOutcomes(new URLSearchParams({ span: '7d' }), sections))
       expect(requests.map((r) => `${r.method} ${r.path}`)).toEqual(['GET /v1/outcomes'])
@@ -302,7 +316,7 @@ describe('every console link the API builds opens a console route', () => {
   }
 
   it('knows every link kind the API builds', () => {
-    expect(Object.keys(routes.console_links).sort()).toEqual(Object.keys(ADDRESS_OF).sort())
+    expect(Object.keys(routes.console_links).sort((a, b) => a.localeCompare(b))).toEqual(Object.keys(ADDRESS_OF).sort((a, b) => a.localeCompare(b)))
   })
 
   for (const [kind, template] of Object.entries(routes.console_links)) {

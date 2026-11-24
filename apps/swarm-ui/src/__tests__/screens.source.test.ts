@@ -41,7 +41,7 @@ function loaderReading(path: string): string {
 
 /** Every top-level *.tsx in src that mentions the loader, other than App.tsx. */
 function screensReading(loader: string): Array<[string, string]> {
-  const files = readdirSync(SRC).filter((f) => f.endsWith('.tsx') && f !== 'App.tsx').sort()
+  const files = readdirSync(SRC).filter((f) => f.endsWith('.tsx') && f !== 'App.tsx').sort((a, b) => a.localeCompare(b))
   expect(files.length, 'no *.tsx files found in src; this check would read nothing').toBeGreaterThan(0)
   return files.map((f): [string, string] => [f, src(f)]).filter(([, text]) => text.includes(loader))
 }
@@ -145,7 +145,7 @@ describe('runtimes screen (was tests/unit/control_plane/test_runtimes_screen.py)
     const section = SECTIONS.find((s) => s.id === sectionId)
     expect(
       section,
-      `SectionBody routes '${sectionId}/${tabId}' and SECTIONS declares no section with id '${sectionId}'. Nothing in the nav leads there. Declared: ${JSON.stringify(SECTIONS.map((s) => s.id).sort())}`,
+      `SectionBody routes '${sectionId}/${tabId}' and SECTIONS declares no section with id '${sectionId}'. Nothing in the nav leads there. Declared: ${JSON.stringify(SECTIONS.map((s) => s.id).sort((a, b) => a.localeCompare(b)))}`,
     ).toBeDefined()
     const tabs = (section as (typeof SECTIONS)[number]).tabs.map((t) => t.id)
     expect(
@@ -223,7 +223,7 @@ describe('runtimes screen (was tests/unit/control_plane/test_runtimes_screen.py)
     const frozen = [...catalogue.runner_profiles, ...catalogue.resource_classes, ...catalogue.backends]
     expect(frozen.length, 'the generated catalogue is empty; this check is vacuous').toBeGreaterThan(0)
     const [path, text] = screenFile()
-    const named = frozen.filter((n) => wordIn(text, n)).sort()
+    const named = frozen.filter((n) => wordIn(text, n)).sort((a, b) => a.localeCompare(b))
     expect(named, `${path} names frozen catalogue entries; every value must come from the response`).toEqual([])
     const built = [...new Set(Array.from(text.matchAll(/\b(cpu|memory_gib|disk_gib|units)\s*:\s*[\d.]/g), (m) => m[1]))]
     expect(built, `${path} constructs a sizing record; sizes are served, never assembled here`).toEqual([])
@@ -231,7 +231,7 @@ describe('runtimes screen (was tests/unit/control_plane/test_runtimes_screen.py)
 
   it('test_the_development_fixture_is_not_a_copy_of_the_frozen_catalogue', () => {
     const block = fixtureBlock()
-    const named = [...catalogue.runner_profiles, ...catalogue.resource_classes].filter((n) => wordIn(block, n)).sort()
+    const named = [...catalogue.runner_profiles, ...catalogue.resource_classes].filter((n) => wordIn(block, n)).sort((a, b) => a.localeCompare(b))
     expect(named, 'the runtimes fixture names real catalogue entries, a copy of the frozen sizes in TypeScript').toEqual([])
   })
 
