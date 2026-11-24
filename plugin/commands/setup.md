@@ -129,5 +129,9 @@ confirmation; tell them the command and stop. The same wizard runs in a
 terminal without Claude Code as `sc setup`, and
 `sc setup status` prints the checklist.
 
-If a tool answers that the person is not signed in, tell them to run
-`sc login` themselves (it opens a browser and waits for them) and stop.
+If a tool answers that the person is not signed in, tell them to run the
+sign-in command exactly as that answer spells it, themselves (it opens a
+browser and waits for them), and stop. It is a bare `sc login` only where
+SwarmCloud's `install.sh` put `sc` on their PATH; with the plugin alone the
+answer spells a longer command that runs the plugin's own bridge, and a bare
+`sc login` answers `sc: command not found`.
