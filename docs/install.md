@@ -973,9 +973,9 @@ uninstall keeps on your machine, for the region and the never-touch list.
 - A kind it could not read (a refused or failed list call) is printed as
   `not read`, with the reason, and it exits 3. It then never says that nothing
   remains: a listing that missed a kind is not offered as the whole one. A
-  kind whose API is off counts as empty only where nothing of that kind can
-  exist without its API; buckets and service accounts can, so for them it is
-  `not read`.
+  kind whose API is off is `not read`, because turning an API off deletes
+  nothing (key rings, Firestore databases, secrets, topics and the rest
+  survive it). Only clusters count as empty, as `preflight.neighbours` argues.
 - A resource on the install's never-touch list is never named, only counted.
 - A project pending deletion is said plainly, and nothing in it is listed.
 

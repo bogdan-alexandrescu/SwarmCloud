@@ -10,8 +10,9 @@ Rules the listing keeps:
 * **Nothing is left out silently.** Every kind in `KINDS` is either read or
   reported under "not read" with the reason. A kind whose API is off reads as
   empty only where nothing of that kind can exist without its API
-  (`off_means_empty`); buckets and service accounts can outlive theirs, so for
-  them an API that is off is a kind not read (`preflight.neighbours` holds the
+  (`off_means_empty`, off by default: only clusters, argued in
+  `preflight.neighbours`); turning an API off deletes nothing, so for every
+  other kind an API that is off is a kind not read (`preflight.neighbours` holds the
   same rule).
 * **"Nothing remains" is said only after a complete read** that found nothing.
   A listing with any kind not read is never offered as the whole one.
@@ -97,7 +98,7 @@ class Kind:
 
     name: str
     list_: Callable[[Gcp, str, str, str], list[str] | None]
-    off_means_empty: bool = True
+    off_means_empty: bool = False
 
 
 def _last(value: Any) -> str:
@@ -179,18 +180,17 @@ def _enabled(item: Mapping[str, Any]) -> str:
 #: Every kind the listing reads, in the order it prints them.
 KINDS: tuple[Kind, ...] = (
     Kind("gcp-api", _paged(f"{USAGE}/v1/projects/{{project}}/services", "services", _enabled,
-                           params={"filter": "state:ENABLED"}), off_means_empty=False),
-    Kind("cluster", _clusters),
+                           params={"filter": "state:ENABLED"})),
+    Kind("cluster", _clusters, off_means_empty=True),
     Kind("network", _paged(f"{COMPUTE}/projects/{{project}}/global/networks", "items")),
     Kind("subnet", _aggregated("subnetworks", "subnetworks")),
     Kind("firewall", _paged(f"{COMPUTE}/projects/{{project}}/global/firewalls", "items")),
     Kind("address", _aggregated("addresses", "addresses")),
     Kind("global-address", _paged(f"{COMPUTE}/projects/{{project}}/global/addresses", "items")),
     Kind("bucket", lambda gcp, project, region, number: [str(b.get("name", ""))
-                                                         for b in gcp.project_buckets(project)],
-         off_means_empty=False),
-    Kind("service-account", _service_accounts, off_means_empty=False),
-    Kind("custom-role", _paged(f"{IAM}/projects/{{project}}/roles", "roles"), off_means_empty=False),
+                                                         for b in gcp.project_buckets(project)]),
+    Kind("service-account", _service_accounts),
+    Kind("custom-role", _paged(f"{IAM}/projects/{{project}}/roles", "roles")),
     Kind("secret", _paged(f"{SECRET_MANAGER_API}/projects/{{project}}/secrets", "secrets")),
     Kind("cloud-run-service", _paged(f"{RUN}/projects/{{project}}/locations/{{region}}/services", "services",
                                      regional=True)),

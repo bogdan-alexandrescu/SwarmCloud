@@ -129,6 +129,31 @@ def test_an_api_that_is_off_is_an_empty_kind(monkeypatch: pytest.MonkeyPatch) ->
     assert f"Nothing remains in {PROJECT}." in out
 
 
+@pytest.mark.parametrize("kind,suffix", [
+    ("kms-key-ring", "/keyRings"), ("firestore-database", "/databases"), ("firestore-backup", "/backups"),
+    ("secret", "/secrets"), ("pubsub-topic", "/topics"), ("pubsub-subscription", "/subscriptions"),
+    ("registry", "/repositories"), ("dns-zone", "/managedZones"), ("logging-bucket", "/buckets"),
+    ("log-metric", "/metrics"), ("alert-policy", "/alertPolicies"),
+    ("notification-channel", "/notificationChannels"), ("cloud-run-service", "/services"),
+    ("cloud-run-job", "/locations/europe-west1/jobs"), ("network", "/global/networks"),
+])
+def test_an_api_that_is_off_is_not_read_never_empty(monkeypatch: pytest.MonkeyPatch, kind: str, suffix: str) -> None:
+    """Turning an API off deletes nothing: the kind is `not read`, exit 3."""
+    disabled = ApiError(403, "SERVICE_DISABLED", "API has not been used in project 1 before or it is disabled")
+
+    class Off(FakeGcp):
+        def _call(self, method: str, url: str, **kw: Any) -> Any:
+            if url.split("?")[0].endswith(suffix) and not url.endswith("/v3/projects:search"):
+                raise disabled
+            return super()._call(method, url, **kw)
+
+    code, out = run_verb(monkeypatch, Off(), json_out=True)
+    found = json.loads(out)
+    assert code == ExitCode.TROUBLE, (kind, out)
+    assert kind in [u["kind"] for u in found["unread"]], (kind, out)
+    assert found["complete"] is False
+
+
 def test_it_only_reads(monkeypatch: pytest.MonkeyPatch) -> None:
     gcp = holding()
     run_verb(monkeypatch, gcp)

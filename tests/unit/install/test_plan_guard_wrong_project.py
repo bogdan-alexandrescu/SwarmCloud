@@ -52,6 +52,21 @@ def bucket_change(project: str, actions: list[str], *, half: str = "after") -> d
             "change": {"actions": actions, half: body, other: None}}
 
 
+def shell_verdict(tmp_path: Path, plan: dict) -> list[dict]:
+    """The shell guard's `wrong_project` for `plan`, with every change a deletion."""
+    plan = json.loads(json.dumps(plan))
+    for rc in plan.get("resource_changes", []):
+        rc["change"]["actions"] = ["delete"]
+        rc["change"].setdefault("before", rc["change"].get("after"))
+    path = tmp_path / "shell-plan.json"
+    path.write_text(json.dumps(plan))
+    done = subprocess.run(
+        ["jq", "-c", "-f", str(DESTROY_GUARD), "--argjson", "deny", "[]", "--argjson", "allow_types", "[]",
+         "--arg", "project", PROJECT, "--arg", "prefix", "swarm-", str(path)],
+        capture_output=True, text=True, check=True)
+    return json.loads(done.stdout)["wrong_project"]
+
+
 def verbs(exec_: FakeExec) -> list[str]:
     return exec_.verbs()
 
@@ -76,12 +91,71 @@ def test_a_plan_for_the_installs_own_project_passes(tmp_path: Path) -> None:
     assert "apply" in verbs(exec_)
 
 
-def test_a_project_not_yet_known_reads_as_the_installs_own(tmp_path: Path) -> None:
+def test_a_project_not_set_in_the_plan_and_not_unknown_reads_as_the_installs_own(tmp_path: Path) -> None:
     change = bucket_change(PROJECT, ["create"])
     change["change"]["after"].pop("project")
     exec_ = FakeExec(plan={"resource_changes": [change]})
     run(tmp_path, "infra-1", exec_)
     assert "apply" in verbs(exec_)
+
+
+def test_a_project_unknown_until_apply_is_refused(tmp_path: Path) -> None:
+    change = bucket_change(PROJECT, ["create"])
+    change["change"]["after"].pop("project")
+    change["change"]["after_unknown"] = {"project": True}
+    exec_ = FakeExec(plan={"resource_changes": [change]})
+    with pytest.raises(TerraformRefused, match="unknown at plan time"):
+        run(tmp_path, "infra-1", exec_)
+    assert "apply" not in verbs(exec_)
+
+
+def other_change(after: dict, rtype: str = "google_thing", *, unknown: dict | None = None) -> dict:
+    change = {"actions": ["create"], "before": None, "after": after}
+    if unknown is not None:
+        change["after_unknown"] = unknown
+    return {"address": f"{rtype}.x", "type": rtype, "change": change}
+
+
+NAMING_ANOTHER = [
+    pytest.param(other_change({"service_account_id": f"projects/{FOREIGN}/serviceAccounts/a@{FOREIGN}.iam.gserviceaccount.com"}),
+                 id="projects-path"),
+    pytest.param(other_change({"crypto_key_id": f"projects/{FOREIGN}/locations/x/keyRings/k/cryptoKeys/c"}), id="key-id"),
+    pytest.param(other_change({"host_project": FOREIGN}, "google_compute_shared_vpc_service_project"), id="host_project"),
+    pytest.param(other_change({"nested": [{"subnetwork_project": FOREIGN}]}), id="nested-subnetwork_project"),
+    pytest.param(other_change({}, "google_organization_iam_member"), id="organization-level"),
+    pytest.param(other_change({}, "google_folder_iam_member"), id="folder-level"),
+    pytest.param(other_change({}, "google_billing_account_iam_member"), id="billing-level"),
+    pytest.param(other_change({"name": "x"}, unknown={"host_project": True}), id="unknown-host_project"),
+]
+
+
+@pytest.mark.parametrize("change", NAMING_ANOTHER)
+def test_every_way_of_naming_another_project_is_refused(tmp_path: Path, change: dict) -> None:
+    exec_ = FakeExec(plan={"resource_changes": [change]})
+    with pytest.raises(TerraformRefused):
+        run(tmp_path, "infra-1", exec_)
+    assert "apply" not in verbs(exec_)
+    plan = {"resource_changes": [change]}
+    assert planguard.wrong_project(plan, PROJECT)
+    assert shell_verdict(tmp_path, plan)
+
+
+def test_the_installs_own_paths_and_numbers_pass(tmp_path: Path) -> None:
+    plan = {"prior_state": {"values": {"root_module": {"resources": [
+                {"type": "google_project", "values": {"number": 123456789012}}]}}},
+            "resource_changes": [other_change({
+                "member": f"projects/{PROJECT}/serviceAccounts/a", "path": "projects/123456789012/secrets/s",
+                "image": "projects/deeplearning-platform-release/global/images/family/x",
+                "host_project": PROJECT})]}
+    assert planguard.wrong_project(plan, PROJECT) == []
+
+
+def test_a_provider_naming_another_project_is_refused(tmp_path: Path) -> None:
+    plan = {"resource_changes": [], "configuration": {"provider_config": {
+        "google.peer": {"expressions": {"project": {"constant_value": FOREIGN}}},
+        "google": {"expressions": {"project": {"references": ["var.project_id"]}}}}}}
+    assert [v["project"] for v in planguard.wrong_project(plan, PROJECT)] == [FOREIGN]
+    assert [v["project"] for v in shell_verdict(tmp_path, plan)] == [FOREIGN]
 
 
 def test_the_before_half_is_read_too(tmp_path: Path) -> None:

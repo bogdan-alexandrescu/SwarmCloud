@@ -33,7 +33,7 @@ PACKAGED_DIR = "_guard"
 #: The checkout's copy (development and the unit tests).
 CHECKOUT_DIR = Path(__file__).resolve().parents[3] / "scripts" / "lib"
 #: The program jq runs: the shared rule over the plan's changes, nothing else.
-PROGRAM = 'include "wrong-project"; [.resource_changes[]?] | wrong_project($project)'
+PROGRAM = 'include "wrong-project"; plan_wrong_project($project; [.resource_changes[]?])'
 JQ_TIMEOUT_SECONDS = 120
 
 

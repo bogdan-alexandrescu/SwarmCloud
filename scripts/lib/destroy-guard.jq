@@ -255,7 +255,7 @@ def summarise($deny; $allow_types; $project):
 
       # The rule is scripts/lib/wrong-project.jq, included above and shared
       # with the install engine (issue 344); it reads both halves of a change.
-      wrong_project: ($deletions | wrong_project($project)),
+      wrong_project: plan_wrong_project($project; $deletions),
 
       offenders: [ $deletions[]
         | . as $r
