@@ -4741,7 +4741,17 @@ or made slower) (`min_prs` and `max_wait_minutes` in
 [`scripts/merge-train.sh`](../scripts/merge-train.sh); the repository
 variables `MERGE_TRAIN_MIN_PRS`, `MERGE_TRAIN_MAX_WAIT_MINUTES` and
 `MERGE_TRAIN_MAX_PRS` still override them). A red train is bisected and the
-pull request that broke it ejected, so main never sees the failure.
+pull request that broke it ejected, so main never sees the failure. A train
+red on a code-scanning result skips the bisection when it can: the check's
+failure-level annotations name files (warning and notice annotations never
+eject anyone), the train maps each to the pull requests whose changed files
+hold it, and ejects those at once with the alert's rule, file and line
+(issue 377); a mapping that names no pull request, or every one on the train,
+bisects as before and still names the check. Check runs are read whole, every
+page compared with `total_count`; a read that is not whole is unreadable,
+never green. Every failing check is named with its title, whichever app
+made it, and rule 1 says a check that is not an Actions job is one no re-run
+changes. [The runbook](runbooks/merge-train.md#a-red-train) states the rules.
 
 **What a lane gives up.** A lane's pull request no longer catches a lint,
 format or contract slip before the train does: the lane's agent runs the
