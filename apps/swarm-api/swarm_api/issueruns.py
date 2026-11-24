@@ -707,6 +707,391 @@ def model_classes_carried() -> bool:
         "model_class" in WorkflowStepCreate.model_fields)
 
 
+# --------------------------------------------------------------------------
+# Diagrams in plans (plans-pipeline.md §6; lane P6 PLANS-DIAGRAMS-API)
+# --------------------------------------------------------------------------
+#
+# A diagram is Mermaid TEXT an agent or a person wrote that the console later
+# draws: untrusted. It is checked here, where it is stored, and again where it
+# is drawn (§6.6). Every path that stores one goes through this check: a plan
+# written now through `parse_plan` (the planner's, a re-plan's) or
+# `parse_edited_plan` (an edit, `plan:add-diagram`), and an agent's on-demand
+# answer through `checked_diagram`. Only a plan read back (`stored=True`) is
+# not checked again: it was checked when it was written, and a later rule must
+# not stop an approved plan from compiling.
+
+MAX_PLAN_DIAGRAMS = 4
+MAX_DIAGRAM_SOURCE_CHARS = 6_000
+MAX_DIAGRAM_SOURCE_LINES = 150
+MAX_DIAGRAM_NODES = 60
+MAX_DIAGRAM_EDGES = 100
+MAX_NO_DIAGRAM_CHARS = 200
+#: The parts of a plan a diagram may explain, and an ask may be anchored to.
+DIAGRAM_PARTS = ("plan", "step", "requirement", "overlap")
+DiagramPart = Literal["plan", "step", "requirement", "overlap"]
+DiagramKind = Literal["flow", "sequence", "architecture", "state", "data", "schematic"]
+#: The Mermaid types each kind may use (§6.2). The `-beta` types are left out:
+#: their syntax still moves, and a plan approved today must render in a year.
+DIAGRAM_TYPES: Mapping[str, tuple[str, ...]] = MappingProxyType({
+    "flow": ("flowchart", "graph"),
+    "sequence": ("sequenceDiagram",),
+    "architecture": ("flowchart", "graph"),
+    "state": ("stateDiagram-v2",),
+    "data": ("erDiagram",),
+    "schematic": ("flowchart", "graph"),
+})
+
+#: Refused wherever they stand on a line, quoted text and comments included:
+#: a directive or metadata that rewrites Mermaid's configuration, a click's
+#: words, a script or data URL, a CSS url, an HTML tag or comment, a class
+#: shorthand, a link, an include.
+_DIAGRAM_ANYWHERE: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
+    (name, re.compile(pattern, re.IGNORECASE)) for name, pattern in (
+        ("%%{", r"%%\s*\{"),
+        ("click", r"\bclick\b"),
+        ("call", r"\bcall\s+[\w.$]+\s*\("),
+        ("href", r"\bhref\b"),
+        ("callback", r"\bcallback\b"),
+        ("javascript:", r"javascript\s*:"),
+        ("data:", r"\bdata\s*:"),
+        ("url(", r"\burl\s*\("),
+        ("an HTML tag", r"<[a-z/!]"),
+        ("@{", r"@\s*\{"),
+        (":::", r":::"),
+        ("a link", r"://"),
+        ("an include", r"[!@](?:include|import)"),
+    )
+)
+#: Refused as the first word of a statement -- a line, or what follows a `;`
+#: or a brace on one -- where Mermaid reads them as keywords. Elsewhere they
+#: are words of a label ("call the API", "the class is kept").
+_DIAGRAM_STATEMENT = re.compile(
+    r"(call|style|classDef|class|linkStyle|links?|properties|details)(?![\w-])", re.IGNORECASE)
+_DIAGRAM_STATEMENTS = re.compile(r"[;{}]")
+_DIAGRAM_LINES = re.compile(r"\r\n|\r|\n")
+#: `#name;`, Mermaid's entity form. Decoded before the tokens are looked for.
+_DIAGRAM_ENTITY = re.compile(r"#(x?[0-9a-z]+);", re.IGNORECASE)
+_DIAGRAM_QUOTED = re.compile(r'"[^"\n]*"')
+_FLOW_TEXT_EDGE = re.compile(
+    r"(?<![-=.])(?:--|==|-\.)\s+[^-=.<>|&\[\](){}\n]+?\s+(?:--|==|\.-)(?=[->=xo.])")
+_FLOW_EDGE = re.compile(r"<?(?:-{2,}|={2,}|-?\.+-|-\.+|~{3,})[-=.]*>?")
+_FLOW_LABEL = re.compile(r"\|[^|]*\||\[[^\]]*\]|\([^)]*\)|\{[^}]*\}")
+_SEQUENCE_EDGE = re.compile(r"<{0,2}--?(?:>>?|x|\)|\||/|\\|-)+")
+_STATE_EDGE = re.compile(r"--+>")
+_ER_EDGE = re.compile(r"\s(?:\S{0,2}(?:--|\.\.)\S{0,2})\s|\s(?:optionally\s+)?to\s")
+_WORDS = re.compile(r"[^\s,;&\[\](){}|<>\"]+")
+
+
+def _decoded(line: str) -> str:
+    """`line` with Mermaid's and HTML's entities decoded, to what a renderer
+    would read; decoded until it stops changing, so a doubled one is too."""
+    for _ in range(4):
+        read = html.unescape(_DIAGRAM_ENTITY.sub(lambda m: (
+            f"&#{m.group(1)};" if m.group(1)[0].isdigit()
+            or re.fullmatch(r"x[0-9a-f]+", m.group(1), re.IGNORECASE)
+            else f"&{m.group(1)};"), line))
+        if read == line:
+            break
+        line = read
+    return line
+
+
+def _diagram_refused_token(line: str) -> str | None:
+    """The §6.6 token `line` carries, as written or once decoded, or None."""
+    for text in dict.fromkeys((line, _decoded(line))):
+        for name, pattern in _DIAGRAM_ANYWHERE:
+            if pattern.search(text):
+                return name
+        for statement in _DIAGRAM_STATEMENTS.split(text):
+            found = _DIAGRAM_STATEMENT.match(statement.strip())
+            if found:
+                return found.group(1)
+    return None
+
+
+def _diagram_counts(kind: str, lines: Sequence[str]) -> tuple[int, int]:
+    """`(nodes, edges)` by a lexical count, over rather than under: the
+    distinct words on either side of every edge, and every edge, `A & B --> C
+    & D` as the four it draws."""
+    nodes: set[str] = set()
+    edges = 0
+    depth = 0
+    for raw in lines:
+        # Statements of one line are counted together with their braces kept
+        # for the kinds that label nodes with them.
+        for line in _DIAGRAM_QUOTED.sub('""', raw).split(";"):
+            line = line.strip()
+            if not line or line.startswith("%%"):
+                continue
+            if kind in ("flow", "architecture", "schematic"):
+                parts = _FLOW_EDGE.split(_FLOW_TEXT_EDGE.sub("--", line))
+                sides = [_FLOW_LABEL.sub(" ", part) for part in parts]
+                for side in sides:
+                    nodes.update(_WORDS.findall(side))
+                for left, right in zip(sides, sides[1:]):
+                    edges += (left.count("&") + 1) * (right.count("&") + 1)
+            elif kind == "sequence":
+                head = line.split(":", 1)[0]
+                parts = _SEQUENCE_EDGE.split(head)
+                edges += len(parts) - 1
+                if len(parts) > 1:
+                    nodes.update(part.strip().strip("+-") for part in parts if part.strip())
+                elif re.match(r"(?:create\s+)?(?:participant|actor)\s", line):
+                    nodes.add(re.sub(r"^(?:create\s+)?(?:participant|actor)\s+", "", line)
+                              .split(" as ")[0].strip())
+            elif kind == "state":
+                parts = _STATE_EDGE.split(line)
+                edges += len(parts) - 1
+                for part in parts:
+                    nodes.update(_WORDS.findall(part.split(":", 1)[0].replace("[*]", "*")))
+            else:
+                head = line.split(":", 1)[0]
+                found = _ER_EDGE.findall(head)
+                edges += len(found)
+                if found:
+                    nodes.update(w for w in _WORDS.findall(head) if re.match(r"\w", w))
+                elif depth == 0:
+                    nodes.update(_WORDS.findall(head)[:1])
+                # `||--o{` is a relation, not a block: only a `{` ending a
+                # line with no relation opens one.
+                if not found:
+                    depth = max(0, depth + line.count("{") - line.count("}"))
+    return len(nodes), edges
+
+
+def check_diagram_source(kind: Any, source: Any) -> str | None:
+    """Why `source` may not be stored as a diagram of `kind` (§6.6), naming
+    the line, or None when it may. Lexical: no Mermaid is needed, and what it
+    cannot judge it refuses. The reason quotes no line of the source: it names
+    the line's number and the token, so a refusal carries no untrusted text."""
+    allowed = DIAGRAM_TYPES.get(kind) if isinstance(kind, str) else None
+    if allowed is None:
+        return f"the kind is one of {list(DIAGRAM_TYPES)}"
+    if not isinstance(source, str) or not source.strip():
+        return "the source is empty"
+    if len(source) > MAX_DIAGRAM_SOURCE_CHARS:
+        return f"the source is over {MAX_DIAGRAM_SOURCE_CHARS:,} characters"
+    lines = _DIAGRAM_LINES.split(source)
+    if len(lines) > MAX_DIAGRAM_SOURCE_LINES:
+        return f"the source is over {MAX_DIAGRAM_SOURCE_LINES} lines"
+    for number, line in enumerate(lines, start=1):
+        for text in (line, _decoded(line)):
+            if any(unicodedata.category(ch) in ("Cc", "Cf", "Cs", "Zl", "Zp")
+                   and ch != "\t" for ch in text):
+                return f"line {number} holds a control or invisible character"
+        token = _diagram_refused_token(line)
+        if token is not None:
+            return (f"line {number} holds {token!r}, which a plan's diagram may not: no "
+                    "directives, clicks, links, HTML, scripts or styling")
+    for number, line in enumerate(lines, start=1):
+        statement = line.strip()
+        if not statement or statement.startswith("%%"):
+            continue
+        if statement.rstrip(";").split(None, 1)[0].rstrip(";") not in allowed:
+            return (f"line {number}: the first statement of a {kind} diagram is one of "
+                    f"{list(allowed)}")
+        nodes, edges = _diagram_counts(kind, lines[number:])
+        if nodes > MAX_DIAGRAM_NODES:
+            return f"the source draws about {nodes} nodes, over the cap of {MAX_DIAGRAM_NODES} nodes"
+        if edges > MAX_DIAGRAM_EDGES:
+            return f"the source draws about {edges} edges, over the cap of {MAX_DIAGRAM_EDGES} edges"
+        return None
+    return "the source holds no statement"
+
+
+class DiagramExplains(_PlanModel):
+    """The part of the same plan a diagram explains; `ref` is null for the
+    whole plan. Whether the plan holds the part is `_diagram_problems`'."""
+
+    part: DiagramPart
+    ref: str | None = Field(default=None, min_length=1, max_length=160)
+
+    @field_validator("ref", mode="before")
+    @classmethod
+    def _number(cls, value: Any) -> Any:
+        # A requirement is named by its number, which a planner writes bare.
+        if isinstance(value, int) and not isinstance(value, bool):
+            return str(value)
+        return value
+
+
+class PlanDiagram(_PlanModel):
+    """One diagram of a plan (§6.2): Mermaid text, never an uploaded image."""
+
+    diagram_id: str = Field(max_length=40, pattern=r"^d-[a-z0-9][a-z0-9-]*\Z")
+    kind: DiagramKind
+    title: str = Field(min_length=1, max_length=120, pattern=r"^[^\x00-\x1f\x7f]+$")
+    #: The one language, named so that a second can be added.
+    language: Literal["mermaid"]
+    source: str = Field(min_length=1, max_length=MAX_DIAGRAM_SOURCE_CHARS)
+    why: str = Field(min_length=1, max_length=300)
+    explains: DiagramExplains
+
+
+def _diagram_parts(plan: Mapping[str, Any]) -> dict[str, list[str]]:
+    """What a diagram or an ask may name in `plan`, per part but the whole."""
+    return {
+        "step": [str(s.get("step_id")) for s in plan.get("steps") or ()],
+        "requirement": [str(n) for n in range(1, len(plan.get("requirements") or ()) + 1)],
+        "overlap": [str(o.get("ref")) for o in plan.get("overlaps") or ()],
+    }
+
+
+def _explains_problem(explains: Mapping[str, Any], plan: Mapping[str, Any]) -> str | None:
+    part, ref = explains["part"], explains.get("ref")
+    if part == "plan":
+        return None if ref is None else f"explains the whole plan, which takes no ref ({ref!r})"
+    if ref is None:
+        return f"explains a {part} and names none"
+    if ref not in _diagram_parts(plan)[part]:
+        return f"explains {part} {ref!r}, which this plan does not have"
+    return None
+
+
+def _diagram_problems(plan: Mapping[str, Any], setting: bool | None,
+                      before: Any = None) -> list[str]:
+    """Why `plan` -- parsed, and written NOW -- may not carry the diagrams it
+    does or does not (§6.2), each naming the field.
+
+    `setting` is the run's: on, exactly one of `diagrams` and `no_diagram`;
+    off, neither, except what `before` (the plan it replaces) already carries,
+    unchanged, because those are inside a digest a person was shown (§6.4);
+    None -- a run planned before the setting was recorded -- never both. The
+    parts and the sources are checked whatever the setting is."""
+    diagrams = list(plan.get("diagrams") or ())
+    none = plan.get("no_diagram")
+    held = before if isinstance(before, Mapping) else {}
+    problems: list[str] = []
+    if diagrams and none is not None:
+        problems.append('no_diagram: a plan carries "diagrams" or "no_diagram", not both')
+    elif setting is True and not diagrams and none is None:
+        problems.append('diagrams: diagrams are on for this run, so a plan carries "diagrams", '
+                        'or "no_diagram" with one line saying why it draws none')
+    if setting is False:
+        kept = list(held.get("diagrams") or ())
+        if any(drawn not in kept for drawn in diagrams):
+            problems.append("diagrams: diagrams are off for this run; leave the field out")
+        if none is not None and none != held.get("no_diagram"):
+            problems.append("no_diagram: diagrams are off for this run; leave the field out")
+    seen: set[str] = set()
+    for index, drawn in enumerate(diagrams):
+        where = f"diagrams.{index} ({drawn['diagram_id']})"
+        if drawn["diagram_id"] in seen:
+            problems.append(f"{where}: every diagram_id must be unique")
+        seen.add(drawn["diagram_id"])
+        wrong = _explains_problem(drawn["explains"], plan)
+        if wrong is not None:
+            problems.append(f"{where}: explains: {wrong}")
+        wrong = check_diagram_source(drawn["kind"], drawn["source"])
+        if wrong is not None:
+            problems.append(f"{where}: source: {wrong}")
+    return problems
+
+
+def _refuse_diagrams(plan: Mapping[str, Any], setting: bool | None, before: Any = None) -> None:
+    problems = _diagram_problems(plan, setting, before)
+    if problems:
+        raise InvalidPlan(
+            "the plan does not match the plan schema: " + "; ".join(problems),
+            detail={"errors": problems},
+        )
+
+
+def checked_diagram(value: Any) -> dict[str, Any]:
+    """One diagram on its own -- an agent's answer, a stored entry's -- in
+    §6.2's shape with its source checked, or InvalidPlan saying why not."""
+    try:
+        drawn = PlanDiagram.model_validate(value).model_dump(exclude_none=True)
+    except ValidationError as exc:
+        raise InvalidPlan("the diagram does not match its schema: " + "; ".join(
+            f"{'.'.join(str(p) for p in e.get('loc') or ()) or 'diagram'}: {e.get('msg')}"
+            for e in exc.errors())) from None
+    wrong = check_diagram_source(drawn["kind"], drawn["source"])
+    if wrong is not None:
+        raise InvalidPlan(f"the diagram's source is refused: {wrong}")
+    return drawn
+
+
+#: The words rule E4 looks for (§6.3), each as the sentence names it.
+_E4_WORDS = re.compile(
+    r"\b(flow|state|sequence|route|round[ -]trip|lifecycle|pipeline|protocol|schema"
+    r"|document shape)s?\b", re.IGNORECASE)
+_E4_LABELS = ("design", "research", "epic")
+#: Rule N1's value files, and the wording files that count when the step is a
+#: wording fix.
+_VALUE_FILES = ("terraform/environments/**", "*.tfvars", ".env*", "*.lock", "package-lock.json",
+                "pnpm-lock.yaml", "npm-shrinkwrap.json", "go.sum")
+_WORDING_FILES = ("docs/**", "*.md")
+_WORDING_FIX = re.compile(
+    r"\b(typos?|wording|reword(?:ed|ing)?|spelling|misspell\w*|grammar|punctuation|phras(?:e|ing)"
+    r"|copy[ -]?edit\w*|broken links?|formatting)\b", re.IGNORECASE)
+
+
+def _value_or_wording(path: str, step: Mapping[str, Any]) -> bool:
+    if any(path_matches(path, pattern) for pattern in _VALUE_FILES):
+        return True
+    return (any(path_matches(path, pattern) for pattern in _WORDING_FILES)
+            and _WORDING_FIX.search(f"{step.get('title')} {step.get('prompt')}") is not None)
+
+
+def _component(path: str) -> str | None:
+    parts = str(path).strip().removeprefix("./").strip("/").split("/")
+    if parts[0] == "apps" and len(parts) > 1:
+        return f"apps/{parts[1]}"
+    return parts[0] if parts[0] in ("terraform", "kubernetes", "scripts") else None
+
+
+def _flow_word(texts: Sequence[Any]) -> str | None:
+    """E4's word, or `state` when a text names a run's state as one is
+    written ("moves to FIXING"): that is a change of the state machine."""
+    for text in texts:
+        found = _E4_WORDS.search(str(text or ""))
+        if found:
+            return found.group(1).lower()
+        if any(re.search(rf"\b{state.value}\b", str(text or "")) for state in RunState):
+            return "state"
+    return None
+
+
+def diagram_expected(plan: Mapping[str, Any], source: Mapping[str, Any] | None,
+                     *, labels: Sequence[Any] = ()) -> dict[str, Any]:
+    """Whether a diagram helps a reviewer of `plan` (§6.3): the first rule
+    that applies. ADVISORY: the planner decides, and the page draws this
+    beside its answer; a plan it disagrees with is not refused. `source` is
+    the run's, `labels` its issue's."""
+    steps = [s for s in plan.get("steps") or () if isinstance(s, Mapping)]
+    files = [str(f) for s in steps for f in s.get("files") or ()]
+    requirements = list(plan.get("requirements") or ())
+    named = {str(label).strip().lower() for label in labels or ()}
+
+    def read(rule: str, expected: bool, why: str) -> dict[str, Any]:
+        return {"expected": expected, "rule": rule, "why": why}
+
+    if len(steps) == 1:
+        own = [str(f) for f in steps[0].get("files") or ()]
+        if own and all(_value_or_wording(f, steps[0]) for f in own):
+            return read("N1", False, "a value or wording change")
+        hours = estimate_hours(steps[0].get("estimate")) or estimate_hours(plan.get("estimate"))
+        if len(own) == 1 and hours is not None and hours[1] < 1 and _flow_word(requirements) is None:
+            return read("N2", False, "a one-file change with no flow")
+    if len(steps) >= 2:
+        return read("E1", True, f"{len(steps)} steps; how they hand over")
+    components = list(dict.fromkeys(c for c in map(_component, files) if c is not None))
+    if len(components) >= 2:
+        return read("E2", True, f"crosses {', '.join(components[:-1])} and {components[-1]}")
+    # A module is a source file: the files a failure's path crosses.
+    if ((source or {}).get("kind") == SOURCE_FAILURE_REVIEW or "bug" in named) \
+            and len(set(files)) >= 2:
+        return read("E3", True, "the failure's path")
+    word = _flow_word([plan.get("summary"), *requirements])
+    if word is not None:
+        return read("E4", True, f"the plan changes a {word}")
+    for label in _E4_LABELS:
+        if label in named:
+            return read("E4", True, f"the issue is labelled {label}")
+    return read("N0", False, "nothing the rule recognises as a flow")
+
+
 class PlanStep(_PlanModel):
     step_id: str = Field(min_length=1, max_length=40, pattern=r"^[a-z0-9][a-z0-9-]*$")
     title: str = Field(min_length=1, max_length=200)
@@ -791,6 +1176,14 @@ class PlanSpec(_PlanModel):
     #: The planner's reason for the plan as a whole (§3.6): inside the digest
     #: and optional, exactly as `PlanStep.rationale` is.
     rationale: str | None = Field(default=None, min_length=1, max_length=2_000)
+    #: The plan's diagrams, or the one line saying why it draws none (§6.2).
+    #: Inside the digest (the owner's Q8): an approved plan's diagrams are the
+    #: ones approved. Optional and never defaulted into the dump, so a plan
+    #: stored before them keeps its digest; which of the two a plan written
+    #: now must carry is `_diagram_problems`'.
+    diagrams: list[PlanDiagram] | None = Field(default=None, max_length=MAX_PLAN_DIAGRAMS)
+    no_diagram: str | None = Field(default=None, min_length=1, max_length=MAX_NO_DIAGRAM_CHARS,
+                                   pattern=r"^[^\x00-\x1f\x7f]+$")
 
     @field_validator("steps")
     @classmethod
@@ -1002,12 +1395,17 @@ def _stages(steps: list[Any]) -> list[list[str]]:
     return stages
 
 
-def parse_plan(value: Any, *, stored: bool = False) -> dict[str, Any]:
+def parse_plan(value: Any, *, stored: bool = False,
+               diagrams: bool | None = None, before: Any = None) -> dict[str, Any]:
     """A plan -- a JSON text or an object -- checked against `PlanSpec`, normalised.
 
     `stored=True` reads a plan back from a run document: one stored before
     `PlanOverlap.action` existed still reads, compiles and digests as it did.
     Every plan written now -- the planner's, an edit -- is checked without it.
+
+    `diagrams` is the diagram setting the plan was asked for under (§6.4),
+    None when the run recorded none; `before` is the plan it replaces, whose
+    diagrams it may keep when they are off (`_diagram_problems`).
     """
     if isinstance(value, (str, bytes)):
         try:
@@ -1034,10 +1432,14 @@ def parse_plan(value: Any, *, stored: bool = False) -> dict[str, Any]:
     # (or set to null) stays out, so a plan written before those fields --
     # `requirements`, `files`, `depends_on` -- existed normalises, and
     # digests, exactly as it did then, and readers use `.get` for every one.
-    return merge_sections(spec.model_dump(exclude_unset=True, exclude_none=True), sections)
+    plan = merge_sections(spec.model_dump(exclude_unset=True, exclude_none=True), sections)
+    if not stored:
+        _refuse_diagrams(plan, diagrams, before)
+    return plan
 
 
-def parse_edited_plan(value: Any, stored_plan: Any) -> dict[str, Any]:
+def parse_edited_plan(value: Any, stored_plan: Any, *,
+                      diagrams: bool | None = None) -> dict[str, Any]:
     """An operator's edit of a stored plan, checked like a new plan except for
     the overlaps it carries over from a plan stored before `PlanOverlap.action`.
 
@@ -1046,6 +1448,9 @@ def parse_edited_plan(value: Any, stored_plan: Any) -> dict[str, Any]:
     and there is no control to add one. Such an overlap is accepted when it is
     IDENTICAL to one the stored plan already had without `action`; a new or
     changed overlap still needs one, exactly as a planner's plan does.
+
+    Its diagrams are a plan's written now (`_diagram_problems`), under
+    `diagrams`, the setting the plan it edits was made under.
     """
     plan = parse_plan(value, stored=True)
     # An edit is a plan written now: parallel steps may not share a file,
@@ -1075,6 +1480,7 @@ def parse_edited_plan(value: Any, stored_plan: Any) -> dict[str, Any]:
                 "the plan does not match the plan schema: " + problem,
                 detail={"errors": [problem]},
             )
+    _refuse_diagrams(plan, diagrams, stored_plan)
     return plan
 
 
@@ -1149,6 +1555,7 @@ class NotReadyVerdict(_PlanModel):
 
 def parse_planner_output(
     value: Any, *, lane_refs: Mapping[str, str] | None = None,
+    diagrams: bool | None = None, before: Any = None,
 ) -> tuple[str, dict[str, Any]]:
     """What the planner wrote in `plan.json`: `("plan", plan)` or `("not_ready", verdict)`.
 
@@ -1161,6 +1568,8 @@ def parse_planner_output(
     run id -> owner/repo#N (archived issue 3507): an overlap whose ref is one of those run
     ids is read as that run's issue, so a planner that copied the lane's id
     is not refused for it. Any other ref is checked as before.
+
+    `diagrams` and `before` are `parse_plan`'s.
     """
     if isinstance(value, (str, bytes)):
         try:
@@ -1172,7 +1581,8 @@ def parse_planner_output(
     if isinstance(value, Mapping) and "ready" in value:
         ready = value.get("ready")
         if ready is True:
-            return "plan", parse_plan({k: v for k, v in value.items() if k != "ready"})
+            return "plan", parse_plan({k: v for k, v in value.items() if k != "ready"},
+                                      diagrams=diagrams, before=before)
         if ready is not False:
             raise InvalidPlan('"ready" is true (and a plan follows) or false (and a reason does)')
         try:
@@ -1203,7 +1613,7 @@ def parse_planner_output(
                 # a duplicate that does not say of what helps nobody.
                 found["reason"] = _not_ready_reason(f"Duplicates {lane}: {verdict.reason}")
         return "not_ready", found
-    return "plan", parse_plan(value)
+    return "plan", parse_plan(value, diagrams=diagrams, before=before)
 
 
 def _lane_refs_normalised(
@@ -2085,6 +2495,36 @@ _DONE_WHEN_RULES = (
 )
 
 
+#: What the planner is told about diagrams (plans-pipeline.md §6.3), right
+#: after the plan's shape and only when the run's setting is on: off, the
+#: prompt is byte for byte what it was before diagrams.
+_DIAGRAMS = (
+    "\nDIAGRAMS. Draw a diagram when it lets a reviewer judge the plan faster than the text "
+    "does: when the plan has more than one step, crosses components, changes a flow, a state "
+    "machine, a sequence of calls, a route's round trip, a document's shape or a failure's "
+    "path, or the issue is design or research. Do not draw one for a value change, a wording "
+    "fix or a one-file change with no flow; then set \"no_diagram\" to one line saying why "
+    "(\"a one-line change to config/dev/dev.tfvars\"). Never both, never neither.\n"
+    "They are two more keys of the object above, beside \"steps\":\n"
+    '   "diagrams": [{"diagram_id": "d-<short id>", "kind": "flow" or "sequence" or '
+    '"architecture" or "state" or "data" or "schematic",\n'
+    '                 "title": "<one line>", "language": "mermaid", "source": "<Mermaid text>",\n'
+    '                 "why": "<why it is here>",\n'
+    '                 "explains": {"part": "plan" or "step" or "requirement" or "overlap",\n'
+    '                              "ref": "<step_id, requirement number, owner/repo#N, or null '
+    'for the whole plan>"}}],\n'
+    '   "no_diagram": "<one line, only when there is no diagram>"\n'
+    f"At most {MAX_PLAN_DIAGRAMS} diagrams, each at most {MAX_DIAGRAM_NODES} nodes and "
+    f"{MAX_DIAGRAM_EDGES} edges, {MAX_DIAGRAM_SOURCE_CHARS:,} characters and "
+    f"{MAX_DIAGRAM_SOURCE_LINES} lines. Mermaid only: flowchart for flow, architecture and "
+    "schematic, sequenceDiagram for sequence, stateDiagram-v2 for state, erDiagram for data, "
+    "and that word starts the source. No %%{init} directives, no click, no links, no URLs, no "
+    "HTML or < before a letter in labels, no style, classDef, class or linkStyle lines, no "
+    ":::, no \"data:\": the console themes the diagram itself. A diagram that does not parse "
+    "is refused with its reason.\n\n"
+)
+
+
 def _plan_shape() -> str:
     if not model_classes_carried():
         return _PLAN_SHAPE
@@ -2245,7 +2685,7 @@ _INFLIGHT_USE = (
 def planner_prompt(
     ref: IssueRef, *, run_id: str = "", open_work: Mapping[str, Any] | None = None,
     context: str | None = None, earlier_runs: "Sequence[IssueRun] | None" = None,
-    tenant_id: str | None = None,
+    tenant_id: str | None = None, diagrams: bool = False,
 ) -> str:
     """The planner's instructions, the index sections and the open work as
     delimited data, under the limit.
@@ -2260,6 +2700,9 @@ def planner_prompt(
     `planhistory.MAX_EARLIER_RUNS_BYTES`, absent when there are none. The cost
     model (`planhistory.cost_section`, from `plan_costs.json`) is in every
     prompt, before the instructions.
+
+    `diagrams` is the setting the run plans under (§6.4): on, the DIAGRAMS
+    section follows the plan's shape; off, nothing of it is here.
     """
     marker = f"=== OPEN WORK {run_id or 'snapshot'} ==="
     lead = (
@@ -2279,6 +2722,7 @@ def planner_prompt(
     instructions = (
         f"Write exactly one file, $SWARM_ARTIFACTS_DIR/{PLAN_FILE}, holding a JSON object:\n"
         + _plan_shape()
+        + (_DIAGRAMS if diagrams else "")
         + '"requirements" lists every requirement the issue states, one short sentence '
         "each: the review checks the change against it, and the pull request closes the "
         'issue only if every one is delivered. "mode" is "single" when one engineer can '
@@ -2341,6 +2785,7 @@ def planner_task(
     context: str | None = None, claude_session: str | None = None,
     model_class: str | None = None, class_models: Mapping[str, str] | None = None,
     earlier_runs: "Sequence[IssueRun] | None" = None, tenant_id: str | None = None,
+    diagrams: bool = False,
 ) -> TaskCreate:
     """The planner: an ordinary task, signed by `submit_tasks` like any other.
 
@@ -2365,7 +2810,8 @@ def planner_task(
         # The planner's session limits (contract request 158, `stepceiling`).
         input=stepceiling.stamp(stepclass.ROLE_PLANNER, PLANNER_PROFILE, {
             "prompt": planner_prompt(ref, run_id=run_id, open_work=open_work, context=context,
-                                     earlier_runs=earlier_runs, tenant_id=tenant_id),
+                                     earlier_runs=earlier_runs, tenant_id=tenant_id,
+                                     diagrams=diagrams),
             "issue": ref.number,
         }),
         repository_url=ref.repository_url,
@@ -2462,7 +2908,8 @@ def replan_task(run: "IssueRun", first: Any, findings: list[Mapping[str, Any]],
     explicit = named if metadata.get(stepclass.CLASS_CHOSEN_BY_KEY) == stepclass.CALLER else None
     choice = stepclass.choose(stepclass.ROLE_PLANNER, PLANNER_PROFILE, class_models,
                               explicit=explicit)
-    prompt = str((first.input or {}).get("prompt") or planner_prompt(run.issue, run_id=run.id))
+    prompt = str((first.input or {}).get("prompt") or planner_prompt(
+        run.issue, run_id=run.id, diagrams=planned_diagrams(run.plan_settings) is True))
     # The first planner's session limits again (contract request 158): its
     # stored `context_ceiling` when it has one, else the planner's default.
     carried = (first.input or {}).get(stepceiling.INPUT_KEY)
@@ -4416,6 +4863,14 @@ class IssueRun:
     #: The re-plans ever submitted for this run, failed ones included: what
     #: `plan_review_caps.replans` caps (§5.4).
     plan_replans: int = 0
+    #: The diagram setting the run planned under (plans-pipeline.md §6.4),
+    #: written once when its planner is submitted; None on a run from before.
+    #: Not signed: it changes what the planner was asked to draw, never who
+    #: may decide or what runs.
+    plan_settings: dict[str, Any] | None = None
+    #: The on-demand diagrams (§6.5): `asks` counted against the cap, the
+    #: `costs` of the agents that ended, and `current`, the ask in flight.
+    plan_diagram: dict[str, Any] | None = None
     #: Why an `auto` run's approval is waiting, e.g. `territory_overlap:
     #: run_<id>` -- another live run's plan in the same repository names a
     #: file this plan does. None when nothing holds it.
@@ -4534,6 +4989,8 @@ class IssueRun:
             "plan_lint": dict(self.plan_lint) if self.plan_lint is not None else None,
             "plan_replan": dict(self.plan_replan) if self.plan_replan is not None else None,
             "plan_replans": self.plan_replans,
+            "plan_settings": dict(self.plan_settings) if self.plan_settings is not None else None,
+            "plan_diagram": dict(self.plan_diagram) if self.plan_diagram is not None else None,
             "hold": self.hold,
             "on_behalf_of": self.on_behalf_of,
             "last_writeback_at": self.last_writeback_at,
@@ -4628,6 +5085,11 @@ class IssueRun:
                 else None
             ),
             plan_replans=_opt_int(data.get("plan_replans")) or 0,
+            plan_settings=stored_plan_settings(data.get("plan_settings")),
+            plan_diagram=(
+                dict(data["plan_diagram"]) if isinstance(data.get("plan_diagram"), Mapping)
+                else None
+            ),
             not_ready=(
                 dict(data["not_ready"]) if isinstance(data.get("not_ready"), Mapping) else None
             ),
@@ -4790,6 +5252,7 @@ class IssueRun:
             # one, and how many this run has had (the cap counts them).
             "plan_replan": served_replan(self.plan_replan),
             "plan_replans": self.plan_replans,
+            "plan_settings": stored_plan_settings(self.plan_settings),
             # What the plan lint REPORTS with the plan but never fails it on
             # (`planlint.warnings`): computed from the plan as it is now, so
             # an edit's are current. [] with no plan or the lint switched off.
@@ -4873,6 +5336,20 @@ PLANNER_DOC_WORD = "design"
 #: served, and a planner that wrote hundreds of screenshots is not a proposal.
 MAX_PLANNER_DOCS = 4
 MAX_PLANNER_DIAGRAMS = 12
+
+
+def stored_plan_settings(raw: Any) -> dict[str, Any] | None:
+    """A stored `plan_settings` record (§6.4), its keys only, or None: a run,
+    or a revision, from before the field, or one that is not a record."""
+    if not isinstance(raw, Mapping) or not isinstance(raw.get("diagrams"), bool):
+        return None
+    return {key: raw.get(key) for key in ("diagrams", "from", "read_at")}
+
+
+def planned_diagrams(settings: Any) -> bool | None:
+    """Whether diagrams were on in a `plan_settings` record; None without one."""
+    record = stored_plan_settings(settings)
+    return record["diagrams"] if record is not None else None
 
 
 def planner_documents(task_id: str, rows: list[Mapping[str, Any]]) -> dict[str, Any]:
@@ -5023,6 +5500,9 @@ PATCHABLE_FIELDS: frozenset[str] = frozenset({
     # Neither moves the run: its answer moves the plan only through a
     # PLANNED -> PLANNED transition, re-signed, with its revision.
     "plan_replan", "plan_replans",
+    # plans-pipeline.md §6.5: the on-demand diagrams' record. An answer is a
+    # thread entry and never moves the plan.
+    "plan_diagram",
     "verification_comment_id", "last_verification_posted", "issue_closed",
     # The sweeper's bookkeeping: why an auto approval waits (cleared when it
     # stops waiting), and when the write-back last wrote to the issue.
@@ -5071,7 +5551,7 @@ MAX_REVISION_CHANGES = 100
 MAX_SERVED_REVISIONS = 100
 #: The keys of a revision as the run read serves it: everything but its plan.
 _SERVED_REVISION_KEYS = ("revision", "digest", "replaces", "author", "made_by", "answers",
-                         "changed", "cost", "at")
+                         "changed", "cost", "at", "plan_settings")
 
 
 @dataclass(frozen=True)
@@ -5085,6 +5565,9 @@ class PlanRevisionWrite:
     made_by: str
     answers: tuple[str, ...] = ()
     cost: Mapping[str, Any] | None = None
+    #: The diagram setting this revision was made under (§6.4); None reads
+    #: the run's, which is what the first plan was made under.
+    plan_settings: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.author_kind not in REVISION_AUTHORS:
@@ -5159,6 +5642,7 @@ def revision_document(before: IssueRun, after: IssueRun, write: PlanRevisionWrit
         "answers": list(write.answers),
         "changed": changed,
         "cost": dict(write.cost) if write.cost is not None else None,
+        "plan_settings": stored_plan_settings(write.plan_settings or after.plan_settings),
         "at": at,
     }
     if cut:
@@ -5177,6 +5661,7 @@ def served_revision(document: Mapping[str, Any], *, whole: bool = False) -> dict
     row["at"] = _iso(row["at"])
     row["answers"] = list(row["answers"] or [])
     row["changed"] = list(row["changed"] or [])
+    row["plan_settings"] = stored_plan_settings(row["plan_settings"])
     if document.get("changed_truncated"):
         row["changed_truncated"] = True
     row["verified"] = _revision_verified(document.get("plan"), document.get("digest"))
@@ -5208,6 +5693,7 @@ def synthesised_revision(run: IssueRun, *, whole: bool = False) -> dict[str, Any
         "changed": [],
         "cost": None,
         "at": _iso(planned_at[-1]) if planned_at else None,
+        "plan_settings": stored_plan_settings(run.plan_settings),
         "verified": _revision_verified(run.plan, run.plan_digest),
         "history_complete": False,
     }
@@ -5702,6 +6188,7 @@ def revise_task(run: "IssueRun", *, base_prompt: str, plan: Mapping[str, Any],
 
 
 def parse_replan_output(content: str, *, lane_refs: Mapping[str, str] | None = None,
+                        diagrams: bool | None = None, before: Any = None,
                         ) -> tuple[str, dict[str, Any], dict[str, str]]:
     """A re-plan's plan.json: `(kind, value, answers)` -- `parse_planner_output`
     over the object without its `answers`, and the answers as entry id ->
@@ -5709,7 +6196,8 @@ def parse_replan_output(content: str, *, lane_refs: Mapping[str, str] | None = N
     try:
         data = json.loads(content)
     except ValueError:
-        return (*parse_planner_output(content, lane_refs=lane_refs), {})
+        return (*parse_planner_output(content, lane_refs=lane_refs, diagrams=diagrams,
+                                      before=before), {})
     answers: dict[str, str] = {}
     if isinstance(data, dict) and REPLAN_ANSWERS_KEY in data:
         raw = data.pop(REPLAN_ANSWERS_KEY)
@@ -5719,7 +6207,8 @@ def parse_replan_output(content: str, *, lane_refs: Mapping[str, str] | None = N
                     answers[key[:64]] = redact_detail(" ".join(value.split()),
                                                       limit=MAX_REPLAN_ANSWER_CHARS)
         content = json.dumps(data)
-    kind, value = parse_planner_output(content, lane_refs=lane_refs)
+    kind, value = parse_planner_output(content, lane_refs=lane_refs, diagrams=diagrams,
+                                       before=before)
     return kind, value, answers
 
 
