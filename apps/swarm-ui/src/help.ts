@@ -1997,6 +1997,7 @@ export const HELP_PLACES = {
   'config/people': 'People and roles',
   'config/workspace': 'Workspace Settings',
   'automate/schedules': 'Schedules',
+  'automate/pipeline': 'Pipeline',
   'automate/approvals': 'Approvals',
   // A Capacity page since NAV-FOOT (archived issue 1672); `reference` still lands there.
   'capacity/api-reads': 'API reads',

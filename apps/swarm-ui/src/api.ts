@@ -13874,6 +13874,128 @@ export async function loadApprovals(
   return r
 }
 
+/** The five stages of the Pipeline board, in its order (plans-pipeline §2.1, §3.2). */
+export const PIPELINE_STAGES = ['found', 'planned', 'running', 'pr_ci', 'ended'] as const
+export type PipelineStage = (typeof PIPELINE_STAGES)[number]
+
+/** One card on the board, as `GET /v1/pipeline` serves it, already in its stage. */
+export interface PipelineCard {
+  card_id: string
+  stage: PipelineStage
+  source: { kind: string; schedule_type?: string | null; schedule_id?: string | null; fingerprint?: string | null; proposal_id?: string | null }
+  subject: { run_id?: string; issue?: string; title: string; approval_id?: string | null }
+  state: string
+  waits_on_person: boolean
+  approval_kind: 'plan' | 'hold' | 'merge' | 'proposal' | null
+  expires_at: string | null
+  since: string | null
+  last_word?: { by: string; at: string; text: string } | null
+  revision?: number | null
+  plan_digest?: string | null
+  pull_request?: { number?: number | null; url?: string | null; checks?: unknown } | null
+}
+
+/** A column's figures: what it shows, what a filter or the bound left out, its oldest card's time. */
+export interface PipelineColumn {
+  count: number
+  hidden: number
+  oldest_at: string | null
+}
+
+/** `GET /v1/pipeline` (plans-pipeline §3.2). `partial` names a read that failed; the others still answer. */
+export interface PipelineBoard {
+  cards: PipelineCard[]
+  by_stage: Record<PipelineStage, PipelineColumn>
+  waits_on_person: number
+  partial: { read: string; status: number }[]
+  window_days: number | null
+}
+
+/** The board's filters, its address's own keys (`?source=&state=&waits=person`). */
+export interface PipelineFilters {
+  source?: string | null
+  state?: string | null
+  waits?: 'person' | null
+}
+
+/**
+ * THE FIXTURE BOARD: one card per stage, drawn from the fixture clock, and
+ * behind the example plans' switch the three example plans as waiting plan
+ * cards in Found, so the development build draws every stage, filter and
+ * waiting card. Filtered as the route filters (`source`, `state`, `waits`).
+ */
+function fixturePipeline(filters: PipelineFilters): Result<PipelineBoard> {
+  const ago = (minutes: number) => new Date(FIXTURE_NOW - minutes * 60_000).toISOString()
+  const base = (card_id: string, stage: PipelineStage, source: string, state: string, title: string, issue: string, minutes: number): PipelineCard => ({
+    card_id, stage, source: { kind: source }, subject: { run_id: card_id, issue, title }, state,
+    waits_on_person: false, approval_kind: null, expires_at: null, since: ago(minutes),
+  })
+  const cards: PipelineCard[] = [
+    base('fx_found', 'found', 'sweep', 'found', 'A retry loop never backs off after a 429', 'example-org/example-api#31', 20),
+    base('fx_planned', 'planned', 'failure_review', 'decided', 'A failed export leaves a half-written file', 'example-org/example-api#27', 45),
+    base('fx_running', 'running', 'hand', 'running', 'Page size ignored on the second page', 'example-org/example-api#19', 15),
+    base('fx_pr', 'pr_ci', 'observer', 'running', 'Slow health check marks a ready pod unready', 'example-org/example-api#12', 8),
+    base('fx_ended', 'ended', 'sweep', 'ended', 'Typo in the export column header', 'example-org/example-api#5', 180),
+  ]
+  for (const r of fixtureExampleRuns()) {
+    const plan = r.plan_approval === 'required' && r.state === 'PLANNED'
+    if (!plan) continue
+    cards.push({
+      card_id: r.id, stage: 'found', source: { kind: 'plan_only' }, subject: { run_id: r.id, issue: r.issue.ref, title: r.issue_read?.title ?? r.issue.ref, approval_id: `${FIXTURE_RUN_APPROVAL}${r.id}` },
+      state: 'waiting', waits_on_person: true, approval_kind: 'plan', expires_at: new Date(FIXTURE_NOW + 20 * 3_600_000).toISOString(), since: r.created_at,
+    })
+  }
+  const stagesOf: Record<string, readonly PipelineStage[]> = { waiting: ['found', 'planned'], running: ['running', 'pr_ci'], decided: ['planned', 'running'], ended: ['ended'] }
+  const kept = cards.filter(
+    (c) =>
+      (!filters.source || c.source.kind === filters.source) &&
+      (filters.waits !== 'person' || c.waits_on_person) &&
+      (!filters.state || (stagesOf[filters.state] ?? PIPELINE_STAGES).includes(c.stage)) &&
+      (filters.state !== 'waiting' || c.waits_on_person),
+  )
+  const by_stage = {} as Record<PipelineStage, PipelineColumn>
+  for (const stage of PIPELINE_STAGES) {
+    const here = kept.filter((c) => c.stage === stage)
+    const all = cards.filter((c) => c.stage === stage)
+    const times = here.map((c) => c.since).filter((t): t is string => t !== null).sort()
+    by_stage[stage] = { count: here.length, hidden: all.length - here.length, oldest_at: times[0] ?? null }
+  }
+  return {
+    status: 'ok', fetchedAt: Date.now(),
+    data: { cards: kept, by_stage, waits_on_person: cards.filter((c) => c.waits_on_person).length, partial: [], window_days: 14 },
+  }
+}
+
+/**
+ * `GET /v1/pipeline`: the board, each card in its one stage. A board with
+ * no card, nothing hidden and no failed read is the measured empty board
+ * (`empty`); a filtered board that hides cards is not empty. A 200 without
+ * `cards` or `by_stage` is a failure, never an empty board. A 404 is passed
+ * on as the failure it is: the board's screen draws "not served" from it.
+ */
+export async function loadPipeline(filters: PipelineFilters = {}): Promise<Result<PipelineBoard>> {
+  if (USE_FIXTURES) return fixturePipeline(filters)
+  const query = new URLSearchParams()
+  if (filters.source) query.set('source', filters.source)
+  if (filters.state) query.set('state', filters.state)
+  if (filters.waits === 'person') query.set('waits', 'person')
+  const r = await read<PipelineBoard>(route('/v1/pipeline', {}, query.toString() === '' ? undefined : query), (d) =>
+    Array.isArray(d.cards) &&
+    d.cards.length === 0 &&
+    (!Array.isArray(d.partial) || d.partial.length === 0) &&
+    !(typeof d.waits_on_person === 'number' && d.waits_on_person > 0) &&
+    Object.values(d.by_stage ?? {}).every((c) => !c || (!c.count && !c.hidden)),
+  )
+  if ((r.status === 'ok' || r.status === 'stale') && (!Array.isArray(r.data.cards) || typeof r.data.by_stage !== 'object' || r.data.by_stage === null)) {
+    return { status: 'error', error: { kind: 'server_error', httpStatus: 200, code: null, message: 'The pipeline answer carried no cards.' } }
+  }
+  if (r.status === 'ok' || r.status === 'stale') {
+    const d = r.data
+    return { ...r, data: { ...d, partial: Array.isArray(d.partial) ? d.partial : [], waits_on_person: typeof d.waits_on_person === 'number' ? d.waits_on_person : d.cards.filter((c) => c.waits_on_person).length, window_days: typeof d.window_days === 'number' ? d.window_days : null } }
+  }
+  return r
+}
+
 /**
  * `GET /v1/approvals/{id}`: one item, with what it is decided on -- the run
  * for a projected plan, and for a merge the head it was checked at and what
