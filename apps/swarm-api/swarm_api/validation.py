@@ -3927,6 +3927,7 @@ def rereview_step_for(
     (`REREVIEW_ALSO_PREAMBLE`). `also_reviews` maps each of those step ids to
     the step as submitted; one missing derives nothing.
     """
+    from .stepceiling import stamp
     from .stepclass import ROLE_REREVIEW, choose
 
     sources = merge_sources(steps, strategy)
@@ -3977,8 +3978,12 @@ def rereview_step_for(
     step: dict[str, Any] = {
         "step_id": _free_step_id(REREVIEW_STEP_ID, {s.step_id for s in steps}),
         "runner_profile": profile,
-        "input": {**original, "prompt": preamble + (prompt if isinstance(prompt, str) else "")
-                  + lenses},
+        # The review's own `context_ceiling` when its caller set one (copied
+        # with the rest of its input), else the re-review role's
+        # (contract request 158, `stepceiling`).
+        "input": stamp(ROLE_REREVIEW, profile, {
+            **original, "prompt": preamble + (prompt if isinstance(prompt, str) else "")
+            + lenses}),
         "depends_on": list(dict.fromkeys([sources.pull_request, *staged])),
         "builds_on": sources.pull_request,
         "input_from": staged,

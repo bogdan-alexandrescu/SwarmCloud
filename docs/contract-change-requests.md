@@ -161,7 +161,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 154 | `profiles.py` / `states.py`: five comment lines name the owner by initials, and take the placeholder "the owner", behaviour unchanged (the repository move) | ACCEPTED by the owner 11 November 2026 and APPLIED by the pull request that adds this line |
 | 155 | `specsign.py`: a `"plans"` block in `SETTINGS_MAC_FIELDS`, `("diagrams", "chat_model_class")`, so a workspace's plan-review settings (`workspace_settings/{tenant_id}.plans`, docs/design/plans-pipeline.md sections 6.4 and 7.8) are signed by the frozen list (PLAN-SETTINGS) | REQUESTED 2026-11-13 by the pull request that adds this line; not applied. Until it is, `canonical_settings_block` refuses the block and swarm-api cannot sign it through the frozen list |
 | 157 | `states.py`: the scheduler may end a re-review whose verdict gate is shut PARKED -> SUCCEEDED, guarded on its own promotion write, without a lease (re-review gate) | ACCEPTED by the owner 2026-11-24 and APPLIED by the pull request that adds this line (requested 2026-11-23): the PARKED row's comment only, no edge changed; the scheduler half (`SchedulerStore.end_shut_gate_rereview`) and the worker's staging of the re-review's pointer entry (`agent_worker.inputs.republished_source`) land with it |
-| 158 | `profiles.py`: declare `context_ceiling` as an optional object input on the claude-code runner family, so a step may carry its own lower session limits (per-role session limits) | REQUESTED 2026-11-23 by the pull request that adds this line; not applied. Until it is, swarm-api refuses a step that carries `context_ceiling` and every session runs at the worker's ceilings |
+| 158 | `profiles.py`: declare `context_ceiling` as an optional object input on the claude-code runner family, so a step may carry its own lower session limits (per-role session limits) | ACCEPTED by the owner 2026-11-24 and APPLIED by the pull request that adds this status (requested 2026-11-23): declared on the seven claude-code-runner profiles, and stamped per role by `swarm_api.stepceiling` |
 | 159 | `profiles.py`: an `xlarge` resource class (16 CPU requested and limit, 64 GiB, GKE only, outside the admin-sized `CLASS_ORDER`) and a `recording` runner profile (no agent, a Docker daemon in a sandboxed pod, 86,400 s), shipped `available=False` (recording runner, docs/design/recording-runner.md, part of #8) | NOT ACCEPTED: waiting for the owner. REQUESTED 2026-11-24 by the pull request that adds this line; not applied. Until it is, no class is above 8 CPU or 32 GiB and no profile runs longer than 14,400 s |
 | 160 | `states.py` / `models.py`: `ParkReason.WORKFLOW_PAUSED`, `Workflow.paused`, `paused_at` and `paused_by`, and `EventType.PAUSE_REQUESTED` and `RESUME_REQUESTED`, so a workflow can be paused and resumed (docs/design/workflow-pause.md, part of issue 7) | NOT ACCEPTED: REQUESTED 2026-11-24 by the pull request that adds this line; not applied. Nothing is built on it; until the owner decides there is no workflow pause |
 | 161 | `admission.py`: export the transactional-get helper `_snapshot` under a public name (`transactional_snapshot`), so the ~94 modules that import the private name stop reaching into it | NOT ACCEPTED: waiting for the owner. REQUESTED 2026-11-24 by the pull request that adds this line (the owner decided on 2026-11-24 that the request be filed); not applied. Until it is, every importer keeps the private name |
@@ -18273,10 +18273,18 @@ owner 2026-11-24.
 
 ## 158. `profiles.py`: declare `context_ceiling` as an optional object input on the claude-code runner family, so a step may carry its own lower session limits (per-role session limits)
 
-**Status:** REQUESTED 2026-11-23 by the pull request that adds this section;
-not applied. Nothing in `apps/common/swarm_common/` was changed for it, and
-nothing is built until the owner decides: a step that carries
-`context_ceiling` is refused today and stays refused.
+**Status:** ACCEPTED by the owner 2026-11-24 and APPLIED by the pull request
+that adds this status (requested 2026-11-23). The declaration below is in
+`apps/common/swarm_common/profiles.py` exactly as written here
+(`_CONTEXT_CEILING_INPUTS`, merged into the seven profiles' input dicts), and
+the per-role defaults are stamped by `apps/swarm-api/swarm_api/stepceiling.py`
+(`ROLE_CEILINGS`, each value explained beside it) at every site that resolves
+a step's role: the planner and its re-plan, a first review at workflow
+submission, the re-review, the fix loop's fix and re-review rounds, and the
+CI-fix and conflict-fix rounds. A build step is not stamped and keeps
+200,000 / 150. A caller's own value wins, inside the declared bounds. The
+worker needed no change. Tested by
+`tests/unit/control_plane/test_step_ceiling_by_role.py`.
 
 ### What is true today
 
@@ -18400,8 +18408,7 @@ resolved role and never from caller metadata.
 
 ### Who decides
 
-The owner: accepting it lets a later lane declare the input and stamp it.
-Awaiting the owner's acceptance.
+The owner: accepted 2026-11-24.
 
 ---
 

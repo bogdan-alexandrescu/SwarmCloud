@@ -63,7 +63,9 @@ def test_indexer_and_review_inputs_are_unchanged(name):
     # pull_request is the owner's pick on archived pull request 3470: claude-code-review declares
     # it beside claude-code, the indexer does not.
     reviews = {"pull_request"} if name == "claude-code-review" else set()
-    assert set(RUNNER_PROFILES[name].inputs) == {"issue"} | reviews
+    # context_ceiling is contract request 158 (accepted 2026-11-24): every
+    # profile on the claude-code runner, claude-code's included.
+    assert set(RUNNER_PROFILES[name].inputs) == {"issue", "context_ceiling"} | reviews
     assert set(RUNNER_PROFILES["claude-code"].inputs) - set(RUNNER_PROFILES[name].inputs) == {
         "mcp_servers"
     } | ({"pull_request"} - reviews)
