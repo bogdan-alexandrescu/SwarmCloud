@@ -586,6 +586,11 @@ An estimate that does not parse makes the whole figure a dash with
 sees the figure as read at `prices_at`. **Owner: `issueruns.py`**
 (`expected_cost(plan, rates)`), served by `routes/runs.py`.
 
+**The cost hold (owner, 2026-11-24).** An automatic approval never starts a
+plan whose `high` is above `SWARM_PLAN_COST_HOLD_USD` (default 30 dollars):
+the run waits for a person, as the plan lint's hold leaves it
+([issue-runs.md](../issue-runs.md#the-cost-hold)).
+
 ### 3.9 `can_decide` / `deciders` (D; C's `run.may_decide`)
 
 Served today on every approval read as `may_decide: {approve, reject, why,

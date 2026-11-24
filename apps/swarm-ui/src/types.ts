@@ -5795,6 +5795,15 @@ export interface PlanLintRecord {
   replan_error: string | null
 }
 
+/** `issueruns.served_readiness`: the readiness pre-pass (owner, 2026-11-24). */
+export interface RunReadiness {
+  task_id: string | null
+  /** Null while it runs. `unreadable`: no valid answer, so the planner ran. */
+  outcome: 'ready' | 'not_ready' | 'unreadable' | null
+  reason: string | null
+  cost_usd: number | null
+}
+
 /** `IssueRun.to_api()`. */
 export interface IssueRun {
   id: string
@@ -5815,6 +5824,8 @@ export interface IssueRun {
    *  person after a re-plan that failed too, the findings (code and sentence).
    *  Null on a run whose plan was never refused. */
   plan_lint?: PlanLintRecord | null
+  /** `issueruns.served_readiness`; null on a run that started its planner at once. */
+  readiness?: RunReadiness | null
   /** `issueruns.plan_shape`: `8 steps in 4 stages (1 → 3 → 3 → 1), then review and fix`; null without a plan. */
   plan_shape?: string | null
   /** Null until approval creates the workflow. */

@@ -1114,7 +1114,9 @@ class NotReadyVerdict(_PlanModel):
     """The planner's answer when the issue is not ready: no plan, and why.
 
     `ready` is the explicit field the owner asked for (2026-10-08: readiness
-    is the PLANNER's call, not a label's): it must be `false` -- a planner
+    is the PLANNER's call, not a label's; since 2026-11-24 the readiness
+    pre-pass answers first in this same shape, `parse_readiness`, and the
+    planner still may): it must be `false` -- a planner
     that finds the issue ready writes a plan. `reason` is a paragraph;
     `needs` lists what would make it ready ("owner decision: ...", "depends
     on #N"), one per entry, and may be empty only when `reason` says it all.
