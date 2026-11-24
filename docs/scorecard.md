@@ -86,6 +86,7 @@ was created.
 | sessions with no numbers of their own | the last session of an attempt that ran several: `metrics.sessions.count` less its stops. Its own numbers are not recorded, so it is counted, not estimated | how much of the per-session distribution is missing, and that it is the sessions that did not hit the ceiling |
 | sessions ended at the ceiling %, by role | stops in `result_summary.runner.output.context_ceiling.stops` over `metrics.sessions.count`, for tasks with both; a ceiling record cut with the runner's output (8,000 characters) is not read, never "no stop" | how often today's limits end a session early, per role |
 | fresh sessions per attempt, by role | `metrics.sessions.count` - 1 (a handoff's fresh session or a refused first call's restart), median, p90 and p99 | each fresh session re-reads a handoff; many per attempt is a lane looping |
+| sub-agent share by role | from `result_summary.runner.usage` (see "Sub-agents" below): cost % is `subagent_cost_usd` over `total_cost_usd`; tokens % is the `model_usage` rows' tokens beyond the parent's own over all their tokens; tasks started is an at-least and an at-most count; per role and `all` | sub-agents were about 15% of cost in the 30 days to 2026-11-23; whether to cap them is decided on this number, per role |
 | model time vs wall-clock | summed `usage.duration_api_ms` against summed `result_summary.duration_seconds` | time not spent in the model is tools, tests and waits: the gate and CI show here |
 | queue wait | created → started, median and p90, for tasks outside a workflow | admission and capacity; a workflow step's created → started also includes waiting on its parents, so it is printed apart |
 | workflows merged, submit → merged | first task's created_at to the merge, median and p90 | the end-to-end number the merge-train change is judged on |
@@ -131,3 +132,25 @@ subtract them and reports the session as having no numbers of its own. A
 task whose runner the ceiling does not watch carries no `metrics.sessions`
 and adds nothing to the session measures. These numbers are what the
 per-role session limits are to be tuned from.
+
+## Sub-agents: what is and is not recorded
+
+The worker writes three things into `result_summary.runner.usage`
+(`apps/agent-worker/agent_worker/usage.py`, SUBAGENT-SPEND): the summary's own
+token counts, which are the **parent** agent's alone; `model_usage`, every
+model the session paid for with its counts and cost, sub-agents included; and
+`subagent_cost_usd`, the share of `total_cost_usd` the parent's tokens do not
+explain. The context ceiling counts a sub-agent's messages too
+(`runners/ceiling.py`, `parent_tool_use_id`), but only into the attempt's
+totals. Both figures also take in the small model the CLI runs for its own
+housekeeping, which cannot be told apart from a sub-agent on that model, so
+the shares are a slight overstatement.
+
+No record counts sub-agent **launches**, so "tasks that started any" is two
+bounds: **at most** the tasks with any token beyond the parent's (a
+housekeeping call counts here too) and **at least** the tasks whose parent's
+own model row holds tokens beyond the parent's (a sub-agent on the session's
+model; one on another model is missed). A role with tasks in the week but no
+`model_usage` on any of them is `not measured`, and a week with none at all is
+`not measured` whole: never 0. No cap on sub-agents is enforced; one is to be
+decided on this measure.

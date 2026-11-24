@@ -179,6 +179,7 @@ def test_claude_code_registers_the_shim_with_the_url_in_its_env(monkeypatch, tmp
     assert seen["args"].count(flag) == 1, seen["args"]
     system = seen["args"][seen["args"].index(flag) + 1]
     assert system.endswith("\n\n" + claude_code.SAVED_OUTPUT_NOTE + "\n\n"
+                           + claude_code.SUBAGENT_NOTE + "\n\n"
                            + claude_code.GRAPH_FIRST_NOTE), system
 
 

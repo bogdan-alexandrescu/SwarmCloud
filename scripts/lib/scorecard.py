@@ -136,6 +136,14 @@ class NotRead:
         return isinstance(other, NotRead) and other.why == self.why
 
 
+class NotMeasured(NotRead):
+    """A measure the records carry no data for, and why. Printed as
+    `not measured: <why>`: a role or week with nothing to measure, never 0."""
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, NotMeasured) and other.why == self.why
+
+
 def parse_time(value: Any) -> datetime | None:
     """An RFC 3339 timestamp (Firestore's, GitHub's) as an aware datetime, or None."""
     if not isinstance(value, str) or not value:
@@ -674,6 +682,7 @@ def task_measures(m: dict[str, Any], tasks: Sequence[Mapping[str, Any]], merged_
                                    else NotRead("no task in the week records a pre-publish gate"))
     m["unpublished_with_reason"] = sum(1 for r in tasks if dig(r, "result_summary", "git", "publish_reason"))
     session_measures(m, tasks)
+    subagent_measures(m, tasks)
 
 
 def _count(value: Any) -> int | None:
@@ -775,6 +784,89 @@ def session_measures(m: dict[str, Any], tasks: Sequence[Mapping[str, Any]]) -> N
     m["sessions_without_own_numbers"] = (
         unrecorded if any(fresh.values())
         else NotRead("no agent task in the week records its session count"))
+
+
+#: The four token kinds of a usage summary and of each of its `model_usage`
+#: rows (agent_worker.usage `_TOKEN_WEIGHTS`).
+TOKEN_KINDS = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+
+
+def subagent_spend(record: Mapping[str, Any]) -> dict[str, Any] | None:
+    """What the task's last attempt spent beyond its parent agent, or None
+    when its usage does not say (not measured, never zero).
+
+    Read from `result_summary.runner.usage` as the worker writes it
+    (agent_worker.usage, SUBAGENT-SPEND): the summary's own token counts are
+    the parent agent's alone; `model_usage` holds every model the session paid
+    for, sub-agents and the CLI's own housekeeping included; and
+    `subagent_cost_usd` is the share of `total_cost_usd` the parent's tokens
+    do not explain. So:
+
+      tokens       every row's four token kinds less the parent's, floored at 0;
+      cost         `subagent_cost_usd` over `total_cost_usd`, when both are numbers;
+      started      AT MOST when any token is beyond the parent's, which a
+                   housekeeping call on a small model also is; AT LEAST when
+                   the parent's own model row (the row whose four counts each
+                   reach the parent's, the costliest if several do, as
+                   usage.py picks it) holds tokens beyond the parent's, which
+                   a sub-agent on another model is not. The records carry no
+                   count of sub-agent launches, so both bounds are reported.
+    """
+    u = usage(record)
+    rows = u.get("model_usage")
+    if not isinstance(rows, list):
+        return None
+    rows = [r for r in rows if isinstance(r, Mapping)]
+    parent = {k: number(u.get(k)) for k in TOKEN_KINDS}
+    if not rows or all(v is None for v in parent.values()):
+        return None
+    parent_tokens = sum(v or 0 for v in parent.values())
+    total_tokens = sum(number(r.get(k)) or 0 for r in rows for k in TOKEN_KINDS)
+    beyond = max(total_tokens - parent_tokens, 0.0)
+    homes = [r for r in rows
+             if all(number(r.get(k)) is not None and number(r.get(k)) >= (parent[k] or 0)
+                    for k in TOKEN_KINDS)]
+    home = max(homes, key=lambda r: number(r.get("cost_usd")) or 0.0) if homes else None
+    on_parent_model = home is not None and any(
+        (number(home.get(k)) or 0) > (parent[k] or 0) for k in TOKEN_KINDS)
+    cost, total = number(u.get("subagent_cost_usd")), number(u.get("total_cost_usd"))
+    return {"tokens": beyond, "total_tokens": total_tokens,
+            "cost": cost if cost is not None and total is not None else None,
+            "total_cost": total if cost is not None and total is not None else None,
+            "at_least": on_parent_model, "at_most": beyond > 0}
+
+
+def subagent_measures(m: dict[str, Any], tasks: Sequence[Mapping[str, Any]]) -> None:
+    """Per role (and `all`): the share of cost and of tokens sub-agents account
+    for, and how many tasks started any (`subagent_spend`). A role with tasks
+    in the week but no usage to read is `not measured`; a role with no task
+    is not listed; a week with nothing to read is `not measured` whole."""
+    spends: dict[str, list[dict[str, Any] | None]] = {}
+    for r in tasks:
+        spend = subagent_spend(r)
+        spends.setdefault(role_for_step(r.get("step_id")), []).append(spend)
+        spends.setdefault("all", []).append(spend)
+
+    def one(values: Sequence[dict[str, Any] | None]) -> Any:
+        read = [v for v in values if v is not None]
+        if not read:
+            return NotMeasured("no task of the role in the week carries per-model usage")
+        costed = [v for v in read if v["cost"] is not None]
+        total_cost = sum(v["total_cost"] for v in costed)
+        total_tokens = sum(v["total_tokens"] for v in read)
+        return {
+            "cost_pct": (round(100.0 * sum(v["cost"] for v in costed) / total_cost, 1) if total_cost > 0
+                         else NotMeasured("no task of the role in the week carries a sub-agent cost")),
+            "tokens_pct": (round(100.0 * sum(v["tokens"] for v in read) / total_tokens, 1)
+                           if total_tokens > 0 else NotMeasured("no token in the role's per-model usage")),
+            "tasks_started": {"at_least": sum(1 for v in read if v["at_least"]),
+                              "at_most": sum(1 for v in read if v["at_most"]), "of": len(read)},
+        }
+
+    if not any(v is not None for v in spends.get("all", [])):
+        m["subagent_share_by_role"] = NotMeasured("no agent task in the week carries per-model usage")
+        return
+    m["subagent_share_by_role"] = {role: one(spends[role]) for role in (*ROLES, "all") if role in spends}
 
 
 def workflow_rows(records: Sequence[Mapping[str, Any]], merged_at: Mapping[int, datetime]) -> list[dict[str, Any]]:
@@ -918,6 +1010,7 @@ ROWS = (
     ("sessions_without_own_numbers", "  sessions with no numbers of their own"),
     ("sessions_at_ceiling_pct_by_role", "sessions ended at the ceiling %, by role"),
     ("fresh_sessions_per_attempt_by_role", "fresh sessions per attempt, by role"),
+    ("subagent_share_by_role", "sub-agent share by role"),
     ("model_time_vs_wall_clock", "model time vs wall-clock"),
     ("queue_wait_s", "queue wait s (no workflow)"),
     ("step_created_to_started_s", "step created->started s"),
@@ -944,6 +1037,8 @@ ROWS = (
 
 
 def render_value(value: Any) -> str:
+    if isinstance(value, NotMeasured):
+        return f"not measured: {value.why}"
     if isinstance(value, NotRead):
         return f"not read: {value.why}"
     if value is None:
@@ -983,6 +1078,8 @@ def render_text(report: Mapping[str, Any]) -> str:
 
 
 def to_json(value: Any) -> Any:
+    if isinstance(value, NotMeasured):
+        return {"not_measured": value.why}
     if isinstance(value, NotRead):
         return {"not_read": value.why}
     if isinstance(value, dict):
