@@ -4040,6 +4040,21 @@ def prepare_publish_repo(
         _publish_fetch_argv(git_binary, source_repo, shallow_file, refspecs),
         "publish-fetch",
     )
+    if fetch_code != 0 and not empty and fetch_on_origin is not None:
+        # A PARTIAL CLONE'S MERGE (issue 367): the agent fetched a branch with
+        # `--filter=blob:none` and merged it, so its history reaches objects
+        # only origin has, and the upload side -- lazy fetching rightly off --
+        # died on the first one. Complete it from origin and retry once; a
+        # fetch that succeeded above never comes here.
+        retried = _complete_publish_fetch(
+            run, source_repo=source_repo, publish_dir=publish_dir,
+            private_dir=private_dir, logs_dir=logs_dir, target=target,
+            boundary=Path(shallow_file), refspecs=refspecs,
+            fetch_on_origin=fetch_on_origin, git_binary=git_binary,
+            timeout_seconds=timeout_seconds, logger=logger,
+        )
+        if retried is not None:
+            fetch_code = retried
     if fetch_code != 0:
         # The fixed text first, verbatim: failure causes and the failure
         # review fingerprint on it. Then git's own reason (archived issue 2559: six failures
@@ -4139,10 +4154,23 @@ _STDERR_TAIL_CHARS = 500
 
 
 def _publish_fetch_argv(
-    git_binary: str, source_repo: Path, shallow_file: str, refspecs: list[str]
+    git_binary: str,
+    source_repo: Path,
+    shallow_file: str,
+    refspecs: list[str],
+    *,
+    upload_config: Sequence[str] = (),
+    fetch_options: Sequence[str] = (),
+    source: str | None = None,
 ) -> list[str]:
     """The object-checked fetch from the clone into a publish repository, its
-    upload side's shallow boundary `shallow_file` (see `prepare_publish_repo`)."""
+    upload side's shallow boundary `shallow_file` (see `prepare_publish_repo`).
+
+    `upload_config` adds the worker's own `-c` pairs to the upload side's
+    command line (`_NO_THIN_PACK`, `_SKELETON_UPLOAD_CONFIG`; issue 367), and
+    `fetch_options` options to the fetch; `source`, when given, is the clone
+    as a URL rather than a path. All three are the worker's constants: nothing
+    the agent wrote reaches them."""
     upload_pack = " ".join(
         [
             "env",
@@ -4152,6 +4180,7 @@ def _publish_fetch_argv(
             *_UPLOAD_PACK_CONFIG,
             # The wants are shas, not advertised refs.
             "-c", "uploadpack.allowAnySHA1InWant=true",
+            *(shlex.quote(item) for item in upload_config),
             "upload-pack",
         ]
     )
@@ -4163,8 +4192,9 @@ def _publish_fetch_argv(
         "-c", "submodule.recurse=false",
         *_NO_AUTO_MAINTENANCE,
         "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--update-shallow",
+        *fetch_options,
         f"--upload-pack={upload_pack}",
-        "--", str(source_repo), *refspecs,
+        "--", source if source is not None else str(source_repo), *refspecs,
     ]
 
 
@@ -4344,6 +4374,188 @@ def _origin_fetched_shallow(
     logger.info("clone shallow lines fetched from origin", asked=len(asked),
                 landed=len(landed))
     return landed
+
+
+#: The upload side's configuration for the retry of a publish fetch the
+#: worker completed from origin (issue 367): no deltas, so `pack-objects`
+#: makes no thin pack against the `have`s and never reads one of their
+#: objects as a delta base -- an object a partial clone may never have
+#: downloaded. Measured on git 2.39.5: with the `have` sent and these unset,
+#: the retry still died on the same blob; with them, it exits 0. `pack.*`
+#: names no program (`_UPLOAD_PACK_CONFIG`).
+_NO_THIN_PACK = ("-c", "pack.window=0", "-c", "pack.depth=0")
+#: The upload side's configuration for the commits-only skeleton fetch: a
+#: filter is refused unless the upload side allows it.
+_SKELETON_UPLOAD_CONFIG = ("-c", "uploadpack.allowFilter=true")
+#: The most commits the skeleton walk reads for merged heads. An agent's
+#: history from its recorded base is a handful of commits; past this the
+#: walk is cut and only the heads it read are asked about.
+_SKELETON_MAX_COMMITS = 2000
+
+
+def _complete_publish_fetch(
+    run: Callable[[list[str], str], tuple[int, str]],
+    *,
+    source_repo: Path,
+    publish_dir: Path,
+    private_dir: Path,
+    logs_dir: Path,
+    target: str,
+    boundary: Path,
+    refspecs: list[str],
+    fetch_on_origin: Callable[[Path, list[str]], list[str]],
+    git_binary: str,
+    timeout_seconds: int,
+    logger: Any,
+) -> int | None:
+    """Complete a publish fetch a partial clone failed, from ORIGIN (issue 367).
+
+    Returns the retried fetch's exit code, or None when there was nothing to
+    retry with (no merged head, or none origin served), so the caller fails
+    exactly as before.
+
+    WHY IT FAILED. An agent that fetched a contributor branch with
+    `--filter=blob:none` and merged it holds a PARTIAL clone: the merge's
+    second parent and its history are commits and trees whose blobs the clone
+    never downloaded. The upload side runs with lazy fetching off
+    (`_UPLOAD_PACK_ENV`: a lazy fetch would run the transport the agent's
+    config names), so `pack-objects` dies on the first missing blob.
+
+    WHAT IS DONE, all after the reap and all in repositories the worker made:
+
+    1. the commit graph is read from the clone through the SAME hardened
+       upload-pack, commits only (`_merged_heads_in_walk`, `--filter=tree:0`:
+       no blob is read), and the merges' non-first parents -- the heads the
+       agent merged -- are listed;
+    2. each is fetched FROM ORIGIN into this repository at depth 1 by the
+       worker's own credentialed, bounded fetch (`fetch_on_origin`,
+       `_origin_fetched_shallow`). Only a sha that landed as itself counts;
+    3. a ref is pointed at each landed head, so the retry's negotiation sends
+       it as a `have`, and it joins the upload side's boundary (`boundary`);
+    4. the fetch is retried once, the upload side making no thin pack
+       (`_NO_THIN_PACK`), and the refs are removed again.
+
+    WHY THE BOUNDARY STAYS SAFE. A head joins it only when origin served that
+    exact sha to the worker's own fetch: everything under it is origin's
+    history, already public on the forge, exactly as for a confirmed or
+    fetched shallow line. The agent's own commits sit above it and are still
+    fetched with every object check and scanned. A head origin does not serve
+    adds nothing, and the retry is not even made. The clone's config is never
+    read by git here beyond what upload-pack reads under `_UPLOAD_PACK_ENV`
+    and `_UPLOAD_PACK_CONFIG`, so no program it names runs.
+    """
+    heads = _merged_heads_in_walk(
+        source_repo=source_repo, private_dir=private_dir, logs_dir=logs_dir,
+        target=target, shallow_file=str(boundary), git_binary=git_binary,
+        timeout_seconds=timeout_seconds, logger=logger,
+    )
+    try:
+        bounded = [line.strip() for line in boundary.read_text().splitlines()]
+    except OSError:
+        return None
+    candidates = [sha for sha in heads if sha not in bounded]
+    landed = _origin_fetched_shallow(
+        candidates, publish_dir=publish_dir, fetch_on_origin=fetch_on_origin, logger=logger,
+    )
+    if not landed:
+        logger.warning("could not complete the partial clone's history from origin",
+                       merged_heads=len(heads), asked=len(candidates))
+        return None
+    haves = [f"refs/swarm/origin-have/{index}" for index in range(len(landed))]
+    try:
+        for ref, sha in zip(haves, landed):
+            code, _ = run([git_binary, *_NO_HOOKS, "update-ref", "--no-deref", ref, sha],
+                          "publish-origin-have")
+            if code != 0:
+                return None
+        boundary.write_text("".join(f"{sha}\n" for sha in [*bounded, *landed] if sha))
+        code, _ = run(
+            _publish_fetch_argv(git_binary, source_repo, str(boundary), refspecs,
+                                upload_config=_NO_THIN_PACK),
+            "publish-fetch-completed",
+        )
+    finally:
+        for ref in haves:
+            run([git_binary, *_NO_HOOKS, "update-ref", "-d", ref], "publish-origin-have-drop")
+    logger.info("retried the publish fetch with the merged heads origin holds",
+                landed=[sha[:12] for sha in landed], exit_code=code)
+    return code
+
+
+def _merged_heads_in_walk(
+    *,
+    source_repo: Path,
+    private_dir: Path,
+    logs_dir: Path,
+    target: str,
+    shallow_file: str,
+    git_binary: str,
+    timeout_seconds: int,
+    logger: Any,
+) -> list[str]:
+    """The non-first parents of the merges between `target` and the boundary
+    in `shallow_file`, read from the clone without reading one blob (issue 367).
+
+    The commits are fetched from the clone, as the publish fetches them
+    (`_publish_fetch_argv`: the hardened upload-pack, object checks, the same
+    boundary), with `--filter=tree:0` into a SCRATCH bare repository of the
+    worker's under `private_dir`, removed after. The clone is named as a
+    `file://` URL: git refuses a promisor remote whose name begins with `/`.
+    That fetch writes the clone as a promisor remote into the scratch config,
+    so the config is rewritten to `_HISTORY_CONFIG` before anything reads
+    the commits: a missing object is then an answer, never a lazy fetch.
+    At most `_SHALLOW_MAX_LINES` heads, in walk order; [] on any failure.
+    """
+    scratch = Path(tempfile.mkdtemp(dir=str(private_dir), prefix="skeleton-"))
+
+    def run(argv: list[str], slug: str) -> tuple[int, str]:
+        return _git_text(argv, repo=scratch, private_dir=private_dir, logs_dir=logs_dir,
+                         slug=slug, timeout_seconds=timeout_seconds, logger=logger)
+
+    try:
+        code, _ = run([git_binary, *_NO_HOOKS, "init", "--quiet", "--bare", str(scratch)],
+                      "publish-skeleton-init")
+        if code != 0:
+            return []
+        source = Path(source_repo).absolute().as_uri()
+        if "=" in source:
+            # Not representable as a `-c` key below: no skeleton, no guess.
+            return []
+        argv = _publish_fetch_argv(git_binary, source_repo, shallow_file,
+                                   [f"+{target}:refs/swarm/head"],
+                                   upload_config=_SKELETON_UPLOAD_CONFIG,
+                                   fetch_options=("--filter=tree:0",), source=source)
+        # NO LAZY FETCH ON THIS SIDE EITHER. The filtered fetch makes the
+        # scratch repository a partial clone whose promisor is the clone, and
+        # git 2.39.5 lazily fetched from it mid-fetch (measured, GIT_TRACE):
+        # a plain `git-upload-pack` in the clone, without `_UPLOAD_PACK_ENV`.
+        # The remote's upload-pack, which only such a lazy fetch reads (the
+        # fetch itself names `--upload-pack`), is the worker's `false`, and
+        # `GIT_NO_LAZY_FETCH` stops a git that knows it from trying at all.
+        argv = ["env", "GIT_NO_LAZY_FETCH=1", argv[0],
+                "-c", f"remote.{source}.uploadpack=false", *argv[1:]]
+        code, _ = run(argv, "publish-skeleton")
+        if code != 0:
+            return []
+        (scratch / "config").write_text(_HISTORY_CONFIG)
+        code, text = run(
+            [git_binary, *_NO_HOOKS, "rev-list", "--parents",
+             f"--max-count={_SKELETON_MAX_COMMITS}", "refs/swarm/head"],
+            "publish-skeleton-walk",
+        )
+        if code != 0:
+            return []
+    except OSError as exc:
+        logger.warning("could not read the clone's commit graph", error=type(exc).__name__)
+        return []
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    heads: list[str] = []
+    for line in text.splitlines():
+        for sha in line.split()[2:]:
+            if _FULL_SHA_RE.match(sha) and sha not in heads:
+                heads.append(sha)
+    return heads[:_SHALLOW_MAX_LINES]
 
 
 def fetch_shallow_lines_from_origin(

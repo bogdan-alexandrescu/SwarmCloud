@@ -238,3 +238,31 @@ def test_a_first_fetch_that_succeeds_makes_no_skeleton_and_no_origin_fetch(
     assert not list(pr.logs.glob("git-publish-skeleton*"))
     assert not list(pr.logs.glob("git-publish-fetch-completed*"))
     assert not list((tmp_path / "private").glob("skeleton-*"))
+
+
+def test_the_completion_makes_no_lazy_fetch_from_the_clone(
+    tmp_path: Path, local_urls, monkeypatch,
+):
+    """The commits-only fetch makes its scratch repository a partial clone
+    whose promisor is the agent's clone; git 2.39.5 lazily fetched from it
+    mid-fetch, running a plain `git-upload-pack` in the clone without the
+    hardened environment. Every git the publish runs is traced: no lazy
+    fetch, and every upload-pack in the clone is the hardened one."""
+    pr = PartialMerge(tmp_path)
+    trace = tmp_path / "git-trace.log"
+    real = gitops._git_env
+
+    def traced(private_dir: Path) -> dict[str, str]:
+        env = real(private_dir)
+        env["GIT_TRACE"] = str(trace)
+        return env
+
+    monkeypatch.setattr(gitops, "_git_env", traced)
+    repo = pr.prepare(fetch_on_origin=pr.fetcher([]))
+    assert _git(repo, "rev-parse", "HEAD") == pr.head
+    text = trace.read_text()
+    assert "fetch.negotiationAlgorithm=noop" not in text
+    spawned = [line for line in text.splitlines()
+               if "run_command:" in line and "upload-pack" in line and str(pr.clone) in line]
+    assert spawned
+    assert all("GIT_NO_LAZY_FETCH=1" in line for line in spawned)
