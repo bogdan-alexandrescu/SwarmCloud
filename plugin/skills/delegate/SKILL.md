@@ -53,6 +53,7 @@ allowed-tools:
   - Bash(uv run swarm tail:*)
   - Bash(swarm tail:*)
   - Bash(git status:*)
+  - Read
 ---
 
 > **Why every tool is listed twice.** The same bridge arrives under two names
@@ -205,6 +206,13 @@ only edits its own repository: each one is a clone that takes disk and time.
   (`additional_repositories_disabled`). Report the refusal as given.
 
 ## Dispatching
+
+**Brief templates are opt-in**: read one only when a lane fits it; a brief
+that uses none is sent exactly as written, and nothing is added to it.
+
+* `reference/brief-build.md`: a build lane (red first, territory, the merge train, the pull request, owner questions).
+* `reference/brief-review.md`: a read-only review (what to check, `verdict.json`'s shape, a rendered console review).
+* `reference/brief-fix.md`: a one-step fixer onto an existing pull request (the named findings only, no weakened assertion).
 
 **Anything with `depends_on` or `input_from` goes through `swarm_workflow`**,
 not through a hand-rolled join. Dispatching the units separately and stitching
