@@ -389,9 +389,18 @@ list in metadata is tenant-writable, so it is re-capped on every read, as
 
 After each `re-review:k` ends, swarm-api reads its `verdict.json`:
 
-* through the size-capped, tenant-checked artifact read that `verdictpublish`
-  uses for the gated fix's verdict;
-* parsed with `verdictpublish.parse_verdict`;
+* through the size-capped, tenant-checked, redacted artifact read that
+  `verdictpublish` uses for the gated fix's verdict (invariant 9);
+* parsed with `verdictpublish.parse_verdict`, which reads only `verdict`,
+  `findings` and the skipped review's reason. Other keys a review writes
+  (`minors`, `checks`, `needs_owner`, `open_questions`, ...) are ignored;
+* with what the redaction masked judged by key (issue 338). The read returns
+  the masked text, never the raw bytes. A mask (`********`) in a key the loop
+  does not read is logged, by key name, and the file is read: it cannot
+  change the verdict, because MERGE must still be literally in the masked
+  text. A mask in `verdict`, `findings` or the skipped reason refuses the
+  file, `review_unreadable`, naming the key. The publish path is different:
+  it writes text to a forge, so it still refuses a file with any mask;
 * only after verifying the round's spec signature and its
   `fix_loop_round.loop_task` against the loop's own id.
 
@@ -404,7 +413,7 @@ After each `re-review:k` ends, swarm-api reads its `verdict.json`:
 | `review-fix:k` SUCCEEDED and pushed a head ≠ `start_head` | submits `re-review:k` at that head | stays parked |
 | `review-fix:k` SUCCEEDED and pushed nothing (head = `start_head`) | no re-review: the head the last NOT_YET judged is unchanged, so a review agent would only repeat it | PARKED `HUMAN_REQUIRED`, `park_phase: "fix_changed_nothing"` |
 | a round FAILED, was CANCELLED or DEAD_LETTERED (its own retries spent) | records it | PARKED `HUMAN_REQUIRED`, `park_phase: "round_failed"`, naming the agent and its end cause |
-| `re-review:k` SUCCEEDED but its verdict does not read (not JSON, no or bad `verdict`, over 256 KiB, missing) | never read as MERGE (it would merge unreviewed work) and never as NOT_YET (it would fix findings that are not there), the §2.1 rule | PARKED `HUMAN_REQUIRED`, `park_phase: "review_unreadable"` |
+| `review` (round 0) or `re-review:k` SUCCEEDED but its verdict does not read (not JSON, no or bad `verdict`, over 256 KiB, missing, a mask in a key the loop reads, a spec or round record that does not verify) | never read as MERGE (it would merge unreviewed work) and never as NOT_YET (it would fix findings that are not there), the §2.1 rule. The park's detail carries `code` (the read's decline code such as `credential`, `verdict_unreadable` or `verdict_absent`; else `spec_unverified`, `round_unsigned` or `no_head`), `keys` when a key refused the file (never a value), `error` as a sentence, and `head`, the head that was judged, when one exists. At round 0 that is the root's pushed head | PARKED `HUMAN_REQUIRED`, `park_phase: "review_unreadable"` |
 | the round's submission was refused (submitter left the tenant, or a 422) | recorded on the round as `error` | PARKED `HUMAN_REQUIRED`, `park_phase: "round_refused"` |
 | the pull request was merged or closed outside the workflow | read once per wake, the `_ended_outside` idea | SUCCEEDED ("merged outside") or CANCELLED |
 | the pull request's head moved to a commit no round pushed (a person pushed) | the next round starts from the new head, and the re-review judges it | as above |
@@ -429,7 +438,29 @@ execution. A person may then do one of three things:
    * It records who and when, in a transaction guarded on the park.
    * Then the decision table runs again. After `fix_changed_nothing` or
      `round_failed`, the added round is a fix. After `review_unreadable`, it
-     is a re-review of the same head.
+     is a re-review of the same head. At round 0 (the first review did not
+     read) that head is the root's pushed head (§4.3). The park carries it,
+     and add-round reads it again from the tasks the signed block names.
+     So the added round is `re-review:1` on that head. Before issue 338 a
+     round-0 park recorded no head. The added round then stored none, every
+     drive failed `resume_head_missing`, and the route answered 200 with
+     only `failed: 1`. A loop already stuck that way takes the root's head
+     on its next drive, a push or the sweep. With no head recorded anywhere,
+     a drive parks it `round_refused` (`code: "no_head"`) instead of failing
+     on every pass, so a person can stop it.
+   * A round that cannot start is refused, not accepted. When no head is
+     recorded for it to start from, add-round answers 409 `conflict`, with
+     `detail: {"reason": "no_head", "park_phase": ...}`, and writes nothing:
+     the park, the `added` list and `max_rounds` are unchanged.
+   * The reply's `report` lists what its drive could not do. Beside the
+     counts, `failures` gives each one's `task_id` and `code` (for example
+     `review_missing`), so a `failed: 1` always says why. A drive that raised
+     is `drive_failed` with `error`, the exception's class and text, redacted
+     and bounded to 1000 characters: before this the text was only logged,
+     which is where issue 338's failed drive lost it. The add-round reply
+     catches such a raise too (the round is already recorded, the sweep drives
+     it again) instead of answering 500, and the admin `task-finished` push
+     and the tick's `fix_loop` report serve the same `failures` list.
    * An optional `note` (at most 4 KiB, redacted) is fenced into the fix's
      prompt as the person's guidance.
 2. **Accept the last verdict.** `POST .../fix-loop/end {"outcome": "stop"}`.
