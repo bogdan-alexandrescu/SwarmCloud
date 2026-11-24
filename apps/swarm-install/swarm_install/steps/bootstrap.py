@@ -320,7 +320,7 @@ def apply_pass(ctx: Any, deps: Deps, pass_name: str, *, targets: Sequence[str] =
             before_plan(tf)
             return original_plan(**kwargs)
 
-        tf.plan = plan  # type: ignore[method-assign]
+        tf.plan = plan
     outputs = run_pass(tf, pass_name, inputs, project=ctx.project, bucket=bucket, guards=guards,
                        confirm=deps.confirm, targets=targets,
                        announce=lambda line: ctx.events.emit("step_apply", step=pass_name, message=line))

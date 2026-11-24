@@ -968,7 +968,7 @@ def _with_budget(base: type) -> type:
         _CANT_ROLLBACK,
     )
 
-    class BudgetedTransaction(base):  # type: ignore[misc, valid-type]
+    class BudgetedTransaction(base):
         def __init__(self, client: Any, *, budget: Mapping[str, Any]) -> None:
             super().__init__(client)
             self._budget = dict(budget)

@@ -10154,7 +10154,7 @@ class Worker(HeartbeatMixin, CheckpointMixin, SpendMixin, AccountPoolMixin):
         for a step with a brief (a `prompt`) to name the file in. Worked out once.
         """
         if self._pull_request_number is not False:
-            return self._pull_request_number  # type: ignore[return-value]
+            return self._pull_request_number
         number: int | None = None
         task = self._task or {}
         if pull_request_mod.takes_brief(task.get("input")):
@@ -18048,7 +18048,7 @@ def _terminal_write_contended(exc: BaseException) -> bool:
     try:
         from google.api_core import exceptions as core
     except ImportError:
-        core = None  # type: ignore[assignment]
+        core = None
     seen: set[int] = set()
     current: BaseException | None = exc
     while current is not None and id(current) not in seen:
@@ -18332,7 +18332,7 @@ def _refusal_cause(exc: BaseException) -> BaseException | None:
     try:
         from google.auth import exceptions as auth
     except ImportError:
-        auth = None  # type: ignore[assignment]
+        auth = None
     if auth is not None:
         refusals = refusals + tuple(
             kind
