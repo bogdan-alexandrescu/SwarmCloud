@@ -5484,7 +5484,11 @@ runner instead, which does hold the sandbox token:
   carrying a task id, a body without its task id, a change outside
   `tests/acceptance/fixtures/`, a diff that does not remove `return a - b` from
   `calc.py`, a direct-pr change to anything but `calc.py`, or an integrate body
-  that lists no merged branch or leaves one out. It only reads; the sweep still
+  that lists no merged branch or leaves one out. Those `calc.py` rules are the
+  claude-code group's. The git-tools pull requests and the workflow group's
+  fix-loop pull request each get their own rules
+  ([acceptance.md](acceptance.md#pull-requests-on-the-sandbox)). A pull request
+  no check owns fails as unclassified. It only reads; the sweep still
   runs when it fails. Finding no pull request at all is printed with a workflow
   warning, not a failure: a claude-code group without a provider credential
   SKIPs without opening one.

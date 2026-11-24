@@ -804,8 +804,8 @@ def pr_kind(body: str, files: Iterable[str] = ()) -> str:
     for the build step's integrator's -- its marker, or, for an integrator
     that wrote none (every run before the marker), the platform's
     "Integrates" block over files that ALL lie under FIXTURE_DIR, where no
-    other group writes; `other` for the rest, which github-verify.sh judges
-    as the claude-code group's. On 2026-11-21 the integrator's pull request
+    other group writes; `other` for the rest, which github-verify.sh classifies
+    further (the fix loop's, the claude-code group's, or unclassified). On 2026-11-21 the integrator's pull request
     was read as claude-code's and failed its calc.py assertion."""
     body = body or ""
     if PR_MARKER in body:

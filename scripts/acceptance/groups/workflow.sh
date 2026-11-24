@@ -85,7 +85,18 @@ WF_START_BUDGET_SECONDS=120
 # park the loop `review_unreadable` and a mock fix round `fix_changed_nothing`.
 # So a step can wait on its workspace account's quota window; a loop held by
 # one that never started is NOT MEASURED, not FAIL (_wf_fix_loop_quota_parked).
-WF_FIX_LOOP_FILE="fix-loop-rounds.txt"
+#
+# WHERE THE FILE LIVES. Under tests/acceptance/fixtures/, in the workflow
+# group's own directory, like every other check's writes: github-cleanup.sh
+# closes only a pull request whose every file lies under the fixtures, and
+# github-verify.sh fails any file outside them. At the repository root (until
+# 2026-11-24) the loop's pull request failed the read-back and was left open
+# by the sweep. The directory is not on the sandbox's main; the prompt creates it.
+# WF_FIX_LOOP_MARKER is the line the fix step writes into its pull request's
+# body, so github-verify.sh judges that pull request as this check's (its
+# FIX_LOOP_FILE and FIX_LOOP_MARKER; a unit test holds the two pairs equal).
+WF_FIX_LOOP_FILE="tests/acceptance/fixtures/workflow/fix-loop-rounds.txt"
+WF_FIX_LOOP_MARKER="acceptance-workflow: fix-loop"
 WF_FIX_LOOP_MERGE_AT=2
 WF_FIX_LOOP_MAX_ROUNDS=3
 WF_FIX_LOOP_VERDICTS="NOT_YET NOT_YET MERGE"
@@ -915,9 +926,9 @@ _wf_fix_loop_body() {
     '{verdict: "NOT_YET", findings: [{severity: "major", summary: ($f + " has fewer than \($n) non-empty lines")}]}')"
   jq -nc --argjson m "$(acc_metadata)" --arg u "${ACC_REPOSITORY_URL}" --arg r "${ACC_REF}" \
       --arg run "${ACC_RUN_ID}" --arg f "${WF_FIX_LOOP_FILE}" --argjson n "${WF_FIX_LOOP_MERGE_AT}" \
-      --argjson max "${WF_FIX_LOOP_MAX_ROUNDS}" --arg v "${verdict}" '
-    ("Append one line reading fix, followed by a newline, to " + $f + " at the repository root, creating the file if it does not exist. Change no other file.") as $append
-    | ("Count the non-empty lines of " + $f + " at the repository root with: grep -c . " + $f
+      --argjson max "${WF_FIX_LOOP_MAX_ROUNDS}" --arg v "${verdict}" --arg marker "${WF_FIX_LOOP_MARKER}" '
+    ("Append one line reading fix, followed by a newline, to " + $f + " (a path from the repository root), creating the file and its directory if they do not exist. Change no other file.") as $append
+    | ("Count the non-empty lines of " + $f + " (a path from the repository root) with: grep -c . " + $f
        + " (a missing file counts 0). Judge by that count alone. If it is \($n) or more, write"
        + " {\"verdict\": \"MERGE\", \"commit\": \"<the output of git rev-parse HEAD>\", \"findings\": []}"
        + " to $SWARM_ARTIFACTS_DIR/verdict.json. Otherwise write {\"verdict\": \"NOT_YET\", \"commit\": \"<the output of git rev-parse HEAD>\","
@@ -931,7 +942,7 @@ _wf_fix_loop_body() {
            input: {prompt: ("acceptance " + $run + " fix-loop review"), artifact_name: "verdict.json", artifact_text: $v, steps: 1, sleep_seconds: 0}},
           {step_id: "fix", runner_profile: "claude-code", depends_on: ["review"], input_from: {review: "verdict.json"},
            when: {step: "review", verdict_in: ["NOT_YET"]},
-           input: {prompt: ($append + " Write a one-line pull request title naming the fix loop acceptance run, with no task id, to $SWARM_ARTIFACTS_DIR/pr-title.txt, and the single line acceptance-run:" + $run + " to $SWARM_ARTIFACTS_DIR/pr-body.md.")}},
+           input: {prompt: ($append + " Write a one-line pull request title naming the fix loop acceptance run, with no task id, to $SWARM_ARTIFACTS_DIR/pr-title.txt, and these two lines, acceptance-run:" + $run + " and then " + $marker + ", to $SWARM_ARTIFACTS_DIR/pr-body.md.")}},
           {step_id: "loop", runner_profile: "fix-loop", depends_on: ["fix"],
            fix_loop: {review: "review", fix: "fix", max_rounds: $max,
                       fix_round: {runner_profile: "claude-code", prompt: $append},
