@@ -1,11 +1,18 @@
 # Workflow pause and resume
 
-**Status:** design only. Nothing here is built. The owner decided to design
+**Status:** being built, lane by lane (section 11). The owner decided to design
 pause first, before the reconciler's pause-overdue rule. That rule (part of
-issue 7) needs a pause to act on, and main has none. Section 7's frozen-contract
-change is **NOT ACCEPTED** (request 160 in
-[`docs/contract-change-requests.md`](../contract-change-requests.md)). Section 10
-lists the owner decisions that are still open.
+issue 7) needs a pause to act on. Section 7's frozen-contract change was
+**ACCEPTED by the owner on 2026-11-24** (request 160 in
+[`docs/contract-change-requests.md`](../contract-change-requests.md)), and
+applied by the first lane. Section 10 records the owner's decisions of the same
+day; none is open.
+
+**Built by the first lane (P0, P1's routes, P2):** the contract change; the
+`pause` and `resume` routes with their store transactions; the scheduler's
+admission gate and promotion sweep. **Not yet built:** the worker's pause park
+(P3), the refunds (Q1, in P1's `AttemptState.park` and P4), `fence_view`'s
+flag, the waiting line, the reconciler's rule (P4), the console and CLI (P5).
 
 Today's behaviour is cited by file and symbol, never by line number, so a
 citation survives the code moving. Everything about pause itself is a proposal.
@@ -271,7 +278,7 @@ new routes need no entry in `VIEWER_WRITES` or `ADMIN_WRITES`.
 * Another tenant's workflow is a 404, from `Store.get_workflow`'s tenant check,
   as for cancel.
 
-Whether only the submitter and admins may pause is decision Q3 (section 10).
+Who may pause was decision Q3 (section 10): any member, decided 2026-11-24.
 
 ## 3. Routes
 
@@ -371,7 +378,12 @@ and `Scheduler._park_for_workflow_pause` both see steps whose raw
 the mirror in the same guarded write that promotes the step, or, in
 `_park_for_workflow_pause`, when it finds the workflow not paused and so does
 not park. A stale mirror therefore costs a step at most one worker park, never
-a loop. The worker still parks on the mirror alone (5.1); the mirror stays a
+a loop. **As built (first lane):** only the promotion's guarded write clears
+it (`loop._clear_pause_mirror`). Admission does not: the scheduler's `Task` does
+not carry the raw mirror, and the lease that follows is the frozen admission
+transaction, so clearing there would cost an extra write per admitted step. A
+stale mirror on a step admitted after a resume still costs that step one worker
+park; the sweep then clears it as it promotes, so the bound holds. The worker still parks on the mirror alone (5.1); the mirror stays a
 signal and the workflow document the authority (2.1). Section 8 records the
 invariants this preserves (4 and 5: no sleeping, and the fenced write).
 
@@ -624,13 +636,14 @@ default is explained next to its value.
 ## 7. Frozen contract
 
 Pause needs four additions in `apps/common/swarm_common/`. They are written as
-**request 160** in `docs/contract-change-requests.md`, marked **NOT ACCEPTED**:
+**request 160** in `docs/contract-change-requests.md`, **ACCEPTED by the owner
+2026-11-24** and applied by the first lane, exactly as requested:
 
 * `ParkReason.WORKFLOW_PAUSED`;
 * `Workflow.paused`, `Workflow.paused_at` and `Workflow.paused_by`;
 * `EventType.PAUSE_REQUESTED` and `EventType.RESUME_REQUESTED`.
 
-Nothing in the frozen package is edited by this design.
+Nothing else in the frozen package is edited for pause.
 
 **Not asked for:**
 
@@ -733,11 +746,23 @@ it.
   tools `swarm_workflow_pause` and `swarm_workflow_resume` sit beside
   `swarm_workflow_cancel` in `apps/swarm-mcp/swarm_mcp/server.py`.
 
-## 10. Open owner decisions
+## 10. Owner decisions (decided 2026-11-24)
 
-These are the same as `questions.json` in the step's artifacts.
+**All five are decided.** The owner answered them on 2026-11-24 in a comment on
+issue 7, together with accepting request 160. Each question keeps its options
+and the reasoning below as the record of what was weighed.
+
+| Question | Decision of 2026-11-24 |
+| --- | --- |
+| Q1. Refunds | **(a)** Refund both the worker's pause park and the reconciler's pause-overdue requeue, bounded at **five per step** (`metadata.pause_refunds`, the quota park's number). Past it, the requeue counts. |
+| Q2. The bound | **(b)** Its own reconciler setting, `pause_enforce_after_seconds` (env `PAUSE_ENFORCE_AFTER_SECONDS`), default **600 seconds**. |
+| Q3. Who | **(a)** Any `MEMBER` of the tenant may pause and resume, as for cancel. |
+| Q4. Children | **(a)** No cascade to child tasks in the first build. |
+| Q5. Park reason | **(a)** A new park reason, `WORKFLOW_PAUSED` (request 160, accepted), not a reuse of `MANUAL_PAUSE`. |
 
 ### Q1. Is a pause-overdue requeue refunded?
+
+**Decided 2026-11-24: (a).**
 
 That is, is it not counted against the attempt limit? The same question covers
 the worker's own pause park.
@@ -768,6 +793,8 @@ not the attempt count, is what catches a truly wedged worker.
 
 ### Q2. Does the bound reuse `cancel_enforce_after_seconds` or get its own setting?
 
+**Decided 2026-11-24: (b), default 600 seconds.**
+
 **Options.**
 
 * **(a) Reuse `cancel_enforce_after_seconds` (600 s).**
@@ -787,6 +814,8 @@ One setting would couple them, and a separate setting costs one config field.
 
 ### Q3. Who may pause and resume?
 
+**Decided 2026-11-24: (a).**
+
 **Options.**
 
 * **(a) Any `MEMBER` of the tenant,** as cancel.
@@ -796,6 +825,8 @@ One setting would couple them, and a separate setting costs one config field.
 may already do. A stricter rule for the milder act would be incoherent.
 
 ### Q4. Does pausing a workflow pause the child tasks its running steps submitted?
+
+**Decided 2026-11-24: (a), no cascade in the first build.**
 
 **Options.**
 
@@ -809,6 +840,8 @@ meaningful capacity during pauses. Cascading needs the gate and the overdue
 rule to resolve a child's root workflow, which doubles the first build.
 
 ### Q5. A new park reason, or reuse `MANUAL_PAUSE`? (request 160)
+
+**Decided 2026-11-24: (a); request 160 accepted.**
 
 **Options.**
 
@@ -825,7 +858,7 @@ the waiting line.
 Each lane is red first: the failing tests are pushed alone, then the fix. No two
 parallel lanes share a file. They run in dependency order.
 
-### P0. Contract (after the owner accepts request 160)
+### P0. Contract (request 160 accepted 2026-11-24; built by the first lane)
 
 * **Files:** `apps/common/swarm_common/states.py`, `models.py`;
   `swarm_api/codec.py` (`workflow_to_firestore` and `workflow_from_dict`); the

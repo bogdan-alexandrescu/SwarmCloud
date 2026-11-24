@@ -40,7 +40,7 @@ from swarm_common.states import (
     TaskState,
     can_transition,
 )
-from swarm_rollup import settled_unpin
+from swarm_rollup import settled_unpause, settled_unpin
 
 from .backends import TENANT_NAMESPACE_MISMATCH, _namespace_mismatch_due, sanitize_name
 from .config import ReconcilerConfig
@@ -919,7 +919,9 @@ class ControlStore:
             # a worker that crashed after its graph ticket and before its
             # step's end left them, and this repair is what settles it.
             txn.update(
-                ref, {"state": to.value, "updated_at": utcnow(), **settled_unpin(to, stored)}
+                ref,
+                {"state": to.value, "updated_at": utcnow(), **settled_unpin(to, stored),
+                 **settled_unpause(to, stored)},
             )
             return None
 
