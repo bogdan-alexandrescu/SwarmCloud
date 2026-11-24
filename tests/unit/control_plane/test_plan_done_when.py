@@ -157,7 +157,7 @@ def test_the_warning_is_not_a_lint_code_that_fails():
     assert planlint.STEP_DONE_WHEN_MISSING in planlint.WARNING_CODES
 
 
-def test_the_runs_read_serves_the_warnings_with_the_plan():
+def test_the_runs_read_serves_the_warnings_with_the_plan(plan_lint_on):
     plan = parse_plan(BARE)
     run = _bare_run(state=RunState.PLANNED, plan=plan, plan_digest=issueruns.plan_digest(plan),
                     plan_revision=1)
@@ -250,10 +250,19 @@ def test_the_plan_comment_shows_done_when_under_each_step():
     assert "#### Plan lint warnings" not in body
 
 
-def test_the_plan_comment_shows_the_lint_warnings():
+def test_the_plan_comment_shows_the_lint_warnings(plan_lint_on):
     plan = parse_plan(BARE)
     body = issuecomments.render_plan_comment(
         _bare_run(state=RunState.PLANNED, plan=plan, plan_digest="sha256:x", plan_revision=1))
     assert "done when:" not in body
     warnings = body.split("#### Plan lint warnings", 1)[1].split("####", 1)[0]
     assert "`sort-key`" in warnings and "`header`" in warnings
+
+
+def test_with_the_lint_switched_off_no_warning_is_shown():
+    """The control-plane tests run with the lint off (conftest): so does a
+    deployment that switched it off, and then nothing warns."""
+    plan = parse_plan(BARE)
+    run = _bare_run(state=RunState.PLANNED, plan=plan, plan_digest="sha256:x", plan_revision=1)
+    assert run.to_api()["plan_warnings"] == []
+    assert "#### Plan lint warnings" not in issuecomments.render_plan_comment(run)

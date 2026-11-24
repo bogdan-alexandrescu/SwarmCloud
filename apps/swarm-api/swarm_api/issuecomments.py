@@ -64,6 +64,7 @@ from .issueruns import (
     VERIFICATION_FILE,
     IssueRun,
     RunState,
+    plan_warnings,
 )
 from .plansections import size_line
 from .redaction import redact
@@ -458,6 +459,18 @@ def render_plan_comment(
     out += _validation_lines(plan, literals)
     out += _graph_lines(plan, literals)
 
+    warned = plan_warnings(plan)
+    if warned:
+        # Reported with the plan, never a refusal (`planlint.warnings`).
+        out.append("#### Plan lint warnings")
+        out += [
+            f"- `{prose(str(w.get('step') or ''), 40, literals=literals, one_line=True)}`: "
+            + prose(str(w.get("message") or ""), MAX_LINE_CHARS, literals=literals,
+                    one_line=True)
+            for w in warned
+        ]
+        out.append("")
+
     out.append("#### Steps")
     for n, step in enumerate(plan.get("steps") or [], start=1):
         title = prose(step.get("title") or "", 200, literals=literals, one_line=True)
@@ -475,6 +488,13 @@ def render_plan_comment(
             out += [
                 f"     - {prose(test, MAX_LINE_CHARS, literals=literals, one_line=True)}"
                 for test in step["tests"]
+            ]
+        if step.get("done_when"):
+            # Numbered as the review names them: `<step_id>.<n>` (`donewhen`).
+            out.append("   - done when:")
+            out += [
+                f"     {k}. {prose(item, MAX_LINE_CHARS, literals=literals, one_line=True)}"
+                for k, item in enumerate(step["done_when"], start=1)
             ]
         prompt = prose(step.get("prompt") or "", MAX_PROMPT_CHARS, literals=literals)
         out += [
