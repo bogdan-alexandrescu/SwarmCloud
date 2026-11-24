@@ -112,6 +112,9 @@ JS_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
     ("const r = a / b // Phone.test.tsx: a division, then a comment\n", 1),
     ("const s = `a ${'b' /* Phone.test.tsx */} c`\n", 1),
     ("// a URL in a comment: https://example.com/Phone.test.tsx\n", 1),
+    # JSX text: an apostrophe and a closing tag end with their line, which is
+    # still counted, so the comment below is reported at its own line.
+    ("const a = <p>Don't</p>\nconst b = <p>it's</p>\n// Phone.test.tsx\n", 3),
 ])
 def test_a_planted_pointer_in_a_javascript_comment_is_flagged(tmp_path, capsys, suffix,
                                                                source, line):
