@@ -1,0 +1,90 @@
+# The recording-runner spike's CONTROL pod: the same fixed workload OUTSIDE the
+# sandbox (docs/design/recording-runner.md §5.2 C, risk 3: "runs one
+# representative suite sandboxed and not").
+#
+# A template for scripts/recording-runner-spike.sh, like sandboxed-pod.yaml
+# beside it. Keep the two in step: the image, the 16-core and 64 GiB
+# Guaranteed shape, the memory-backed work/ and the labels are the same, so the
+# only differences a wall-time comparison sees are the runtime class (none
+# here: the cluster's normal runtime) and the daemon this pod does not start.
+# Anything else that differs makes the comparison worthless.
+#
+# This pod runs no daemon, so it needs nothing beyond what every agent pod
+# has: its security context IS dispatch.py's POD_SECURITY_CONTEXT and
+# CONTAINER_SECURITY_CONTEXT, field for field. No disk claim: it has no image
+# store.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: recording-spike-__RUN_ID__-control
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-spike
+    swarm-tenant: __TENANT_ID__
+    swarm-spike: recording-runner
+    swarm-spike-run: __RUN_ID__
+    swarm-spike-arm: control
+    app.kubernetes.io/part-of: swarm
+    app.kubernetes.io/component: recording-spike
+  annotations:
+    cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+spec:
+  # No runtimeClassName. This is the control.
+  restartPolicy: Never
+  activeDeadlineSeconds: 14400
+  serviceAccountName: default
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: spike
+      image: __DAEMON_IMAGE__
+      command: ["sleep", "14400"]
+      env:
+        - name: HOME
+          value: /tmp
+        - name: SPIKE_WORK_DIR
+          value: /work
+      resources:
+        requests:
+          cpu: "16"
+          memory: 64Gi
+          ephemeral-storage: 10Gi
+        limits:
+          cpu: "16"
+          memory: 64Gi
+          ephemeral-storage: 10Gi
+      securityContext:
+        allowPrivilegeEscalation: false
+        privileged: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 10001
+        capabilities:
+          drop: ["ALL"]
+        seccompProfile:
+          type: RuntimeDefault
+      volumeMounts:
+        - name: run
+          mountPath: /run
+        - name: tmp
+          mountPath: /tmp
+        - name: work
+          mountPath: /work
+  volumes:
+    - name: run
+      emptyDir:
+        sizeLimit: 1Gi
+    - name: tmp
+      emptyDir:
+        sizeLimit: 2Gi
+    - name: work
+      emptyDir:
+        medium: Memory
+        sizeLimit: 8Gi

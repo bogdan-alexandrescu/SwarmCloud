@@ -35,6 +35,7 @@ to be written down rather than assumed.
 | `cluster-network.sh` | Reads the pod range, service range, kube-dns IP and NodeLocal DNSCache address from the live cluster (sourced) |
 | `network_parity.py` | Compares an applied egress policy with the live network; run by `scripts/lib/check-cluster-network-parity.sh`. With `--live-ingress`, compares swarm-system's three live-relay policies with swarm-api's egress range; run by `apply.sh --swarm-system --confirm` |
 | `swarm-system/swarm-live.yaml` | The live relay's manifest, a template `terraform/infra/live.tf` renders as `swarm_live_manifest`; applied by `apply.sh --swarm-system` |
+| `recording-spike/` | The recording-runner spike's sandboxed and control pods and fixed workload (docs/design/recording-runner.md §5.2 C), created and deleted only by `scripts/recording-runner-spike.sh` ([runbook](../docs/runbooks/recording-runner-spike.md)); not part of the tenant render |
 
 Every file is held to its invariants by `tests/unit/worker/test_kubernetes_manifests.py`,
 which renders them with the real renderer and asserts the properties that matter
