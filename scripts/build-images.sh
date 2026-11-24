@@ -488,6 +488,24 @@ QUOTA_BACKOFF_MAX="${BUILD_QUOTA_BACKOFF_MAX:-120}"
 # is failed, named as unreadable rather than broken, so a quota that never
 # comes back cannot hold the job until its own timeout.
 QUOTA_ROUNDS="${BUILD_QUOTA_ROUNDS:-10}"
+# THE DIGEST READ-BACK (step "Digests") reads one image's tag again when the
+# registry has not given an answer YET: the read failed server-side (INTERNAL,
+# UNAVAILABLE, DEADLINE_EXCEEDED, a 5xx) or succeeded without the tag, seconds
+# after this run added it. Two dev releases failed on 2026-11-23 on exactly
+# these, each after about forty minutes of building, and a re-run passed.
+# This is NOT a rebuild, so the owner's rule of 2026-09-30 on rebuilds (retry
+# only when no answer came back at all; see pull_got_no_answer) is untouched:
+# it repeats one READ, costs seconds and rebuilds nothing. A refusal (auth,
+# permission, NOT_FOUND) or a tag naming two digests is never read again.
+# Four reads in all: three waits, enough to outlast a listing that lags a tag
+# by seconds, few enough that a registry that is really down fails the release
+# within half a minute per image.
+DIGEST_READ_ATTEMPTS="${BUILD_DIGEST_READ_ATTEMPTS:-4}"
+# The first wait, doubled per attempt and scaled by a random 50-100% (as a 429
+# is): about 2+4+8 s, at most 14 s per image and nothing when the read answers.
+DIGEST_READ_BACKOFF="${BUILD_DIGEST_READ_BACKOFF:-2}"
+# A cap on any one wait; at the defaults the third wait (8 s) reaches it.
+DIGEST_READ_BACKOFF_MAX="${BUILD_DIGEST_READ_BACKOFF_MAX:-8}"
 # A pause between two submissions started in the same pass. Every gcloud
 # process opens the same sqlite credential cache under ~/.config/gcloud, and
 # several opening it in the same instant is how parallel gcloud reports
@@ -2076,9 +2094,29 @@ quota_exhausted() {
 # number, because a backgrounded subshell may start from its parent's seed and
 # builds retrying in step would meet the next quota minute together.
 quota_delay() {
-  awk -v b="${QUOTA_BACKOFF}" -v m="${QUOTA_BACKOFF_MAX}" -v a="$1" \
-      -v r="$(( (RANDOM + ${2:-0} * 7919) % 32768 ))" \
+  backoff_delay "${QUOTA_BACKOFF}" "${QUOTA_BACKOFF_MAX}" "$1" "${2:-0}"
+}
+
+# The same schedule from any base ($1) and cap ($2): attempt $3, salt $4.
+backoff_delay() {
+  awk -v b="$1" -v m="$2" -v a="$3" \
+      -v r="$(( (RANDOM + ${4:-0} * 7919) % 32768 ))" \
       'BEGIN { d = b * 2 ^ (a - 1); if (d > m) d = m; printf "%.2f", d * (0.5 + r / 65534) }'
+}
+
+# Whether gcloud's stderr ($1) is the server failing to answer -- INTERNAL,
+# UNAVAILABLE, DEADLINE_EXCEEDED or an HTTP 5xx -- rather than refusing. A
+# refusal (an auth failure, PERMISSION_DENIED, NOT_FOUND) is checked first and
+# is never "no answer", whatever else the message holds.
+server_gave_no_answer() {
+  local text="$1"
+  if gcloud_auth_failure "${text}"; then return 1; fi
+  case "${text}" in
+    *PERMISSION_DENIED*|*NOT_FOUND*|*UNAUTHENTICATED*) return 1 ;;
+  esac
+  printf '%s\n' "${text}" | grep -Eq \
+    -e 'INTERNAL' -e 'UNAVAILABLE' -e 'DEADLINE_EXCEEDED' \
+    -e '"code": *5[0-9][0-9]' -e "'status': '5[0-9][0-9]'" -e 'HTTP(/[0-9.]+)? 5[0-9][0-9]'
 }
 
 # Run a gcloud READ ($4...) with stdout to $2 and stderr to $3, retrying a 429
@@ -2537,18 +2575,50 @@ for target in ${BUILT[@]+"${BUILT[@]}"} ${REUSED[@]+"${REUSED[@]}"}; do
   # digests into one: release run 35972131246 wrote all eight manifest entries
   # as `sha256:<release build>sha256:<pr build>`. The JSON carries full resource
   # paths, so the tag and the digest are the last segment of each.
-  if digest_err="$(gcloud artifacts docker tags list "${image}" \
-       --project "${PROJECT_ID}" --filter="tag:${TAG}" --format=json \
-       2>&1 >"${DIGEST_OUT}")"; then
-    digest="$(jq -r --arg t "${TAG}" '
-        [ .[] | select((.tag // "" | split("/") | last) == $t)
-              | (.version // "" | split("/") | last) ]
-        | unique | if length == 1 then .[0] else "" end' "${DIGEST_OUT}" 2>/dev/null || true)"
-  else
-    # Exits here if the session is dead, so nothing below can misreport it as a
-    # missing image.
-    die_if_auth_failure "${digest_err}"
-  fi
+  #
+  # READ AGAIN, up to DIGEST_READ_ATTEMPTS, only when the registry has not
+  # answered yet: a server-side failure, or an answer without the tag (the
+  # listing can lag a tag this run added seconds ago). An auth failure ends the
+  # run here, a refusal or a tag naming several digests fails the image at
+  # once, and the last miss is exactly the single read's: the image is
+  # unreadable and no manifest is written.
+  attempt=1
+  while :; do
+    digest=""
+    digest_err=""
+    no_answer=""
+    if digest_err="$(gcloud artifacts docker tags list "${image}" \
+         --project "${PROJECT_ID}" --filter="tag:${TAG}" --format=json \
+         2>&1 >"${DIGEST_OUT}")"; then
+      # Every digest the tag names, one per line; "?" when the answer is not
+      # the JSON list asked for, which is no answer to read again.
+      digests="$(jq -r --arg t "${TAG}" '
+          [ .[] | select((.tag // "" | split("/") | last) == $t)
+                | (.version // "" | split("/") | last) ]
+          | unique | .[]' "${DIGEST_OUT}" 2>/dev/null || printf '?\n')"
+      if [[ -z "${digests}" ]]; then
+        no_answer="no entry for the tag :${TAG}"
+      elif [[ "${digests}" != *$'\n'* && "${digests}" != "?" ]]; then
+        digest="${digests}"
+      elif [[ "${digests}" != "?" ]]; then
+        digest_err="the tag :${TAG} names $(printf '%s\n' "${digests}" | wc -l | tr -d ' ') digests: $(printf '%s' "${digests}" | tr '\n' ' ')"
+      fi
+    else
+      # Exits here if the session is dead, so nothing below can misreport it as
+      # a missing image.
+      die_if_auth_failure "${digest_err}"
+      if server_gave_no_answer "${digest_err}"; then
+        no_answer="$(printf '%s\n' "${digest_err}" | grep -E 'ERROR|INTERNAL|UNAVAILABLE|DEADLINE_EXCEEDED|5[0-9][0-9]' \
+          | head -n 1 | redact | cut -c1-200 || true)"
+        [[ -n "${no_answer}" ]] || no_answer="a server-side error"
+      fi
+    fi
+    if [[ -z "${no_answer}" || "${attempt}" -ge "${DIGEST_READ_ATTEMPTS}" ]]; then break; fi
+    delay="$(backoff_delay "${DIGEST_READ_BACKOFF}" "${DIGEST_READ_BACKOFF_MAX}" "${attempt}" 0)"
+    warn "${target}: digest read-back attempt ${attempt}/${DIGEST_READ_ATTEMPTS} got no answer (${no_answer}); reading again in ${delay}s"
+    sleep "${delay}"
+    attempt=$((attempt + 1))
+  done
   if [[ -z "${digest}" ]]; then
     err "${target}: built, but its digest could not be read back"
     [[ -z "${digest_err}" ]] || printf '%s\n' "${digest_err}" | head -n 2 | sed 's/^/     /' >&2

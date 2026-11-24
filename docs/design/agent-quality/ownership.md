@@ -18,7 +18,7 @@ is frozen and owned by no package; a need there is a contract request.
 
 | Package | Owns | Its tests |
 |---|---|---|
-| Baseline and capability inventory (this one) | `docs/design/agent-quality/`, `scripts/agent_quality_inventory.py` | `tests/unit/scripts/test_agent_quality_inventory.py` |
+| Baseline and capability inventory (this one) | `docs/design/agent-quality/` | none: documents kept by hand (issue 74 retired their census) |
 | Work contracts and territory | `apps/agent-worker/agent_worker/territory.py`, `expected_outputs.py`, `specverify.py`, `verdict.py`, `questions.py`, `owner_questions.py`; `apps/swarm-api/swarm_api/territory.py`, `laneterritory.py` | `tests/unit/worker/test_territory_warn.py`, `test_specverify_upstream.py`, `test_verdict_gate.py`, `test_fencing.py`; `tests/unit/control_plane/test_plan_territory.py`, `test_territory_input.py` |
 | Jev accounting and adapter | `apps/agent-worker/agent_worker/judge/`, `jevkey.py`, `qualitygates.py`, `runners/jev_launch.py`; `apps/swarm-api/swarm_api/jevusage.py`, `routes/jev_usage.py`, `judgment.py`; `apps/swarm-ui/src/JevUsagePage.tsx`; `images/agent-runtime-base/jev-gates/` | `tests/unit/worker/test_jev_*.py`, `test_judge_*.py`, `test_quality_gates.py`; `tests/unit/control_plane/test_jev_usage.py`, `test_issue_run_jev_hold.py`; `apps/swarm-ui/src/__tests__/jev.*.test.tsx` |
 | Index and freshness | `apps/agent-worker/agent_worker/indexrun.py`, `indexspec.py`; `apps/swarm-api/swarm_api/repoindex.py`, `indexfailure.py`, `schedtypes/repo_index_refresh.py`; `apps/swarm-graph/`; `images/agent-runtime-indexer/` | `tests/unit/control_plane/test_repository_index*.py`; `tests/unit/worker/test_index_run_*.py`, `test_repo_index_*.py`; `tests/unit/graphsvc/` |
@@ -38,7 +38,7 @@ body under "Shared-file hunks".
 
 | File | Lines | What each package reaches there |
 |---|---|---|
-| `apps/agent-worker/agent_worker/lifecycle.py` | 21,782 | `Worker` (most of the file): graph staging (`graphstage_mod.prepare`, context packs), Jev's gates (`Worker._quality_gates_env`), the fencing revalidation before publish and merge (contracts), the leak scan at publish (`final_tree_leak`, verification), cost and usage (`_add_spend`, `_usage_summary`, `_subagent_cost_usd`, evidence), console links in the PR body (`pr_body_with_console_links`) |
+| `apps/agent-worker/agent_worker/lifecycle.py` | 21,782 | `Worker` (most of the file): graph staging (`graphstage_mod.prepare`, context packs), Jev's gates (`Worker._quality_gates_env`), the fencing revalidation before publish and merge (contracts), the leak scan at publish (`final_tree_leak`, bound from `publish_guard.py`; verification), cost and usage (`_add_spend`, `_usage_summary`, bound from `usage.py`; evidence), console links in the PR body (`pr_body_with_console_links`) |
 | `apps/swarm-api/swarm_api/validation.py` | 4,880 | the workflow switches (`DISPATCH_SWITCHES`, the arm of an experiment), model class (`resolve_task_model`), max turns (`validate_max_turns`), the base commit of a replay (`check_repository_ref`), additional repositories' refusals (`AdditionalRepositoriesDisabled` and its siblings), registered MCP servers' refusals, merge planning |
 | `apps/swarm-api/swarm_api/issueruns.py` | 3,951 | plan territory and its lock (`territory_overlap`, `territory_refusal`), the planner's duplicate verdict (`NotReadyVerdict`), the owner signature that accepts Jev's hold (`_narrowed`), plan compilation (`compile_plan`) |
 

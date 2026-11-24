@@ -104,6 +104,176 @@ run's own; the plan schema has no field for a profile, image, command,
 resource class, backend or branch. Text reaches agents between delimiter
 lines carrying the run id or a fresh nonce, as data.
 
+## The plan lint, the one re-plan and the hold for a person
+
+A plan that parses can still be one nobody can check: no requirement to hold
+it to, a step that names no file or no test, a requirement no step delivers,
+two parallel steps editing one file. `planlint.lint(plan)` names each of these
+as a finding with a stable code, the step or the 1-based requirement it names,
+and one sentence:
+
+| code | the plan |
+|---|---|
+| `requirements_missing` | states no requirement |
+| `step_files_missing` | has several steps, and this one names no file it edits |
+| `step_tests_missing` | has several steps, and this one names no test that proves it |
+| `requirement_uncovered` | has no step whose `requirements` names this one (the one step of a single-step plan covers all) |
+| `file_shared` | has two steps not on one dependency line naming one file (`parallel_file_conflicts`) |
+| `plan_invalid` | did not parse at all: the schema's errors, one finding each |
+
+A step links to what it delivers by `PlanStep.requirements`, the requirement
+numbers 1 up, as `validation.tests[].requirements` numbers them; the planner's
+prompt asks for it. The lint is pure: no model, no network, no clock, so the
+same plan always gives the same findings in the same order, and a run read
+twice shows the same list.
+
+**Where it runs.** In `advance_run`'s planner seam (`routes/runs.py`,
+`_from_planner`), after `parse_planner_output`, on every planner output. A
+plan with no finding goes on exactly as before: `PLANNED`, or straight on to an
+automatic approval; no extra task, no extra wait.
+
+**The one re-plan.** On a parse failure or any finding, and only while the
+run's `plan_lint.replans` is 0, the run stays `PLANNING` and one more planner
+task is submitted: the first planner's prompt whole, plus the findings between
+two delimiter lines carrying the run id (`PLAN ERRORS`), as data about the
+first output and never as instructions, and a line saying what to fix. It is
+submitted as the run's owner (`run_owner_auth`) with the first planner's model
+class, profile and limits, and admitted and reserved like any task. The claim
+is written first, in a `PLANNING → PLANNING` transaction that sets
+`plan_lint.replans = 1` with the findings; the task id is linked after. So the
+count is read from the run document: a restart, a second tick or a second
+replica between the first failure and the submit finds `replans == 1` and
+never starts a second re-plan; a claim whose task was never linked is adopted
+(the task found by `metadata.issue_run`) or, once older than
+`REPLAN_CLAIM_BOUND_SECONDS`, submitted again under the same claim. Before that
+submit the visit renews the claim, a compare-and-set on `plan_lint.claimed_at`
+in one transaction: two visits that both found the claim overdue and nothing to
+adopt race on that write, the loser gets a Conflict and re-reads, so only one
+submits, and the renewed claim is inside the bound again for every later visit.
+
+**The hold.** If the re-plan's output fails parse or lint too, the run is not
+`FAILED`: it moves to `PLANNED`, the run's existing wait for a person, with
+`plan_approval` made `required` and `plan_lint.held = true`. No new state:
+`PLANNED` is already where a person edits, approves or rejects, and it holds
+nothing. The plan shown is the re-plan's if it parsed, else the latest earlier
+output that did; with neither, the run is `PLANNED` with no plan and a person
+edits one in or rejects it: there is no digest to send, so `plan:edit` sends
+none (`PlanEdit.plan_digest` is optional for that run alone, and refused
+`plan_changed` on a run that has a plan), and the console draws Edit plan and
+Reject, without Approve, the editor opening on one empty step. The findings are on the run and served by
+`GET /v1/runs/{run_id}` as `plan_lint` (`replans`, `held`, `findings`,
+`replan_findings`, `planner_task_ids`, `replan_error`); the console's run page
+lists them, code and sentence, above the plan's steps. An edit relints: the
+findings shown are always the current plan's.
+
+**Never approved past a failed lint automatically.** An automatic approval
+(`plan_approval: auto`, or a schedule's) of a plan with any finding is refused
+inside the approval's transaction; a person's approval is not: the lint is
+advice to a person, a gate only on the automatic path.
+
+**Capacity (invariants 1 to 3).** A run waiting for its re-plan is `PLANNING`
+with one planner task: that task alone creates demand, from `LEASED`, reserved
+all-or-nothing by the ordinary admission path, exactly as the first planner. A
+held run is `PLANNED` and has no task: it costs nothing.
+
+**The switch.** `SWARM_PLAN_LINT=off` turns the whole of this off (no lint, no
+re-plan, no hold, no refusal of an automatic approval); it is on by default.
+
+## Each step says when it is done (`done_when`)
+
+A requirement says what the issue needs; it does not say when ONE step of a
+plan of several is finished, so the review could only judge a step against the
+plan's summary. A plan step may now carry `done_when`: 1 to
+`MAX_STEP_DONE_WHEN` (8) statements, each one plain-text line of at most
+`MAX_DONE_WHEN_CHARS` (300) characters with no control character, that a
+reviewer can check is true or false of the branch. Each is named
+`<step_id>.<n>`, `n` from 1 in the step's order. The planner's prompt asks for
+them on every step.
+
+**Why a warning and not a finding.** Statements are new, and a plan that has
+none is no less checkable than it was yesterday: refusing it, re-planning it or
+holding its automatic approval for that alone would spend a planner task and a
+person's attention on what worked before. So `planlint.warnings(plan)` reports
+`step_done_when_missing` for each step of a multi-step plan that states none,
+and `planlint.lint` never does: the code is in `planlint.WARNING_CODES`, not
+`CODES`. The warnings are computed from the plan as it is now, so an edit's are
+current; `GET /v1/runs/{run_id}` serves them as `plan_warnings`, and the plan
+comment on the issue lists them under "Plan lint warnings". With
+`SWARM_PLAN_LINT=off` there are none.
+
+**Where the statements go.** All three places fence them as data, as the plan's
+other text is fenced (`donewhen`, the same rules as `planfiles`): between two
+delimiter lines carrying the run id, each statement folded onto one line with
+its @-mentions broken and the delimiters stripped from it. A section holds at
+most `MAX_DONE_WHEN_BYTES`; past it every statement is cut to an equal share,
+and no id the review must answer is ever dropped.
+
+* The step's build prompt lists that step's own statements.
+* The review prompt lists every step's statements, and its verdict.json gains
+  `done_when`: one `{"id", "met", "note"}` entry per id. An unmet statement is
+  also a finding, so the review says NOT_YET and the fix runs. The worker's
+  verdict reader takes `verdict` and `findings` and ignores other keys, so the
+  fix's gate, the re-review and the fix loop read the file as before.
+* The fix prompt lists every statement and tells the fix to make true each
+  one that verdict.json's `done_when` marks `"met": false`. The fix is compiled
+  at approval, before any review ran, so it reads which ones are unmet from the
+  verdict staged for it, not from its prompt.
+* The plan comment shows each step's statements under it, numbered as the
+  review names them.
+
+**A plan with none runs exactly as before.** The field is optional and never
+defaulted into the stored plan, so a plan stored before it keeps its digest,
+and every section above is empty for it: its compiled prompts are byte for byte
+what they were.
+
+## The planner is told what a step costs and how the issue's earlier runs ended
+
+A planner that cannot see the price of a step splits work too finely, and one
+that cannot see the issue's past repeats a plan that was already refused. So
+the planner's prompt carries two more sections (`swarm_api/planhistory.py`),
+both plain text in the one planner task `start_run` already submits: no new
+model call, no new task, no schedule change.
+
+**The cost model is data.** The numbers live in ONE file,
+`apps/swarm-api/swarm_api/plan_costs.json`, with the date they were measured
+(`measured_on`) and the window (`window_days`): a build step's median cost,
+turns and minutes, a review's and a fix's median cost, a whole
+build-review-fix workflow's median and ninetieth percentile, and the turn
+count past which a step costs disproportionately (`turns_knee`). Measured
+2026-11-23 over the previous 30 days: a build step about $3.60, 63 turns and
+36 minutes; a review about $1.10; a fix about $1.40; a workflow $5.90 at the
+median and $15.60 at the ninetieth percentile; the knee at about 100 turns.
+Re-measuring is an edit to that file, never a code change. The sentences
+around the numbers (each extra step adds a review and a merge; size a step
+well under the knee) are in the code. A file that cannot be read, lacks a
+number or would render past 2 KiB leaves the section out, logged: a planner
+is never refused for its cost note.
+
+**The earlier runs are the workspace's own.** `start_run` reads the runs of
+the same repository and issue number with `IssueRuns.for_issue` and the run's
+own tenant, the same tenant-scoped read every run route uses: the query
+filters on `tenant_id` and every row is checked again. `planhistory` checks
+the tenant, the repository and the number a third time, so another
+workspace's run of the same issue number is never shown. Of those, the ended
+runs, most recent first, at most five: each one's plan step titles, how it
+ended -- merged, done with no change, refused by review, failed plan lint
+(held, or then rejected), rejected by a person, cancelled, failed, not ready
+-- and the reason stored with it (`error`, `rejection_reason`, the lint's
+codes, the NOT_READY reason). Live runs are left to the IN FLIGHT section; a
+run held after failing the lint is listed, since its plan was already
+refused.
+
+**Fenced as the open work is.** A stored reason can carry text an agent or a
+person wrote. The section sits between two delimiter lines carrying the new
+run's id and says it is data; every free text is folded onto one line with
+its @-mentions broken (`forge.neutral_line`), each reason cut to 500
+characters, and the run's own delimiters are stripped until none is left.
+
+**Bounded.** The section takes at most 6 KiB (`MAX_EARLIER_RUNS_BYTES`),
+delimiters and notes included; past it the OLDER runs are dropped and the
+section says how many. The open work's share of the 64 KiB prompt is what is
+left after both sections. With no earlier run the section is absent.
+
 ## Why the planner reads every open issue and pull request, and what caps apply
 
 The issue-run guardrails design asks the planner to avoid conflicts: work already in flight, two issues
@@ -676,10 +846,11 @@ whose `max_rounds` is the run's `fix_rounds`, under the same two conditions
 as any workflow that merges on its review (the owner, 9 November 2026;
 `issueruns._with_review_rounds`):
 
-* **the `fix-loop` runner type is available.** Until contract request 151
-  makes it so, the run compiles the single re-review it always had
-  (`issueruns._with_rereview`). Why: the loop is built, but it is not
-  switched on until its acceptance check passes.
+* **the `fix-loop` runner type is available.** Contract request 151 makes
+  it so (applied again 2026-11-23). Wherever it is not (the request
+  reverted), the run compiles the single re-review it always had
+  (`issueruns._with_rereview`). Why: an appended loop on an unavailable
+  profile would refuse the whole run as disabled.
 * **the run asked for no security review.** A run with a security review
   keeps the single re-review. Why: a merge behind a loop reads only the
   loop, and the security review judges one head, which later rounds would

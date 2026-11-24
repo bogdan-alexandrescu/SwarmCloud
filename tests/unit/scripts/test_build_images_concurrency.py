@@ -302,6 +302,36 @@ if args[:4] == ["artifacts", "docker", "tags", "list"]:
         (f"pr-99-{wanted}", "sha256:" + hashlib.sha256(f"{image}@pr".encode()).hexdigest()),
         (wanted, "sha256:" + hashlib.sha256(f"{image}@{wanted}".encode()).hexdigest()),
     ]
+    # FAKE_TAGS_TARGET's reads answer in the order FAKE_TAGS_PLAN lists
+    # (test_build_images_digest_retry.py); a last entry ending in `*` repeats
+    # for ever, and a plan that has run out answers `ok`.
+    outcome = "ok"
+    if name == os.environ.get("FAKE_TAGS_TARGET"):
+        plan = [p for p in os.environ.get("FAKE_TAGS_PLAN", "").split(",") if p]
+        n = bump(f"tags-{name}")
+        if plan and n > len(plan) and plan[-1].endswith("*"):
+            outcome = plan[-1]
+        elif n <= len(plan):
+            outcome = plan[n - 1]
+        outcome = outcome.rstrip("*")
+    record(event="tags", target=name, outcome=outcome)
+    failures = {
+        "internal": "ERROR: (gcloud.artifacts.docker.tags.list) INTERNAL: Internal error encountered.",
+        "unavailable": "ERROR: (gcloud.artifacts.docker.tags.list) UNAVAILABLE: The service is currently unavailable.",
+        "http503": "ERROR: (gcloud.artifacts.docker.tags.list) HttpError: response: <{'status': '503'}>",
+        "auth": "ERROR: (gcloud.artifacts.docker.tags.list) There was a problem refreshing your current auth tokens: Reauthentication required.",
+        "denied": "ERROR: (gcloud.artifacts.docker.tags.list) PERMISSION_DENIED: Permission 'artifactregistry.tags.list' denied on resource (or it may not exist).",
+        "notfound": "ERROR: (gcloud.artifacts.docker.tags.list) NOT_FOUND: Requested entity was not found.",
+    }
+    print(f"Listing items under project p, location r, repository swarm-images.", file=sys.stderr)
+    if outcome in failures:
+        print(failures[outcome], file=sys.stderr)
+        sys.exit(1)
+    if outcome == "empty":
+        # The tag was added seconds ago and the listing does not show it yet.
+        rows = rows[:1]
+    elif outcome == "two":
+        rows.append((wanted, "sha256:" + hashlib.sha256(f"{image}@other".encode()).hexdigest()))
     if fmt == "json":
         base = f"projects/p/locations/r/repositories/swarm-images/packages/{name}"
         print(json.dumps([
@@ -315,6 +345,20 @@ if args[:4] == ["artifacts", "docker", "tags", "list"]:
 
 print("fake gcloud: unhandled " + " ".join(args), file=sys.stderr)
 sys.exit(2)
+'''
+
+
+# A `sleep` that records every wait and spends real time only on the
+# scheduler's short polls (BUILD_POLL_INTERVAL, 0.1 s here), so a backoff of
+# seconds costs a test nothing and the scheduler still does not spin.
+FAKE_SLEEP = r'''#!{python}
+import json, os, sys, time
+
+seconds = float(sys.argv[1]) if len(sys.argv) > 1 else 0.0
+with open(os.environ["FAKE_EVENTS"], "a") as fh:
+    fh.write(json.dumps({"event": "sleep", "seconds": seconds, "t": time.time()}) + "\n")
+if seconds <= 0.1:
+    time.sleep(seconds)
 '''
 
 
@@ -351,6 +395,7 @@ def _run(
     seconds: float = 1.5,
     plant_creds: bool = False,
     gcloudignore: str | None = None,
+    fake_sleep: bool = False,
     **fakes: str,
 ):
     root = _sandbox(tmp_path)
@@ -363,6 +408,10 @@ def _run(
     gcloud = bindir / "gcloud"
     gcloud.write_text(FAKE_GCLOUD.replace("{python}", sys.executable))
     gcloud.chmod(0o755)
+    if fake_sleep:
+        sleep = bindir / "sleep"
+        sleep.write_text(FAKE_SLEEP.replace("{python}", sys.executable))
+        sleep.chmod(0o755)
     events_file = tmp_path / "events.jsonl"
     home = tmp_path / "home"
     home.mkdir()

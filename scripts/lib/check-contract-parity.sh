@@ -655,18 +655,23 @@ else:
 from swarm_common.models import EndCause, Task             # noqa: E402
 
 frozen_fields = set(f.name for f in dataclasses.fields(Task))
-iface = re.search(r"export interface Task \{(.*?)\n\}", SRC, re.S)
+# The console's Task extends the type GENERATED from swarm-api's OpenAPI
+# document (scripts/gen_api_types.py, part of #72), so its fields are declared
+# in that file, not in types.ts.
+GENERATED_TS = Path(repo_root) / "apps/swarm-ui/src/generated/api-types.ts"
+iface = re.search(r"export interface Task \{(.*?)\n\}",
+                  GENERATED_TS.read_text() if GENERATED_TS.is_file() else "", re.S)
 wanted = ["parent_attempt_id", "parent_task_id"]
 if iface is None:
-    emit("MISSING", "Task.parent_*", "no export interface Task block")
+    emit("MISSING", "Task.parent_*", "no export interface Task block in the generated api-types.ts")
 elif not set(wanted) <= frozen_fields:
     emit("DRIFT", "Task.parent_*", "the frozen Task lacks %s" % " ".join(sorted(set(wanted) - frozen_fields)))
 else:
     declared = [w for w in wanted if re.search(r"\n\s*%s\??\s*:" % w, iface.group(1))]
     if declared == wanted:
-        emit("OK", "Task.parent_*", "types.ts declares %s" % " ".join(wanted))
+        emit("OK", "Task.parent_*", "the generated Task declares %s" % " ".join(wanted))
     else:
-        emit("DRIFT", "Task.parent_*", "types.ts declares %s of %s" % (" ".join(declared) or "none", " ".join(wanted)))
+        emit("DRIFT", "Task.parent_*", "the generated Task declares %s of %s" % (" ".join(declared) or "none", " ".join(wanted)))
 
 # -- 10. the credential an attempt ran on (contract request 152) ----------
 # Attempt.account_id, credential_source and credential_tier, restated on
@@ -2207,7 +2212,10 @@ else
   # in fixture order, exactly as before. A batch is waited on pid by pid, so a
   # redact() that fails is reported against its case instead of vanishing in a
   # bare `wait`, which always returns 0. Batches, not `wait -n`: bash 3.2.
-  REDACT_JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+  # nproc, not getconf: getconf counts the node's CPUs (8 in a container
+  # limited to 6, measured 2026-11-23), nproc the ones this process may use.
+  # getconf is the fallback where nproc is missing (macOS).
+  REDACT_JOBS="$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
   [[ "${REDACT_JOBS}" =~ ^[0-9]+$ && "${REDACT_JOBS}" -ge 1 ]] || REDACT_JOBS=4
   # Capped: past 8 the sed processes only contend for the same few cores a CI
   # runner has, and the check's own memory stays small.

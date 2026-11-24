@@ -203,6 +203,7 @@ from ..brokerclient import AccountPool
 from .accounts import VOICE_POOL, account_pool
 from .profile import preferences_store
 from ..preferences import Preferences
+from ..voice import budget as vbudget
 from ..voice import cards as vcards
 from ..voice import grant as vgrant
 from ..voice import ledger as vledger
@@ -210,8 +211,11 @@ from ..voice import preferences as vprefs
 from ..voice import projectstate as vstate
 from ..voice import sessions as vs
 from ..voice import settings as vsettings
+from ..voice import speech_catalogue as cat
+from ..voice import speech_machine as sm
 from ..voice import store as vstore
 from ..voice import stream as vstream
+from ..voice import workfeed as vwork
 
 router = APIRouter(prefix="/v1/voice", tags=["voice"])
 log = logging.getLogger("swarm_api.voice.refused")
@@ -301,6 +305,9 @@ class WorkReport(BaseModel):
 
     delegation: dict[str, Any] | None = None
     roster: list[Any] | None = None
+    #: The follower's question each tick: the caps' state, and the notices
+    #: the voice has not yet said (voice/budget.py `enforce`); nothing else.
+    budget: Literal[True] | None = None
 
 
 class Seen(BaseModel):
@@ -341,14 +348,15 @@ def speech_machine(request: Request, ctx: AppContext = Depends(get_context)) -> 
     return machine if machine is not None else rvs.machine_for(request.app, ctx)
 
 
-def _service(ctx: AppContext, client: Any, machine: Any = None) -> vs.VoiceSessions:
+def _service(ctx: AppContext, client: Any, machine: Any = None,
+             after_end: Callable[..., None] | None = None) -> vs.VoiceSessions:
     if client is None:
         raise vs.unavailable()
     return vs.VoiceSessions(ctx.db, client,
                             marker_key=str(getattr(ctx.settings, "child_key", "") or ""),
                             now=ctx.now,
                             class_models=ctx.settings.worker_class_models,
-                            machine=machine)
+                            machine=machine, after_end=after_end)
 
 
 #: The broker's reasons for "no account" (`GET /v1/voice/pool`); anything
@@ -392,6 +400,7 @@ def _check_id(value: str, prefix: str, what: str) -> None:
 @router.post("/sessions")
 async def start_session(
     body: StartSession,
+    request: Request,
     person: str = Depends(allowed_person),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
@@ -412,6 +421,11 @@ async def start_session(
             tenant_id=tenant_id, person=person, session_id=body.session_id, offer=offer))
     if body.project_id is not None:
         _check_id(body.project_id, "vp_", "project_id")
+    # The day cap (§3.8), read before anything is written: a day at its cap
+    # starts no session, takes no marker and asks swarm-voice nothing.
+    await run_in_threadpool(lambda: _guard(ctx, request).refuse_start(
+        tenant_id=tenant_id, person=person))
+    if body.project_id is not None:
         # A session start reads its project: its merge is settled first
         # (voice-it.md §3.13.2, settled on read).
         project_id = body.project_id
@@ -430,6 +444,55 @@ async def start_session(
                              chosen=chosen)
 
     return await run_in_threadpool(_start)
+
+
+class WarmSpeech(BaseModel):
+    """The warm takes no field: no machine, zone, image or engine (invariant 10)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+@router.post("/speech/warm")
+async def warm_speech(
+    request: Request,
+    body: WarmSpeech | None = None,
+    person: str = Depends(allowed_person),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+    client: Any = Depends(voice_client),
+    machine: Any = Depends(speech_machine),
+) -> dict:
+    """THE WARM (voice/speech_machine.py; own-speech §4.1). Talk posts it once
+    when it opens: the speech machine starts in the background when nothing
+    holds it, for a caller a session start would admit, with own speech the
+    engine Settings select. The same checks in the same order as a start: the
+    Voice it list (403), the console's workspace, swarm-voice deployed (503),
+    the day cap (409 voice_day_cap); then `{warming: false, reason}` and
+    nothing written when Settings name another engine or none is deployed
+    (`not_own_speech`), the person already has a session (`live_session`),
+    the lease is held (`held`) or this person warmed under
+    WARM_EVERY_SECONDS ago (`rate_limited`). Otherwise `{warming: true,
+    reason: started, within_seconds}`, answered before any Compute call:
+    the start is the one a session runs, on `rvs.warm_runner`'s thread. It
+    asks swarm-voice and the OpenAI pool nothing, and touches no task,
+    capacity reservation or task lease."""
+    service = _service(ctx, client, machine)
+    await run_in_threadpool(lambda: _guard(ctx, request).refuse_start(
+        tenant_id=tenant_id, person=person))
+    chosen = (await run_in_threadpool(vsettings.VoiceSettings(ctx.db, now=ctx.now).read))["settings"]
+    engine = chosen.get("engine")
+    engine = engine if engine in vs.ENGINE_MODES else cat.DEFAULTS["engine"]
+    if machine is None or vs.ENGINE_MODES[engine] != vs.MODE_SPEECH:
+        return {"warming": False, "reason": sm.WARM_NOT_SELECTED}
+    if await run_in_threadpool(lambda: service.holds_live(person=person)):
+        return {"warming": False, "reason": sm.WARM_LIVE_SESSION}
+    outcome, holder = await run_in_threadpool(lambda: machine.begin_warm(
+        tenant_id=tenant_id, person=person, chosen=chosen))
+    if holder is None:
+        return {"warming": False, "reason": outcome}
+    rvs.warm_runner(request.app)(lambda: machine.finish_warm(
+        holder, tenant_id=tenant_id, person=person, chosen=chosen))
+    return {"warming": True, "reason": outcome, "within_seconds": int(sm.READY_SECONDS)}
 
 
 @router.post("/sessions/{session_id}/reopen")
@@ -501,17 +564,45 @@ async def work(
     request: Request,
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
+    client: Any = Depends(voice_client),
+    machine: Any = Depends(speech_machine),
 ) -> dict:
     """swarm-voice's report of a delegation's lifecycle or the roster's
     changed rows (voice-it.md §3.12.5, §3.12.6), through its session's grant
-    only, for that session only (`voice.grant.record_work`)."""
+    only, for that session only (`voice.grant.record_work`), or its question
+    about the caps (`{budget: true}`).
+
+    THE CAPS (§3.8; voice/budget.py). A delegation's `started` is asked
+    before it runs: at a cap, or when one more planner turn would pass one,
+    it is 409 `conflict` with `detail.reason` (voice_budget_capped,
+    voice_session_cap, voice_day_cap) and nothing is written, so the voice
+    says one sentence instead of starting it. Every answer carries `budget`:
+    the caps warned of, the cap reached, when the session ends for it and
+    the notices this call newly recorded, for the voice to say once."""
     if auth.via != vgrant.VIA:
         raise vgrant.RouteNotGranted("only swarm-voice reports a Voice it session's work")
     _check_id(session_id, "vs_", "session_id")
     session = vgrant.session_of(request.headers.get(vgrant.SESSION_HEADER),
                                 tenant_id=auth.tenant_id, person=auth.email)
+    if session_id != session.session_id:
+        raise vgrant.RouteNotGranted("a Voice it grant writes only to its own session")
     report = {k: v for k, v in (("delegation", body.delegation), ("roster", body.roster))
               if v is not None}
+    guard = _guard(ctx, request, end=_ender(ctx, client, machine))
+    where = {"tenant_id": session.tenant_id, "person": session.person,
+             "project_id": session.project_id, "session_id": session.session_id}
+    if body.budget:
+        if report:
+            raise ValidationFailed("work is {delegation}, {roster} or {budget}",
+                                   detail={"field": "work"})
+        state = await run_in_threadpool(lambda: guard.enforce(**where))
+        return {"session_id": session.session_id, "budget": state}
+    delegation = report.get("delegation")
+    if isinstance(delegation, dict) and delegation.get("state") == vwork.STARTED:
+        # Refused here, before the event is written: nothing starts.
+        state = await run_in_threadpool(lambda: guard.admit_work(**where))
+    else:
+        state = None
     at = ctx.now()
     answer = await run_in_threadpool(lambda: vgrant.record_work(
         ctx.db, session, session_id=session_id, body=report, at=at))
@@ -521,7 +612,9 @@ async def work(
         await run_in_threadpool(lambda: vstate.settle_on_read(
             ctx.db, tenant_id=session.tenant_id, person=session.person,
             project_id=session.project_id, now=ctx.now))
-    return answer
+    if state is None:
+        state = await run_in_threadpool(lambda: guard.enforce(**where))
+    return {**answer, "budget": state}
 
 
 @router.post("/sessions/{session_id}/seen")
@@ -568,6 +661,7 @@ class EndSession(BaseModel):
 @router.post("/sessions/{session_id}/end")
 async def end_session(
     session_id: str,
+    request: Request,
     body: EndSession | None = None,
     person: str = Depends(allowed_person),
     tenant_id: str = Depends(tenant_scope),
@@ -575,7 +669,11 @@ async def end_session(
     client: Any = Depends(voice_client),
     machine: Any = Depends(speech_machine),
 ) -> dict:
-    service = _service(ctx, client, machine)
+    from .voice_record import summaries_for  # voice_record imports this module
+
+    # The session's summary starts once it is closed (voice/record.py).
+    service = _service(ctx, client, machine,
+                       after_end=summaries_for(request, ctx, client).after_end if client is not None else None)
     _check_id(session_id, "vs_", "session_id")
     return await run_in_threadpool(
         service.end, tenant_id=tenant_id, person=person, session_id=session_id,
@@ -809,6 +907,19 @@ def _ledger(ctx: AppContext, prefs: Preferences, request: Request) -> vledger.Vo
         prices=lambda: ctx.store.get_platform_settings()["model_prices"],
         time_zone=lambda email: prefs.read(email).time_zone,
         work=getattr(request.app.state, "voice_work", None))
+
+
+def _guard(ctx: AppContext, request: Request,
+           end: Callable[..., Any] | None = None) -> vbudget.BudgetGuard:
+    """The caps, enforced over the same ledger `GET .../ledger` serves (the
+    day in UTC when the preferences cannot be read: `budget.saved_zone`), as
+    the sweep enforces them (voice_speech.budget_ledger)."""
+    return vbudget.BudgetGuard(ctx.db, rvs.budget_ledger(request, ctx), now=ctx.now, end=end)
+
+
+def _ender(ctx: AppContext, client: Any, machine: Any) -> Callable[..., Any] | None:
+    """The person's End, with the cause `budget_cap`; None without swarm-voice."""
+    return _service(ctx, client, machine).end_for_budget if client is not None else None
 
 
 @router.get("/sessions/{session_id}/ledger")

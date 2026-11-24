@@ -521,15 +521,32 @@ planner used to call the Messages API with an Anthropic API key read from the
 person's own secret, which needed a per-secret accessor grant and a stored key.
 It now runs each delegation turn the way a worker runs an agent:
 
-* **One lease per turn** (`swarm_voice/plannerlease.py`). swarm-voice asks the
+* **One lease and one child per session, kept warm**
+  (`swarm_voice/plannerwarm.py`). A cold turn paid the broker's assign and
+  Claude Code's start before its first model call, and again at the next
+  delegation. The session's first delegated turn now starts both and the next
+  ones reuse them. The session's end, a pause, a spend cap and
+  `WARM_IDLE_SECONDS` (two minutes) with no delegated turn each stop the child
+  and then give the lease back; a turn that is running is never cut for it. Two
+  minutes, because a hold is one of an account's slots (six by default, one
+  until the account's first reading) and an idle one is a slot another session
+  or lane cannot have. At most `MAX_IDLE` (two) idle children stay in the pod
+  at once, for its 2Gi; past it the longest idle one goes. A child that is
+  dead, silent or spent, and a hold that is lost, leave that turn to a lease
+  and a child of its own, as below; a turn that drew, acted or spoke is never
+  run twice. A child is reused only for the same session, person, project,
+  grant, model and tools, its tool calls are refused between turns, and its
+  HOME, with the only copy of the conversation, is removed with it.
+* **The lease** (`swarm_voice/plannerlease.py`). swarm-voice asks the
   broker's `POST /v1/accounts/assign` for an `anthropic` account with holder
   `voice-planner`, the session's person and the voice session id. The broker
   resolves the person's OWN workspace (never one the body names), picks the
   account with `choose()` over that workspace's pool, and records the hold on
   the account like an agent's, so `max_agents` and the windows see it. The hold
-  is renewed every four minutes and released in a `finally` whatever the turn
-  did. If swarm-voice dies the hold lapses on the broker's TTL, which a turn
-  (four minutes at most) never outlives unrenewed.
+  is renewed every four minutes and, for a turn of its own, released in a
+  `finally` whatever the turn did. If swarm-voice dies the hold lapses on the
+  broker's TTL, which neither a turn (four minutes at most) nor a warm child
+  outlives unrenewed.
 * **A full pool is a refusal, never a wait.** With no account free the voice
   says so ("Every Claude account in your workspace's pool is busy right
   now..."), or that the workspace has none, and nothing runs.
@@ -549,7 +566,7 @@ It now runs each delegation turn the way a worker runs an agent:
   the read tools and `speak`. It holds nothing itself: each call goes over a
   unix socket in the private HOME (checked against a per-turn nonce) back to
   swarm-voice, which runs it through swarm-api with the session grant the
-  child never sees. The turn stops the child once `speak` is answered.
+  child never sees. The turn ends at `speak`: a cold child is stopped, a warm one interrupted.
 * **Nothing secret captured.** Every line the child prints is scrubbed of the
   token and the grant before it is parsed, as the worker's redaction does. So
   are the prompt, the tool results, the cards and the spoken summary.
@@ -559,7 +576,7 @@ It now runs each delegation turn the way a worker runs an agent:
   session's $100 and the day's $300, never counts it as $0 spent, and counts
   it in `subscription_turns`.
 * **The windows.** A planner turn is one agent on one account for at most
-  four minutes. It competes with the workspace's lanes for that account's
+  four minutes, and for two idle minutes after it. It competes with the workspace's lanes for that account's
   five-hour window exactly as one more short agent would, and the broker's
   `choose()` spreads it like one. This was the reason the earlier design kept
   the planner off the pool. The owner accepted that cost on 2 November 2026.
@@ -616,7 +633,7 @@ drifted here before.
 2. The ledger adds those budgets, times 1.2, to what is already spent and
    reserved.
 3. It refuses the start if the total would pass **$100 for the session or
-   $300 for the owner's day**. The owner's day is the calendar day in his saved time
+   $300 for the owner's day**. The owner's day is the calendar day in their saved time
    zone (`user_preferences`; UTC when none is saved).
 
 Turns run one at a time, and a person has at most one live session, so the
@@ -633,6 +650,50 @@ spend grow by the second; the meter on the Talk pane shows both caps.
   Budget card. Running lanes keep running inside what they reserved. The
   conversation stays open two more minutes so the owner can raise the cap on the
   card, then the session ends; the project is kept.
+
+**How it is enforced (built; the owner's decision of 23 November 2026: the
+caps are enforced as designed).** `swarm_api/voice/budget.py` reads the same
+`VoiceLedger` computation `GET .../ledger` serves; nothing stores a total. What
+it writes is what it *did*, on the session document's `budget` field: when each
+cap was warned of, when one was reached and when its grace ends. That field is
+what keeps the warning, the grace and the card to once each.
+
+* **Start.** `POST /v1/voice/sessions` reads the day first: a day already at
+  its $300 (spent plus reserved) is refused, 409 with `detail.reason`
+  `voice_day_cap`, the cap, what is spent and what is reserved, before any
+  session, marker or lease is written and before swarm-voice is asked.
+* **Work.** swarm-voice asks before a delegation runs: its `started` report on
+  `POST .../work` waits for swarm-api's answer (`swarm_voice/worksink.py`
+  `admit`; up to five seconds, then the work runs). A session at a cap, or
+  one where one more planner turn (`DELEGATION_ESTIMATE_USD`, times 1.2) would
+  pass a cap through `reserve_or_refuse`, is refused (`voice_budget_capped`,
+  `voice_session_cap`, `voice_day_cap`), nothing is written, and the voice
+  says that reason's one sentence instead. A GPT-Live session has no work
+  sink: its planner asks the caps' state first (`planner._capped`) and says
+  the same sentence at a cap.
+* **Warning.** Crossing `WARN_SHARE` (80%) of either cap records it once per
+  session per cap, draws the session's one Budget card (status `warning`,
+  which cap) and hands back a notice. The roster follower asks every tick
+  (`POST .../work {budget: true}`) and the update queue says each warning
+  once, at a conversational gap (`swarm_voice/updates.py` `budget`).
+* **End.** Reaching a cap refuses new work at once, starts the grace
+  (`CAP_GRACE_SECONDS`, 120, beside the caps in `ledger.py`), redraws the
+  Budget card (status `capped`, `ends_at`) and the voice says it once; at the
+  grace's end the session ends with the cause `budget_cap` through
+  `VoiceSessions.end_for_budget`, the person's End path, so swarm-voice is
+  told and billing stops, and a speech session's machine lease ends with
+  `END_BUDGET_CAP`. The speech sweep (`POST /v1/internal/voice/speech/sweep`,
+  every two minutes) runs the same check for every live session, so the
+  grace ends the session even when swarm-voice never calls back.
+* **Reservations count.** A cap is reached on spent *plus* reserved: running
+  work at its step budgets times 1.2, and subscription planner turns at their
+  estimate, which are reserved and never counted as spent. A session can be
+  capped while part of its total is a reservation that later shrinks to a
+  measured cost; it ends all the same, the conservative reading.
+* **Console.** The Cost pill takes the warning tone for a cap warned of and
+  the bad tone for a cap reached, with the session's end time (no word); the
+  Budget card shows its cap's bar, the lines spent and reserved, and the end
+  time once the cap is reached.
 
 **A raise is a click and a typed amount** on the Budget card, never a spoken
 yes. The microphone cannot tell the owner from a television (question 3).
@@ -751,13 +812,23 @@ only "with limitations" [7]. The owner accepted this when he chose GPT-Live.
   card that polls do not pause on a person who is only talking. When the
   session ends, nothing calls it and the 15-minute rule applies again. That
   keeps the rule's intent: speech is proof someone is there.
-* **Silence ends a session.** After ten minutes in which neither side speaks,
-  the agent asks once whether the owner is still there, then ends the GPT-Live
-  session to stop the meter. The project is kept. **Not built for GPT-Live**
-  (on `main`, 2026-11-11, swarm-voice's `live.py` has no silence stop; text and
-  the fast front end after 900 s; an unattended session ends as `abandoned`
-  after 30 minutes without a heartbeat). §3.12.2 restates the rule: silence
-  counts only while the voice is open and no delegated work runs.
+* **Silence pauses a session** (the owner's pick of 23 November 2026, which
+  replaces "ten minutes of silence ends it", never built). After **45 seconds**
+  in which neither side speaks and no audio plays, with or without delegated
+  work in flight, the voice says one line ("I'll pause now; say something or
+  press Resume to carry on.", or with work in flight "I'll pause while that
+  runs; ...") and swarm-voice closes the GPT-Live session, keeping the voice
+  session, transcript, cards, grant and lease exactly as the pause with work
+  running does (§3.12.7). It never pauses while either side is mid-sentence,
+  while a read-back waits for the owner's answer, or within the first 45
+  seconds of a session or of a reopen, and says its line once per pause. The
+  console shows Paused with Resume; the owner's next word, Resume or a result
+  reopens it with a fresh offer. Before this, a GPT-Live session in which
+  nobody spoke was billed per minute until someone ended it. A paused session
+  nobody resumes is ended by swarm-api as `paused_idle` after an hour
+  (`PAUSED_IDLE_SECONDS`), the Voice it lease held and renewed until then.
+  Text and the fast front still end after 900 s; an unattended session still
+  ends as `abandoned` after 30 minutes without a heartbeat.
 * **Keyboard.** Hold Space (outside a text field) to talk, M to mute,
   Escape to stop.
 * **Headphones are advised** in the page's first-use note; echo cancellation
@@ -935,7 +1006,7 @@ floating view still shows no card content (§3.12.8).
 | The session stream is server-sent events, stored before sent, resumed by `Last-Event-ID`, ending itself before 540 s; it carries `card.upsert`, `card.remove`, `visual.upsert`, `note.upsert`, `focus`, and `trace.turn` (debug only) | `swarm_api/voice/stream.py` (`EVENT_TYPES`, `MAX_SECONDS`) | The working card, the roster and the marker ride this one stream: no new socket, no polling per item |
 | **`session.state` and `meter.update` are declared but nothing writes them.** `VOICE_STATES` is `listening, thinking, speaking, working, ended`; the only `append_event` callers are cards, visuals and the debug trace | `stream.py` (`SESSION_STATE`, `VOICE_STATES`), `voice/cards.py`, `voice/visuals.py`, `routes/voice_trace.py` | §3.5's "streams `session.state`" is a declaration, not behaviour. This section gives the state its first writer, and adds `paused` |
 | A grant works only while the session document is `live`; ending clears its hash | `swarm_api/voice/grant.py` (`resolve`), `sessions.py` (`_close`) | **Pausing must not end the session**: the planner and the delegated work keep acting through the grant while the voice is closed |
-| **GPT-Live has no silence stop in swarm-voice.** The text conversation and the fast Claude front end after `IDLE_SECONDS = 900`; own speech's machine stops after Settings' idle (`IDLE`, default `5m`); a `live` session with no activity for `LIVE_STALE_SECONDS` (the longest idle, 900 s, plus 900 s: 30 minutes) is ended as `abandoned` by the next start or the sweep. The open stream writes `heartbeat_at` on every connect, so an open tab is never abandoned | `swarm_voice/textchat.py`, `claudefront.py`, `swarm_api/voice/speech_catalogue.py` (`IDLE`), `sessions.py` (`LIVE_STALE_SECONDS`, `ACTIVITY_FIELDS`), `routes/voice.py` (the heartbeat) | §3.10's "after ten minutes in which neither side speaks ... ends the GPT-Live session" is not built. §3.12.2 says what ends a session now |
+| **GPT-Live pauses on silence; it has no silence end.** swarm-voice pauses a `live` session after `PAUSE_AFTER_SECONDS = 45` in which nobody speaks, with or without a delegation in flight (23 November 2026), and swarm-api ends a paused one nobody resumes after `PAUSED_IDLE_SECONDS` (an hour). The text conversation and the fast Claude front end after `IDLE_SECONDS = 900`; own speech's machine stops after Settings' idle (`IDLE`, default `5m`); a `live` session with no activity for `LIVE_STALE_SECONDS` (the longest idle, 900 s, plus 900 s: 30 minutes) is ended as `abandoned` by the next start or the sweep. The open stream writes `heartbeat_at` on every connect, so an open tab is never abandoned | `swarm_voice/live.py` (`check_quiet`, `PAUSE_IDLE_SENTENCE`), `textchat.py`, `claudefront.py`, `swarm_api/voice/speech_catalogue.py` (`IDLE`), `sessions.py` (`LIVE_STALE_SECONDS`, `PAUSED_IDLE_SECONDS`, `ACTIVITY_FIELDS`), `routes/voice.py` (the heartbeat) | §3.10's "after ten minutes in which neither side speaks ... ends the GPT-Live session" is replaced by the 45-second pause. §3.12.2 says what ends a session now |
 | **The tier reopen is built in swarm-voice only.** When a key's credit is spent, `Sessions.start` for a voice session that holds a next tier runs `_reopen`: a new Live session from a fresh browser offer, carrying the transcript segments, the grant, the planner model and the trace, then closing the spent one. Nothing in swarm-api or the console sends that second offer, and the `voice.tier.reopen` event has no reader | `swarm_voice/live.py` (`REOPEN_EVENT`, `_reopen`, `REOPEN_SECONDS`) | The pause's reopen is this path, given a route and a browser side (§3.12.7). §3.11's rollover is not built either; it becomes a third caller of the same path |
 | Delegations: GPT-Live's arrive as `session.delegation.created` and run `Planner.delegate`; the fast front's run in the background, one at a time, at most two waiting, each kept in memory for `GET /delegations/{id}`; swarm-api waits on it up to `DELEGATION_WAIT_SECONDS = 240` | `swarm_voice/live.py`, `planner.py` (`TurnResult.delegation_id`), `claudefront.py` (`Delegation`), `swarm_api/voice/sessions.py` | A delegation's id exists in both engines; neither is stored, so a reload loses it. §3.12.5 stores its lifecycle as events |
 | **Nothing Voice it starts is recorded yet.** `VoiceStore.record_start` writes `voice_starts` rows (`agent`, `workflow` or `run`, by id) and the ledger reads them, but no caller writes one: the planner's only act tool is `answer_question` | `swarm_api/voice/store.py` (`record_start`), `ledger.py`, `swarm_voice/tools_act.py`, `prompts.py` ("You cannot start, approve, cancel or spend anything") | The roster reads `voice_starts` by id and the project's tag; it shows starts as soon as Phase 3's act lane writes them, and follow-ups by tag today |
@@ -968,7 +1039,7 @@ shortcuts and text fields are never captured.
 |---|---|---|
 | **End** | The End button (Talk or the floating view), Escape on Stop, or a spoken "stop the session" (`spokenAction`) | `ended_by_person` |
 | **The budget cap** | §3.8, unchanged | `budget_cap` |
-| **Silence, while the voice is open** | New for GPT-Live: ten minutes in which neither side speaks and **no delegated work is running** ends it; the voice asks once first. Own speech keeps its Settings idle rule; text keeps its 900 s. Time paused is not silence (§3.12.7) | `idle` |
+| **Silence, while the voice is open** | GPT-Live (23 November 2026): 45 seconds in which neither side speaks **pauses** it, with or without delegated work running; the voice says one line first. A paused session nobody resumes ends after an hour (`paused_idle`). Own speech keeps its Settings idle rule; text keeps its 900 s. Time paused is not silence (§3.12.7) | `paused_idle` |
 | **A long pause** | A paused session with no delegated work running and no activity from the owner for **60 minutes** ends (question 10). Paused time while work runs never ends it | `paused_idle` |
 | **Closing the tab** | `pagehide` sends the end with `fetch(..., {keepalive: true})`, which carries the session cookie and the workspace header (a beacon cannot send the header). If it never arrives: own speech ends after its 60 s socket grace (`tab_closed`); GPT-Live's peer is gone, and the abandonment rule ends the session after `LIVE_STALE_SECONDS` with no heartbeat | `tab_closed`, else `abandoned` |
 | **A reload** | Is a closed tab: a WebRTC peer cannot survive a page load. The project is kept, and Voice it › Projects › Resume continues it | as closing the tab |

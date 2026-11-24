@@ -12,8 +12,10 @@ So every prompt carries one platform line, built by `cliagent.time_limit_line`,
 naming the limit in minutes and its end time in UTC, and telling the agent to
 commit before then -- and not to run tests in the background and poll them
 with sleep. A fresh start
-with a repository has it just before PUBLISH_PARAGRAPH, which still ends the
-prompt; one without a repository has it last. A session resumed to wrap up
+with a repository has it last in the user prompt, PUBLISH_PARAGRAPH ending
+claude-code's system prompt (`--append-system-prompt`, 2026-11-23; codex keeps
+PUBLISH_PARAGRAPH last in its prompt, just after the line); one without a
+repository has it last. A session resumed to wrap up
 before the limit is told what is left (test_cli_wrap_up_before_deadline.py).
 So is a resumed session (an account move, a credential reload) and the
 finish pass, from the time left at that moment (owner decision 2026-10-28).
@@ -153,11 +155,18 @@ def test_repository_prompt_names_the_limit_before_the_publish_paragraph(tmp_path
 
     prompt, before, after = _run(ctx)
 
+    # claude-code's PUBLISH_PARAGRAPH is a standing paragraph: it ends the
+    # system prompt (`--append-system-prompt`, 2026-11-23), and the limit
+    # line, which varies per step, ends the user prompt.
+    argv = _runs(ctx)[0]["argv"]
+    flag = claude_code.APPEND_SYSTEM_PROMPT_FLAG
+    assert argv.count(flag) == 1, argv
+    system = argv[argv.index(flag) + 1]
+    assert system.rstrip().split("\n\n")[-1] == cliagent.PUBLISH_PARAGRAPH, system[-800:]
+    assert (system + prompt).count(cliagent.PUBLISH_PARAGRAPH) == 1
     paragraphs = prompt.rstrip().split("\n\n")
-    assert paragraphs[-1] == cliagent.PUBLISH_PARAGRAPH, prompt[-800:]
-    assert prompt.count(cliagent.PUBLISH_PARAGRAPH) == 1
-    _assert_is_the_limit_line(paragraphs[-2], before, after)
-    assert prompt.count("120 minutes") == 1, "one limit line, not one per paragraph"
+    _assert_is_the_limit_line(paragraphs[-1], before, after)
+    assert (system + prompt).count("120 minutes") == 1, "one limit line, not one per paragraph"
 
 
 def test_prompt_without_repository_names_the_limit(tmp_path, monkeypatch):
@@ -168,6 +177,7 @@ def test_prompt_without_repository_names_the_limit(tmp_path, monkeypatch):
 
     assert prompt.startswith("summarise the notes\n\n"), prompt[:200]
     assert cliagent.PUBLISH_PARAGRAPH not in prompt
+    assert cliagent.PUBLISH_PARAGRAPH not in json.dumps(_runs(ctx)[0]["argv"])
     _assert_is_the_limit_line(prompt.rstrip().split("\n\n")[-1], before, after)
 
 

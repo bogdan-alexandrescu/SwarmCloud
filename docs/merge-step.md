@@ -568,7 +568,7 @@ hold:
   worker publishes *as the person*, so the committer's address alone cannot
   tell the owner's laptop from a lane. The worker's line can, because every
   commit the worker pushes carries it: its own (`_worker_commit_message`) and
-  each agent commit it keeps, which `lifecycle.replay_agent_commits` rewrites
+  each agent commit it keeps, which `publish_guard.replay_agent_commits` rewrites
   as the person and ends with the line. Before the replay-agent-commits review the kept
   commits did not, so a red-first lane's head -- one parent, the person's
   address, linked to the pull request's author -- read as a person's push.
@@ -1076,7 +1076,7 @@ CI-fix round:
   `git merge origin/main` was pushed with one parent: GitHub kept the old
   merge base, listed every file main had changed as the PR's, and the PR still
   conflicted (PR 1316, PR 1304). The replay and the fold now keep a merge
-  parent the forge's default branch holds (`lifecycle.replay_agent_commits`,
+  parent the forge's default branch holds (`publish_guard.replay_agent_commits`,
   `gitops.fold_agent_commits`); a side branch the agent made is still
   dropped, so none of its commits is pushed as the agent wrote it. Before it
   pushes, a round checks that `git merge-base <main's head on the forge> HEAD`
@@ -3661,7 +3661,7 @@ retries in the merge slot's fenced transaction (the heartbeat thread writes
 the agent's task document and its lease meanwhile) reached the worker's crash
 handler and ended the agent `FAILED`/`runner_error` with nine of its ten
 attempts unused. Now `lifecycle.py::Worker._run_worker_action` asks
-`lifecycle.py::_unavailable_cause` of whatever the action raises: an outage
+`publish_guard.py::_unavailable_cause` of whatever the action raises: an outage
 (`ABORTED`, every server error, a spent retry budget, through the whole
 exception chain) exits 69 through `lifecycle.py::Worker._exit_action_unavailable`,
 writing only the attempt's own document and leaving the agent's task document

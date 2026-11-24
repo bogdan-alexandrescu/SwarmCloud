@@ -146,15 +146,16 @@ run "each_model_class_is_pinned_to_an_id_of_its_own_family" {
     error_message = "every pin in local.runner_models must be claude-<its own class>-...: an ID of another family runs a model nobody asked for"
   }
 
-  # The owner's pins of 2026-10-17 (Q3).
+  # The owner's pins of 2026-10-17 (Q3), fable re-pinned to claude-fable-5-2
+  # by the owner on 2026-11-23.
   assert {
     condition = local.runner_models == {
       opus   = "claude-opus-5-5"
-      fable  = "claude-fable-5-1"
+      fable  = "claude-fable-5-2"
       sonnet = "claude-sonnet-5-5"
       haiku  = "claude-haiku-5-5"
     }
-    error_message = "the class pins are the owner's of 2026-10-17: opus claude-opus-5-5, fable claude-fable-5-1, sonnet claude-sonnet-5-5, haiku claude-haiku-5-5"
+    error_message = "the class pins are the owner's of 2026-10-17 and 2026-11-23: opus claude-opus-5-5, fable claude-fable-5-2, sonnet claude-sonnet-5-5, haiku claude-haiku-5-5"
   }
 }
 

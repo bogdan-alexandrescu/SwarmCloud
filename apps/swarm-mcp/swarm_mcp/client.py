@@ -20,12 +20,14 @@ life. It lives in this process and nowhere else.
 from __future__ import annotations
 
 import collections
+import contextlib
 import copy
 import email.utils
 import json
 import os
 import random
 import re
+import secrets
 import subprocess
 import threading
 import time
@@ -34,7 +36,7 @@ import urllib.parse
 import urllib.request
 import zlib
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, Callable, Iterator, Sequence
 
 #: An ID token is good for an hour. Re-minting a few minutes early costs one
 #: subprocess and avoids the failure mode where a long `tail` dies at the
@@ -311,8 +313,8 @@ def front_door_host() -> str:
     # pointed every installed `sc` plugin at the owner's deployment: the
     # hostname in Track C's tfvars is THIS repository's deployment, not the
     # user's. `config.py` is where a user's deployment comes from now, and
-    # `tests/unit/mcp/test_contexts.py` holds this gate with an audit hook
-    # that fails on any open of a tfvars file outside the mode.
+    # this gate is audited to fail on any open of a tfvars file outside the
+    # mode.
     from .config import repo_mode
 
     if not repo_mode():
@@ -1022,8 +1024,10 @@ def runs_of(summary: dict[str, Any]) -> dict[str, Any]:
     The worker writes `runs` and `swaps` only when an attempt started more
     than one runner (SWAP-RUNS, archived issue 2457): then `duration_s` above is the SUM of
     the runs, `last_run_duration_s` the last run's alone, and `swap_cost` what
-    the swaps cost in seconds and tokens before the agent acted again. A
-    one-run attempt's outputs carry none of these keys, as before.
+    the swaps cost in seconds and tokens before the agent acted again.
+    `duration_partial: true` (and `swap_cost.partial: true`) say a run's
+    seconds were unknown and left out of that sum (issue 186). A one-run
+    attempt's outputs carry none of these keys, as before.
     """
     runs = summary.get("runs")
     if not isinstance(runs, list) or not runs:
@@ -1046,7 +1050,105 @@ def runs_of(summary: dict[str, Any]) -> dict[str, Any]:
     cost = summary.get("swap_cost")
     if isinstance(cost, dict):
         out["swap_cost"] = dict(cost)
+    # The worker leaves a run whose duration is unknown out of the sum and
+    # says so (issue 56); passed on so a shortened sum never reads as complete
+    # (issue 186). Absent when the sum is complete, as before.
+    if summary.get("duration_partial") is True:
+        out["duration_partial"] = True
     return out
+
+
+#: How long a dispatch or workflow submission's POST waits for its answer.
+#: 120, not the 60 every other call waits: a large batch or workflow is
+#: written in one transaction, and a POST that times out may still have been
+#: accepted (improvement plan 2026-11-23, item 4). A re-send after a timeout
+#: carries the first send's idempotency key (`send_submission`), so swarm-api
+#: answers the first submission instead of creating a second.
+SUBMIT_TIMEOUT_SECONDS = 120
+
+#: How many times one submission's POST is sent: once, and once more, with
+#: the SAME idempotency key, when the first had no answer in
+#: SUBMIT_TIMEOUT_SECONDS. Two, not more: a second timeout in a row is an API
+#: that is not answering, and the caller is told to read before sending again.
+SUBMIT_SENDS = 2
+
+#: Re-sends (same key) when swarm-api answers 409 `idempotency_replay_incomplete`:
+#: the first send's claim is written but its workflow document is not yet. The
+#: key never leaves the bridge, so the caller cannot re-send; the bridge waits
+#: SUBMIT_INCOMPLETE_BACKOFF_SECONDS * attempt between tries, a few seconds in total.
+SUBMIT_INCOMPLETE_RETRIES = 4
+SUBMIT_INCOMPLETE_BACKOFF_SECONDS = 0.5
+
+#: The body field swarm-api reads the key from (`swarm_api.idempotency`).
+IDEMPOTENCY_FIELD = "idempotency_key"
+
+
+def submission_key() -> str:
+    """A fresh key for ONE logical submission: random, URL-safe, 36
+    characters, inside swarm-api's 16-128. A new submission always calls
+    this; only `send_submission`'s re-send reuses a key."""
+    return f"sub_{secrets.token_urlsafe(24)}"
+
+
+def send_submission(path: str, payload: dict[str, Any], post: Callable[[dict[str, Any]], Any]) -> Any:
+    """Send one submission: `post(body)` with `payload` plus a fresh
+    idempotency key, and on a timeout send the SAME body -- the same key --
+    once more (SUBMIT_SENDS). swarm-api answers a re-sent key with the first
+    submission's ids (`idempotent_replay: true`) and creates nothing, so a
+    POST that timed out after it was accepted is not duplicated. The key is
+    added to a copy: `payload`, which a caller may keep or log, never holds
+    it, and the API's answer does not echo it, so no reply carries it. A
+    bridge that restarts mid-send loses the key with the send; the next
+    submission is a new one, with a new key."""
+    body = {**payload, IDEMPOTENCY_FIELD: submission_key()}
+    sent = 1
+    incomplete = 0
+    with submit_guard(path):
+        while True:
+            try:
+                return post(body)
+            except SwarmError as exc:
+                if (
+                    exc.status == 409
+                    and exc.code == "idempotency_replay_incomplete"
+                    and incomplete < SUBMIT_INCOMPLETE_RETRIES
+                ):
+                    incomplete += 1
+                    time.sleep(SUBMIT_INCOMPLETE_BACKOFF_SECONDS * incomplete)
+                    continue
+                if sent >= SUBMIT_SENDS or not _timed_out(exc):
+                    raise
+                sent += 1
+
+
+def _timed_out(exc: BaseException) -> bool:
+    """True when `exc` (a SwarmError) was a socket timeout, not a refusal."""
+    cause = exc.__cause__
+    if isinstance(cause, urllib.error.URLError):
+        cause = cause.reason
+    return isinstance(cause, TimeoutError)
+
+
+@contextlib.contextmanager
+def submit_guard(path: str) -> Iterator[None]:
+    """Wrap a dispatch or workflow submission's POST, which passes
+    `timeout=SUBMIT_TIMEOUT_SECONDS` itself, with the route written out as a
+    literal so the check that compares the bridge's calls with the real API
+    can read it. A timeout's error tells the caller to read the running
+    workflows before sending again: the first call may have been accepted, and
+    a re-sent batch duplicates every task in it."""
+    try:
+        yield
+    except SwarmError as exc:
+        if not _timed_out(exc):
+            raise
+        raise SwarmError(
+            f"POST {path} had no answer within {SUBMIT_TIMEOUT_SECONDS}s, sent "
+            f"{SUBMIT_SENDS} times with one idempotency key, so it was created at most "
+            "once, but it may have been accepted: read the running workflows "
+            "(swarm_workflows, or swarm_check) before sending again, because a NEW send "
+            "is a new submission."
+        ) from exc
 
 
 #: Which of the caller's tenants a request acts as (archived issue 447). The API honours it
@@ -2115,13 +2217,15 @@ class SwarmClient:
         # UNWRAPPED HERE, not by each caller. `cmd_dispatch` printed
         # `task.get("task_id", "")` off the envelope and printed an empty line,
         # which a shell then piped into `swarm tail`.
-        return unwrap_task(self.request("POST", "/v1/tasks", payload=payload))
+        return unwrap_task(send_submission("/v1/tasks", payload, lambda body: self.request(
+            "POST", "/v1/tasks", payload=body, timeout=SUBMIT_TIMEOUT_SECONDS)))
 
     def dispatch_batch(self, tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Several tasks at once. A LIST, matching what `dispatch` returns for
         one -- `{"tasks": [...], "count": n, ...}` is the route's envelope and
         a caller iterating it would iterate its keys."""
-        data = self.request("POST", "/v1/tasks/batch", payload={"tasks": tasks})
+        data = send_submission("/v1/tasks/batch", {"tasks": tasks}, lambda body: self.request(
+            "POST", "/v1/tasks/batch", payload=body, timeout=SUBMIT_TIMEOUT_SECONDS))
         created = data.get("tasks") if isinstance(data, dict) else None
         if created is None:
             raise SwarmError("the batch response carried no `tasks` field")

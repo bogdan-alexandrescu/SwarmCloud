@@ -67,7 +67,7 @@ from swarm_common.admission import _snapshot
 from swarm_common.models import EndCause
 from swarm_common.states import TERMINAL_STATES, ParkReason, TaskState
 
-from . import mergewake, refusals
+from . import mergewake, refusals, stepclass
 from .continuation import TASK_ID_RE
 from .errors import ApiError, Conflict, NotFound, UpstreamUnavailable, ValidationFailed
 from .issuecomments import neutralise_mentions
@@ -87,6 +87,7 @@ from .validation import (
     MERGE_METADATA_KEY,
     IssueRef,
 )
+from .specsigning import stored_refusal
 from .verdictpublish import (
     MAX_FINDING_CHARS,
     MAX_FINDINGS,
@@ -653,7 +654,7 @@ def fix_round_spec(*, root: str, repository_url: str, round_no: int, rounds: int
                    number: int, url: str, start_head: str, findings: tuple[str, ...],
                    earlier: list[str], profile: str, model_class: str | None,
                    prompt: str | None, note: str | None, resource_class: str | None,
-                   record: Mapping[str, Any]) -> WorkflowCreate:
+                   record: Mapping[str, Any], chosen_by: str | None = None) -> WorkflowCreate:
     """`review-fix:<k>`: `issueci.ci_fix_continuation`'s shape (§4.3) -- one
     `direct-pr` step continuing the root, `merge: "off"`, no pr-title.txt or
     pr-body.md, no closing keyword, commit on top -- with the findings, and a
@@ -685,6 +686,8 @@ def fix_round_spec(*, root: str, repository_url: str, round_no: int, rounds: int
                             "input": {"prompt": text}}
     if model_class:
         step["model_class"] = model_class
+    if chosen_by:
+        step["metadata"] = {stepclass.CLASS_CHOSEN_BY_KEY: chosen_by}
     if resource_class:
         step["resource_class"] = resource_class
     return WorkflowCreate.model_validate({
@@ -700,7 +703,7 @@ def fix_round_spec(*, root: str, repository_url: str, round_no: int, rounds: int
 def review_round_spec(*, repository_url: str, round_no: int, rounds: int, head: str,
                       number: int, findings: tuple[str, ...], profile: str,
                       model_class: str | None, prompt: str | None,
-                      record: Mapping[str, Any]) -> WorkflowCreate:
+                      record: Mapping[str, Any], chosen_by: str | None = None) -> WorkflowCreate:
     """`re-review:<k>`: a one-step `collect` workflow pinned to the 40-hex head
     fix k pushed (§4.3). It publishes nothing, so it opens no second pull
     request; its verdict is about a known head."""
@@ -716,6 +719,8 @@ def review_round_spec(*, repository_url: str, round_no: int, rounds: int, head: 
                             "input": {"prompt": text}}
     if model_class:
         step["model_class"] = model_class
+    if chosen_by:
+        step["metadata"] = {stepclass.CLASS_CHOSEN_BY_KEY: chosen_by}
     return WorkflowCreate.model_validate({
         "strategy": "collect",
         "repository_url": repository_url,
@@ -1054,10 +1059,14 @@ def _round_zero(loop: _Loop, review: Mapping[str, Any], root_doc: Mapping[str, A
 def _override(loop: _Loop, name: str, base: Mapping[str, Any]) -> tuple[str, str | None,
                                                                          str | None]:
     """(profile, model class, prompt) of a round: the signed override's, else
-    the repeated step's own (invariant 10: by name, never anything else)."""
+    the repeated step's own (invariant 10: by name, never anything else). The
+    class is None when neither names one: the round's role default then
+    applies (`_round_class`)."""
     over = _mapping(loop.block.get(name))
     profile = over.get("runner_profile") or base.get("runner_profile")
-    model_class = over.get("model_class") or base.get("model_class")
+    # Only a class someone NAMED: the repeated step's when its caller chose
+    # it, never one a role default chose for it (`stepclass.explicit_class`).
+    model_class = over.get("model_class") or stepclass.explicit_class(base)
     prompt = over.get("prompt")
     if not isinstance(prompt, str) or not prompt:
         prompt = _mapping(base.get("input")).get("prompt")
@@ -1091,15 +1100,30 @@ def _next(loop: _Loop, review: Mapping[str, Any], root_doc: Mapping[str, Any], *
             # pushed (§4.3), and round 1 the head the first review judged.
             head = moved
     seen = len(loop.rounds)
+    # The step the round repeats -- the root for a fix, the first review for a
+    # re-review -- gives the round its profile, class and prompt (`_override`),
+    # and the round is signed from them: its spec must verify as stored on
+    # THIS pass, by the rule the review gate applies before it signs again
+    # (`specsigning.stored_refusal`, issue 207). Round 0 checked the review,
+    # but a tenant's agent can rewrite it, or the root, while rounds run. A
+    # refusal is recorded on the claimed round and parks `round_refused`,
+    # as a submitter who left does: nothing is submitted, so nothing is held.
+    base = root_doc if kind == FIX_KIND else review
+    base_id = str(base.get("id") or "")
     refused = ""
+    signer = getattr(getattr(ctx, "submissions", None), "signer", None)
+    if stored_refusal(base, task_id=base_id, signer=signer, settings=ctx.settings) is not None:
+        refused = (f"the {'fix' if kind == FIX_KIND else 'review'}'s spec does not verify; "
+                   "the round is not built from it")
     owner = None
-    try:
-        owner = mergewake.submitter(ctx, loop.tenant, loop.doc)
-    except UpstreamUnavailable:
-        loop.report.waiting += 1
-        return
-    except Exception as exc:  # noqa: BLE001 -- recorded on the round, by name
-        refused = exc.message if isinstance(exc, ApiError) else type(exc).__name__
+    if not refused:
+        try:
+            owner = mergewake.submitter(ctx, loop.tenant, loop.doc)
+        except UpstreamUnavailable:
+            loop.report.waiting += 1
+            return
+        except Exception as exc:  # noqa: BLE001 -- recorded on the round, by name
+            refused = exc.message if isinstance(exc, ApiError) else type(exc).__name__
     head_key = "start_head" if kind == FIX_KIND else "head"
     index = claim_round(db, tenant_id, loop.id, seen=seen, now=loop.now,
                         entry={"round": round_no, "kind": kind, head_key: head})
@@ -1110,8 +1134,10 @@ def _next(loop: _Loop, review: Mapping[str, Any], root_doc: Mapping[str, Any], *
     if owner is None:
         _record(db, tenant_id, loop.id, index, {"error": failure_text(refused)})
         loop.doc = _doc(db, tenant_id, loop.id) or loop.doc
-        _park(loop, ROUND_REFUSED, {"round": round_no, "kind": kind,
+        _park(loop, ROUND_REFUSED, {"round": round_no, "kind": kind, "task_id": base_id,
                                     "error": failure_text(refused)})
+        log.warning("fix loop %s tenant=%s: round %d %s refused (%s)", loop.id, tenant_id,
+                    round_no, kind, refused)
         return
     record: dict[str, Any] = {"loop_task": loop.id, "round": round_no, "kind": kind,
                               head_key: head, "pull_request": number}
@@ -1121,11 +1147,13 @@ def _next(loop: _Loop, review: Mapping[str, Any], root_doc: Mapping[str, Any], *
             # The root is the declared fix under `integrate`; under
             # `direct-pr`, with no declared fix, the implementer.
             profile, model_class, prompt = _override(loop, "fix_round", root_doc)
+            choice = stepclass.choose(stepclass.ROLE_FIX, profile,
+                                      stepclass.class_models_of(ctx), explicit=model_class)
             spec = fix_round_spec(
                 root=str(root_doc["id"]), repository_url=repository_url, round_no=round_no,
                 rounds=loop.limit, number=number, url=url, start_head=head, findings=findings,
                 earlier=_earlier_lines(loop.rounds[:-1]), profile=profile,
-                model_class=model_class, prompt=prompt,
+                model_class=choice.model_class, chosen_by=choice.chosen_by, prompt=prompt,
                 note=note if isinstance(note, str) and note else None,
                 resource_class=mergewake.round_resource_class(ctx, tenant_id, str(root_doc["id"])),
                 record=record)
@@ -1137,9 +1165,12 @@ def _next(loop: _Loop, review: Mapping[str, Any], root_doc: Mapping[str, Any], *
                 # A list that cannot be built is read as UI: the browser, gated.
                 record["rendered_review_unknown"] = True
             profile, model_class, prompt = _override(loop, "re_review", review)
+            choice = stepclass.choose(stepclass.ROLE_REREVIEW, profile,
+                                      stepclass.class_models_of(ctx), explicit=model_class)
             spec = review_round_spec(
                 repository_url=repository_url, round_no=round_no, rounds=loop.limit, head=head,
-                number=number, findings=findings, profile=profile, model_class=model_class,
+                number=number, findings=findings, profile=profile,
+                model_class=choice.model_class, chosen_by=choice.chosen_by,
                 prompt=prompt, record=record)
         submission = ctx.submissions.submit_workflow(owner, spec, fix_loop_round=record)
     except Exception as exc:  # noqa: BLE001 -- a refused round is recorded and parked

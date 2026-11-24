@@ -26,6 +26,7 @@ import pytest
 
 from swarm_mcp import config, launch
 from test_plugin_agents_and_workflows import _PLUGIN, _SPEC, _SUBMITTED, _run, _step
+import sc_skill_text
 
 SESSION = "11111111-2222-4333-8444-555555555555"
 _MANIFEST = _PLUGIN / ".claude-plugin" / "plugin.json"
@@ -126,9 +127,9 @@ def test_the_default_attach_of_an_18_step_workflow_writes_one_copy_that_runs_the
     assert "row_share" not in copy["args"]  # MUTATION: hand the summary a share -- present.
     assert copy["title"] == "SC ∴ big · 18 steps"  # MUTATION: add a rows suffix to a summary -- " · rows 1-18".
     assert Path(copy["script_path"]).is_file()
-    # The reply's own fields are that one copy's, so a caller reading only
-    # `script_path` still launches it.
-    assert out["script_path"] == copy["script_path"] and out["args"] == copy["args"]
+    # The reply's own fields are that one copy's but its args, which
+    # `launches` alone carries (improvement plan 2026-11-23, item 2).
+    assert out["script_path"] == copy["script_path"] and "args" not in out
 
 
 def test_single_tasks_are_one_run_each_at_the_default_summary_setting():
@@ -205,7 +206,7 @@ def test_per_step_within_the_limit_is_one_copy_as_before(monkeypatch):
     monkeypatch.setenv("SWARM_PLUGIN_ROWS", "per-step")
     out = launch.for_attach(_Client(_envelope(5)), "wf_big")
     assert [l["title"] for l in out["launches"]] == ["SC ∴ big · 5 steps"]  # MUTATION: always add a share -- " · rows 1-5".
-    assert "row_share" not in out["args"]
+    assert "row_share" not in out["launches"][0]["args"]
 
 
 # --------------------------------------------------------------------------
@@ -398,7 +399,7 @@ def test_the_follower_counts_states_into_the_same_buckets_as_run_js():
 
 
 def test_the_skill_describes_both_modes_and_the_per_step_flag():
-    flat = " ".join(_SKILL.read_text().split())
+    flat = " ".join(sc_skill_text.text().split())
     assert "`rows`" in flat and "`summary`" in flat and "`per-step`" in flat  # MUTATION: no mode in the skill.
     assert "--per-step" in flat  # MUTATION: no override documented.
     assert "rows 9-16" in flat  # MUTATION: no word on the split copies.

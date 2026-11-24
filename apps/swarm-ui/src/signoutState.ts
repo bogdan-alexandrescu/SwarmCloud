@@ -48,7 +48,7 @@ export const SIGNED_OUT_KEY = 'swarm.signout.from'
  * RepoGraph.tsx declare: importing Spine.tsx from here, and this from
  * Spine.tsx, is a cycle, and the other two would pull whole screens (and
  * RepoGraph's network drawing) into the shell's bundle.
- * `signout.test.tsx` scans every source file for a declared `swarm.` key and
+ * A sign-out test scans every source file for a declared `swarm.` key and
  * fails on one that is in neither list, so a renamed key cannot slip out.
  */
 export const USER_KEYS: readonly string[] = [

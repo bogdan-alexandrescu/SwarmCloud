@@ -30,6 +30,9 @@ import pytest
 
 from .conftest import auth_header, seed_task, seed_tenant
 
+#: Holds the one-re-review shape: `fix-loop` switched off (tests/unit/conftest.py).
+pytestmark = pytest.mark.usefixtures("fix_loop_off")
+
 BUCKET = "swarm-artifacts-example-project"
 OWNER = "alice@example.com"
 WORKFLOW = "wf_lane"

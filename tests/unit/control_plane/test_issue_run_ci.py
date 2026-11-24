@@ -47,6 +47,9 @@ from . import forge_fakes
 from .conftest import api_settings, auth_header
 from .test_issue_runs import _approve, _docs, _planned, _run
 
+#: Holds the one-re-review shape: `fix-loop` switched off (tests/unit/conftest.py).
+pytestmark = pytest.mark.usefixtures("fix_loop_off")
+
 SHA_A, SHA_B, SHA_C, SHA_D = ("a" * 40, "b" * 40, "c" * 40, "d" * 40)
 PR = 57
 

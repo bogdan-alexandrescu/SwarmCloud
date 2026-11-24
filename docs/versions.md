@@ -49,11 +49,25 @@ provider builds and get two different results.
 | Node | `node:24-bookworm-slim` (Node 24.22.3, npm 11.19.1) | `sha256:dc26ae92...` |
 | uv | `ghcr.io/astral-sh/uv:0.11.7` | `sha256:240fb85a...` |
 | Playwright | `playwright==1.63.0` (pip) | — |
-| Claude Code CLI | `@anthropic-ai/claude-code@2.1.283` | — |
+| Claude Code CLI | `@anthropic-ai/claude-code@2.1.330` (2026-11-23; 2.1.283 refused `claude-fable-5-2`) | — |
 | Codex CLI | `@openai/codex@0.154.0` | — |
 
 Every `FROM` carries a digest, so a rebuild in six months produces the same
 toolchain rather than whatever the tag points at that day.
+
+### Model pins (one per model class)
+
+The model each class runs is stated once, in `terraform/infra/locals.tf`
+`runner_models` ([design/model-per-step.md](design/model-per-step.md) §4.2);
+`tests/unit/scripts/test_model_pins.py` holds every class-pin literal under
+`apps/` equal to it.
+
+| Class | Pinned ID | Since |
+|---|---|---|
+| `opus` | `claude-opus-5-5` | 2026-10-17 |
+| `fable` | `claude-fable-5-2` | 2026-11-23 (was `claude-fable-5-1`) |
+| `sonnet` | `claude-sonnet-5-5` | 2026-11-06 |
+| `haiku` | `claude-haiku-5-5` | 2026-11-06 |
 
 ### Agent image toolbox
 
@@ -77,7 +91,7 @@ release of either, and the same findings.
 |---|---|---|---|
 | `gh` | **2.105.0** | yes | newest; go1.27.4 fixes CVE-2026-97054 (2.103.3 was go1.27.3; 2026-11-20); go1.27.3 and x/net 0.60.0 had fixed CVE-2026-78667 and -78669 (2026-10-31) |
 | `gcloud` | **591.0.0** | yes | newest; its bundled Python 3.14 is removed (7 fixable HIGHs in its site-packages) and gcloud runs on the image's 3.11; its gcloud-crc32c is go1.27.2, its gke-gcloud-auth-plugin still go1.27.1 (accepted in `.trivyignore.yaml`, 2026-10-31); on 2026-11-18 the newest, 594.0.0, still carries the same builds (gcloud-crc32c 20261016, auth plugin 20261030), so the crypto/x509 acceptance (CVE-2026-111943) runs one more week, to 2026-11-25, and is re-checked then (see below the table); the pin stays 591.0.0; for CVE-2026-97054 (Go net/http MaxBytesReader, fixed in Go 1.26.11 / 1.27.4) 594.0.0 is still gcloud-crc32c go1.27.2 and auth plugin go1.27.3 (2026-11-20), so both are accepted to 2026-11-27 (see below the table) |
-| `kubectl` | **1.36.6** | yes | newest 1.36 patch (go1.26.10: CVE-2026-56857, -78667 and -111943 fixed; x/net 0.56.0's CVE-2026-78669 is in every kubectl release and accepted); operators pin 1.36.3 |
+| `kubectl` | **1.37.2** | yes | newest release and the only one that links x/net 0.57.0, which fixes CVE-2026-39821 (1.36.6, 1.35.10 and 1.34.13 link 0.56.0; refused from 2026-11-24); go1.26.10 (CVE-2026-56857, -78667 and -111943 fixed); x/net 0.57.0's CVE-2026-78669 and -78661, x/text 0.40.0's CVE-2026-56851 and go1.26.10's CVE-2026-97054 are in every kubectl release and accepted; needs a **1.36 or newer** control plane (one minor of skew); operators pin 1.36.3 |
 | `terraform` | **1.17.1** | yes | newest; go1.26.10, x/net 0.62.0 and go-jose 4.1.6 fix CVE-2026-78667, -78669 and -116587 (1.16.7 still has go-jose 4.1.4); operators and CI pin 1.16.2, whose Go 1.26.4 stdlib has 9 fixable HIGHs |
 | `checkov` | **3.3.17** | yes | matches CI; isolated `uv tool` env, resolution pinned to 2026-10-01 |
 | `shellcheck` | **0.11.0** | yes | matches the operator pin |
@@ -122,7 +136,7 @@ upstream release of the other five is built with a fixed Go yet (read with
 `go version -m` on each newest release after its checksum matched,
 2026-11-20): Google's `gcloud-crc32c` (594.0.0: go1.27.2) and
 `gke-gcloud-auth-plugin` (594.0.0: go1.27.3), `kubectl` (1.36.6 and 1.37.2:
-go1.26.10), `terraform` (1.17.2: go1.26.10) and `trivy` (0.76.2: go1.27.3). One
+go1.26.10; the pin moved to 1.37.2 on 2026-11-24 for CVE-2026-39821, still go1.26.10), `terraform` (1.17.2: go1.26.10) and `trivy` (0.76.2: go1.27.3). One
 `.trivyignore.yaml` entry accepts the id for exactly those five paths, because
 they are client tools that run no HTTP/1 server in our containers; it expires
 on **2026-11-27** and is re-checked before then. The owner's rule: take every
@@ -251,6 +265,13 @@ attribute default; in a shared project that is a plan to read carefully.
 follows its release channel (`RAPID` in dev, `STABLE` in prod), so check the
 cluster version before bumping the client.
 
+**Minimum control plane: 1.36.** The images' and the installer's kubectl is
+1.37.2 (2026-11-24, for CVE-2026-39821), so a deployment needs a GKE control
+plane of 1.36 or newer; on 1.35 or older the client would be two or more
+minors ahead, outside kubectl's supported skew. Nothing checks this yet: read
+`gcloud container clusters describe ... --format='value(currentMasterVersion)'`
+before rolling an image out to a deployment on a slower channel.
+
 **Container bases.** Change the digest, not the tag, and rebuild:
 
 ```bash
@@ -266,6 +287,48 @@ affected profile — a CLI's output format changes more often than its flags.
 **Scanners.** checkov and trivy update their rule sets constantly; a green build
 today can fail tomorrow on a newly published CVE. That is the point, and it is
 why `security.yml` also runs on a weekly schedule rather than only on PRs.
+
+### Re-pinning a model class
+
+A new model for a class is an edit to `runner_models` in
+`terraform/infra/locals.tf` and a release, never a contract request: the
+frozen `ModelClass.admits` already takes any later ID of the class's family
+(generation 5 or later). The order is merge, then canary, revert on failure
+(owner, 2026-11-23); the map is never applied to dev from a branch:
+
+1. **Add the new ID's price to the live price setting on the dev
+   deployment, first.** The seed in `apps/swarm-api/swarm_api/modelprices.py`
+   is read only while the `model_prices` setting has never been written; once
+   it has, a new ID is priced only when the setting holds it. Write it with
+   `PUT /v1/admin/settings` (admin only), body
+   `{"model_prices": {"<id>": {"input": …, "output": …, "cache_read": …,
+   "cache_write": …, "as_of": "YYYY-MM-DD", "source": "…"}}}` (only the rows
+   named change), or in the console at **Admin › Limits**
+   (`#admin/limits`), the **Model prices** card, which lists a pinned model
+   with no price as an unpriced row once the release serves the pin.
+   Without it, every attempt on the class reads "cost not reported".
+2. **Merge the map change** (with the seed entry and any restated literal
+   `test_model_pins.py` names) and let the ordinary dev release apply it.
+3. **At once, run one task on the class on dev** (`model_class` in the
+   submission) and read its attempt's `model` (the new ID) and its cost (a
+   figure, not "cost not reported"). The model-class canary does the same for
+   every class: the `claude-code` acceptance group,
+   `scripts/acceptance/groups/claude-code.sh`
+   (`tests/unit/scripts/test_model_class_canary.py` pins it offline), run
+   inside the VPC with
+   `ENVIRONMENT=dev ./scripts/verify-remote.sh acceptance/claude-code` (or
+   `scripts/acceptance/run.sh --only claude-code` from anywhere that reaches
+   the API).
+4. **If the runtime's command-line tool answers that the model is not
+   recognised** (`[claude-code:unrecognized_model]` in the attempt's
+   `runner_error`), the pinned Claude Code does not know the ID yet: revert
+   the map commit and release, keeping the old ID's price so tasks recorded on
+   it stay priced. Then raise `CLAUDE_CODE_VERSION` in
+   `images/agent-runtime-base/Dockerfile` as its own change. That rebuilds the
+   worker images (`agent-runtime-browser` and `agent-runtime-indexer` are
+   built `FROM` the base) and the swarm-voice image, which reads the same
+   version from that file. Release it, and only then merge the map change
+   again.
 
 ---
 

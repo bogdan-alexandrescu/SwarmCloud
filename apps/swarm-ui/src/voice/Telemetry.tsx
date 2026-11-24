@@ -8,11 +8,17 @@
  *             latency, first audio, and the machine's 5 s readings;
  *   Days      one bar per day of the range (`/days`), coloured by nothing but
  *             the one figure picked, with the busiest day against the day cap;
+ *   Latency   end of speech to the reply's first audio on both engines
+ *             (`/latency`, §12.6): per engine and part, count, p50, p90 and
+ *             not measured, the p50s as bars; each definition in its row's
+ *             tooltip. Read on its own, so a failed read leaves the page drawn;
  *   Sessions  the timeline (`/sessions`), newest first; the one picked opens
  *             into four cards: Models (end of speech to final words, first
  *             partial, real-time factors, first audio), Machine (peaks, model
  *             load and warm-up), Start (the start's phases) and Cost (minutes,
- *             the ledger's machine cost against both caps, stock-outs).
+ *             the ledger's machine cost against both caps, stock-outs),
+ *             under its record: Download transcript and the summary
+ *             (SessionRecord.tsx).
  *   Trace     debug mode's card (voice/DebugTrace.tsx, the owner's pick of 10
  *             November 2026, "Trace on Telemetry"): the recent traced
  *             sessions and one opened, every planner turn in full.
@@ -33,10 +39,13 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react
 
 import {
   loadVoiceTelemetryDays,
+  loadVoiceTelemetryLatency,
   loadVoiceTelemetrySession,
   loadVoiceTelemetrySessions,
   normVoiceTelemetrySample,
   voiceTelemetryLiveUrl,
+  type VoiceLatency,
+  type VoiceLatencyFigure,
   type VoicePercentiles,
   type VoiceTelemetryDay,
   type VoiceTelemetrySample,
@@ -49,6 +58,7 @@ import { PageHead } from '../Shell'
 import { currentZone } from '../timezone'
 import { clockTime } from '../types'
 import { DebugTrace } from './DebugTrace'
+import { SessionRecord } from './SessionRecord'
 import { Bars, CapMeter, PhaseTrack, Spark, Tile, orderedPhases, phaseWord, quantile, usd } from './telemetryCharts'
 import '../styles/voice-settings.css'
 import '../styles/voice-telemetry.css'
@@ -312,6 +322,78 @@ function DaysCard({ days, range }: { days: readonly VoiceTelemetryDay[]; range: 
   )
 }
 
+// ---- latency (§12.6) --------------------------------------------------------
+
+/** The own-speech turn's parts, in the order they happen; a part the server adds follows by its key. */
+const PARTS: readonly { key: string; label: string; say: string }[] = [
+  { key: 'recognition_ms', label: 'Recognition', say: "End of speech to the recogniser's final" },
+  { key: 'front_first_token_ms', label: 'First token', say: "Final to the front's first token; the front sends whole replies, so not measured" },
+  { key: 'front_ms', label: 'Front', say: 'Final to the reply handed to speech synthesis' },
+  { key: 'synthesis_ms', label: 'Synthesis', say: 'Handed to synthesis to the first audio byte sent' },
+]
+const ENGINE_ROWS: readonly { engine: keyof VoiceLatency; label: string; say: string }[] = [
+  { engine: 'own', label: 'Own speech', say: "End of speech (final segment or push-to-talk release) to the reply's first audio byte sent to the browser" },
+  { engine: 'gpt-live', label: 'GPT-Live', say: 'Speech stopped to reply audio started, both as the sideband receives them' },
+]
+
+function LatencyCard({ latency, error, onRetry }: { latency: VoiceLatency | null; error: ApiError | null; onRetry: () => void }) {
+  const rows: { key: string; label: string; say: string; fig: VoiceLatencyFigure; part: boolean }[] = []
+  for (const e of ENGINE_ROWS) {
+    const mine = latency?.[e.engine]
+    if (!mine) continue
+    rows.push({ key: e.engine, label: e.label, say: e.say, fig: mine.span_ms, part: false })
+    const known = PARTS.filter((p) => mine.parts[p.key] !== undefined)
+    const rest = Object.keys(mine.parts)
+      .filter((k) => !PARTS.some((p) => p.key === k))
+      .sort()
+      .map((k) => ({ key: k, label: k.replace(/_ms$/, ''), say: k }))
+    for (const p of [...known, ...rest]) rows.push({ key: `${e.engine}.${p.key}`, label: p.label, say: p.say, fig: mine.parts[p.key]!, part: true })
+  }
+  const turns = latency === null ? 0 : ENGINE_ROWS.reduce((a, e) => a + latency[e.engine].turns, 0)
+  return (
+    <Card title="Reply latency" id="latency">
+      {error !== null ? (
+        <Fail what="Latency" error={error} onRetry={onRetry} />
+      ) : latency === null ? null : turns === 0 ? (
+        <p className="vtel-empty">Nothing measured yet</p>
+      ) : (
+        <>
+          <div className="vtel-lat-wrap">
+            <table className="vtel-pct vtel-lat">
+              <thead>
+                <tr>
+                  <th />
+                  <th title="Turns that measured it">n</th>
+                  <th>p50</th>
+                  <th>p90</th>
+                  <th title="Turns that did not measure it">Unmeasured</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.key} data-latency={r.key} className={r.part ? 'is-part' : undefined}>
+                    <th scope="row" title={r.say}>
+                      {r.label}
+                    </th>
+                    <td>{r.fig.count}</td>
+                    <td>{ms(r.fig.p50)}</td>
+                    <td>{ms(r.fig.p90)}</td>
+                    <td>{r.fig.not_measured}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <figure className="vtel-fig">
+            <figcaption>p50</figcaption>
+            <Bars testId="vtel-latency-chart" data={rows.map((r) => r.fig.p50)} labels={rows.map((r) => r.label)} tone={1} label="Reply latency p50, per engine and part" unit="ms" />
+          </figure>
+        </>
+      )}
+    </Card>
+  )
+}
+
 // ---- sessions ----------------------------------------------------------------
 
 function SessionRow({ s, on, onPick }: { s: VoiceTelemetrySession; on: boolean; onPick: () => void }) {
@@ -367,6 +449,8 @@ function SessionCards({ s, day, detail, detailError, onRetry }: { s: VoiceTeleme
   const peaks = s.peaks
   return (
     <>
+      {/* The session's transcript and summary (SessionRecord.tsx), ended sessions as much as the live one. */}
+      <SessionRecord sessionId={s.session_id} />
       {detailError !== null && <Fail what="Samples" error={detailError} onRetry={onRetry} />}
       <div className="vset-grid">
         <Card title="Models" id="models">
@@ -437,6 +521,8 @@ export function VoiceTelemetry() {
   const [picked, setPicked] = useState<string | null>(null)
   const [detail, setDetail] = useState<VoiceTelemetrySessionDetail | null>(null)
   const [detailError, setDetailError] = useState<ApiError | null>(null)
+  const [latency, setLatency] = useState<VoiceLatency | null>(null)
+  const [latencyError, setLatencyError] = useState<ApiError | null>(null)
   const live = useLive()
 
   const load = useCallback(async () => {
@@ -456,6 +542,21 @@ export function VoiceTelemetry() {
   useEffect(() => {
     void load()
   }, [load])
+
+  const loadLatency = useCallback(async () => {
+    const r = await loadVoiceTelemetryLatency({ from: dayIn(tz, range - 1), to: dayIn(tz), tz })
+    if (r.status === 'error') {
+      setLatency(null)
+      setLatencyError(r.error)
+    } else if (r.status === 'ok' || r.status === 'stale') {
+      setLatencyError(null)
+      setLatency(r.data)
+    }
+  }, [tz, range])
+
+  useEffect(() => {
+    void loadLatency()
+  }, [loadLatency])
 
   const session = data?.sessions.find((x) => x.session_id === picked) ?? data?.sessions[0] ?? null
   const sessionId = session?.session_id ?? null
@@ -494,14 +595,22 @@ export function VoiceTelemetry() {
     return (
       <div className="vset vtel">
         {head}
-        <Fail what="Telemetry" error={error} onRetry={() => void load()} />
+        <Fail
+          what="Telemetry"
+          error={error}
+          onRetry={() => {
+            void load()
+            void loadLatency()
+          }}
+        />
       </div>
     )
   }
   if (data === null) return <div className="vset vtel">{head}</div>
 
   const empty = data.sessions.length === 0 && data.days.every((d) => d.sessions === 0 && !d.stockouts && !d.machine_usd)
-  if (empty && live.state !== 'session') {
+  const hosted = latency !== null && latency['gpt-live'].turns > 0
+  if (empty && live.state !== 'session' && !hosted) {
     return (
       <div className="vset vtel">
         {head}
@@ -516,6 +625,7 @@ export function VoiceTelemetry() {
       {head}
       <LiveCard live={live} />
       <DaysCard days={data.days} range={range} />
+      <LatencyCard latency={latency} error={latencyError} onRetry={() => void loadLatency()} />
       {data.sessions.length > 0 && (
         <section className="vtel-sessions" aria-label="Sessions">
           <ol className="vtel-slist">

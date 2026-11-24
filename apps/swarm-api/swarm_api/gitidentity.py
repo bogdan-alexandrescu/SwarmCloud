@@ -23,7 +23,7 @@ The record lives INSIDE the `metadata.dispatch` block, as
 `dispatch.git_identity = {"name", "email"}`, for the reason `pr_role` and
 `pr_author` do: the spec signature covers `dispatch` whole
 (`swarm_common.specsign.SIGNED_METADATA_KEYS`), every metadata key the worker
-reads must be signed (tests/unit/common/test_specsign_covers.py), and a
+reads must be signed (a test holds this), and a
 caller cannot write `dispatch` at all (`reject_reserved_metadata`). A caller's
 own `metadata.git_identity`, or any other body field naming an identity, is
 read by nothing: ignored. The connection is looked up by the VERIFIED

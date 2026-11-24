@@ -148,6 +148,9 @@ class World:
         self.refuse: str | None = None
         self.broker_calls: list[tuple[str, dict]] = []
         self.api_requests: list[httpx.Request] = []
+        #: The caps' state swarm-api answers (swarm_api/voice/budget.py), and how often it was asked.
+        self.budget: dict = {"warned": [], "capped": None, "ends_at": None, "notices": [], "ended": False}
+        self.budget_asks = 0
         self.cards: list[dict] = []
         self.visuals: list[dict] = []
         #: The visual each write landed on, in order.
@@ -190,6 +193,11 @@ class World:
         return httpx.Response(404)
 
     def swarm_api(self, request: httpx.Request) -> httpx.Response:
+        if (request.method == "POST" and request.url.path == f"/v1/voice/sessions/{self.grant.session_id}/work"
+                and json.loads(request.content) == {"budget": True}):
+            # The caps' question a turn asks first (planner._capped): kept apart.
+            self.budget_asks += 1
+            return httpx.Response(200, json={"session_id": self.grant.session_id, "budget": self.budget})
         self.api_requests.append(request)
         if (request.headers.get("authorization") != f"Bearer {self.id_token}"
                 or request.headers.get(GRANT_HEADER) != self.grant.headers()[GRANT_HEADER]
@@ -351,7 +359,7 @@ def test_the_child_holds_the_token_and_no_api_key_and_only_the_planners_tools(wo
     assert "ANTHROPIC_API_KEY" not in env and "SWARM_API_URL" not in env
     assert env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1" and env["DISABLE_TELEMETRY"] == "1"
     argv = child["argv"]
-    assert argv[argv.index("--model") + 1] == "claude-fable-5-1"
+    assert argv[argv.index("--model") + 1] == "claude-fable-5-2"
     assert argv[argv.index("--output-format") + 1] == "stream-json"
     assert argv[argv.index("--tools") + 1] == ""
     assert argv[argv.index("--allowedTools") + 1] == "mcp__planner"
@@ -559,7 +567,7 @@ def test_no_secret_reaches_a_log_the_transcript_the_summary_a_card_or_the_prompt
 def test_a_turns_usage_is_a_subscriptions_never_a_price(world):
     world.plan = {"calls": [["speak", {"summary": "Done."}]]}
     result = _delegate(world)
-    assert result.usage["billing"] == "subscription" and result.usage["model"] == "claude-fable-5-1"
+    assert result.usage["billing"] == "subscription" and result.usage["model"] == "claude-fable-5-2"
     assert result.usage["input_tokens"] >= 100 and "cost_usd" not in result.usage
 
 
@@ -818,3 +826,33 @@ def test_with_both_tiers_spent_the_turn_says_the_pool_is_full_and_holds_nothing(
     assert released == ["/v1/voice/lease/acct-0/release", "/v1/voice/lease/acct-1/release"]
     for key in world.keys.values():
         assert key not in caplog.text
+
+
+def test_a_turn_asks_the_caps_first_and_runs_below_them(world):
+    world.plan = {"calls": [["speak", {"summary": "Done."}]]}
+    result = _delegate(world)
+    assert world.budget_asks == 1
+    assert result.spoken != pl.CAP_SENTENCES[pl.CAPPED_REASON]
+    assert world.broker_calls
+
+
+def test_a_turn_at_a_cap_says_its_sentence_and_leases_nothing(world):
+    world.budget = {**world.budget, "capped": "session", "ends_at": "2026-11-23T10:02:00+00:00"}
+    result = _delegate(world)
+    assert result.spoken == pl.CAP_SENTENCES[pl.CAPPED_REASON]
+    # No account leased, no model run, nothing read or written.
+    assert world.broker_calls == [] and world.api_requests == [] and not world.dump.exists()
+
+
+def test_an_admitted_turn_does_not_ask_the_caps_again(world):
+    world.plan = {"calls": [["speak", {"summary": "Done."}]]}
+
+    async def main():
+        try:
+            return await world.planner().delegate(person=PERSON, grant=world.grant,
+                                                  transcript=[("person", "Plan it.")], admitted=True)
+        finally:
+            await world.http.aclose()
+
+    asyncio.run(main())
+    assert world.budget_asks == 0

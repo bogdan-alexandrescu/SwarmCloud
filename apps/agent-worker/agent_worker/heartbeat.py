@@ -5,9 +5,9 @@ takes.
 Moved out of `lifecycle.py` unchanged (issue 68, a slice of splitting that file
 by concern): `Worker` inherits `HeartbeatMixin`, so the methods keep their
 `self` access and every `worker._heartbeat()` call and test still resolves.
-`lifecycle` re-exports `HEARTBEAT_EVENT_EVERY` by assignment, for a cite of that
-file; a test that changes the cadence patches it here, where `_heartbeat` reads
-it.
+`HEARTBEAT_EVENT_EVERY` lives here alone (issue 193): a test that changes the
+cadence patches it here, where `_heartbeat` reads it, and a patch of
+`lifecycle.HEARTBEAT_EVENT_EVERY` raises `AttributeError`.
 """
 
 from __future__ import annotations

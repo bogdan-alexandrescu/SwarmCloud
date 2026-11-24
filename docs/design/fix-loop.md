@@ -1,6 +1,12 @@
 # A workflow step that runs review-fix rounds until a review says MERGE
 
-Status: **built, and shipped unavailable** (contract request 124). The
+Status: **built, and switched on again on 2026-11-23** (contract request
+151, the owner's decision, on the same condition as before: the dev
+acceptance check "workflow: fix-loop" runs right after the release and the
+switch-on is reverted at once if it fails). The cause of the 2026-11-10
+failure below was found: the check's `fix` step was parked on its account's
+quota window, so the loop never started, and the check now reports that as
+not measured rather than failed (`_wf_fix_loop_quota_parked`). The
 switch-on (request 151) was reverted on 2026-11-10 after the dev acceptance
 check "workflow: fix-loop" left the loop PARKED DEPENDENCY_INCOMPLETE for its
 whole hour (issue 3). For that check's exact workflow, the scheduler and
@@ -9,8 +15,8 @@ review-fix:2 and re-review:2 in order. That holds with and without the
 deployed 60 s control-publish hold, with and without an appended merge, and
 when the finish event is lost
 (`tests/unit/control_plane/test_fix_loop_acceptance_flow.py`). So the dev run's
-`fix` step most likely never reached SUCCEEDED within the hour. That run's
-cause is not found yet.
+`fix` step most likely never reached SUCCEEDED within the hour, and so it
+proved: `fix` was quota-parked (2026-11-23, above).
 
 The design came first (lane FIX-LOOP-DESIGN). The owner asked for it (2026-10-26, about 17:20 PDT in Product
 Oracle's session, confirmed on an earlier issue at about 00:10Z on 2026-10-27). Build
@@ -720,7 +726,7 @@ FL-CONTRACT.
 | 3 | **FL-UI** | `apps/swarm-ui/src/WorkflowViews.tsx`, `apps/swarm-ui/src/components/StatePill.tsx`, `apps/swarm-ui/src/types.ts`, `apps/swarm-ui/src/__tests__/fixLoop.test.tsx` (new) | the loop row shows round k of N and the two actions on a parked loop; round rows link their agents |
 | 3 | **FL-PLUGIN** | `apps/swarm-mcp/swarm_mcp/check.py`, `progress.py`, `compact.py`, `server.py` (the `swarm_fix_loop` tool), `plugin/workflows/run.js`, `plugin/skills/sc/SKILL.md`, `tests/unit/mcp/test_fix_loop_check.py` (new), `plugin/hooks/band.test.ts` | `/sc check` flags an exhausted loop with its phase and the add-round command, and does not flag a loop with a round running |
 | 4 | **FL-DOCS** | `docs/workflows.md` ("What this does not do" and a new section), `docs/merge-step.md`, `docs/issue-runs.md`, `plugin/skills/delegate/SKILL.md` | `tests/unit/scripts/` doc guards that already read those files |
-| 5 | **FL-ACCEPT** | `scripts/acceptance/groups/workflow.sh` | a mock-profile workflow whose review says NOT_YET twice then MERGE ends SUCCEEDED with `re-review:1`, `review-fix:2`, `re-review:2` appended |
+| 5 | **FL-ACCEPT** | `scripts/acceptance/groups/workflow.sh` | a mock-profile workflow whose review says NOT_YET twice then MERGE ends SUCCEEDED with `re-review:1`, `review-fix:2`, `re-review:2` appended; a run whose loop waited out the hour on a claude-code step (`fix` or an appended round) that never started and is parked PROVIDER_QUOTA_EXHAUSTED on its workspace account's window reports not measured, naming the step, its task and the window's end, because the loop was never exercised (owner, 2026-11-23); every other non-settlement, failed read included, stays a FAIL |
 
 Order: 0 first. Then 1 in parallel. FL-DRIVE needs FL-ROLLUP merged, because
 otherwise `_append_round_step` refuses the new ids. FL-ISSUE, FL-UI and

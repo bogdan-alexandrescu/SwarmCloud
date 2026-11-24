@@ -131,7 +131,26 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # merge (2.6 s), test_issue_forms (0.6 s) and test_verify_deployer_trust
 # (4.0 s), +7.2 CI-seconds a pull request; they also read CLAUDE.md or
 # docs/runbooks/merge-app.md by name, so a docs-only diff of those selects
-# them as readers (CI-GUARDS-THREE, part of archived issue 1822).
+# them as readers (CI-GUARDS-THREE, part of archived issue 1822). After
+# test_verify_deployer_trust: test_check_test_pointers (about 2.5 s), which
+# refuses a comment under apps/ that names a test -- a new one names no test,
+# so only a whole-tree run reaches it (part of issue 69). Then the inventory
+# walkers the merge train ejected for (owner's improvement plan, 2026-11-23)
+# -- test_runbook_index (every docs/runbooks/*.md is linked from its README;
+# 0.1 s) and test_plugin_agents_ignore_chat (every plugin/agents/*.md is a
+# known kind; 1.0 s). A new runbook or agent breaks them and names neither,
+# so no diff selects them. test_agent_quality_inventory was a third until
+# issue 74 deleted it: its subject was the agent-quality docs, not the product.
+# Last, tests/unit/install/test_manifest_complete.py: every Terraform resource,
+# environment variable reference, secret, image and Kubernetes object in the
+# tree is listed in install/manifest.yaml. A lane's new resource changes a .tf
+# file the test never names, so no diff selects it; the merge train ran it
+# first and ejected six pull requests' checks (2026-11-23). It is OVER the
+# 10 CI-seconds above: 15.1 s alone at one pytest worker, and +15.7 s and
+# +22.7 s on this set's pass at -n 6 (its ~10 s tree collection is a module
+# fixture, run again on each worker that draws one of its tests), measured
+# 2026-11-23 in a 6-CPU lane container (docs/ci.md, "The install manifest
+# completeness test").
 GUARD_TESTS=(
   tests/unit/scripts/test_docs_describe_what_was_built.py
   tests/unit/scripts/test_docs_spec_amendments.py
@@ -174,6 +193,10 @@ GUARD_TESTS=(
   tests/unit/scripts/test_auto_merge_base_merge.py
   tests/unit/scripts/test_issue_forms.py
   tests/unit/scripts/test_verify_deployer_trust.py
+  tests/unit/scripts/test_check_test_pointers.py
+  tests/unit/scripts/test_runbook_index.py
+  tests/unit/mcp/test_plugin_agents_ignore_chat.py
+  tests/unit/install/test_manifest_complete.py
 )
 # The guards that read docs: all a docs-only diff selects of GUARD_TESTS.
 # Pull-request CI runs the whole GUARD_TESTS even for a docs-only change.
@@ -193,14 +216,16 @@ RECORD_DIR_NAME="swarm-changed-guards"
 GENERIC_BASENAMES=" __init__.py conftest.py README.md main.py app.py config.py models.py utils.py index.ts index.tsx types.ts package.json pyproject.toml Makefile Dockerfile "
 
 # The whole run stays under the 10 minutes a lane allows a command: the pytest
-# pass gets 540 s and the parity check 60 s. NOT RAISED for a selection that
+# pass gets 540 s and the parity check 180 s (a part of its own under the
+# pre-publish gate, where the gate's remaining-budget clamp still bounds it;
+# 60 s was overrun in busy containers, owner's plan 2026-11-23). NOT RAISED for a selection that
 # needs longer (archived issue 1334: GS-HOOKS, 79 files, 2,603 tests, all passing in 595 s on
 # 6 cores): past 600 s the agent's own command limit kills the run, with no
 # `ran past` line and no faulthandler frames to name what held it. A heavier
 # selection is split instead (`--shard`, SHARD_HINT_WEIGHT), and every part
 # keeps this limit, so a hang still ends at 540 s.
 PYTEST_SECONDS=540
-PARITY_SECONDS=60
+PARITY_SECONDS=180
 DURATIONS="tests/unit/scripts/unit_test_durations.json"
 # The CI-seconds of selected files past which a run is told to split, and the
 # weight of each part it is told to split into. CI's weights are a file's
@@ -630,6 +655,11 @@ if [[ "${shard_k}" -le 1 && "${run_parity}" -eq 1 ]]; then
 fi
 if [[ "${parity_status}" -ne 0 ]]; then
   tail -n 25 "${log}.parity" | redact
+  # The `ran past` line, as for pytest and vitest: the gate reads it as a stop
+  # left to CI, not a failure its fix turn can mend.
+  if [[ "${parity_status}" -eq 124 ]]; then
+    err "contract parity ran past ${PARITY_SECONDS} s"
+  fi
   err "contract parity failed (exit ${parity_status}); full output: ${log}.parity"
   failed=1
 fi

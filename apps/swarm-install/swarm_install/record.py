@@ -6,8 +6,7 @@ writes what it reads.** The engine writes `swarm-install/<env>` and nothing
 else; it reads the console's documents (written by swarm-api) and copies what
 it needs into its authoritative GCS state (`swarm_install.state`).
 
-`WRITERS` is the table itself. SETUP-API-1's
-`tests/unit/control_plane/test_install_record_writers.py` imports it and
+`WRITERS` is the table itself. SETUP-API-1 imports it and
 asserts swarm-api writes exactly its rows, so the table lives once, here.
 
 Within the one writer every write is conditional: a create, or an update with

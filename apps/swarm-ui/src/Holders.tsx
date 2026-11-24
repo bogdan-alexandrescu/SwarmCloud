@@ -142,7 +142,7 @@ export function HoldersScreen() {
   const linkedTenant = useLinkedParam('tenant')
   const linkedPool = useLinkedPool()
   // "Holders", matching the tab, and the two are not allowed to differ:
-  // test_nav_headings_agree.py asserts every screen's heading IS the label of
+  // the nav-headings test asserts every screen's heading IS the label of
   // the tab that opens it. It was "Capacity holders", and it had to be while
   // the section was called Pools -- one tab away from "Accounts", "Holders"
   // alone reads as holders of accounts. The section is called Capacity now, so

@@ -48,3 +48,21 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     except flaky_quarantine.QuarantineListError as exc:
         raise pytest.UsageError(str(exc)) from None
     flaky_quarantine.apply(items, entries, pytest.mark.flaky)
+
+
+@pytest.fixture
+def fix_loop_off(monkeypatch) -> None:
+    """The `fix-loop` runner profile switched off, as it is wherever contract
+    request 151 is reverted. Modules that hold the one-re-review shape (a
+    workflow merging on its review's verdict, an issue run's compiled plan)
+    opt in with `pytestmark = pytest.mark.usefixtures("fix_loop_off")`: with
+    the profile available the loop is appended in its place, which
+    tests/unit/control_plane/test_fix_loop_by_default.py and
+    test_issue_run_fix_loop.py hold. Not autouse: no other test pays for it."""
+    from dataclasses import replace
+
+    from swarm_common.profiles import RUNNER_PROFILES
+
+    monkeypatch.setitem(RUNNER_PROFILES, "fix-loop", replace(
+        RUNNER_PROFILES["fix-loop"], available=False,
+        disabled_reason="fix-loop is not available in this test."))

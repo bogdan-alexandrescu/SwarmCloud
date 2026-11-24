@@ -55,6 +55,9 @@ from .test_issue_run_ci import (  # noqa: F401  (fixtures, imported to be used)
     forge_tokens,
 )
 
+#: Holds the one-re-review shape: `fix-loop` switched off (tests/unit/conftest.py).
+pytestmark = pytest.mark.usefixtures("fix_loop_off")
+
 ROOT = Path(__file__).resolve().parents[3]
 BASE = "main"
 

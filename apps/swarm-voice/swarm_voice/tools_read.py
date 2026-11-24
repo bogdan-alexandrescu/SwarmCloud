@@ -32,6 +32,16 @@ with the same filters, for at most `COUNT_PAGES` pages, and says
 `total_exact: false` when it stopped short. One tool round answers a count.
 Neither route serves a total, so the pages are the count.
 
+THIS PROJECT'S STATUS (`project_status`, voice-it-own-speech.md §3.3 step 4).
+The project's own cards and roster, as the console's project page shows them
+to the person: `GET /v1/voice/projects/{project_id}/status`, with the project
+id taken from the session grant, never from the model, so the tool takes no
+input and cannot be steered to another project. swarm-api applies the roster
+route's own checks (the person's project in the person's workspace) and
+refuses a grant any project but its session's. It is how the fast front says
+"what is running" or "did that finish" itself instead of delegating, and how
+a planner turn reads the project's brief (prompts.turn_message).
+
 NOTHING SECRET LEAVES. An error names the route template and the HTTP status,
 never a body (a body may quote the request) and never a header. The grant and
 the ID token live only in the request's headers.
@@ -71,6 +81,7 @@ SEARCH_HITS = 20
 
 CATALOGUE_ROUTE = "/v1/voice/cards/schema"
 CARD_WRITE_ROUTE = "/v1/voice/sessions/{session_id}/cards"
+STATUS_ROUTE = "/v1/voice/projects/{project_id}/status"
 
 
 class NoGrant(PermissionError):
@@ -80,11 +91,29 @@ class NoGrant(PermissionError):
 class ApiRefused(RuntimeError):
     """swarm-api refused or failed a call. Names the route and status only."""
 
-    def __init__(self, route: str, status: int | None, what: str = "") -> None:
+    def __init__(self, route: str, status: int | None, what: str = "",
+                 reason: str | None = None) -> None:
         self.route = route
         self.status = status
+        #: A refusal's `detail.reason` when it is a short token (a cap's
+        #: refusal names which cap, worksink.py), else None. Never free text.
+        self.reason = reason
         detail = f"HTTP {status}" if status is not None else what or "no answer"
         super().__init__(f"swarm-api {route}: {detail}")
+
+
+_REASON_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+
+def _reason(response: Any) -> str | None:
+    """A refusal's `detail.reason` when it is a short token, else None."""
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    detail = body.get("detail") if isinstance(body, dict) else None
+    reason = detail.get("reason") if isinstance(detail, dict) else None
+    return reason if isinstance(reason, str) and _REASON_RE.match(reason) else None
 
 
 def google_id_tokens(audience: str) -> IdTokens:
@@ -126,6 +155,16 @@ class SwarmApi:
     def session_id(self) -> str:
         return self._grant.session_id
 
+    @property
+    def project_id(self) -> str:
+        return self._grant.project_id
+
+    async def project_status(self) -> dict[str, Any]:
+        """The session's own project: its cards, roster and brief (module
+        docstring); the project id is the grant's."""
+        body = await self.get(STATUS_ROUTE, STATUS_ROUTE.format(project_id=self._grant.project_id))
+        return body if isinstance(body, dict) else {}
+
     def known_secrets(self) -> tuple[str, ...]:
         """The grant's value, for the planner to scrub from all the model sees."""
         return (self._grant.headers()[GRANT_HEADER],)
@@ -146,7 +185,7 @@ class SwarmApi:
         except httpx.HTTPError as exc:
             raise ApiRefused(route, None, type(exc).__name__) from None
         if response.status_code >= 300:
-            raise ApiRefused(route, response.status_code)
+            raise ApiRefused(route, response.status_code, reason=_reason(response))
         try:
             return response.json()
         except ValueError:
@@ -247,6 +286,18 @@ SEARCH = {
                      "properties": {"query": {"type": "string"}}, "required": ["query"]},
 }
 
+PROJECT_STATUS = {
+    "name": "project_status",
+    "description": ("Read THIS project's status, as its page shows it: its cards (kind, title, "
+                    "state, summary), the cards waiting on the person, and its roster (each "
+                    "delegation, agent, workflow and run it started, with its state: queued, "
+                    "running, waiting, done, failed or cancelled). Use it for what is running "
+                    "here, whether something finished, what is waiting on the person."),
+    "strict": True,
+    "input_schema": {"type": "object", "additionalProperties": False, "properties": {},
+                     "required": []},
+}
+
 _BY_NAME = {t.name: t for t in READ_TOOLS}
 
 #: The lists `search` scans: (kind, route, the keys of a row's title and id).
@@ -258,11 +309,11 @@ _SEARCHED = (
 
 
 def tool_schemas() -> list[dict[str, Any]]:
-    return [t.schema() for t in READ_TOOLS] + [SEARCH]
+    return [PROJECT_STATUS] + [t.schema() for t in READ_TOOLS] + [SEARCH]
 
 
 def is_read_tool(name: str) -> bool:
-    return name in _BY_NAME or name == SEARCH["name"]
+    return name in _BY_NAME or name in (SEARCH["name"], PROJECT_STATUS["name"])
 
 
 class BadInput(ValueError):
@@ -331,6 +382,10 @@ async def run_read_tool(api: SwarmApi, name: str, args: Any) -> Any:
     """Run read tool `name` with the model's `args`; the swarm-api answer."""
     if not isinstance(args, dict):
         raise BadInput("a tool's input is an object")
+    if name == PROJECT_STATUS["name"]:
+        if args:
+            raise BadInput("project_status takes no input")
+        return await api.project_status()
     if name == SEARCH["name"]:
         query = args.get("query")
         if not isinstance(query, str):

@@ -178,7 +178,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.states import TaskState
 
-from . import approvals, refusals, reviewgate
+from . import approvals, refusals, reviewgate, stepclass
 from .cirerun import (
     RERUN_REFUSALS_MAX,
     RERUN_SETTLE_SECONDS,
@@ -223,6 +223,7 @@ from .issueruns import (
     OUTCOME_ALREADY_ON_MAIN,
     REREVIEW_STEP,
     REVIEW_STEP,
+    SECURITY_LENS_STEP,
     SECURITY_REVIEW_STEP,
     STEP_PROFILE,
     VERDICT_FILE,
@@ -287,8 +288,8 @@ MAX_LOG_TAIL_BYTES = 3_000
 # EVERY FAILING FILE, NOT THE FIRST 3,000 BYTES OF THEM (archived issue 3170). On archived pull request 3146,
 # "swarm-ui component tests (1/4)" said `Tests  2 failed`, and the excerpt
 # named one file: the later failure, a `waitFor` timeout, printed a DOM dump
-# of tens of KiB under its FAIL line, so the earlier phone.chrome.test.tsx
-# FAIL sat above the 16 KiB read, and the blocks kept front-first would have
+# of tens of KiB under its FAIL line, so the earlier failing file's FAIL line
+# sat above the 16 KiB read, and the blocks kept front-first would have
 # let the dump fill the 3,000 bytes anyway. Neither CI-fix round heard of the
 # second file. So the count vitest prints is compared with the distinct FAIL
 # headers found; when it found fewer, the log is read ONCE more, up to
@@ -346,7 +347,7 @@ NO_CHANGE_MARKER = "no_change"
 #: walk's cap, not the per-slot `MERGE_MAX_BRANCH_UPDATES`, because the
 #: re-takes' catch-ups are base merges on the same head too -- spelled again
 #: because the API image does not carry the worker, and held equal to it by
-#: tests/unit/control_plane/test_issue_run_merge_update.py.
+#: a test.
 MERGE_MAX_HEAD_UPDATES = 12
 #: The committer of a commit GitHub itself made and signed, as `update-branch`
 #: merges are (`agent_worker.merge.GITHUB_COMMITTER_EMAIL`, held the same way).
@@ -1376,7 +1377,8 @@ EARLIER_FIX_ASK = (
 
 
 def ci_fix_workflow(run: IssueRun, round_no: int, excerpt: str, head_sha: str,
-                    context: str | None = None) -> WorkflowCreate:
+                    context: str | None = None,
+                    class_models: Mapping[str, str] | None = None) -> WorkflowCreate:
     """Round `round_no`: one `direct-pr` step continuing the run's integrator.
 
     `context` is `reviewcontext.read_fix_context`'s TESTED CODE block (lane
@@ -1399,6 +1401,7 @@ def ci_fix_workflow(run: IssueRun, round_no: int, excerpt: str, head_sha: str,
         rounds=run.fix_rounds,
         excerpt=excerpt,
         context=context,
+        class_models=class_models,
         step_input={"issue": ref.number},
         metadata={
             # The run's session (SC-SESSION-SCOPE): its fix rounds are its own.
@@ -1425,6 +1428,7 @@ def ci_fix_continuation(
     metadata: Mapping[str, Any],
     context: str | None = None,
     resource_class: str | None = None,
+    class_models: Mapping[str, str] | None = None,
 ) -> WorkflowCreate:
     """One CI fix round: a one-step `direct-pr` workflow continuing `continues_task`.
 
@@ -1438,7 +1442,10 @@ def ci_fix_continuation(
     TESTED CODE block, fenced by its own nonce (`reviewcontext.fix_block`).
     `resource_class`, when given, is the class of the step whose branch the
     round continues (lane SPEED-D2); None is the profile's own.
+    `class_models` (the deployment's pins) gives the round its role's class
+    (`stepclass`, the owner 2026-11-23: `sonnet`), else the profile's default.
     """
+    choice = stepclass.choose(stepclass.ROLE_CI_FIX, STEP_PROFILE, class_models)
     marker = f"=== FAILING CHECKS {secrets.token_hex(8)} ==="
     prompt = (
         f"{lead} This is CI fix round {round_no} of at most {rounds}.\n\n"
@@ -1462,6 +1469,8 @@ def ci_fix_continuation(
             "runner_profile": STEP_PROFILE,
             "input": {"prompt": prompt, **step_input},
             **({"resource_class": resource_class} if resource_class else {}),
+            **choice.fields(),
+            "metadata": choice.metadata(),
         }],
         "metadata": {
             # Never a merge inside a round: it would merge with no CI read and
@@ -1528,8 +1537,7 @@ def _read_ci(
 
 #: The repository merge train's switch and its own required check (archived issue 3312),
 #: held equal to the worker's `agent_worker.merge.REPOSITORY_TRAIN_VARIABLE`,
-#: `REPOSITORY_TRAIN_ON` and `REPOSITORY_TRAIN_CONTEXT` by
-#: tests/unit/control_plane/test_issue_run_ci.py: the variable
+#: `REPOSITORY_TRAIN_ON` and `REPOSITORY_TRAIN_CONTEXT` by a test: the variable
 #: `vars.MERGE_TRAIN`, exactly `on`, and the commit status
 #: scripts/merge-train.sh posts on each head it lands.
 TRAIN_VARIABLE = "MERGE_TRAIN"
@@ -2057,7 +2065,8 @@ def _start_round(
     try:
         # The run's own tenant's index only (invariant 9); None is today's prompt.
         context = read_fix_context(ctx, tenant_id, claimed, excerpt)
-        spec = ci_fix_workflow(claimed, round_no, excerpt, head, context)
+        spec = ci_fix_workflow(claimed, round_no, excerpt, head, context,
+                               class_models=stepclass.class_models_of(ctx))
         with submitting(spec):
             # A fix round builds: the platform picks its class from the
             # stage (contract request 135); a round's own escalated class
@@ -2497,6 +2506,11 @@ def merge_gate(
                 log.info("issue run %s tenant=%s: hold %s cleared at %s: %s", run.id, tenant_id,
                          (before or {}).get("code"), head[:12], cleared)
             record["files_checked_head"] = head
+            # The plan's files are advisory for the security lens too: a real
+            # change on a risk path with no security review behind it is not
+            # merged on the code review alone.
+            record["security_unreviewed_head"] = (
+                head if _lacks_security_review(ctx, tenant_id, run, files) else None)
     changes: dict[str, Any] = {}
     if hold != run.approval_hold:
         changes["approval_hold"] = hold
@@ -2509,7 +2523,8 @@ def merge_gate(
             f"run {run.id} is held {hold.get('code')} at merge ({', '.join(hold.get('reasons') or [])})"
         ))
     approved_here = (run.merge_approved or {}).get("head_sha") == head
-    if not (blocks or run.merge_approval == "required") or approved_here:
+    unreviewed = record.get("security_unreviewed_head") == head
+    if not (blocks or run.merge_approval == "required" or unreviewed) or approved_here:
         if changes:
             # The widened hold is re-signed with the run; the caller goes on
             # with `run`, so it carries the new signature to `_merge`'s check.
@@ -2525,6 +2540,25 @@ def merge_gate(
     announce_merge(ctx, run, record_doc, token)
     log.info("issue run %s tenant=%s: merge of %s waits for approval", run.id, tenant_id, head[:12])
     return runs.patch(tenant_id, run.id, {**changes, "pull_request": record}, sign=resign)
+
+
+def _lacks_security_review(ctx: Any, tenant_id: str, run: IssueRun, files: Sequence[str]) -> bool:
+    """Whether the pull request's REAL files touch a risk path
+    (`reviewgate.DEFAULT_RISK_PATHS`) and the run's workflow has no security
+    review: neither the lens compiled from the plan's files
+    (`SECURITY_LENS_STEP`) nor the run's optional security review step.
+    A workflow that cannot be read counts as having none."""
+    if not any(reviewgate.matches(f.replace("\\", "/").lstrip("/"), glob)
+               for f in files for glob in reviewgate.DEFAULT_RISK_PATHS):
+        return False
+    if run.security_review:
+        return False
+    try:
+        workflow = ctx.store.get_workflow(tenant_id, run.workflow_id, submitted_by=None)
+    except NotFound:
+        return True
+    return not any(getattr(step, "step_id", None) == SECURITY_LENS_STEP
+                   for step in getattr(workflow, "steps", None) or [])
 
 
 def _review_verdict(ctx: Any, tenant_id: str, run: IssueRun) -> tuple[str | None, str]:

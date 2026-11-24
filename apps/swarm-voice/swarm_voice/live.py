@@ -42,8 +42,7 @@ ATTACH_SECONDS each, after the lease and the create, took longer than that, so
 the person saw "could not be reached" in place of the refusal this process had.
 So a start -- lease, create, every attach try -- runs inside START_SECONDS, and a
 failed start waits at most RELEASE_WAIT_SECONDS for its lease's release before it
-answers: START_WORST_SECONDS is held below swarm-api's timeout with a margin by a
-unit test (tests/unit/voice/test_live_sideband_events.py).
+answers: START_WORST_SECONDS is held below swarm-api's timeout with a margin.
 * END: `{"type": "session.close"}`, answered by `session.closed` with the final
   `usage.seconds` and `reason` (/api/docs/guides/live-conversations, "Usage and
   graceful close"). The Live API documents no HTTP hangup, so the sideband is
@@ -164,6 +163,7 @@ from websockets.exceptions import InvalidStatus, WebSocketException
 from .accountlease import SPENT_CODES, VoicePoolRefused
 from .credential import Credential, CredentialError
 from . import instructions as vinstructions
+from . import latency as vlatency
 from . import readback as vreadback
 from . import trace as vtrace
 from .grant import GRANT_HEADER, SessionGrant
@@ -191,19 +191,31 @@ REOPEN_SECONDS = 60.0
 #: seconds", moved to 45 on 12 November 2026 after three talks on the
 #: development deployment in which the voice paused while the planner was still
 #: plainly at work: the updates (updates.py) now speak while work runs).
-#: In a GPT-Live session with a delegation in flight, no read-back pending and
-#: nothing playing, this many seconds in which neither side speaks pause it:
+#: In a GPT-Live session with no read-back pending, nothing playing and neither
+#: side mid-sentence, this many seconds in which neither side speaks pause it:
 #: GPT-Live bills every second it is open, and a voice waiting on delegated
-#: work says nothing worth paying for. Shorter paused while the owner was still
-#: watching the work start (15 s did); longer pays for more silence on every
-#: delegation. The update queue's check-in counts the same silence.
+#: work, or on nobody at all, says nothing worth paying for. Shorter paused
+#: while the owner was still watching the work start (15 s did); longer pays
+#: for more silence. The update queue's check-in counts the same silence.
+#: PAUSE ON SILENCE (owner, 23 November 2026): a session in which nobody speaks
+#: billed per minute until someone ended it, since the pause waited for a
+#: delegation in flight; it no longer does. A session, and each reopen, opens a
+#: new Live session whose silence counts from its creation, so neither pauses
+#: within its first PAUSE_AFTER_SECONDS.
 PAUSE_AFTER_SECONDS = 45.0
 #: The most the pause waits for its sentence to be spoken before it closes: the
 #: sentence takes about four seconds to say, so twice that covers a slow voice
 #: and still bounds a Live session whose audio events never come.
 PAUSE_SAY_SECONDS = 8.0
-#: The one sentence the voice says before it pauses.
+#: How soon the pause looks again when silence is due but held (a read-back
+#: waiting, audio playing, a side mid-sentence): the events that end most holds
+#: check at once; this bounds a hold no event ends (a read-back's expiry).
+QUIET_RECHECK_SECONDS = 1.0
+#: The one sentence the voice says before it pauses with work in flight.
 PAUSE_SENTENCE = ("I'll pause while that runs; I'll be back when it's ready, or just start talking.")
+#: The one sentence it says before it pauses with nothing in flight. One sentence,
+#: not two: the pause closes at the end of the first sentence the voice says.
+PAUSE_IDLE_SENTENCE = "I'll pause now; say something or press Resume to carry on."
 #: What the event sink is told about the voice's state (§3.12.7), and the states.
 SESSION_STATE = "session.state"
 PAUSED, WAKING, LISTENING = "paused", "waking", "listening"
@@ -726,6 +738,9 @@ class LiveSession:
         #: start body said `debug: true`; None counts and sends nothing.
         self.trace: vtrace.SessionTrace | None = None
         self._trace_writes: set[asyncio.Task] = set()
+        #: Every session's turn latency (latency.py, own-speech §12.6): the
+        #: person's end of speech to the voice's audio, on the session clock.
+        self.latency = vlatency.TurnLatency(voice_id, clock=self._clock)
         #: Told when the key is spent (Sessions moves the session to the next tier).
         self.on_spent: Callable[["LiveSession"], None] | None = None
         #: The next tier's credential, held for the reopen once the key is spent.
@@ -900,6 +915,7 @@ class LiveSession:
                             self._delegated(event)
                     # After the transcript has taken the event: a voice line's text is current.
                     self._note_activity(kind, event)
+                    self._note_latency(kind, event)
                     if kind == "error":
                         # The error's code only: its message may quote what was sent.
                         error = event.get("error") if isinstance(event.get("error"), dict) else {}
@@ -1126,8 +1142,17 @@ class LiveSession:
         result = await self._planner.delegate(person=self.person, grant=self.grant,
                                               transcript=transcript, delegation_id=delegation_id,
                                               model=self.planner_model, request=request or None)
+        if self.paused:
+            # It ran on while the session paused: nothing is kept warm for it.
+            self.cool_planner("paused")
         await self._result(delegation_id, result.spoken)
         self._traced(transcript, request, result, result.spoken)
+
+    def cool_planner(self, why: str) -> None:
+        """Have the planner let this session's account and child go (planner.cool)."""
+        cool = getattr(self._planner, "cool", None)
+        if cool is not None:
+            cool(self.voice_id, why)
 
     async def _result(self, delegation_id: str, spoken: str) -> None:
         """The planner's result, through the update queue (updates.py) when one
@@ -1142,22 +1167,28 @@ class LiveSession:
 
     def at_gap(self) -> bool:
         """Whether an update may be spoken now: the Live session is open and not
-        pausing, the person is not speaking (no utterance of theirs open, no
-        speech started and not stopped) and the voice is not mid-sentence (its
+        pausing, and neither side is mid-sentence (`_mid_sentence`)."""
+        if self.ended or self._socket is None or self.pausing:
+            return False
+        return not self._mid_sentence()
+
+    def _mid_sentence(self) -> bool:
+        """Whether either side is mid-sentence: the person speaking (an utterance
+        of theirs open, or speech started and not stopped) or the voice (its
         audio playing, or its text not ending a sentence for less than
         VOICE_SENTENCE_SECONDS)."""
-        if self.ended or self._socket is None or self.pausing or self._playing or self._person_speaking:
-            return False
+        if self._playing or self._person_speaking:
+            return True
         self._end_idle_utterances()
         if any(s.speaker == "person" and not s.ended for s in self._segments):
-            return False
+            return True
         for segment in reversed(self._segments):
             if segment.speaker == "voice":
                 if (not segment.final and not ends_sentence(segment.text)
                         and self._clock() - self.spoken_at < VOICE_SENTENCE_SECONDS):
-                    return False
+                    return True
                 break
-        return True
+        return False
 
     async def say_update(self, line: str, *, wakes: bool, delegation_id: str | None = None) -> bool:
         """Say one update queue line (updates.py): as the result's commentary for
@@ -1188,10 +1219,12 @@ class LiveSession:
         body["tier"] = self.tier
         vtrace.spawn(self._planner.write_trace(self.grant, body), self._trace_writes)
 
-    async def _say(self, delegation_id: str, spoken: str, *, prefix: str = "planner") -> None:
+    async def _say(self, delegation_id: str | None, spoken: str, *, prefix: str = "planner") -> None:
         """Send `spoken` back as the delegation's commentary, unless the session
         ended. Paused, it is held for the wake, which it asks for (`cause:
-        result`); reopened, the Live session open now says it (§3.12.7)."""
+        result`); reopened, the Live session open now says it (§3.12.7). With no
+        delegation (the pause of a session that never delegated) the append
+        carries no `delegation_id`."""
         if not spoken:
             return
         if self.successor is not None:
@@ -1208,10 +1241,12 @@ class LiveSession:
             return
         # Said aloud: the voice is speaking, so the silence counts from now.
         self.spoken_at = self._clock()
+        event_id = f"{prefix}_{delegation_id or self.voice_id}"[:64]
+        append: dict[str, Any] = {"type": COMMENTARY_APPEND, "event_id": event_id, "content": spoken}
+        if delegation_id is not None:
+            append["delegation_id"] = delegation_id
         try:
-            await self._socket.send(json.dumps({
-                "type": COMMENTARY_APPEND, "event_id": f"{prefix}_{delegation_id}"[:64],
-                "delegation_id": delegation_id, "content": spoken}))
+            await self._socket.send(json.dumps(append))
         except WebSocketException as exc:
             log.info("voice session %s: the planner's summary was not sent (%s)",
                      self.voice_id, type(exc).__name__)
@@ -1222,7 +1257,9 @@ class LiveSession:
             self._playing = True
             return
         if kind == OUTPUT_AUDIO_STOPPED:
+            # The voice was speaking until now: the silence counts from here.
             self._playing = False
+            self.spoken_at = self._clock()
             self._spoken()
             return
         if kind.endswith(SPEECH_STARTED_SUFFIX) and not kind.startswith("session.output"):
@@ -1249,6 +1286,15 @@ class LiveSession:
         if speaker == "voice" and (final or ends_sentence(self._voice_text())):
             self._spoken()
 
+    def _note_latency(self, kind: str, event: dict) -> None:
+        """A finished turn's latency record goes to swarm-api beside the
+        sideband (its own task, through the session grant), never waited on."""
+        record = self.latency.note(kind, event)
+        write = getattr(self._planner, "write_latency", None)
+        if record is None or self.grant is None or not callable(write):
+            return
+        vtrace.spawn(write(self.grant, record), self._trace_writes)
+
     def _voice_text(self) -> str:
         for segment in reversed(self._segments):
             if segment.speaker == "voice":
@@ -1259,7 +1305,7 @@ class LiveSession:
         if self._spoke is not None:
             self._spoke.set()
 
-    async def say_and_wait(self, delegation_id: str, spoken: str, seconds: float) -> None:
+    async def say_and_wait(self, delegation_id: str | None, spoken: str, seconds: float) -> None:
         """Say `spoken` for `delegation_id` and wait until the voice has said a
         sentence after it (a voice final, a sentence's end, or the audio
         stopping), at most `seconds`."""
@@ -1277,18 +1323,19 @@ class LiveSession:
             self._quiet_timer = None
 
     def check_quiet(self) -> None:
-        """Pause when neither side has spoken for `pause_after` with a delegation
-        in flight, no read-back pending and nothing playing; else look again when
-        it could be due. Checked on every sideband event (on the injected clock)
-        and by a timer for when none comes."""
+        """Pause when neither side has spoken for `pause_after`, with or without
+        a delegation in flight, no read-back pending and neither side
+        mid-sentence (nothing playing); else look again when it could be due.
+        Checked on every sideband event (on the injected clock) and by a timer
+        for when none comes; a hold looks again every QUIET_RECHECK_SECONDS."""
         self._stop_quiet_timer()
         if (self.pause_after is None or self.on_quiet is None or self.pausing or self.paused
                 or self.ended or self.replaced or self.reopen_pending):
             return
-        if not self.delegations or self._playing or self.readback_pending():
-            return
         left = self.spoken_at + self.pause_after - self._clock()
-        if left <= 0:
+        if left <= 0 and (self.readback_pending() or self._mid_sentence()):
+            left = QUIET_RECHECK_SECONDS
+        elif left <= 0:
             self.pausing = True
             self.on_quiet(self)
             return
@@ -1592,8 +1639,8 @@ class Sessions:
                               clock=self._clock)
         session.answer = answer
         session.on_spent = self._spent
-        if self._planner is not None and self._pause_after is not None:
-            # Without a planner nothing is ever delegated, so nothing waits to pause.
+        if self._pause_after is not None:
+            # Silence pauses a session with or without a planner (PAUSE ON SILENCE).
             session.pause_after = self._pause_after
             session.on_quiet = self._quiet
             session.readback_pending = lambda: self._readback_pending(voice_id)
@@ -1616,15 +1663,22 @@ class Sessions:
         """THE PAUSE (§3.12.7): say the sentence, wait for it (at most
         `pause_say_seconds`), close the Live session keeping its usage seconds,
         and tell the sink `session.state: paused`. The voice session, its grant,
-        its lease and its planner turns keep running. The person speaking, or the
-        delegated work finishing, before the close leaves the session open."""
+        its lease and its planner turns keep running; the planner's warm account
+        and child (plannerwarm.py) are let go. With a delegation in
+        flight it says PAUSE_SENTENCE for it; with none, PAUSE_IDLE_SENTENCE, for
+        the newest delegation if there was one. The person speaking, or the
+        delegated work in flight finishing, before the close leaves the session open."""
         try:
-            delegation_id = next(iter(session.delegations), None)
-            if delegation_id is None or session.ended:
+            in_flight = next(iter(session.delegations), None)
+            if session.ended:
                 return
             session.person_spoke = False
-            await session.say_and_wait(delegation_id, PAUSE_SENTENCE, self._pause_say)
-            if (session.person_spoke or not session.delegations or session.ended or session.replaced
+            if in_flight is not None:
+                await session.say_and_wait(in_flight, PAUSE_SENTENCE, self._pause_say)
+            else:
+                await session.say_and_wait(session.last_delegation, PAUSE_IDLE_SENTENCE, self._pause_say)
+            finished = in_flight is not None and not session.delegations
+            if (session.person_spoke or finished or session.ended or session.replaced
                     or session.reopen_pending or self._live.get(session.voice_id) is not session):
                 log.info("voice session %s: the pause was called off", session.voice_id)
                 return
@@ -1642,6 +1696,8 @@ class Sessions:
             if not session.paused and not session.ended:
                 session.spoken_at = session._clock()
                 session.check_quiet()
+        # The planner's account and child go back; a turn it is running finishes first.
+        session.cool_planner("paused")
         log.info("voice session %s: paused after %.0f s of silence (%s s talked)", session.voice_id,
                  session.pause_after or 0, f"{session.talk_seconds:g}")
         await session.emit({"type": SESSION_STATE, "state": PAUSED, "paused_at": session.paused_at,

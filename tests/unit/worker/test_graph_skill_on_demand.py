@@ -218,12 +218,17 @@ def test_a_graph_on_step_gets_the_skill_not_the_ten_tools(monkeypatch, tmp_path,
     assert claude_code.ALWAYS_LOAD not in entry
     assert entry["args"][-2:] == ["--shape", graphstage.SHAPE_SKILL]
     assert claude_code.GRAPH_FIRST_NOTE not in seen["prompt"]
+    assert claude_code.GRAPH_FIRST_NOTE not in (_system(seen) or "")
     # An implement step: the lookup line names the skill, in place of the
     # exploration line's clause (the owner, 2026-11-06).
     assert claude_code.GRAPH_LOOKUP_SKILL in seen["prompt"]
     assert claude_code.EXPLORATION_SKILL_CLAUSE not in seen["prompt"]
     system = _system(seen)
-    assert system == claude_code.GRAPH_SKILL_SYSTEM_NOTE
+    # The skill's moment, then the standing paragraphs the step has (the
+    # saved-output note), in the one flag (2026-11-23).
+    assert system == "\n\n".join([claude_code.GRAPH_SKILL_SYSTEM_NOTE,
+                                   claude_code.SAVED_OUTPUT_NOTE,
+                                   claude_code.SUBAGENT_NOTE])
     assert len(_hint_hooks(_settings(seen))) == 1
 
 
@@ -232,8 +237,13 @@ def test_the_tools_shape_is_batch_two_exactly(monkeypatch, tmp_path):
                                         graphstage.SHAPE_ENV: graphstage.SHAPE_TOOLS})
     entry = _servers(seen)[graphstage.SERVER_NAME]
     assert entry[claude_code.ALWAYS_LOAD] is True and "--shape" not in entry["args"]
-    assert claude_code.GRAPH_FIRST_NOTE in seen["prompt"]
-    assert _system(seen) == claude_code.GRAPH_SYSTEM_NOTE
+    # The loaded tools' moment, then the standing paragraphs, GRAPH_FIRST_NOTE
+    # last (2026-11-23: the standing paragraphs ride the system prompt).
+    assert claude_code.GRAPH_FIRST_NOTE not in seen["prompt"]
+    assert _system(seen) == "\n\n".join([claude_code.GRAPH_SYSTEM_NOTE,
+                                          claude_code.SAVED_OUTPUT_NOTE,
+                                          claude_code.SUBAGENT_NOTE,
+                                          claude_code.GRAPH_FIRST_NOTE])
     assert not _skill(tmp_path).exists()
     assert _hint_hooks(_settings(seen)) == []
 
@@ -245,7 +255,10 @@ def test_a_graph_off_step_gets_no_skill_and_no_hint_and_clears_an_old_one(monkey
     seen = _run(monkeypatch, tmp_path, {graphstage.SHAPE_ENV: graphstage.SHAPE_SKILL})
     assert not stale.parent.exists()
     assert _hint_hooks(_settings(seen)) == []
-    assert _system(seen) is None
+    # No graph moment: the system prompt holds only the standing paragraphs
+    # (2026-11-23), none of them about the graph.
+    assert _system(seen) == "\n\n".join([claude_code.SAVED_OUTPUT_NOTE,
+                                          claude_code.SUBAGENT_NOTE])
 
 
 def test_the_skill_costs_a_fraction_of_the_loaded_tools_every_turn():

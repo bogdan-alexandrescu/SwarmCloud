@@ -28,7 +28,7 @@
  * only its own card; a row that comes before its card is used when it comes.
  *
  * ONLY THE CATALOGUE IS DRAWN (cards.ts, held to swarm-api's schema by
- * tests/unit/control_plane/test_voice_cards.py). A card of a kind the
+ * a guard test). A card of a kind the
  * catalogue does not list is not drawn, and the console logs it once per
  * kind. A renderer is handed only the body fields its kind names and only
  * the actions its kind allows. The diagram, mock-up, proposal, credential and
@@ -73,8 +73,11 @@ export const TRACE_EVENTS = ['trace.turn'] as const
 /** A spent Live key's next tier is held: Talk offers again (swarm_api/voice/stream.py `TIER_REOPEN`). */
 export const TIER_EVENTS = ['voice.tier.reopen'] as const
 
+/** The voice's pause and wake: swarm-voice's reported state (swarm_api/voice/stream.py `WORK_TYPES`' `paused`); session.tsx reads it. */
+export const PAUSE_EVENTS = ['paused'] as const
+
 /** Every event the stream carries (swarm_api/voice/stream.py `EVENT_TYPES`). */
-const SESSION_EVENTS: readonly string[] = [...STREAM_EVENTS, ...STAGE_EVENTS, ...TRACE_EVENTS, ...TIER_EVENTS]
+const SESSION_EVENTS: readonly string[] = [...STREAM_EVENTS, ...STAGE_EVENTS, ...TRACE_EVENTS, ...TIER_EVENTS, ...PAUSE_EVENTS]
 
 const IS_TRACE_EVENT: readonly string[] = TRACE_EVENTS
 

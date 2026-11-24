@@ -73,8 +73,8 @@ is the intended outcome. Not covered, as the design says: a cookie without
 PUPPETEER OPENS PAGES TOO (DEVB-GATE; part of archived issue 1030). dev-browser v1 drives
 Chromium with puppeteer-core 25.8.0, whose `newPage()` fails outright when
 `Performance.enable` or `Audits.enable` errors (CdpPage#initialize,
-FrameManager.initialize; the sequence is pinned in
-tests/unit/worker/fixtures/puppeteer-core-25.8.0-*.json). So:
+FrameManager.initialize; the sequence is pinned in a fixture captured from
+puppeteer-core 25.8.0). So:
 
 * `Performance.enable` / `getMetrics` / `disable` are allowed. The domain
   reports counters -- `Metric` is a name and a number, the `metrics` event a

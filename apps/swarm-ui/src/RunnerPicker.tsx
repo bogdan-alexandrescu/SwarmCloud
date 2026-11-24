@@ -311,7 +311,7 @@ function HeldRunners({ held, heldAs }: { held: ReadonlyArray<readonly [string, R
     <details className="sbf-runners-more">
       <summary>{heldSummary(held.length, heldAs)}</summary>
       {/* THE WHY IS ONE CLICK AWAY, in Help (walkthrough E). A link, not a
-          `?`: the console's glyphs are rationed (tests/help.test.ts, B7.4),
+          `?`: the console's glyphs are rationed (a help test, B7.4),
           and this list is drawn on two forms. */}
       <a className="sbf-runners-why ctl-link" href={`#${HELP['runner-unavailable'].anchor}`}>
         Why a runner is unavailable

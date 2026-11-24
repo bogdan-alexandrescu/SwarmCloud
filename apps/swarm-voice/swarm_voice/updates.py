@@ -12,6 +12,10 @@ It is fed by:
   or a run started, a run opened its pull request, something finished, failed,
   was cancelled, or is waiting on the owner;
 * a card drawn by the planner (planner.py), by its kind and title;
+* the spend caps' state (swarm-api's voice/budget.py, read by the follower
+  every tick): 80% of the session cap or the day cap used, once per cap, and
+  a cap reached, once (`BUDGET_LINES`); a reached cap is said as an update
+  for the owner, and a pause hears it on the wake;
 * a CHECK-IN about every CHECKIN_SECONDS while a delegation runs and nothing
   else was said, phrased from the tool the planner is calling now
   (`TOOL_PHRASES`), never from its text or its arguments.
@@ -118,6 +122,7 @@ TOOL_PHRASES = {
     "list_repositories": "reading the repositories",
     "list_schedules": "reading the schedules",
     "search": "searching SwarmCloud",
+    "project_status": "reading this project's status",
     "show_file": "putting a file on screen",
     "show_diff": "putting a diff on screen",
     "show_log": "putting a log on screen",
@@ -134,6 +139,17 @@ DRAW_PREFIX = "draw_"
 CHECKIN_LINE = "Still working: {doing}."
 CHECKIN_IDLE = "Still working on it."
 DRAWN_LINE = "I drew a {kind} card: {title}."
+#: The spend caps' lines (voice-it.md §3.8), by notice and cap: said once per
+#: session each. A reached cap says the two-minute grace
+#: (swarm_api/voice/ledger.py CAP_GRACE_SECONDS).
+BUDGET_LINES = {
+    ("warning", "session"): "Heads up: this session has used 80% of its budget.",
+    ("warning", "day"): "Heads up: today has used 80% of the day's budget.",
+    ("capped", "session"): "This session has reached its budget cap: nothing new starts, "
+                           "and it ends in two minutes.",
+    ("capped", "day"): "Today has reached the day's budget cap: nothing new starts, "
+                       "and this session ends in two minutes.",
+}
 MORE_LINE = "And {n} more {updates}."
 
 
@@ -201,6 +217,26 @@ def roster_updates(changes: Iterable[Change]) -> list[Update]:
             kind, line = STATE_PHRASES[change.state]
             found.append(Update(kind, f"{base}:{change.state}", line.format(item=item, id=change.id),
                                 item=base))
+    return found
+
+
+def budget_updates(state: Any) -> list[Update]:
+    """The updates the caps' state makes: a warning per cap in `warned`, and
+    the reached cap (`capped`), each keyed so it is said once per session. A
+    reached cap's update carries its warning's key as its item, so a line
+    with both names only the cap."""
+    if not isinstance(state, dict):
+        return []
+    found: list[Update] = []
+    warned = state.get("warned") if isinstance(state.get("warned"), list) else []
+    for line in ("session", "day"):
+        if line in warned:
+            found.append(Update(OWNER, f"budget:warning:{line}", BUDGET_LINES[("warning", line)],
+                                item=f"budget:{line}"))
+    capped = state.get("capped")
+    if capped in ("session", "day"):
+        found.append(Update(OWNER, "budget:capped", BUDGET_LINES[("capped", capped)],
+                            item=f"budget:{capped}"))
     return found
 
 
@@ -300,6 +336,12 @@ class UpdateQueue:
 
     def roster(self, changes: Iterable[Change]) -> None:
         self.note_all(roster_updates(changes))
+
+    def budget(self, state: Any) -> None:
+        """The caps' state (`{warned, capped, ...}`): each cap warned of and
+        the cap reached, said once each. A reached cap's line stands for its
+        own warning, which is then never said."""
+        self.note_all(budget_updates(state))
 
     # -- speaking -----------------------------------------------------------------
 
@@ -451,6 +493,11 @@ class Board:
         queue = self._queues.get(voice_id)
         if queue is not None:
             _safely(queue.roster, list(changes))
+
+    def budget(self, voice_id: str, state: Any) -> None:
+        queue = self._queues.get(voice_id)
+        if queue is not None:
+            _safely(queue.budget, state)
 
 
 def _safely(call: Callable[..., None], *args: Any) -> None:

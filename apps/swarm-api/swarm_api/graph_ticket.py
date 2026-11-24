@@ -42,8 +42,8 @@ says `off` for this tenant and registration, the answer is 403 with
 THE CODES. Every refusal here is an ESTABLISHED code (`forbidden`, `conflict`,
 `validation_failed`, `no_graph`), always enforced: continuing past any of them
 is the breach itself, and a new code would need a switch or a listing outside
-this lane's files (`swarm_api.refusals`; tests/unit/control_plane/
-test_new_refusals_ship_off.py). The design's `context_disabled` is therefore
+this lane's files (`swarm_api.refusals`; a test pins this). The design's
+`context_disabled` is therefore
 carried as `detail.reason` on the established 403, and the fence as
 `detail.reason == "fenced"` on the established 409. 503
 `graph_ticket_unavailable` is not a refusal: the deployment has no key.
@@ -135,9 +135,9 @@ MIN_TICKET_SECONDS = 60
 #: ticket never reads `/mcp`. It names a repository and two digests, and no
 #: task, attempt or commit: it reads counters, never a graph.
 #: swarm_graph.ticket.STATS_TICKET_FIELDS restates this set (its image carries
-#: no swarm-api); tests/unit/graphsvc/test_graphsvc_ticket.py mints here and
-#: verifies there, so a rename on either side turns it red. The nonce makes
-#: every mint distinct; the service checks its shape.
+#: no swarm-api); a test mints here and verifies there, so a rename on
+#: either side turns it red. The nonce makes every mint distinct; the
+#: service checks its shape.
 STATS_DOMAIN = b"swarm-graph-stats/v1\0"
 STATS_FIELDS = frozenset({"tenant_id", "repo_id", "manifest_digest", "previous_digest",
                           "exp", "nonce"})

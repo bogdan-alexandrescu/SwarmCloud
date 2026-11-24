@@ -11,8 +11,8 @@ nothing else under the collection. A write an admin must answer for
 `SWARM_API_DOCUMENTS` restates swarm-api's rows of `swarm_install.record.WRITERS`
 (DAYONE-ENGINE-1). It is restated, not imported, because swarm-api's image does
 not carry `apps/swarm-install` (the engine's Google clients stay out of it);
-`tests/unit/control_plane/test_install_record_writers.py` imports both and
-fails on any difference, so the table still lives once in effect.
+a test imports both and fails on any difference, so the table still lives
+once in effect.
 
 Every write is a Firestore transaction: read, merge, write, retried by the
 client on contention, so two swarm-api replicas cannot lose an update.

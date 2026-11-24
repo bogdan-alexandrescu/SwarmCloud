@@ -35,8 +35,8 @@ from .errors import WorkerError
 from .forge import PullHead
 
 #: The dispatch block's key, as `swarm_api.validation.CI_FIX_HEAD_FIELD`
-#: writes it; the worker cannot import swarm_api, so a parity test
-#: (tests/unit/worker/test_ci_fix_superseded_at_start.py) holds the two equal.
+#: writes it; the worker cannot import swarm_api, so a parity test holds the
+#: two equal.
 FIELD = "ci_fix_head"
 
 #: Every reason `superseded` returns starts with this, so a run's record can

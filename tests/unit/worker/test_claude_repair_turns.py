@@ -32,7 +32,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_worker.runners import claude_code, cliagent
+from agent_worker.runners import ceiling, claude_code, cliagent
 from agent_worker.runners.base import RunnerContext
 from test_cli_prompt_names_time_limit import without_limit_line
 
@@ -87,7 +87,8 @@ def _ctx(tmp_path: Path, payload: dict, *, repo: bool) -> RunnerContext:
 
 
 #: The fake CLI. Its plan is `$HOME/plan.json` (HOME is the work directory);
-#: each start appends how it was started to `$HOME/runs.jsonl`, then writes
+#: each start appends how it was started (its `--resume` value, its stdin
+#: prompt and its `--append-system-prompt` value) to `$HOME/runs.jsonl`, then writes
 #: the files its step names: `$ARTIFACTS/<name>` into the artifacts directory,
 #: anything else relative to where it was started (the checkout), runs each
 #: argv of the step's `git` list as `git <argv>` there, and, when the step
@@ -98,8 +99,12 @@ argv = sys.argv[1:]
 home = pathlib.Path(os.environ["HOME"])
 plan = json.loads((home / "plan.json").read_text())
 resume = argv[argv.index("--resume") + 1] if "--resume" in argv else None
+# The standing paragraphs ride `--append-system-prompt` (2026-11-23).
+flag = "--append-system-prompt"
+system = argv[argv.index(flag) + 1] if flag in argv[:-1] else ""
 with (home / "runs.jsonl").open("a") as f:
-    f.write(json.dumps({"resume": resume, "prompt": sys.stdin.read()}) + "\n")
+    f.write(json.dumps({"resume": resume, "prompt": sys.stdin.read(),
+                        "system": system}) + "\n")
 runs = sum(1 for _ in (home / "runs.jsonl").open())
 step = plan["runs"][min(runs - 1, len(plan["runs"]) - 1)]
 for name, text in step.get("write", {}).items():
@@ -339,6 +344,15 @@ def test_a_finish_pass_runs_before_the_repair_checks(tmp_path, monkeypatch):
     assert "scan-01.md" in runs[2]["prompt"]
     assert out["resumed_to_finish"] is True
     assert out["repair_turns"] == 1
+    # The finish pass and the repair turn start from the runner's base argv:
+    # each carries the standing paragraphs in its one system prompt, as the
+    # first start did, and none restates them in its user prompt.
+    # MUTATION: stop adding them to `base_argv` in run_cli_agent -> red.
+    assert runs[0]["system"]
+    for run in runs:
+        assert run["system"] == runs[0]["system"]
+        assert run["system"].count(ceiling.HANDOFF_NOTE) == 1
+        assert ceiling.HANDOFF_NOTE not in run["prompt"]
 
 
 def test_the_session_id_never_reaches_the_runner_log(tmp_path, monkeypatch, capfd):

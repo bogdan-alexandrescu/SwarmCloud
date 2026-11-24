@@ -12,9 +12,8 @@ resume, drain and remove one of your own accounts, set how many agents it may
 hold (`max-agents`, archived issue 2222), put it in or take it out of the workspace and
 Voice it pools (`pool`), and add one through the API's browser sign-in. The
 API served those routes and nothing reached them. They are a separate
-subcommand, never a view, held out of every skill's grant by
-`test_plugin_commands.py`, and `remove`, `max-agents` and `pool` take the
-label typed back.
+subcommand, never a view, held out of every skill's grant, and `remove`,
+`max-agents` and `pool` take the label typed back.
 
 THE SECOND IS THE ISSUE RUN (archived issue 454): `sc run --issue owner/repo#N` creates a
 run -- one planner task -- and `sc plan approve|edit|reject <run>` moves its
@@ -51,8 +50,6 @@ promise above holds. No skill or slash command may grant them to a model:
 prefix -- a prefix grant covers these too, and did until review caught it --
 and why `overview` exists as a named view: it is the one view a flag could
 not otherwise follow without the grant also matching `sc --json login`.
-`test_plugin_commands.py` compiles every grant the way Claude Code matches it
-and runs each command it allows through these parsers to see what it reaches.
 
 THE DIVISION OF LABOUR WITH render.py IS THE POINT. Everything in this file
 does I/O and decides nothing about presentation; everything in `render.py`
@@ -103,7 +100,7 @@ from typing import Any, Callable, Sequence
 
 from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES, TERMINAL_STATES, TaskState
 
-from . import board, keys, render, session
+from . import awaitchange, board, keys, render, session
 from .client import SwarmClient, SwarmError, chosen_tenant, outputs_of
 from .follow import with_console
 from .invocation import help_command, terminal_command
@@ -650,6 +647,33 @@ def cmd_capacity(client: SwarmClient, args, out) -> int:
         _dump(snap, out)
         return code
     _emit(render.render_capacity_view(snap, style), out)
+    return code
+
+
+def cmd_await(client: SwarmClient, args, out) -> int:
+    """`sc await`: the push path (`awaitchange`). Read-only; one line per
+    change, then exit 0; `awaitchange.EXIT_DEADLINE` when nothing changed."""
+    try:
+        timeout = awaitchange.timeout_seconds(args.timeout)
+    except SwarmError as exc:
+        print(f"sc: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    given = list(args.ids or [])
+    if bool(given) == bool(args.mine):
+        print("sc: sc await takes task or workflow ids, or --mine; not both, not neither", file=sys.stderr)
+        return EXIT_USAGE
+    if args.mine:
+        try:
+            given, why = awaitchange.mine(client)
+        except SwarmError as exc:
+            given, why = [], f"this session's running work could not be listed: {exc}"
+        if not given:
+            out.write(f"{why}\n")
+            return awaitchange.EXIT_NOTHING
+    code, lines = awaitchange.wait(client, awaitchange.resolve(client, given), timeout=timeout)
+    for text in lines:
+        out.write(text + "\n")
+    out.flush()
     return code
 
 
@@ -1686,8 +1710,8 @@ def _dump(snap: Snapshot, out) -> None:
 # /v1/accounts/{id}` and nothing in the CLI, MCP or plugin reached them, so
 # pausing an account meant the console or curl. They live under `sc account`
 # (singular), apart from the `sc accounts` VIEW, so a grant for the view can
-# never match them; `test_plugin_commands.py` holds every handler below out of
-# every skill's grant, as it holds `sc login`.
+# never match them; every handler below is held out of every skill's grant,
+# as `sc login` is.
 #
 # NO CREDENTIAL CROSSES HERE. The state and removal routes take an id and a
 # word; `account add` drives the API's own browser sign-in and never sees a
@@ -4533,8 +4557,8 @@ def cmd_context_remove(_client, args, out) -> int:
 #
 # THE SECOND PART OF `sc` THAT WRITES, after `sc account ...`: `sc run --issue`
 # creates a run (one planner task), and `sc plan approve|edit|reject` moves
-# its plan. Like the account verbs they are held out of every skill's grant by
-# `test_plugin_commands.py`; `sc runs`, `sc run show` and `sc plan show` read.
+# its plan. Like the account verbs they are held out of every skill's grant;
+# `sc runs`, `sc run show` and `sc plan show` read.
 #
 # APPROVAL SENDS THE DIGEST OF THE PLAN IT PRINTED. `sc plan approve` reads the
 # run, prints the plan and its digest, and asks for `approve` typed back; the
@@ -4703,7 +4727,7 @@ def _json_out(value: Any, out) -> int:
 # tool or command here writes: a session that could register a URL could
 # point the platform's relay anywhere, and one that took a store value would
 # hold a secret in its transcript. So this is the one place the package names
-# the registry's route, and only in a GET (tests/unit/mcp/test_mcp_servers_tool.py).
+# the registry's route, and only in a GET.
 
 #: What one listing entry carries: the registration's NAMES and rules, never
 #: its header or scheme, which only the worker's relay needs.
@@ -4796,9 +4820,8 @@ DEFAULT_ROLE_NAMES = ("viewer", "member")
 TERMINAL = "/dev/tty"
 
 #: The three role writes, by verb. NAMED ONCE, read by `_send_role_change`
-#: only, and that by the three typed handlers only:
-#: tests/unit/mcp/test_roles_bridge.py holds that no other module -- the MCP
-#: server above all -- reaches them.
+#: only, and that by the three typed handlers only; no other module -- the
+#: MCP server above all -- reaches them.
 ROLE_WRITES = {
     "set": ("PUT", "/v1/workspace/roles/person"),
     "clear": ("DELETE", "/v1/workspace/roles/person"),
@@ -5276,6 +5299,20 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("task_id")
     _common(t, root=False)
     t.set_defaults(func=cmd_task)
+
+    aw = sub.add_parser(
+        "await",
+        help=("wait for the first of these to finish or need a person, print one line per change "
+              "and exit 0; exit 4 when the deadline passes first. Read-only"),
+    )
+    aw.add_argument("ids", nargs="*", help="task ids, or a workflow id (wf_...) for every step of it")
+    aw.add_argument("--mine", action="store_true",
+                    help="this session's running work in this project, as /sc check scopes it")
+    aw.add_argument("--timeout", default=str(awaitchange.DEFAULT_TIMEOUT_SECONDS),
+                    help=(f"the deadline in seconds (default {awaitchange.DEFAULT_TIMEOUT_SECONDS}, "
+                          f"at most {awaitchange.MAX_TIMEOUT_SECONDS})"))
+    _common(aw, root=False)
+    aw.set_defaults(func=cmd_await)
 
     r = sub.add_parser("trouble", help="what is wrong right now (exit 3 if anything is down)")
     _common(r, root=False)

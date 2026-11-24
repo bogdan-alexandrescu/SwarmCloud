@@ -349,7 +349,7 @@ export function useIdleStop(active: boolean): { idle: boolean; resume: () => voi
  * late or need the same bookkeeping. Every REGULAR tick schedules with `ms`
  * itself (not a delta against `Date.now()`), so the timer this hook creates
  * on mount and on every tick after that is `setTimeout(fire, ms)` exactly --
- * OV-16 (layout.overview.test.tsx) spies on `setTimeout` and keys its
+ * OV-16 (the overview layout test) spies on `setTimeout` and keys its
  * assertion on that literal `ms`, for the 20 s poll and the 60 s stats read
  * each having their own hook instance. Only the resume-from-hidden path
  * schedules a shorter, computed delay, to finish the wait a tick was
@@ -997,7 +997,7 @@ export function Screen<T>({
  * a property of the whole screen -- the Workflows board's absent figures --
  * has no label nearer than the screen's own title. So the glyph follows the
  * `<h1>`, outside it: a heading's accessible name is its words, not the
- * topic's short form. Passed as `help="<id>"` so `tests/help.test.ts` counts
+ * topic's short form. Passed as `help="<id>"` so the help test counts
  * it against the ration on the screen that asked for it.
  *
  * A HEAD WITH NO AGE OF ITS OWN -- Help and API reads, which read nothing --
@@ -1379,7 +1379,7 @@ export { timeAgo }
  * transform by inheritance rather than by out-specifying it -- which means a
  * heading, chip or table cell added later cannot break it from above. Wrapping
  * the value is the only thing a caller has to remember, and
- * `src/__tests__/brand.test.tsx` asserts the computed style rather than the
+ * the brand test asserts the computed style rather than the
  * source text, so deleting the CSS rule fails the suite.
  */
 export function Id({

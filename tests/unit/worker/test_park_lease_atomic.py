@@ -367,7 +367,12 @@ def test_a_commit_aborted_for_good_writes_nothing():
     db.rpcs.on_commit = refuse
     control = _control(db)
 
-    with pytest.raises(ValueError):
+    from google.api_core import exceptions as core
+
+    # An abort on every run, the commit's included, goes up as one `Aborted`
+    # that says how many runs were made (issue 313), not the library's
+    # bare commit-exhausted `ValueError`.
+    with pytest.raises(core.Aborted):
         _park(control)
 
     # MUTATION: write the task, the events or the release outside the commit.
@@ -635,3 +640,227 @@ def test_only_a_contention_abort_is_written_again():
     assert not _terminal_write_contended(core.InvalidArgument("invalid nested entity"))
     assert not _terminal_write_contended(ValueError("something else"))
     assert not _terminal_write_contended(RuntimeError("boom"))
+
+
+# -- a commit Firestore aborts on every one of the library's tries (issue 313) ----
+#
+# Dev acceptance, 2026-11-24: a worker parking on a rate limit ended its task
+# FAILED with "Failed to commit transaction in 5 attempts.": the park's commit
+# lost the contention race on each of `firestore.transactional`'s five tries
+# inside ONE run, and the library's `ValueError` for that went straight up.
+# An aborted commit committed nothing, like an aborted read: the body is run
+# again on fresh reads, under the same runs, backoff and deadline.
+
+
+def _abort_commits(db: AbortingFirestore, count: int, then: Callable[[], None] | None = None):
+    """The first `count` commit RPCs are aborted; `then` runs at the last of them."""
+    left = [count]
+
+    def on_commit() -> None:
+        if left[0] > 0:
+            left[0] -= 1
+            db.aborted += 1
+            if left[0] == 0 and then is not None:
+                then()
+            raise _aborted()
+
+    db.rpcs.on_commit = on_commit
+
+
+def _library_attempts() -> int:
+    from google.cloud.firestore_v1.base_transaction import MAX_ATTEMPTS
+
+    return MAX_ATTEMPTS
+
+
+def test_a_park_whose_commit_is_aborted_on_every_library_try_is_run_again_and_parks():
+    db = _seeded()
+    tries = _library_attempts()
+    _abort_commits(db, tries)
+    control = _control(db)
+
+    _park(control)
+
+    assert db.aborted == tries
+    # MUTATION: let the library's commit-exhausted ValueError go up: `_park`
+    # raises and nothing below is reached.
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.PARKED.value
+    assert task["current_lease_id"] is None
+    assert db.doc("leases/lease_1")["released_at"] is not None
+    assert set(_pools(db).values()) == {2}, _pools(db)
+    # One run of the library's tries, then the run that committed.
+    assert db.rpcs.names().count("begin") == tries + 1
+    types = db.event_types("task_1")
+    # MUTATION: write the events outside the transaction: the aborted first
+    # run leaves its copy behind and the second run adds another.
+    assert types.count(EventType.PARKED.value) == 1, types
+    assert types.count(EventType.LEASE_RELEASED.value) == 1, types
+    assert control.committed_end is TaskState.PARKED
+
+
+def test_a_commit_aborted_on_every_run_stops_at_the_bound_and_says_so():
+    from google.api_core import exceptions as core
+
+    db = _seeded()
+    pools = _pools(db)
+    _abort_commits(db, 10_000)
+    control = _control(db)
+
+    with pytest.raises(core.Aborted) as raised:
+        _park(control)
+
+    runs = control_mod.TRANSACTION_ABORTED_RUNS
+    # MUTATION: retry the commit-exhausted error without a bound.
+    assert db.rpcs.names().count("begin") == runs * _library_attempts()
+    message = str(raised.value)
+    # MUTATION: raise the library's bare "Failed to commit transaction in 5
+    # attempts." when the runs are spent: the task's error names no contention.
+    assert f"on each of {runs} runs" in message, message
+    assert "contention" in message, message
+    assert "nothing was committed" in message, message
+    assert " s" in message and "over " in message, message
+    # The library's last error is kept in the chain.
+    assert isinstance(raised.value.__cause__, ValueError)
+    # Nothing landed.
+    assert db.doc("tasks/task_1")["state"] == TaskState.RUNNING.value
+    assert db.doc("leases/lease_1")["released_at"] is None
+    assert _pools(db) == pools
+    assert db.event_types("task_1") == []
+
+
+def test_a_commit_aborted_on_every_run_stops_at_the_calls_deadline(monkeypatch):
+    from google.api_core import exceptions as core
+
+    db = _seeded()
+    _abort_commits(db, 10_000)
+    clock = [0.0]
+    monkeypatch.setattr(control_mod, "_abort_clock", lambda: clock[0], raising=False)
+
+    def sleep(seconds: float) -> None:
+        clock[0] += seconds
+
+    monkeypatch.setattr(control_mod, "_abort_sleep", sleep, raising=False)
+
+    class _Retry:
+        timeout = 1.0
+
+    runner = FirestoreTransactionRunner(db)
+
+    def body(txn: Any) -> None:
+        txn.get(db.document("tasks/task_1"))
+        txn.update(db.document("tasks/task_1"), {"state": "PARKED"})
+
+    with pytest.raises(core.Aborted) as raised:
+        runner.run(body, call_options={"retry": _Retry(), "timeout": 1.0})
+
+    # MUTATION: ignore the deadline for an exhausted commit: five runs where
+    # the budget allows three (at 0, 0.25 and 0.75 s).
+    assert db.rpcs.names().count("begin") == 3 * _library_attempts()
+    assert "deadline" in str(raised.value), str(raised.value)
+    assert db.doc("tasks/task_1")["state"] == TaskState.RUNNING.value
+
+
+def test_a_newer_generation_met_on_the_next_run_is_refused_and_writes_nothing():
+    """Invariant 5 across runs: the next run reads the task afresh, so a newer
+    attempt that took the task while the commit was being aborted is a fence,
+    and the aborted run's writes are not applied over it."""
+    db = _seeded()
+
+    def take_over() -> None:
+        db.documents["tasks/task_1"]["current_generation"] = 2
+        db.documents["leases/lease_1"]["generation"] = 2
+
+    _abort_commits(db, _library_attempts(), then=take_over)
+    before_pools = _pools(db)
+    control = _control(db)
+
+    with pytest.raises(FencedWriteRefused):
+        _park(control)
+
+    # MUTATION: re-commit the first run's held writes instead of re-running
+    # the body: the task is PARKED over the newer attempt.
+    assert db.doc("tasks/task_1")["state"] == TaskState.RUNNING.value
+    assert db.doc("leases/lease_1")["released_at"] is None
+    assert _pools(db) == before_pools
+    assert db.event_types("task_1") == []
+
+
+def test_a_fence_is_not_run_again():
+    db = _seeded(task_generation=2)
+    control = _control(db, generation=1)
+
+    with pytest.raises(FencedWriteRefused):
+        _park(control)
+
+    # MUTATION: treat any error as contention: the fence is read five times.
+    assert db.rpcs.names().count("begin") == 1
+
+
+def test_only_the_librarys_own_commit_exhausted_error_is_run_again():
+    """The same text from anywhere else -- a body's own ValueError, with no
+    abort behind it -- is not contention and goes up untouched, on one run."""
+    db = _seeded()
+    runner = FirestoreTransactionRunner(db)
+    raised_by_body = ValueError("Failed to commit transaction in 5 attempts.")
+
+    def body(txn: Any) -> None:
+        txn.get(db.document("tasks/task_1"))
+        raise raised_by_body
+
+    with pytest.raises(ValueError) as raised:
+        runner.run(body)
+
+    # MUTATION: match the message alone (a substring of str(exc)).
+    assert raised.value is raised_by_body
+    assert db.rpcs.names().count("begin") == 1
+
+
+def test_a_read_abort_on_every_run_says_so():
+    from google.api_core import exceptions as core
+
+    db = _seeded()
+    db.pool_aborts = 10_000
+    control = _control(db)
+
+    with pytest.raises(core.Aborted) as raised:
+        control.release_lease("parked:provider_quota_exhausted")
+
+    runs = control_mod.TRANSACTION_ABORTED_RUNS
+    assert db.aborted == runs
+    message = str(raised.value)
+    assert f"on each of {runs} runs" in message, message
+    assert CONTENTION in str(raised.value.__cause__)
+
+
+def test_a_quota_park_whose_commit_is_aborted_on_every_library_try_ends_parked(
+    store, tmp_path, log_stream
+):
+    """The issue 313 sequence through the worker: the park's commit loses the
+    race on each of the library's tries in its first run, and the task still
+    ends PARKED, its lease released, and the worker exits as parked."""
+    db = AbortingFirestore()
+    seed_attempt(db, task_input=QUOTA_RUN, simulated={"provider": "anthropic"}, pool_active=3)
+    worker = _worker(db, store, tmp_path, log_stream)
+    real_park = worker.control.park
+
+    def park(**kwargs: Any) -> Any:
+        _abort_commits(db, _library_attempts())
+        try:
+            return real_park(**kwargs)
+        finally:
+            db.rpcs.on_commit = None
+
+    worker.control.park = park  # type: ignore[method-assign]
+
+    exit_code = worker.run()
+
+    assert db.aborted == _library_attempts(), "no commit was aborted"
+    # MUTATION: let the commit-exhausted ValueError go up: the crash path
+    # writes FAILED with "Failed to commit transaction in 5 attempts.".
+    assert exit_code == ExitCode.PARKED
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.PARKED.value
+    assert db.doc("leases/lease_1")["released_at"] is not None
+    assert db.doc("pools/global")["active"] == 2
+    assert db.event_types("task_1").count(EventType.PARKED.value) == 1

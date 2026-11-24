@@ -47,8 +47,8 @@ deletes here. The blob sweep is the writer's (`swarm-repo-graph sweep`),
 run as the tenant's own worker account.
 
 The format constants are restated from the writer, which runs in another
-image; tests/unit/control_plane/test_repository_graph.py reads manifests and
-blobs the shipped writer wrote, so a drift between the two is a red test.
+image; a test reads manifests and blobs the shipped writer wrote, so a
+drift between the two is a red test.
 """
 
 from __future__ import annotations

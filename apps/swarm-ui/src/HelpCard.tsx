@@ -61,7 +61,7 @@ import { HELP, type TopicId } from './help'
  *   4. A `?`. One per screen, on the screen's own subject, in the same place
  *      every time so it is learnable rather than hunted for.
  *
- * `tests/help.test.ts` counts the anchors and fails over the ceiling, because
+ * A help test counts the anchors and fails over the ceiling, because
  * the last four passes at this each reintroduced a handful and nothing noticed.
  * WHAT IS NOT NEGOTIABLE while doing any of the above: this console draws THREE
  * marks -- a measured value, a stale one (`~12%`, the last reading, too old to
@@ -233,7 +233,7 @@ interface Container {
  * Whether a press landed inside one of `inside` -- the card or its trigger --
  * and is therefore NOT the outside press that dismisses a pinned card (AH-6).
  *
- * Pure, and duck-typed on `contains`, so `tests/helpcard.test.tsx` can prove it
+ * Pure, and duck-typed on `contains`, so a test can prove it
  * under node without a DOM.
  */
 export function pressedInside(target: unknown, inside: ReadonlyArray<Container | null>): boolean {
@@ -409,7 +409,7 @@ interface BridgeKey {
  * once and `SectionQuestion` (App.tsx) calls it too.
  *
  * `data-focus-return` on a card is not decoration. It names the trigger the
- * card hands focus back to, and `src/__tests__/keyboard.test.tsx` asserts that
+ * card hands focus back to, and the keyboard test asserts that
  * EVERY tab stop living outside the app root sits inside an element carrying
  * one, and that the id resolves to a real element.
  */
@@ -610,7 +610,7 @@ const GLYPH: CSSProperties = {
   // (§11.3, §12.5). The ring separated nothing, so it goes; the fill carries
   // the affordance instead, and the ink comes up from --text-faint to
   // --text-dim because the glyph lost the edge that was half its presence.
-  // `prose.hygiene.test.tsx` holds both halves: no border, and still a fill.
+  // The prose hygiene test holds both halves: no border, and still a fill.
   //
   // THE FILL IS THE PAGE HEAD'S `?` FILL (admin-008, visual QA run 2). It was
   // --surface-2, which in light is #eef4fa on a #f3f6f9 page, 1.02:1 -- the
@@ -889,7 +889,7 @@ export function useEdgeSafePlacement(
 
 // NO CAPITALS AND NO TRACKING (CH-3). This title was forced to uppercase and
 // tracked `.04em` through an inline style -- the one place the stylesheet's
-// "nothing shouts" rule (§B5.2, `typescale.test.ts`) could not see. The title
+// "nothing shouts" rule (§B5.2, held by the type-scale test) could not see. The title
 // is a sentence someone wrote; mono plus `--text-faint` is the label rank, and
 // capitals were a third channel on the same distinction.
 //
@@ -942,7 +942,7 @@ const CARD_VALUE: CSSProperties = {
   // them -- `LEASED` -- and a card of raw capitals shouts every one. This is
   // what §B5.2 says `text-transform` is FOR: a string the API chose, made
   // quieter, with the string itself untouched so it is still the owner's
-  // spelling for a copy, a search and the anti-drift test in help.test.ts.
+  // spelling for a copy, a search and the help anti-drift test.
   textTransform: 'lowercase',
 }
 
@@ -984,13 +984,13 @@ const HIDDEN: CSSProperties = {
  * (`data-help-description`) is written in exactly one place. A second spelling
  * of it would be invisible until a word-count gate started counting the whole
  * help corpus as screen text and passing for the wrong reason -- which is the
- * failure `honesty.prose.test.tsx` was written against.
+ * failure the honesty prose test was written against.
  *
  * `data-help-description` MARKS IT, and that attribute is not decoration. This
  * node is in `document.body.textContent` whether any card is open or shut, so a
  * test asking "what can a reader see with every card closed" reads the whole
  * explanation back out of it and passes for the wrong reason. `visibleText()`
- * in `src/__tests__/honesty.prose.test.tsx` strips it by this attribute, and so
+ * in the honesty prose test strips it by this attribute, and so
  * does every `prose.budget*` ceiling.
  */
 export function HelpNote({ topic, id }: { topic: TopicId; id: string }) {
@@ -1369,7 +1369,7 @@ const LINKS: CSSProperties = {
   borderTop: '1px solid var(--line)',
   // Longhands, not a `font:` shorthand: jsdom does not expand a shorthand
   // carrying a custom property into longhands, so the DOM half of
-  // typescale.test.ts would read nothing back from it. 1.45 is --lh-micro
+  // the type-scale test would read nothing back from it. 1.45 is --lh-micro
   // rather than the 1.7 this was written with; the row gap above already
   // supplies the separation the looser line-height was doing by hand.
   fontSize: 'var(--t-micro)',
@@ -1386,12 +1386,12 @@ const LINK: CSSProperties = { color: 'var(--text-dim)' }
  * WHY A LIST OF LINKS RATHER THAN NOTHING. The legends this replaces were the
  * only index of what a screen's marks mean, and deleting one takes the index
  * out along with the essay. So the subjects stay on the surface -- two to six
- * words each, asserted by `help.guidance.test.tsx` -- and the paragraphs live
+ * words each, asserted by the help guidance test -- and the paragraphs live
  * at `#help/<id>`.
  *
  * NOTHING MEASURED MAY DEPEND ON IT. A screen that needs this footer followed
  * before an absent figure can be told from a zero has moved a fact rather than
- * an explanation, and `src/__tests__/honesty.prose.test.tsx` renders those
+ * an explanation, and the honesty prose test renders those
  * screens with every card closed and asserts otherwise.
  *
  * `AgentDetail.tsx` grew this shape first, as its own `AttemptLegend`. That

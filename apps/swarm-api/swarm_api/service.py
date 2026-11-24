@@ -133,11 +133,20 @@ from .schemas import (
 )
 from .served_limits import configured_limits
 from .settings import ApiSettings
-from .specsigning import SpecSigner, sign_task_specs
+from .specsigning import SpecSigner, sign_task_specs, stored_refusal
+from . import idempotency
 from . import steprerun
 from . import wfdescription
 from .store import Store, derived_service_account
 from .task_accounts import takes_pool_account
+from . import reviewgate
+from .stepclass import (
+    CLASS_AT_GATE_KEY,
+    CLASS_CHOSEN_BY_KEY,
+    REVIEW_AT_GATE,
+    signed_record,
+    submitted_record,
+)
 from .validation import (
     APP_CREDENTIAL_PROVIDERS,
     AWAIT_STEP_REFUSED_FIELDS,
@@ -259,6 +268,9 @@ class SubmissionResult:
     #: `{"server", "expires_at"}` (docs/design/registered-mcp-servers.md
     #: §4.3): never the value, its length, a prefix or a hash.
     mcp_credentials: Mapping[str, list[dict[str, Any]]] = field(default_factory=dict)
+    #: True when this answers an earlier submission's idempotency key
+    #: (`idempotency`): the tasks are that submission's, and nothing was created.
+    replayed: bool = False
 
 
 @dataclass(frozen=True)
@@ -279,6 +291,8 @@ class WorkflowSubmission:
     integrator_step_id: str | None
     #: The workflow's stored per-run MCP credentials, as `SubmissionResult`'s.
     mcp_credentials: list[dict[str, Any]] = field(default_factory=list)
+    #: As `SubmissionResult.replayed`.
+    replayed: bool = False
 
 
 @dataclass(frozen=True)
@@ -310,6 +324,15 @@ def _step_resource_class(
     if requested is not None:
         return validate_resource_class_override(profile, requested, sizes=sizes)
     return resource_class_for_stage(profile, stage)
+
+
+def _also_reviews(step_specs: Any, by_id: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Every further review a step's gate reads (`when.also`), as submitted:
+    what `rereview_step_for` carries into the re-review's prompt."""
+    return {
+        step_id: by_id[step_id].model_dump()
+        for spec in step_specs for step_id in spec.when_also if step_id in by_id
+    }
 
 
 def refuse_long_names(metadata: Mapping[str, Any]) -> None:
@@ -1046,6 +1069,17 @@ class SubmissionService:
             dispatch = workcontract.attach(dispatch, contract.compiled, environ=os.environ)
         metadata = dict(spec.metadata)
         metadata[DISPATCH_METADATA_KEY] = dispatch.to_metadata()
+        # `class_chosen_by` is unsigned and the caller's to write: stored only
+        # as a submission would have recorded it (`stepclass.submitted_record`).
+        recorded = submitted_record(metadata.pop(CLASS_CHOSEN_BY_KEY, None), spec.model_class)
+        if recorded is not None:
+            metadata[CLASS_CHOSEN_BY_KEY] = recorded
+        # A role's record for a NAMED class is copied into the signed block,
+        # the only copy `stepclass.explicit_class` reads; absent for a
+        # caller's class and for none, so those blocks keep their bytes.
+        role_record = signed_record(recorded, spec.model_class)
+        if role_record is not None:
+            metadata[DISPATCH_METADATA_KEY][CLASS_CHOSEN_BY_KEY] = role_record
         # The limits go in the typed `Task.budget` below (contract request
         # 120, signed at spec format 6); where each came from goes in the
         # signed dispatch block, which no caller can write
@@ -1390,16 +1424,89 @@ class SubmissionService:
             message = f"step {step_id!r}: {message}"
         refusals.refuse(BrowserToolUnavailable(message, detail=detail))
 
+    # -- idempotency keys -------------------------------------------------
+
+    def _submission_key(
+        self, ctx: AuthContext, tenant: Tenant, key: str | None, *, kind: str, payload: Any,
+    ) -> tuple[idempotency.Keyed | None, idempotency.Claim | None]:
+        """This request's key in its scope -- the tenant `tenant_for` checked
+        and the verified email, never anything from the body -- and the live
+        claim it already holds, if any. (None, None) without a key."""
+        if idempotency.check_key(key) is None:
+            return None, None
+        keys = idempotency.SubmissionKeys(self._store.db, now=self._now)
+        keyed = keys.keyed(tenant_id=tenant.tenant_id, submitter=ctx.email, key=key,
+                           kind=kind, payload=payload)
+        return keyed, keys.find(keyed)
+
+    def _claim_after_race(self, keyed: idempotency.Keyed) -> idempotency.Claim:
+        """The winner's claim, read after this submit's batch lost the create."""
+        claim = idempotency.SubmissionKeys(self._store.db, now=self._now).find(keyed)
+        if claim is None:
+            raise idempotency.ReplayIncomplete(
+                "a submission with this idempotency_key is being written; send it again "
+                "with the same key in a few seconds to read its ids",
+                detail={"field": "idempotency_key"})
+        return claim
+
+    def _replayed_tasks(self, tenant_id: str, claim: idempotency.Claim) -> list[Task]:
+        tasks: list[Task] = []
+        for task_id in claim.task_ids:
+            try:
+                tasks.append(self._store.get_task(tenant_id, task_id, submitted_by=None))
+            except NotFound:
+                raise idempotency.ReplayIncomplete(
+                    "the submission this idempotency_key names is still being written; "
+                    "send it again with the same key in a few seconds to read its ids",
+                    detail={"field": "idempotency_key"}) from None
+        return tasks
+
+    def _replay_workflow(self, tenant_id: str, claim: idempotency.Claim) -> WorkflowSubmission:
+        try:
+            workflow = self._store.get_workflow(tenant_id, claim.workflow_id or "",
+                                                submitted_by=None)
+        except NotFound:
+            raise idempotency.ReplayIncomplete(
+                "the workflow this idempotency_key names is still being written; send it "
+                "again with the same key in a few seconds to read its ids",
+                detail={"field": "idempotency_key"}) from None
+        echo = claim.dispatch
+        return WorkflowSubmission(
+            workflow=workflow,
+            tasks=self._replayed_tasks(tenant_id, claim),
+            dispatch=DispatchOptions(
+                strategy=str(echo.get("strategy") or DispatchOptions.strategy),
+                carrier=str(echo.get("carrier") or DispatchOptions.carrier),
+                continues=echo.get("continues_task"),
+            ),
+            integrator_step_id=echo.get("integrator_step_id"),
+            replayed=True,
+        )
+
     def submit_tasks(
-        self, ctx: AuthContext, specs: Sequence[TaskCreate], *, service_submission: bool = False
+        self, ctx: AuthContext, specs: Sequence[TaskCreate], *, service_submission: bool = False,
+        idempotency_key: str | None = None, idempotency_kind: str = idempotency.KIND_BATCH,
     ) -> SubmissionResult:
         """`service_submission` is set by the platform's own automation that
         submits as the person who registered a repository (`repoindex`), never
         by a route from a request: the owner's D4 for automation (2026-10-07)
-        runs repository indexing with the tenant token."""
+        runs repository indexing with the tenant token.
+
+        `idempotency_key` (`idempotency`): a key this workspace and submitter
+        used within `KEY_WINDOW` answers that submission's tasks with
+        `replayed` set and creates nothing; the same key with another payload
+        is refused 409. `idempotency_kind` is the route's: one task or a batch."""
         validate_batch_size(len(specs), self._settings.core.max_batch_size)
         tenant = self.tenant_for(ctx)
         self.workspace_gate(ctx, tenant)
+        dumped = [spec.model_dump(mode="json") for spec in specs] if idempotency_key else []
+        keyed, claim = self._submission_key(
+            ctx, tenant, idempotency_key, kind=idempotency_kind,
+            payload=(dumped[0] if idempotency_kind == idempotency.KIND_TASK and dumped
+                     else {"tasks": dumped}))
+        if claim is not None:
+            return SubmissionResult(tasks=self._replayed_tasks(tenant.tenant_id, claim),
+                                    woke_scheduler=False, replayed=True)
         now = self._now()
         budget_scope = self.budget_scope(tenant.tenant_id)
         try:
@@ -1473,7 +1580,19 @@ class SubmissionService:
                 credentials=spec.mcp_credentials, by=ctx.email)
             if stored:
                 mcp_stored[task.id] = stored
-        self._store.create_tasks(tasks, tenant_member=ctx.tenant_member)
+        if keyed is not None:
+            keyed.task_ids = [task.id for task in tasks]
+        try:
+            self._store.create_tasks(tasks, tenant_member=ctx.tenant_member, claim=keyed)
+        except idempotency.Raced:
+            # Nothing of this submission was written (`Store.create_tasks`).
+            # A per-run MCP credential stored above is left to its TTL, as a
+            # failed write's always is (`_store_mcp_credentials`).
+            if keyed is None:
+                raise
+            winner = self._claim_after_race(keyed)
+            return SubmissionResult(tasks=self._replayed_tasks(tenant.tenant_id, winner),
+                                    woke_scheduler=False, replayed=True)
         for task in tasks:
             self._metrics.tasks_submitted.labels(
                 tenant=task.tenant_id, runner_profile=task.runner_profile
@@ -1498,7 +1617,10 @@ class SubmissionService:
 
     def submit_workflow(self, ctx: AuthContext, spec: WorkflowCreate, *,
                         fix_loop_round: Mapping[str, Any] | None = None,
-                        step_stages: Mapping[str, str] | None = None) -> WorkflowSubmission:
+                        step_stages: Mapping[str, str] | None = None,
+                        idempotency_key: str | None = None) -> WorkflowSubmission:
+        # `idempotency_key` as on `submit_tasks`; only the create route
+        # passes it, from the request it is answering.
         # `step_stages` is the compiler's step id -> stage map (contract
         # request 135): only the issue-run compilers pass it, no route
         # builds it from a request, so the class it picks is the platform's.
@@ -1521,6 +1643,11 @@ class SubmissionService:
         tenant = self.tenant_for(ctx)
         # Before compiling any step: the workflow is admitted or refused whole.
         self.workspace_gate(ctx, tenant)
+        keyed, claim = self._submission_key(
+            ctx, tenant, idempotency_key, kind=idempotency.KIND_WORKFLOW,
+            payload=spec.model_dump(mode="json") if idempotency_key else None)
+        if claim is not None:
+            return self._replay_workflow(tenant.tenant_id, claim)
         integrator_step_id: str | None = None
         try:
             # The WORKFLOW's own metadata, up front and inside this try. It is
@@ -1912,6 +2039,8 @@ class SubmissionService:
                 builds_on=step_task_id[source.builds_on] if source.builds_on else None,
                 gate_task_id=step_task_id[source.when.step] if source.when else None,
                 gate_verdicts=source.when.verdict_in if source.when else (),
+                gate_also_task_ids=(
+                    [step_task_id[a] for a in source.when.also] if source.when else ()),
                 allow_empty_diff=source.allow_empty_diff or step_id in readers,
                 # Kept on a gated step only (`with_routing`): the MERGE path's
                 # pull request title when the implementer wrote none.
@@ -2022,6 +2151,24 @@ class SubmissionService:
                 }
             if step_id in default_gated:
                 task.metadata[REVIEW_GATE_METADATA_KEY] = dict(REVIEW_GATE_DEFAULT_BLOCK)
+            # A first review's class is the review gate's to pick, from the
+            # diff it reads (`stepclass`, the owner 2026-11-23): submitted on
+            # the profile's default, marked here, re-signed by the gate. Not a
+            # requirements check, a security review or the re-review, and
+            # never a step whose caller named a class. The mark the gate acts
+            # on is inside the SIGNED dispatch block, which no caller writes;
+            # `class_chosen_by` beside it is only the display record.
+            claude = RUNNER_PROFILES.get(task.runner_profile)
+            if (source.model_class is None and task.model_class is None
+                    and step_id != rereview_step_id
+                    and claude is not None and claude.model_classes
+                    and not is_security_review(task.metadata, os.environ)
+                    and task.metadata.get(REVIEW_GATE_METADATA_KEY)
+                    and not reviewgate.is_requirements_check(task.metadata)):
+                task.metadata[DISPATCH_METADATA_KEY][CLASS_AT_GATE_KEY] = True
+                task.metadata[CLASS_CHOSEN_BY_KEY] = REVIEW_AT_GATE
+            elif task.metadata.get(CLASS_CHOSEN_BY_KEY) == REVIEW_AT_GATE:
+                task.metadata.pop(CLASS_CHOSEN_BY_KEY)
             step_task_id[step_id] = task.id
             step_model_class[step_id] = task.model_class
             tasks.append(task)
@@ -2094,7 +2241,23 @@ class SubmissionService:
         mcp_stored = self._store_mcp_credentials(
             tenant.tenant_id, owner_id=workflow_id, owner_kind=OWNER_WORKFLOW,
             credentials=spec.mcp_credentials, by=ctx.email)
-        self._store.create_workflow(workflow, tasks, tenant_member=ctx.tenant_member)
+        if keyed is not None:
+            keyed.task_ids = [task.id for task in tasks]
+            keyed.workflow_id = workflow_id
+            keyed.dispatch = {
+                "strategy": dispatch.strategy,
+                "carrier": dispatch.carrier,
+                "integrator_step_id": integrator_step_id,
+                **({"continues_task": dispatch.continues} if dispatch.continues else {}),
+            }
+        try:
+            self._store.create_workflow(workflow, tasks, tenant_member=ctx.tenant_member,
+                                        claim=keyed)
+        except idempotency.Raced:
+            # As in `submit_tasks`: none of this workflow was written.
+            if keyed is None:
+                raise
+            return self._replay_workflow(tenant.tenant_id, self._claim_after_race(keyed))
         self._metrics.workflows_submitted.labels(tenant=tenant.tenant_id).inc()
         self._wake("workflow_submitted", tenant_id=tenant.tenant_id, workflow_id=workflow_id)
         # A workflow submitted without a description gets one written for it,
@@ -2138,6 +2301,7 @@ class SubmissionService:
                 input_from=dict(s.input_from),
                 when_step=s.when.step if s.when else None,
                 when_verdicts=tuple(s.when.verdict_in) if s.when else (),
+                when_also=tuple(s.when.also) if s.when else (),
                 builds_on=s.builds_on,
                 input_layout=resolve_input_layout(
                     spec.metadata, s.metadata, step_id=s.step_id
@@ -2236,7 +2400,8 @@ class SubmissionService:
         if choice == "off":
             if fix_loop is not None:
                 return spec, None
-            return spec, self._stated_rereview(spec, step_specs, strategy)
+            return spec, self._stated_rereview(spec, step_specs, strategy,
+                                               self._settings.worker_class_models)
         explicit = choice is not None
         if not explicit:
             if not is_mergeable_forge(repository_url):
@@ -2281,6 +2446,7 @@ class SubmissionService:
     @staticmethod
     def _stated_rereview(
         spec: WorkflowCreate, step_specs: Sequence[StepSpec], strategy: str,
+        class_models: Mapping[str, str] | None = None,
     ) -> str | None:
         """The id of the re-review `spec` states itself, or None (archived issue 2217).
 
@@ -2308,7 +2474,8 @@ class SubmissionService:
             sources = merge_sources(rest, strategy)
             if sources is None or sources.review not in by_id:
                 continue
-            derived = rereview_step_for(rest, by_id[sources.review].model_dump(), strategy)
+            derived = rereview_step_for(rest, by_id[sources.review].model_dump(), strategy,
+                                        class_models, _also_reviews(rest, by_id))
             if derived is not None and (
                 WorkflowStepCreate.model_validate(derived).model_dump() == step.model_dump()
             ):
@@ -2359,7 +2526,9 @@ class SubmissionService:
         by_id = {s.step_id: s for s in spec.steps}
         sources = merge_sources(step_specs, strategy)
         rereview = (
-            rereview_step_for(step_specs, by_id[sources.review].model_dump(), strategy)
+            rereview_step_for(step_specs, by_id[sources.review].model_dump(), strategy,
+                              self._settings.worker_class_models,
+                              _also_reviews(step_specs, by_id))
             if sources is not None and sources.review in by_id else None
         )
         if rereview is None:
@@ -3123,12 +3292,15 @@ class SubmissionService:
         self, ctx: AuthContext, tenant_id: str, workflow_id: str, step_id: str
     ) -> steprerun.RerunResult:
         """Re-run a failed step inside its workflow (`swarm_api.steprerun`):
-        new tasks for it and for what its failure cancelled, signed like a
+        new tasks for it and for what its failure cancelled, each verified as
+        stored first (`specsigning.stored_refusal`) and signed like a
         submission's, swapped in with one transaction, then a wake so
         admission sees them now rather than on the safety tick."""
         result = steprerun.rerun(
             store=self._store,
             sign=self._sign,
+            refusal=lambda task: stored_refusal(task.to_firestore(), task_id=task.id,
+                                                signer=self._signer, settings=self._settings),
             tenant_id=tenant_id,
             workflow_id=workflow_id,
             step_id=step_id,

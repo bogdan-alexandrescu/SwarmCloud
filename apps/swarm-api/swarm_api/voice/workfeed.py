@@ -12,8 +12,8 @@ the path parameters the template names, and nothing else:
   * `phrase` is the route's entry in `PHRASES`, a fixed table: the template's
     `{param}` placeholders are left for the console to fill from `ids`, so no
     value is ever spliced into text here. A route missing from the table is
-    `FALLBACK` ("Reading SwarmCloud"); tests/unit/voice/test_workfeed.py walks
-    the grant's lists and fails on any route without its own phrase.
+    `FALLBACK` ("Reading SwarmCloud"); every route on the grant's lists must
+    have its own phrase.
   * `class` is the call's class on the grant's lists: `read` for
     `ALLOWED_ROUTES`, `write` for `WRITE_ROUTES`. The step is written before
     the route runs, so it says what was asked, never how it ended.
@@ -90,6 +90,7 @@ PHRASES: Mapping[tuple[str, str], str] = {
     ("GET", "/v1/failure-findings/{finding_id}"): "Reading failure finding {finding_id}",
     ("GET", "/v1/runtimes"): "Reading runtimes",
     ("GET", "/v1/voice/cards/schema"): "Reading the card catalogue",
+    ("GET", "/v1/voice/projects/{project_id}/status"): "Reading this project's status",
     ("POST", "/v1/voice/sessions/{session_id}/cards"): "Drawing a card",
     ("POST", "/v1/voice/sessions/{session_id}/readbacks/answer"): "Hearing your answer",
     ("POST", "/v1/voice/sessions/{session_id}/visuals"): "Drawing a visual",
@@ -98,6 +99,7 @@ PHRASES: Mapping[tuple[str, str], str] = {
     ("POST", "/v1/tasks/{task_id}/answers"): "Answering agent {task_id}'s question",
     ("POST", "/v1/voice/sessions/{session_id}/trace"): "Tracing the turn",
     ("POST", "/v1/voice/sessions/{session_id}/reopen"): "Reporting the voice's state",
+    ("POST", "/v1/voice/sessions/{session_id}/brief"): "Noting the project's brief",
 }
 
 #: A step's `class`.

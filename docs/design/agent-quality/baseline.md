@@ -9,19 +9,19 @@ never zero.
 
 The rest of the inventory: [capability matrix](capability-matrix.md),
 [known failures](known-failures.md), [experiment protocol](experiment-protocol.md),
-[ownership](ownership.md). `scripts/agent_quality_inventory.py` re-reads the
-parts of these pages that the tree holds (the model pins, the cited tests, and
-every skip, expected failure and quarantined test), and
-`tests/unit/scripts/test_agent_quality_inventory.py` fails when one of them
-moves without its page.
+[ownership](ownership.md). They are kept by hand. Since issue 74 no test
+re-reads them against the tree (the model pins, the cited tests, every skip):
+that census's subject was these documents, not the product, and docs drift
+reddened code pull requests. A value here is as of the commit it names; read
+the tree for today's.
 
 A skip is registered as a row, never counted: [known failures
 §3](known-failures.md#3-every-skip-by-location) lists each skip, expected
 failure and `importorskip` under `tests/` by file, enclosing test and kind,
 with its reason, and each `tests/flaky.txt` entry in its quarantine table. A
-change that adds a skip adds its row (the failing test prints the row to add)
-and one that removes a skip deletes it; only the file, test and kind are
-matched, so a reason can be reworded freely. Why rows and not a count (the
+change that adds a skip should add its row and one that removes a skip
+delete it; a row is its file, test and kind, so a reason can be reworded
+freely. Why rows and not a count (the
 owner, 6 November 2026): two green changes that each add a skip and bump the
 same count conflict or fail when they land together, while two that each add
 their own row pass together as each passed alone.
@@ -98,9 +98,11 @@ to the CLI as `--model`. A caller's `model` field is attribution only
 | Class | Model id |
 |---|---|
 | `opus` | `claude-opus-5-5` |
-| `fable` | `claude-fable-5-1` |
+| `fable` | `claude-fable-5-2` |
 | `sonnet` | `claude-sonnet-5-5` |
 | `haiku` | `claude-haiku-5-5` |
+
+`fable` was `claude-fable-5-1` until the owner's re-pin of 2026-11-23.
 
 `swarm_common.profiles.ModelClass.admits` refuses an id below generation 5 at
 scheduler and swarm-api start.

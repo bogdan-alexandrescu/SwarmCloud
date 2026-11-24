@@ -24,6 +24,9 @@ allowed-tools:
   - Bash(sc roles --json)
   - Bash(sc roles list:*)
   - Bash(swarm doctor:*)
+  - CronList
+  - CronCreate
+  - Bash(sc await:*)
 ---
 
 Run the requested view and show the operator its output:
@@ -36,11 +39,32 @@ With no arguments that is the overview. Other views: `accounts`, `agents`,
 `capacity`, `task <id>`, `trouble`, `whoami`, and for issue runs (archived issue 454)
 `runs`, `run show <run>` and `plan show <run>`.
 
-If the arguments are `check`, `watch [interval]` or `watch off`, do **not**
-run them here: `sc` has no such view. They are the `sc` skill's verbs -- one
-`swarm_check` read and the attach of this project's running workflows, and
-the CronCreate schedule `swarm_check_schedule` hands back -- so follow that
-skill's `check` and `watch` sections.
+If the arguments are `check`, do **not** run it here: `sc` has no such view.
+It is the plugin's `/sc:check` command (a watch armed with `/sc check` before
+0.5.88 fires this), so do exactly what that command does, without loading the
+`sc` skill:
+
+Read-only: report and attach; never cancel, retry or re-dispatch.
+
+1. Call `swarm_check` once, with no arguments (or what $ARGUMENTS names).
+2. Follow its `how_to_read`: `flagged` first, in order (stuck before stale),
+   each by its `say`, evidence, console link and `next`; then
+   `awaiting_input`; then put each `owner_questions` question to the person
+   with AskUserQuestion and record each pick with `swarm_task_answer`.
+3. Make ONE `swarm_workflow_launch` call: `attach_with`'s args (with
+   `new_only: true`) and `exclude` the ids of every [SwarmCloud] row live
+   here; then one Workflow call per entry of its `launches`.
+4. If that reply's `arm_watch` is set, arm the watch: CronList; unless a job
+   whose prompt is `/sc:check` or `/sc check` exists, call
+   `swarm_check_schedule` with `arm_watch.save_with.args`, then CronCreate
+   with `arm_watch.args`, and say its `then_say`.
+5. If `swarm_check`'s `await_in_background` is set and no `sc await --mine`
+   runs in this session yet, run it with Bash in the background; when it
+   exits, report its lines (exit 4: nothing changed, run it again).
+
+If the arguments are `watch [interval]` or `watch off`, do **not** run them
+here either: they are the `sc` skill's verbs -- the CronCreate schedule
+`swarm_check_schedule` hands back -- so follow that skill's `watch` sections.
 
 If the arguments are `layout`, `layout rows`, `layout pane` or `layout band`,
 do **not** run them here: `sc` has no such view. It is the `sc` skill's toggle

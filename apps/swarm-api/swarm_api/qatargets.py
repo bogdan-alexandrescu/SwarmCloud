@@ -17,11 +17,13 @@ is the allowlist. `base_url` is `https` only, no userinfo, query or fragment,
 not an IP literal (`qaspec.base_url`, the renderer's own rule), and its host
 must be a public name: not single-label, not `localhost`, no internal suffix
 (`INTERNAL_SUFFIXES`, swarm_egress.policy's list, restated because swarm-api
-cannot import swarm-egress; tests/unit/control_plane/test_qa_targets.py holds
-the two equal), and every address it resolves to public unicast. A new target
+cannot import swarm-egress; a test holds the two equal), and every address
+it resolves to public unicast. A new target
 is `pending`; no run starts until a PLATFORM ADMIN approves it (VQ-Q1, "any
 platform admin, audited"), naming the host they approve, so an approval can
-never land on a host that changed under the approver. Changing the host,
+never land on a host that changed under the approver; the approval
+resolves every origin it approves again, so a name that moved to a private
+address since registration is a 422 and nothing is approved. Changing the host,
 the login's `extra_origin` or the leg's `extra_origins` sets it back to
 `pending`.
 
@@ -332,7 +334,7 @@ QA_TARGET_PURPOSE = "swarm-qa-target-request/v1"
 MAX_REQUEST_BYTES = 4096
 
 #: swarm_egress.policy.INTERNAL_SUFFIXES, restated: swarm-api's image installs
-#: swarm-api alone. tests/unit/control_plane/test_qa_targets.py holds them equal.
+#: swarm-api alone. A test holds them equal.
 INTERNAL_SUFFIXES = (
     ".local", ".localhost", ".internal", ".cluster.local", ".svc", ".localdomain",
     ".home.arpa", ".intranet", ".lan",
@@ -1533,8 +1535,14 @@ class QaTargets:
             if migrated and "legacy_map_key" not in status:
                 status["legacy_map_key"] = False
             entries.append({**leg, **status})
-            legs.append({"name": leg["name"], "host": leg["host"], "host_reset": host_reset,
-                         "bypass_value_cleared": cleared})
+            summary = {"name": leg["name"], "host": leg["host"], "host_reset": host_reset,
+                       "bypass_value_cleared": cleared}
+            # Origins are hosts, not secrets: the row says what the list was
+            # and became, so the change can be read without the target (epic 21).
+            was, now_listed = list(old.get("extra_origins") or []), list(leg.get("extra_origins") or [])
+            if was != now_listed:
+                summary["extra_origins"] = {"from": was, "to": now_listed}
+            legs.append(summary)
         names = {leg["name"] for leg in doc["environments"]}
         removed = sorted(name for name in before if name not in names) if migrated else []
         for name in removed:
@@ -1563,6 +1571,8 @@ class QaTargets:
             (leg,) = legs
             detail = {"fields": changed, "host": leg["host"], "host_reset": leg["host_reset"],
                       "bypass_value_cleared": leg["bypass_value_cleared"], "revision": new["revision"]}
+            if "extra_origins" in leg:
+                detail["extra_origins"] = leg["extra_origins"]
         ref = self._ref(target_id)
         stored = _stored(new)
         transaction = self._db.transaction()
@@ -1735,6 +1745,11 @@ class QaTargets:
         if any(named not in listed for named in extra_origins):
             raise Conflict("an extra origin named is not one this QA target's leg declares")
         approved.extend(o for o in listed if o in extra_origins)
+        # Resolved again, each origin approved (epic 21): registration's check
+        # is only as old as the registration, and a name can move to a
+        # private address before an admin approves it. A 422 approves none.
+        for approved_origin in approved:
+            check_public_host(urlsplit(approved_origin).hostname or "", self._resolve)
         now = self._now()
         tenant_id = str(current.get("tenant_id") or "")
         new = _replace_entry(current, name, {"host_state": HOST_APPROVED, "approved_by": by, "approved_at": now,

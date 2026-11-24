@@ -466,14 +466,24 @@ def test_claude_code_names_swarm_graph_only_when_staged(monkeypatch, tmp_path):
         "args": ["-I", "-m", "agent_worker.graphmcp", "--snapshot", snapshot,
                  "--workdir", str(work / "repo")], "alwaysLoad": True}}
     assert seen["env"][graphstage.CONTEXT_ENV] == str(work / ".swarm-context")
-    # What to ask the graph first (AGENTS-USE-TOOLS, 2026-11-02), then the
-    # implement step's lookup line (the owner, 2026-11-06), which takes the place of
-    # the exploration line's graph clause (LANE CAPS, part of archived issue 2524).
-    assert seen["prompt"] == ("Implement it.\n\n" + claude_code.SAVED_OUTPUT_NOTE + "\n\n"
-                              + claude_code.GRAPH_FIRST_NOTE + "\n\n"
+    # The implement step's lookup line (the owner, 2026-11-06), which takes the place of
+    # the exploration line's graph clause (LANE CAPS, part of archived issue 2524),
+    # is per task: the user prompt.
+    assert seen["prompt"] == ("Implement it.\n\n"
                               + claude_code.graph_lookup_line(
                                   {"prompt": "Implement it."}, work,
                                   shape=graphstage.SHAPE_TOOLS))
+    # The saved-output note and what to ask the graph first (AGENTS-USE-TOOLS,
+    # 2026-11-02) are standing paragraphs: they end the system prompt, in that
+    # order (2026-11-23), after the tool moments.
+    args = seen["args"]
+    flag = claude_code.APPEND_SYSTEM_PROMPT_FLAG
+    assert args.count(flag) == 1, args
+    system = args[args.index(flag) + 1]
+    assert system.endswith("\n\n" + claude_code.SAVED_OUTPUT_NOTE + "\n\n"
+                           + claude_code.SUBAGENT_NOTE + "\n\n"
+                           + claude_code.GRAPH_FIRST_NOTE), system
+    assert system.count(claude_code.GRAPH_FIRST_NOTE) == 1, system
 
     # The control: nothing staged, no server and no config at all.
     seen = _run_body(claude_code, monkeypatch, work, {})

@@ -10,10 +10,9 @@ ONE SCHEMA, THREE READERS.
   * The planner reads it as strict tool schemas, one `draw_<kind>` tool a kind
     (`tool_schemas`), from `GET /v1/voice/cards/schema` (routes/voice.py).
   * The console names the same kinds, fields, states and actions in
-    apps/swarm-ui/src/voice/cards.ts, and
-    tests/unit/control_plane/test_voice_cards.py holds the two equal, the way
-    test_issue_forms.py holds the forms to `SECTIONS`. The console renders only
-    kinds it knows; an unknown kind is not drawn.
+    apps/swarm-ui/src/voice/cards.ts; a test holds the two equal, the way
+    another test holds the issue forms equal to `SECTIONS`. The console
+    renders only kinds it knows; an unknown kind is not drawn.
 
 THE SHAPE follows Google's A2UI (§4): declarative data drawn only from a
 catalogue of trusted components, never executable code. A mock-up's HTML is
@@ -59,12 +58,14 @@ from ..errors import ValidationFailed
 from .workfeed import ID_RE
 
 #: Bumped when a kind, field, state, action or content changes, so the
-#: planner can tell a cached catalogue from the served one. 4: each kind names
+#: planner can tell a cached catalogue from the served one. 5: the budget
+#: card says which cap it is about, whether it warns or the cap is reached,
+#: and when the session ends (voice/budget.py). 4: each kind names
 #: its content, the wireframe, code, diff, document and test results kinds,
 #: the system and product flow diagrams, `mockup_ref`, `frame_ref`,
 #: `viewport`, the common actions and the server-set `outcome` (§3.13.6); 3
 #: was the navigate card's.
-CATALOGUE_VERSION = 4
+CATALOGUE_VERSION = 5
 
 # ---- the common states (§4) -------------------------------------------------
 
@@ -120,7 +121,6 @@ _PULL_NUMBER_RE = re.compile(r"^[1-9][0-9]{0,9}$")
 #: apps/swarm-ui/src/paths.ts that a person reads, in its order, never an
 #: admin page, a submit form or a callback. The console maps the key through
 #: `FIXED` itself, so no string of the card becomes an address.
-#: tests/unit/control_plane/test_voice_navigate.py holds this to paths.ts.
 NAVIGATE_DESTINATIONS: tuple[str, ...] = (
     "overview/now", "work/running", "work/workflows", "work/timeline",
     "work/timeline/outcomes", "work/runs", "automate/schedules", "automate/approvals",
@@ -338,6 +338,11 @@ _LANE = _o("lane",
            _n("reservation_usd", nullable=True),
            _s("state", nullable=True, max=TITLE_MAX))
 
+#: A Budget card's notice (voice/budget.py): 80% of a cap used, or the cap
+#: reached; and which cap.
+BUDGET_STATUSES = ("warning", "capped")
+BUDGET_CAPS = ("session", "day")
+
 KINDS: tuple[Kind, ...] = (
     Kind("work", "Work", "work",
          (_e("target_kind", ("issue", "run", "agent", "workflow", "schedule")),
@@ -510,12 +515,16 @@ KINDS: tuple[Kind, ...] = (
           _n("reserved_usd"),
           _n("session_cap_usd"),
           _n("day_cap_usd"),
-          _l("not_counted", _s("item", max=TITLE_MAX))),
+          _l("not_counted", _s("item", max=TITLE_MAX)),
+          _e("status", BUDGET_STATUSES, nullable=True),
+          _e("cap", BUDGET_CAPS, nullable=True),
+          _s("ends_at", nullable=True, max=TITLE_MAX)),
          (WAITING, DONE),
          ("raise",),
          ("platform",),
          "Spent and reserved against the session and day caps, by line, and "
-         "what is not counted."),
+         "what is not counted; which cap it is about, whether 80% of it is "
+         "used or it is reached, and when the session ends for it."),
     Kind("stop", "Stop", "stop",
          (_t("what", max=2_000),
           _e("rule", ("iam", "secrets", "tenancy", "shared_project", "workflow_file")),

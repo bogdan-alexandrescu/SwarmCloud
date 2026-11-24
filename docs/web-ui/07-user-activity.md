@@ -16,7 +16,7 @@ Every row was checked by opening the file, and the token row was checked by **ex
 | **Jobs** per engineer, calendar range ("all of August") | **No** | `list_tasks` has no `since`/`until` and no index covers `submitted_by` — see P1 and P3 |
 | **Agents** (attempts that actually ran) per tenant, per hour/day/week/month | Yes, **but nothing in this repo can read it yet** | Cloud Monitoring `logging.googleapis.com/user/swarm/starting`, labelled `tenant_id` + `runner_profile` (`terraform/modules/monitoring/metrics.tf:42-101`, `:103-136`) |
 | **Agents** per *engineer* | **No, and not cheaply fixable** | `submitted_by` never reaches the worker — `worker_env` carries identifiers only (`apps/scheduler/scheduler/dispatch.py:194-220`), and `build_logger` binds no user label (`apps/agent-worker/agent_worker/logs.py:183-201`) |
-| **Tokens / provider cost** per agent | **No. The capture exists and never fires.** | `_usage_summary` (`apps/agent-worker/agent_worker/lifecycle.py::_usage_summary`) is correct, but it is called on the **wrong object** in `apps/agent-worker/agent_worker/lifecycle.py::Worker._collect_spend`. See the box below — `result_summary.runner.usage` is `{}` on every agent in the database |
+| **Tokens / provider cost** per agent | **No. The capture exists and never fires.** | `_usage_summary` (`apps/agent-worker/agent_worker/lifecycle.py::_usage_summary`) is correct, but it is called on the **wrong object** in `apps/agent-worker/agent_worker/spend.py::SpendMixin._collect_spend`. See the box below — `result_summary.runner.usage` is `{}` on every agent in the database |
 | **Tokens** per engineer, aggregated | **No**, twice over | Nothing to aggregate (above), and no index/`sum()` target if there were — see P4 |
 | **Cost / spend**, compute | **No** | No billing export anywhere in `terraform/` — no `google_logging_sink`, no BigQuery dataset |
 | **Budget per tenant** | **No — this is a trap** | `Tenant.monthly_budget_usd` exists in the model (`models.py:246`) and is returned by `tenant_to_api` (`codec.py:297`), but `PUT /v1/admin/tenants/{id}/limits` **422s** on it (`routes/admin.py:178-195`). It is `None` for every tenant. Rendering it is rendering a permanent blank that looks like "no budget set" |
@@ -28,7 +28,7 @@ Every row was checked by opening the file, and the token row was checked by **ex
 
 * A runner's `body()` returns `{summary, provider, model, exit_code, structured_output, limits, metrics}` (`apps/agent-worker/agent_worker/runners/cliagent.py:342-357`). The Claude Code JSON — the object that actually holds `usage` and `total_cost_usd` — is nested under **`structured_output`**.
 * `run_runner` writes `result.json` with `output` = that dict minus `status`/`summary`/`metrics` (`apps/agent-worker/agent_worker/runners/base.py:228-239`).
-* `apps/agent-worker/agent_worker/lifecycle.py::Worker._collect_spend` then calls `_usage_summary(runner_result.get("output"))` — the envelope, whose top-level keys are `exit_code, limits, model, provider, structured_output`. `output.get("usage")` is `None`. `output.get("total_cost_usd")` is `None`.
+* `apps/agent-worker/agent_worker/spend.py::SpendMixin._collect_spend` then calls `_usage_summary(runner_result.get("output"))` — the envelope, whose top-level keys are `exit_code, limits, model, provider, structured_output`. `output.get("usage")` is `None`. `output.get("total_cost_usd")` is `None`.
 
 Executed against the real functions with the real result shape:
 
@@ -342,7 +342,7 @@ Carried here so the prerequisites section picks them up; **P4a is new and is the
 
 | | What | Track | Size |
 |---|---|---|---|
-| **P4a** | `apps/agent-worker/agent_worker/lifecycle.py::Worker._collect_spend` must call `_usage_summary(runner_result["output"].get("structured_output"))` — today it passes the runner envelope and records `{}` on every agent. Add a test at the `result.json` level, not the CLI-object level | B | one line + one test |
+| **P4a** | `apps/agent-worker/agent_worker/spend.py::SpendMixin._collect_spend` must call `_usage_summary(runner_result["output"].get("structured_output"))` — today it passes the runner envelope and records `{}` on every agent. Add a test at the `result.json` level, not the CLI-object level | B | one line + one test |
 | **P1** | `since`/`until` on `list_tasks`, mapping onto `tasks-tenant-created`; plus a `count()` variant per bucket | A | small |
 | **P3** | Index `tenant_id ASC, submitted_by ASC, created_at DESC`, and a `submitted_by` parameter on `GET /v1/tasks` | C + A | small (index build time is the real cost) |
 | **P4** | Somewhere typed to aggregate usage from — per-attempt fields plus a `sum()` target, which is a **frozen-contract change request** against `swarm_common.models.Attempt`, not an edit | contract request | medium |

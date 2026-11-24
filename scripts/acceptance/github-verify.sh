@@ -45,6 +45,20 @@
 #     changes only that group's build.txt and its integrate block is whole --
 #     never the calc.py assertion, which is the claude-code group's. That it
 #     exists at all is a warning: the suite's push_fails check FAILs it.
+#   * the workflow group's review-and-fix loop's pull request (its body
+#     carries FIX_LOOP_MARKER, or it changes FIX_LOOP_FILE alone) instead:
+#     it changes only FIX_LOOP_FILE, and its diff appends lines reading `fix`
+#     and removes none -- what the loop's fix step and fix rounds are told to
+#     write, and nothing else. How many lines is the suite's to judge (a loop
+#     the workspace's quota parked leaves one); never the calc.py assertion.
+#
+# WHICH RULES: a pull request is judged by the check that opened it, in this
+# order -- git-tools' (the judge's pr-kind), the fix loop's, then the
+# claude-code group's (direct-pr and integrate, the workflow group's
+# integrate chain included) when it changes a file under that group's
+# fixture directory. Anything else FAILS as unclassified, naming its files:
+# it is never judged by another check's rules. On 2026-11-23 the fix loop's
+# pull request fell through to the claude-code rules and failed calc.py's.
 #
 # Nothing is written: this reads only. Pull requests are listed by the sweep
 # that follows and closed there.
@@ -98,6 +112,16 @@ GIT_TOOLS_DIR="tests/acceptance/fixtures/git-tools"
 # What the git-tools build step commits, the one file its integrator's pull
 # request may change (the judge's BUILD_FILE; a unit test holds them equal).
 GIT_TOOLS_BUILD="${GIT_TOOLS_DIR}/build.txt"
+# The claude-code group's fixture directory: a pull request that changes a
+# file under it is that group's (or the workflow integrate chain's, which
+# edits the same calc.py and is judged the same way).
+CC_DIR="tests/acceptance/fixtures/claude-code/"
+# The workflow group's fix-loop check: the one file its fix step and fix
+# rounds append to, and the line its fix step writes into the pull request's
+# body (groups/workflow.sh's WF_FIX_LOOP_FILE and WF_FIX_LOOP_MARKER; a unit
+# test holds them equal).
+FIX_LOOP_FILE="tests/acceptance/fixtures/workflow/fix-loop-rounds.txt"
+FIX_LOOP_MARKER="acceptance-workflow: fix-loop"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-acc-verify.XXXXXX")"
 trap 'rm -rf "${WORK}"' EXIT
 
@@ -200,8 +224,33 @@ verify_git_tools_integrate_pr() {
   [[ -z "${GITHUB_ACTIONS:-}" ]] || printf '::warning::PR #%s: the git-tools build step ended SUCCEEDED, so its integrator ran; see the suite'"'"'s push_fails check\n' "${number}"
 }
 
+# verify_fix_loop_pr NUMBER -> the workflow group's fix-loop pull request:
+# FIX_LOOP_FILE alone, every added line reading `fix`, no line removed.
+verify_fix_loop_pr() {
+  local number="$1" files patch added bad
+  files="$(jq -r '[.[].filename] | sort | join(" ")' "${WORK}/files.json" | redact)"
+  if [[ "${files}" == "${FIX_LOOP_FILE}" ]]; then
+    ok "PR #${number}: the fix-loop pull request changes only ${FIX_LOOP_FILE}"
+  else
+    fail_pr "${number}" "the fix-loop pull request must change only ${FIX_LOOP_FILE}; it changes: ${files:-nothing}"
+    return 0
+  fi
+  patch="$(jq -r --arg f "${FIX_LOOP_FILE}" '.[] | select(.filename == $f) | .patch // ""' "${WORK}/files.json")"
+  added="$(grep -c '^+' <<<"${patch}" || true)"
+  bad="$(grep -E '^-|^\+' <<<"${patch}" | grep -vxF '+fix' | head -3 | redact | tr '\n' '|' || true)"
+  if [[ -n "${bad}" ]]; then
+    fail_pr "${number}" "the fix-loop pull request's diff must only append lines reading fix to ${FIX_LOOP_FILE}; it has: ${bad}"
+  elif [[ "${added}" -eq 0 ]]; then
+    fail_pr "${number}" "the fix-loop pull request's diff appends nothing to ${FIX_LOOP_FILE}"
+  else
+    ok "PR #${number}: the fix-loop pull request appends ${added} line(s) reading fix"
+  fi
+}
+
 direct=0
 integrate=0
+fix_loop=0
+unclassified=0
 git_tools=0
 git_tools_integrate=0
 visited=0
@@ -246,6 +295,18 @@ while IFS=$'\t' read -r number head; do
     verify_git_tools_integrate_pr "${number}"
     continue
   fi
+  if grep -qxF -- "${FIX_LOOP_MARKER}" "${WORK}/body.txt" \
+      || [[ "$(jq -r '[.[].filename] | join(" ")' "${WORK}/files.json")" == "${FIX_LOOP_FILE}" ]]; then
+    fix_loop=$(( fix_loop + 1 ))
+    verify_fix_loop_pr "${number}"
+    continue
+  fi
+  if ! jq -e --arg d "${CC_DIR}" 'any(.[]; .filename | startswith($d))' "${WORK}/files.json" >/dev/null; then
+    unclassified=$(( unclassified + 1 ))
+    files="$(jq -r '[.[].filename] | join(" ")' "${WORK}/files.json" | redact)"
+    fail_pr "${number}" "unclassified: no acceptance check owns this pull request (no check's marker in its body, no file under ${CC_DIR}), so no check's rules were applied; it changes: ${files:-nothing}"
+    continue
+  fi
   if jq -r --arg f "${CALC}" '.[] | select(.filename == $f) | .patch // ""' "${WORK}/files.json" \
       | grep -qxF -- "-${BUG_LINE}"; then
     ok "PR #${number}: the diff removes '${BUG_LINE# *}' from ${CALC}"
@@ -272,11 +333,12 @@ done < <(jq -r --arg since "${SINCE}" '
   | select($since == "" or (.created_at // "") >= $since)
   | [.number, .head.ref] | @tsv' "${WORK}/pulls.json")
 
-info "verified ${visited} pull request(s): ${direct} direct-pr, ${integrate} integrate, ${git_tools} git-tools, ${git_tools_integrate} git-tools integrate"
-for kind in direct-pr integrate git-tools; do
+info "verified ${visited} pull request(s): ${direct} direct-pr, ${integrate} integrate, ${git_tools} git-tools, ${git_tools_integrate} git-tools integrate, ${fix_loop} fix-loop, ${unclassified} unclassified"
+for kind in direct-pr integrate git-tools fix-loop; do
   case "${kind}" in
     direct-pr) n="${direct}" ;;
     integrate) n="${integrate}" ;;
+    fix-loop) n="${fix_loop}" ;;
     *) n="${git_tools}" ;;
   esac
   if [[ "${n}" -eq 0 ]]; then

@@ -83,7 +83,20 @@ WF_START_BUDGET_SECONDS=120
 # review_round_spec), and the mock writes verdict.json only when its input
 # names it (`artifact_name`), and commits nothing, so a mock re-review would
 # park the loop `review_unreadable` and a mock fix round `fix_changed_nothing`.
-WF_FIX_LOOP_FILE="fix-loop-rounds.txt"
+# So a step can wait on its workspace account's quota window; a loop held by
+# one that never started is NOT MEASURED, not FAIL (_wf_fix_loop_quota_parked).
+#
+# WHERE THE FILE LIVES. Under tests/acceptance/fixtures/, in the workflow
+# group's own directory, like every other check's writes: github-cleanup.sh
+# closes only a pull request whose every file lies under the fixtures, and
+# github-verify.sh fails any file outside them. At the repository root (until
+# 2026-11-24) the loop's pull request failed the read-back and was left open
+# by the sweep. The directory is not on the sandbox's main; the prompt creates it.
+# WF_FIX_LOOP_MARKER is the line the fix step writes into its pull request's
+# body, so github-verify.sh judges that pull request as this check's (its
+# FIX_LOOP_FILE and FIX_LOOP_MARKER; a unit test holds the two pairs equal).
+WF_FIX_LOOP_FILE="tests/acceptance/fixtures/workflow/fix-loop-rounds.txt"
+WF_FIX_LOOP_MARKER="acceptance-workflow: fix-loop"
 WF_FIX_LOOP_MERGE_AT=2
 WF_FIX_LOOP_MAX_ROUNDS=3
 WF_FIX_LOOP_VERDICTS="NOT_YET NOT_YET MERGE"
@@ -96,6 +109,9 @@ WF_FIX_LOOP_SECONDS=3600
 # offer the profile, or a FAIL's when its catalogue could not be read.
 WF_FIX_LOOP_SKIP=""
 WF_FIX_LOOP_PROBLEM=""
+# Set by _wf_fix_loop_quota_parked: the not-measured reason and its task.
+WF_FIX_LOOP_PARKED=""
+WF_FIX_LOOP_PARKED_TASK=""
 
 workflow_checks() {
   cat <<'EOF'
@@ -521,13 +537,23 @@ _wf_check_integrate() {
 # acc_run_to_end's ACC_TIMEOUT (900 s by default) covers A's 60 s park plus
 # two mock attempts and B's one, with room for admission.
 _wf_check_carry() {
-  local wf="$1" notes="$2" a b state attempts events parked final artifacts entry count carried uri staged object
+  local wf="$1" notes="$2" a b state parent_state attempts events parked final artifacts entry count carried uri staged object
   acc_check "workflow: carry: a file written before a quota park reaches the attempt that succeeds by reference, and the child stages it"
   [[ -n "${wf}" ]] || { acc_fail "not submitted"; return 0; }
   a="$(workflow_step_task "${wf}" a)"
   b="$(workflow_step_task "${wf}" b)"
   acc_run_to_end state "${b}" || return 0
-  acc_assert_eq "SUCCEEDED SUCCEEDED" "$(task_state "${a}") ${state}" "parent and child" "${b}"
+  parent_state="$(task_state "${a}")"
+  acc_assert_eq "SUCCEEDED SUCCEEDED" "${parent_state} ${state}" "parent and child" "${b}"
+  # WHY THE PARENT ENDED, ON THE SAME RUN (issue 202). The 2026-11-23 22:30
+  # run read FAILED CANCELLED, one attempt document and no park event, and
+  # the job log said no more: the parent's own `last_error` names what failed
+  # its first attempt -- the mock's refusal to simulate a park without an
+  # attempt number, a runner crash, a park that raised -- and the next red run
+  # needs it to tell those apart without a Firestore session.
+  if [[ "${parent_state}" != "SUCCEEDED" ]]; then
+    acc_fail "the parent ended ${parent_state}: $(task_field "${a}" '.last_error // "no error"' | redact | tr '\n' ' ' | head -c 400)" "${a}"
+  fi
 
   # COUNTED FROM THE ATTEMPT DOCUMENTS, NOT FROM `attempt_count`. The recipe's
   # first attempt parks on PROVIDER_QUOTA_EXHAUSTED, and that park refunds its
@@ -868,10 +894,12 @@ _wf_check_expire() {
 #
 # NO SWITCH TURNS IT ON FOR THIS RUN. `available` is the frozen catalogue's, and
 # swarm-api refuses a step that names an unavailable profile for every caller
-# (validation.validate_runner_profile). Unlike await-input (contract request
-# 105, made available on dev before its checks ran), the owner keeps fix-loop
-# off everywhere until FL-ISSUE, FL-UI and FL-DOCS are on main, then applies
-# request 151 and this check measures it. Until then, this is a SKIP.
+# (validation.validate_runner_profile). Contract request 151 makes fix-loop
+# available (applied again 2026-11-23 on the owner's decision, on the condition
+# that this check runs against dev right after the release and the switch-on
+# is reverted at once if it fails). A deployment still on a release without
+# it, or one where request 151 was reverted, ships the profile unavailable,
+# and there this is a SKIP.
 _wf_fix_loop_offered() {
   local out="${ACC_WORK}/wf-runtimes.json" offered
   WF_FIX_LOOP_SKIP=""
@@ -908,9 +936,9 @@ _wf_fix_loop_body() {
     '{verdict: "NOT_YET", findings: [{severity: "major", summary: ($f + " has fewer than \($n) non-empty lines")}]}')"
   jq -nc --argjson m "$(acc_metadata)" --arg u "${ACC_REPOSITORY_URL}" --arg r "${ACC_REF}" \
       --arg run "${ACC_RUN_ID}" --arg f "${WF_FIX_LOOP_FILE}" --argjson n "${WF_FIX_LOOP_MERGE_AT}" \
-      --argjson max "${WF_FIX_LOOP_MAX_ROUNDS}" --arg v "${verdict}" '
-    ("Append one line reading fix, followed by a newline, to " + $f + " at the repository root, creating the file if it does not exist. Change no other file.") as $append
-    | ("Count the non-empty lines of " + $f + " at the repository root with: grep -c . " + $f
+      --argjson max "${WF_FIX_LOOP_MAX_ROUNDS}" --arg v "${verdict}" --arg marker "${WF_FIX_LOOP_MARKER}" '
+    ("Append one line reading fix, followed by a newline, to " + $f + " (a path from the repository root), creating the file and its directory if they do not exist. Change no other file.") as $append
+    | ("Count the non-empty lines of " + $f + " (a path from the repository root) with: grep -c . " + $f
        + " (a missing file counts 0). Judge by that count alone. If it is \($n) or more, write"
        + " {\"verdict\": \"MERGE\", \"commit\": \"<the output of git rev-parse HEAD>\", \"findings\": []}"
        + " to $SWARM_ARTIFACTS_DIR/verdict.json. Otherwise write {\"verdict\": \"NOT_YET\", \"commit\": \"<the output of git rev-parse HEAD>\","
@@ -924,7 +952,7 @@ _wf_fix_loop_body() {
            input: {prompt: ("acceptance " + $run + " fix-loop review"), artifact_name: "verdict.json", artifact_text: $v, steps: 1, sleep_seconds: 0}},
           {step_id: "fix", runner_profile: "claude-code", depends_on: ["review"], input_from: {review: "verdict.json"},
            when: {step: "review", verdict_in: ["NOT_YET"]},
-           input: {prompt: ($append + " Write a one-line pull request title naming the fix loop acceptance run, with no task id, to $SWARM_ARTIFACTS_DIR/pr-title.txt, and the single line acceptance-run:" + $run + " to $SWARM_ARTIFACTS_DIR/pr-body.md.")}},
+           input: {prompt: ($append + " Write a one-line pull request title naming the fix loop acceptance run, with no task id, to $SWARM_ARTIFACTS_DIR/pr-title.txt, and these two lines, acceptance-run:" + $run + " and then " + $marker + ", to $SWARM_ARTIFACTS_DIR/pr-body.md.")}},
           {step_id: "loop", runner_profile: "fix-loop", depends_on: ["fix"],
            fix_loop: {review: "review", fix: "fix", max_rounds: $max,
                       fix_round: {runner_profile: "claude-code", prompt: $append},
@@ -942,6 +970,59 @@ _wf_fix_loop_settled() {
       if (.state // "") | test("^(SUCCEEDED|FAILED|CANCELLED|DEAD_LETTERED)$") then "settled"
       elif .state == "PARKED" and .park_reason == "HUMAN_REQUIRED" then "settled"
       else "running" end' <<<"${doc}")" == "settled" ]]
+}
+
+# _wf_fix_loop_quota_parked WORKFLOW_ID FIX LOOP -> 0, with WF_FIX_LOOP_PARKED
+# the check's "not measured" reason and WF_FIX_LOOP_PARKED_TASK the step's
+# task, when the loop did not settle only because the claude-code step it
+# waits on never ran: no attempt, never started, PARKED
+# PROVIDER_QUOTA_EXHAUSTED with next_eligible_at still ahead -- the park the
+# scheduler writes when no account of the workspace's pool can take the step
+# (scheduler/loop.py `_park_on_pool`, or the worker's `_park_no_account`).
+# Owner decision 2026-11-23 (issue 3): that is NOT MEASURED, not FAIL. On
+# 2026-11-10 `fix` sat in that park for the check's whole hour, its window 28
+# hours out, and the loop waited on its parent exactly as designed.
+#
+# The step the loop waits on: `fix` while the loop is PARKED
+# DEPENDENCY_INCOMPLETE; the newest appended round (review-fix:N or
+# re-review:N) while it is PARKED FIX_ROUNDS_RUNNING. Every round read is
+# recorded, so cleanup cancels it. 1 for anything else -- a loop parked on
+# its own phase, a round or dependency that ran, failed or started, a window
+# already past, and any read that failed: those stay the FAIL they were.
+_wf_fix_loop_quota_parked() {
+  local wid="$1" fix="$2" loop="$3" doc step="" task="" out rounds s t window
+  WF_FIX_LOOP_PARKED=""
+  WF_FIX_LOOP_PARKED_TASK=""
+  doc="$(task_doc "${loop}")" || return 1
+  case "$(jq -r '"\(.state // "MISSING") \(.park_reason // "none")"' <<<"${doc}")" in
+    "PARKED DEPENDENCY_INCOMPLETE")
+      step="fix"
+      task="${fix}" ;;
+    "PARKED FIX_ROUNDS_RUNNING")
+      out="${ACC_WORK}/wf-fix-loop-unsettled.json"
+      rounds="${ACC_WORK}/wf-fix-loop-unsettled-rounds.txt"
+      api_fetch "/workflows/${wid}" "${out}" || return 1
+      jq -r '.workflow.steps[]? | select((.step_id // "") | test("^(re-review|review-fix):"))
+        | "\(.step_id) \(.task_id // "")"' "${out}" >"${rounds}" || return 1
+      while read -r s t; do
+        [[ -n "${t}" ]] || continue
+        acc_record_task "${t}"
+        step="${s}"
+        task="${t}"
+      done <"${rounds}" ;;
+    *) return 1 ;;
+  esac
+  [[ -n "${task}" ]] || return 1
+  doc="$(task_doc "${task}")" || return 1
+  window="$(jq -r "${WF_JQ_EPOCH}"'
+      if .state == "PARKED" and .park_reason == "PROVIDER_QUOTA_EXHAUSTED"
+         and (.attempt_count // 0) == 0 and .started_at == null
+         and ((.next_eligible_at | epoch) // 0) > now
+      then .next_eligible_at | epoch | strftime("%Y-%m-%dT%H:%MZ") else empty end' <<<"${doc}")" || return 1
+  [[ -n "${window}" ]] || return 1
+  # The workspace the run used: the step's own tenant, else the one it was sent to.
+  WF_FIX_LOOP_PARKED="not measured: the $(jq -r --arg t "${SWARM_API_TENANT}" '.tenant_id // $t' <<<"${doc}") workspace's account is quota-parked until ${window} (${step}, ${task})"
+  WF_FIX_LOOP_PARKED_TASK="${task}"
 }
 
 # _wf_check_fix_loop WORKFLOW_JSON: the fix loop, live (docs/design/fix-loop.md
@@ -963,7 +1044,11 @@ _wf_check_fix_loop() {
   loop="$(workflow_step_task "${wf}" loop)"
 
   if ! wait_until "the fix loop ended, or parked for a person" "${WF_FIX_LOOP_SECONDS}" _wf_fix_loop_settled "${loop}"; then
-    acc_fail "the loop is $(task_field "${loop}" '"\(.state // "MISSING") \(.park_reason // "none")"') ${WF_FIX_LOOP_SECONDS} s after it was submitted" "${loop}"
+    if _wf_fix_loop_quota_parked "${wid}" "${fix}" "${loop}"; then
+      acc_skip "${WF_FIX_LOOP_PARKED}" "${WF_FIX_LOOP_PARKED_TASK}"
+    else
+      acc_fail "the loop is $(task_field "${loop}" '"\(.state // "MISSING") \(.park_reason // "none")"') ${WF_FIX_LOOP_SECONDS} s after it was submitted" "${loop}"
+    fi
     _wf_fix_loop_close "${fix}"
     return 0
   fi

@@ -23,6 +23,7 @@ from pydantic import (
     StrictInt,
     StrictStr,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -198,6 +199,17 @@ def _plugins_field() -> Any:
     return Field(default=None, max_length=8)
 
 
+def _idempotency_key_field() -> Any:
+    # One logical submission's key (`swarm_api.idempotency`): the same key,
+    # re-sent by the same submitter in the same workspace within its window,
+    # answers the first submission's ids marked `idempotent_replay` and
+    # creates nothing; with another payload it is refused 409. Checked by
+    # `idempotency.check_key` (16-128 characters, URL-safe). Honoured on the
+    # body of `POST /v1/tasks`, `/v1/tasks/batch` and `/v1/workflows` only,
+    # never on a task inside a batch and never from a stored spec.
+    return Field(default=None, max_length=128)
+
+
 def _plugins_off_field() -> Any:
     # The workspace's every-step defaults this step turns off, by name
     # (install id or built-in name; docs/design/managed-plugins.md section
@@ -211,6 +223,7 @@ class TaskCreate(StrictModel):
     #: The ONLY execution knob a caller has. Image, command, resource spec and
     #: backend all come from the frozen catalogue keyed by this name.
     runner_profile: str = Field(min_length=1, max_length=64)
+    idempotency_key: str | None = _idempotency_key_field()
     input: dict[str, Any] = Field(default_factory=dict)
     priority: int = Field(default=0, ge=-100, le=100)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -292,6 +305,7 @@ class TaskCreate(StrictModel):
 
 class TaskBatchCreate(StrictModel):
     tasks: list[TaskCreate] = Field(min_length=1)
+    idempotency_key: str | None = _idempotency_key_field()
 
 
 # --------------------------------------------------------------------------
@@ -307,10 +321,28 @@ class StepVerdictGate(StrictModel):
     step still runs, without an agent, and still publishes: it is the step
     that opens the pull request. The values are checked by
     `validation.validate_step_routing`, which names the accepted ones.
+
+    The gate may also read further reviews (`also`): their verdict files,
+    staged through `input_from` under names of their own, are read the same
+    way, and the agent runs when ANY of the verdicts read is in `verdict_in`
+    -- the security review beside an issue run's first review, whose fix
+    runs when either says NOT_YET. Empty, the gate is the one review's, as
+    it always was.
     """
 
     step: str = Field(min_length=1, max_length=64)
     verdict_in: list[str] = Field(min_length=1, max_length=8)
+    also: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(
+        default_factory=list, max_length=4)
+
+    @model_serializer(mode="wrap")
+    def _omit_no_further_review(self, handler: Any) -> Any:
+        """An empty `also` is not written: a gate on one review dumps exactly
+        the `{"step", "verdict_in"}` it always did."""
+        out = handler(self)
+        if isinstance(out, dict) and not out.get("also"):
+            out.pop("also", None)
+        return out
 
 
 class WorkflowStepCreate(StrictModel):
@@ -636,6 +668,7 @@ class AfterPullRequest(StrictModel):
 
 class WorkflowCreate(StrictModel):
     steps: list[WorkflowStepCreate] = Field(min_length=1)
+    idempotency_key: str | None = _idempotency_key_field()
     priority: int = Field(default=0, ge=-100, le=100)
     on_step_failure: Literal["fail_workflow", "continue"] = "fail_workflow"
     #: Free-form, copied onto every step's task. Two keys are the merge
@@ -838,7 +871,11 @@ class PlanApprove(StrictModel):
 class PlanEdit(StrictModel):
     #: The digest of the plan being edited, so two editors cannot silently
     #: overwrite each other: the second is refused with `plan_changed`.
-    plan_digest: str = Field(min_length=1, max_length=128)
+    #: Omitted (None) only for a run held with no plan -- both planner
+    #: outputs failed to parse -- which has no digest to send; on a run that
+    #: has a plan, None is refused with `plan_changed` like any other digest
+    #: that is not the plan's.
+    plan_digest: str | None = Field(default=None, min_length=1, max_length=128)
     #: The whole replacement plan, checked against `issueruns.PlanSpec`.
     plan: dict[str, Any]
 

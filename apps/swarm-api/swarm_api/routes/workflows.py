@@ -260,10 +260,16 @@ def create_workflow(
 ) -> dict:
     # `member` or above (workspace-roles.md §4.1), before anything is written.
     require_member(ctx, auth)
-    submission = ctx.submissions.submit_workflow(auth, body)
+    submission = ctx.submissions.submit_workflow(auth, body,
+                                                 idempotency_key=body.idempotency_key)
     workflow = submission.workflow
     response.headers["Location"] = f"/v1/workflows/{workflow.workflow_id}"
+    if submission.replayed:
+        # The first submission's workflow (`swarm_api.idempotency`): read
+        # back, nothing created now.
+        response.status_code = status.HTTP_200_OK
     return {
+        "idempotent_replay": submission.replayed,
         # No rollup on the create response. The step tasks were written
         # microseconds ago by `create_workflow` and deriving over them would
         # spend a read per step to be told what this request just decided. The
@@ -886,8 +892,9 @@ def rerun_workflow_step(
     A `member` or above, as cancel is (Q8): re-running spends what the steps
     spend. Refused 409 `conflict` with `detail.reason` `workflow_still_running`
     until every step has finished, `step_not_failed` for a step that did not
-    fail, `workflow_cancelled`, and `step_rerun_raced` when another re-run or
-    a cancel landed first; 404 `not_found` (`step_not_found`) for a step the
+    fail, `workflow_cancelled`, `step_rerun_raced` when another re-run or
+    a cancel landed first, and `step_spec_unverified` when a step to re-run
+    no longer verifies as stored (issue 207); 404 `not_found` (`step_not_found`) for a step the
     workflow has not. Established codes: a new code ships behind a switch.
     Answers each re-run step's old and new task id."""
     require_member(ctx, auth)

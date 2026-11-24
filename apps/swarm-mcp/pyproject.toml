@@ -49,8 +49,7 @@ build-backend = "hatchling.build"
 # workspace resolves exactly as before.
 #
 # uv only: pip does not read [tool.uv.sources], and installing this package
-# with pip is not supported. tests/unit/mcp/test_plugin_bridge_install.py
-# holds all of the above.
+# with pip is not supported.
 [tool.uv.sources]
 swarm-common = { path = "../common", editable = true }
 

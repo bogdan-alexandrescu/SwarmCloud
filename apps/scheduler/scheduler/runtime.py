@@ -60,8 +60,7 @@ rendered-review gate holds a UI MERGE to NOT_YET (`gate_rendered_review`).
 A re-review with no `inherit` (a pinned review's, archived issue 2275) is not touched.
 
 THE UI-PATH RULE is `is_ui_path` below, held equal to the worker's
-`agent_worker.verdict.is_ui_path` by
-tests/unit/control_plane/test_runtime_by_diff.py. It is restated, not shared:
+`agent_worker.verdict.is_ui_path` by a test. It is restated, not shared:
 the scheduler image carries `swarm_common` and `quota_broker` only, the
 worker image `swarm_common` and `swarm_redaction` only, and `swarm_common` is
 frozen. Test files are not UI (fix 6 of the 2026-10-25 audit): a change to
@@ -121,8 +120,7 @@ REASON_INHERIT_UNREADABLE = "inherited_unreadable"
 REASON_REPUBLISH = "republish_no_agent"
 
 #: The verdicts a gate reads. `agent_worker.verdict.REVIEW_VERDICTS`, restated
-#: for the reason the UI-path rule is; held equal by
-#: tests/unit/control_plane/test_rereview_republish_runtime.py.
+#: for the reason the UI-path rule is; held equal by a test.
 REVIEW_VERDICTS = ("MERGE", "NOT_YET")
 #: The dispatch block a step's verdict gate and `builds_on` live under.
 DISPATCH_METADATA_KEY = "dispatch"
@@ -275,6 +273,11 @@ def republishes(
     if None in verdict_in:
         return None
     if not isinstance(review_task_id, str) or gate.get("task_id") != review_task_id:
+        return None
+    # A gate that also reads further reviews (swarm-api's `when.also`) opens on
+    # any of them, and the integrator's record is the first review's verdict:
+    # not a certain skip.
+    if "also_task_ids" in gate:
         return None
     integrator = block.get("builds_on")
     if not isinstance(integrator, str) or integrator not in task_depends_on:

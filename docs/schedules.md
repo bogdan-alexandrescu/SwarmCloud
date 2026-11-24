@@ -894,7 +894,15 @@ every tenant's data within one approval's reach.
   | `plan_approval` | `auto` | `auto`, `required` |
   | `merge` | `approve` | `off`, `approve`, `auto` (`auto` only through the audited switch, §4.2) |
   | `fix_rounds` | 3 | 1-5 |
+  | `planner_model_class` | `fable` | a class the planner's profile runs (`opus`, `fable`, `sonnet`, `haiku`) |
   | `territory_guard` | true | **not settable to false** by a member |
+
+  `planner_model_class` is the class of each run's planner, by name (owner
+  decision 2026-11-23, [model-per-step.md §4.12](design/model-per-step.md#412-role-defaults-the-owners-decision-of-2026-11-23)).
+  The default is the planner's role default, which falls back to the
+  profile's default (`opus`) where the deployment pins no model for it; any
+  other class is the schedule's own choice, and a run is refused at
+  submission where that class is not pinned.
 
   The cap of 8 is lane SWEEP's, and it is the upper bound here: one firing can
   hold at most 8 tenant slots of work at once.
@@ -912,7 +920,7 @@ every tenant's data within one approval's reach.
   issue run's existing approve. Nothing executes until a person approves.
 * **Parameters.** The selection parameters of §3.1, `max_pending_plans`
   (default 5, range 1-20: a new plan is not made while that many are waiting),
-  and `fix_rounds`.
+  `fix_rounds` and `planner_model_class` (as in §3.1).
 * **Default gate.** Approve plan. It is the floor, so it cannot be lowered.
 * **Produces.** `PLANNED` issue runs and plan comments on the issues.
 * **Blast radius.** One planner agent per issue, and plan comments on GitHub.
@@ -1286,7 +1294,9 @@ on lanes FR-1 (the hold categories in `issueruns.hard_stop_hold`) and FR-2
   its issue. A retried firing, or the next firing after a crash, carries on
   where the last one stopped.
 * **Parameters.** `summary_issue` (`owner/repo#N`, optional; posted to only
-  when it is in the platform's own repository) and `fix_rounds` (3, at most 5).
+  when it is in the platform's own repository), `fix_rounds` (3, at most 5)
+  and `planner_model_class` (as in §3.1: the fix run's planner, `fable` by
+  default).
 * **Default gate.** Plan auto; merge **`approve`**. Nothing in the code sets
   `auto`. The owner switches it once, through the audited switch (§4.2), when
   creating the schedule (owner decision 2026-10-22, Q8). Every hard stop of
@@ -1554,10 +1564,16 @@ the decision are `swarm_api/graphreports.py`. The design is
   answer). The runs go to `graph/<sha>/latency.json`, beside the manifest and
   never in it, so a timing never changes a manifest digest. The type reads a
   version's `index_versions/{sha}.answer_latency` when promotion recorded one,
-  else that `latency.json`. Who passes the flag (a registration setting,
-  `index.measure_latency_hours`) is the design's (§1.2, "When") and is not
-  wired yet: until it is, no version carries a measurement and every firing
-  reads "no promoted version in the window carries a measurement".
+  else that `latency.json`. Who passes the flag is the registration setting
+  `index.measure_latency_hours` (the design's §1.2, "When"):
+  `repositories.measure_latency_hours_of` (`swarm_api/repositories.py`) reads
+  it, whole hours in `MEASURE_LATENCY_HOURS_RANGE`, and `repoindex.py` puts it
+  in the index run's signed prompt (`MEASURE_LATENCY_LINE`), which the worker
+  passes to `swarm-repo-graph write --measure-latency-hours`. It has no
+  default: a registration that leaves it unset is never measured, so its
+  versions carry no measurement and its firings read "no promoted version in
+  the window carries a measurement" -- the setting is off for that
+  registration, not a missing platform piece.
 * **The ratio, never the milliseconds.** Each reading is the run's p95 over
   its own `reference_ms`, timed in the same process on the same node, so a
   busy or small node slows both and the ratio holds (the owner, Q3). Because
@@ -1582,8 +1598,11 @@ the decision are `swarm_api/graphreports.py`. The design is
   (default 7 versions, 1-30) and `issue_label` (`bug`). No URL, command or
   credential is a parameter (invariant 10).
 * **Dry run** (§2.8). The same reads, and what each repository would do; no
-  write.
+  write. It also lists, as `measure_latency_unset`, the registered
+  repositories in room whose `index.measure_latency_hours` is unset.
 * **Produces.** One api_action per repository, `graph-latency-report:<repo_id>`,
+  whose detail carries the registration's `measure_latency_hours` (null when
+  unset, so an operator reads "no measurement" as the setting off),
   ended as it is recorded; a repository GitHub refused is that repository's
   `failed` with its code, as in `release-health`.
 * **Gate, budget, creates.** Run auto; risk R1 (one issue). `BUDGET_CAPS` in

@@ -10,8 +10,8 @@ credential of every `POST /v1/systemone`.
 Both halves base64url without padding; the claims are exactly TICKET_FIELDS;
 the key is `swarm-typesafe-fwd-key`, its payload read as UTF-8 and stripped
 (mac_key), never swarm-egress-key or swarm-live-key. This image carries no
-swarm-api, so the wire is restated here; tests/unit/typesafe_fwd/
-test_typesafe_fwd_ticket.py holds it equal to the reference, byte for byte.
+swarm-api, so the wire is restated here, held equal to the reference, byte
+for byte.
 
 The MAC is checked FIRST, in constant time (hmac.compare_digest) against every
 key in the ring, before a byte of the payload is parsed. Then, as defence in

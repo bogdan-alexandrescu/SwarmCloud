@@ -7,8 +7,7 @@ here by its (method, route template): `GATED_ROUTES` maps a route to the verb
 in `READBACK_VERBS` it performs, `AS_HEARD_ROUTES` names the acts that run as
 heard (filing, starting, answering, scheduling, drawing). A route on the
 grant's lists (`voice.grant`) that is not a GET and is in neither is unclassed,
-and tests/unit/voice/test_readback.py fails on it, so a new act route cannot
-land without a class.
+so a new act route cannot land without a class.
 
 HOW IT HOLDS (§7.2). swarm-api enforces it, not the prompt: a gated route
 reached under a grant with no confirmed read-back does not run
@@ -153,6 +152,9 @@ AS_HEARD_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # The work feed (voice-it.md §3.12.5): a delegation's lifecycle and the
     # roster's changed rows, a record of the session's work, never an act.
     ("POST", "/v1/voice/sessions/{session_id}/work"),
+    # The planner's brief of the project (voice/projectbrief.py): a note the
+    # next turn reads, never an act of the person's.
+    ("POST", "/v1/voice/sessions/{session_id}/brief"),
 })
 
 #: A route template whose last step names a gated verb, or a DELETE: what the

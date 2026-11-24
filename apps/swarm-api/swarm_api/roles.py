@@ -137,8 +137,8 @@ VIA_PROBE_ADMIN = "probe_admin"
 #: /v1/workspace/members/person`), and nothing else a workspace admin does.
 #: Each passes `probe_admin=True` to the resolution its gate asks for (or
 #: declares `people.people_scope`); no other call does, so a new admin route
-#: refuses a probe admin until it is added here. Held to the call sites and
-#: the app's routes by tests/unit/control_plane/test_probe_admin_routes.py.
+#: refuses a probe admin until it is added here. A test holds it to the
+#: call sites and the app's routes.
 PROBE_ADMIN_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/v1/workspace/roles"),
     ("PUT", "/v1/workspace/roles/person"),
@@ -378,8 +378,22 @@ def probe_admin_admin_target(store: "RoleStore", tenant_id: str, subject: str,
     would outlive its entry, and narrowing one, or clearing one a platform
     admin stored ahead of a person's joining, would take the workspace from
     the people it belongs to. 403 `role_admin_required`, before anything is
-    written."""
-    current = store.newest_valid(tenant_id, subject, fresh=True)
+    written.
+
+    This early check reads outside any transaction, so it is a fast answer
+    only: every write it guards decides again with
+    `refuse_probe_admin_admin_target` inside its own transaction, on the role
+    read there after the last-admin guard (`routes/last_admin.py`), so a
+    platform admin storing an `admin` grant between the two is never
+    overwritten (epic 21)."""
+    refuse_probe_admin_admin_target(
+        tenant_id, store.newest_valid(tenant_id, subject, fresh=True), role)
+
+
+def refuse_probe_admin_admin_target(tenant_id: str, current: "Grant | None",
+                                    role: str | None) -> None:
+    """`probe_admin_admin_target` on a grant the caller already read --
+    inside the write's transaction, after its guard read, where it decides."""
     if role == ADMIN or (current is not None and current.role == ADMIN):
         raise RoleAdminRequired(
             f"a probe admin's role in {tenant_id} is scoped to it: it cannot grant, change "
@@ -759,6 +773,43 @@ class RoleStore:
             if grant is not None and grant.role is not None:
                 out.append((subject, grant))
         out.sort(key=lambda item: item[1].granted_at, reverse=True)
+        return out
+
+    def admin_subjects(self, tenant_id: str) -> list[str]:
+        """Every person whose newest valid grant here is `admin`, sorted,
+        each read fresh. For the last-admin guard (`routes/last_admin.py`):
+        `overrides()` scans a capped, unordered roster and could miss the
+        admin who remains in a large workspace (epic 21), so this asks for
+        the `admin` grants themselves -- two equalities, served by Firestore's
+        single-field indexes, no composite index -- and lets `newest_valid`
+        decide each person's role as every gate does. A grant read here
+        that is no longer its person's newest is dropped by that read."""
+        try:
+            snaps = list(self._grants()
+                         .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+                         .where(filter=FieldFilter("role", "==", ADMIN))
+                         .limit(ROSTER_SCAN).stream())
+        except Exception as exc:  # noqa: BLE001
+            log.warning("role admins unreadable tenant=%s (%s)", tenant_id, type(exc).__name__)
+            raise RoleUnavailable(
+                "this workspace's roles could not be read; retry shortly") from None
+        if len(snaps) >= ROSTER_SCAN:
+            # Fails safe: an admin missed past this can only refuse a change.
+            log.warning("role admins exhausted the bounded read tenant=%s", tenant_id)
+        keys = self._keys()
+        subjects: set[str] = set()
+        for snap in snaps:
+            doc = snap.to_dict() or {}
+            subject = doc.get("subject")
+            if (isinstance(subject, str) and subject != DEFAULT_SUBJECT
+                    and shape_problem(doc, tenant_id, subject) is None
+                    and grant_verifies(keys, doc)):
+                subjects.add(subject)
+        out: list[str] = []
+        for subject in sorted(subjects):
+            grant = self.newest_valid(tenant_id, subject, fresh=True)
+            if grant is not None and grant.role == ADMIN:
+                out.append(subject)
         return out
 
     def admins(self, tenant_id: str, limit: int = 3) -> list[str]:

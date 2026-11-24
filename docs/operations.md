@@ -208,6 +208,16 @@ moment you most need it is the moment the API is unhealthy. It prints no secrets
 no environment variables, no payloads, no tokens. `--json` gives the same data
 for scripting; `--watch [seconds]` refreshes; `--tenant <id>` narrows.
 
+### The weekly scorecard
+
+`scripts/scorecard.sh` (read-only) prints, per week, agent tasks, success
+rate, cost and tokens per merged pull request, cost by role and model, turns,
+workflow latency, merge-train ejections, review NOT_YET rates by model class,
+release and acceptance health and pre-publish gate outcomes; `--weeks 4` for
+a trend, `--no-github` to spend none of your GitHub quota. Every later change
+to models, the gate or the merge train is judged on it:
+[the scorecard](scorecard.md).
+
 ---
 
 ## 3. Changing capacity
@@ -491,6 +501,38 @@ still counted.
 hour, as one incident per tenant and reason that stays open while any stays
 stranded and closes about seven hours after the last is merged. Before the seven-day incident-volume measurement
 every sweep entry (520 in seven days) opened its own incident.
+
+**A new log-based metric makes its apply wait.** A policy that reads a
+log-based metric created in the same apply used to fail with a 404 ("Cannot
+find metric(s)"): a new metric is not readable at once, up to ten minutes by
+the provider's own message (dev's release of 2026-11-23). Each such metric
+now sleeps `log_metric_settle_seconds` (600; 0 when `create_alerts = false`)
+in a create-time provisioner, and its policy is created after. That runs only
+when a metric is created or replaced: a release that creates none waits zero
+seconds, and one that does waits up to 600. A fresh install creates up to 17 such
+metrics at once, up to 10 sleeping per wave (Terraform's default
+parallelism), so its apply can take up to about 20 minutes longer.
+
+### Voice it alerts
+
+Two WARNING policies in `terraform/infra/voice_alerts.tf`, made only while
+Voice it's own speech engine is on (`voice_speech.enabled` and
+`voice_it = "on"`). Both read the one line swarm-api's speech sweep writes
+every two minutes, `jsonPayload.event="voice_sweep_state"`. The sweep is the
+only writer, and its Cloud Scheduler job exists only with the engine on, so
+with it off there is nothing to read and no policy is made. Each alert means a
+stop that already exists did not take; the alert is there so a person notices
+before the bill does.
+
+| Alert | Means | What to do |
+|---|---|---|
+| `voice-session-idle` | a session has been `live` with no activity (no turn, no Talk tab connected) for over `voice_session_idle_alert_seconds` (default 2700). The sweep should have ended it at 1800 seconds, as `abandoned`. | Look in swarm-api's log for `voice sweep: marker … failed` or `abandoned voice session` warnings: they name the session and say why the end failed. Check that the `<prefix>-voice-speech-sweep` job ran. The person's next Start, or Talk's end button, also ends it. |
+| `speech-machine-unheld` | the speech machine (an L4, billed while it runs) has been running for over `speech_machine_unheld_alert_seconds` (default 1200) with no session and no warm start holding it. The sweep should have stopped it at its next run. | Stop the `<prefix>-speech-machine` instance in Compute Engine, in whichever zone it is in; swarm-api starts it again for the next session. Then read swarm-api's `speech sweep` lines for the instance status and why the stop failed, and check the sweep job ran. |
+
+Both thresholds are variables, and each default is explained next to its
+value. Changing one only changes a metric filter or a condition duration, in
+place. Neither alert can see a sweep that never runs; if the sweep job stops,
+the lines stop and both alerts stay quiet.
 
 ### Alert notification channels
 

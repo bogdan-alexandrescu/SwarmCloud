@@ -62,7 +62,7 @@ who wrote which entry, never the value.
 from __future__ import annotations
 
 import json
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Header, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
@@ -157,7 +157,9 @@ class ApproveBody(StrictModel):
     #: through to after its sign-in; checked by `QaTargets.approve_host`.
     idp_token_path: str | None = Field(default=None, max_length=600)
     #: The leg's declared `extra_origins` approved: only those named here.
-    extra_origins: list[str] | None = Field(default=None, max_length=3)
+    #: Each entry bounded as `extra_origin` is (epic 21), the list to three.
+    extra_origins: list[Annotated[str, Field(max_length=300)]] | None = Field(
+        default=None, max_length=3)
     #: The entry whose host this is (§1.3), required on a target of several.
     environment: str | None = EnvironmentName
 

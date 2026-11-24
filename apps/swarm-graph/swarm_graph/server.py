@@ -52,7 +52,7 @@ paged as usual with a `partial` head (what it missed and why) and is never
 cached; a manifest not read in time is an error answer saying so. Either way
 the reads finish into the caches, so the same question asked again is whole. So an answer here is
 byte for byte the one `tools.call(snap, Observation.empty(index_sha), ...)`
-gives, which tests/unit/graphsvc/test_graphsvc_server.py holds for every tool.
+gives, for every tool.
 
 The same hardening as swarm-typesafe-fwd's server: every method reaches the one
 handler (never a stdlib 501), an unparsable request is 400 with no echo, the

@@ -155,11 +155,13 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 146 | `admission.py`: `acquire_leases_in_transaction` and `AdmissionRequest`, a batched admission that reads and writes each pool document once per batch, sharing the per-task checks, the lease document and the task write with `acquire_lease_in_transaction` (ADMISSION-BATCH, PR 3493, part of #2688) | ACCEPTED by the owner 6 November 2026 ("frozen-batch-function", answering question 0 of PR 3493; rejected: the scheduler's own copy of the per-task rules) and APPLIED by the pull request that adds this line (PR 3493): the scheduler's `SchedulerStore.acquire_leases` calls it |
 | 147 | `profiles.py`: a `medium` resource class (6 CPU requested, 12 limit, 16 GiB, 8 GiB workspace, 2 units) between `browser` and `large` in `CLASS_ORDER`, and a `claude-code-medium` runner profile, `claude-code`'s image and settings at the `medium` class (MIDDLE-RUNNER-SIZE, part of #2688) | ACCEPTED by the owner 6 November 2026 and APPLIED 2026-11-06 by the pull request that adds this line (lane middle-runner-size, part of #2688): the owner's pick after the 7-day load analysis, in which 771 large attempts (4.8% of 16,103) held 46% of all capacity unit-hours and used about a third of the CPU and memory they reserved; measured without page cache 66% would have fit `standard`, 96% fit 6 CPU and 16 GiB and only 31 needed `large`. Memory and ephemeral storage request equal limit, CPU request <= limit <= `CPU_BURST_MAX_RATIO` x request (invariant 7); the class needs the pools `resource:medium` and `runner:claude-code-medium` |
 | 150 | `specsign.py`: `"plugins"` in `PLATFORM_SETTINGS_MAC_FIELDS`, so the platform's plugins switch is inside the contract's platform-settings MAC (PR 3648, part of #2688) | REQUESTED 2026-11-08 by the pull request that adds this line, on the owner's pick 'Add a plugins switch' (PR 3648, question 0); not applied. Until it is, swarm-api's own second MAC (`platformswitches.SWITCHES_MAC_FIELD`) covers the switch |
-| 151 | `profiles.py`: `fix-loop` becomes available, `available=True` and its `disabled_reason` removed (FL-ENABLE, fix loop request A's second half) | ACCEPTED by the owner 2026-11-09 on one condition: the workflow acceptance group runs against dev right after the release, and the switch-on is reverted at once if its fix-loop check fails. Applied 2026-11-09 (PR 3717) and reverted the same day (PR 3723: the check could not reach the loop). Applied again 2026-11-10 (PR 3759) after two loop bugs were fixed (PRs 3733 and 3743), and REVERTED AGAIN 2026-11-10 by the pull request that adds this text: the check "workflow: fix-loop" (`scripts/acceptance/groups/workflow.sh`) ran against dev and failed, the loop parked DEPENDENCY_INCOMPLETE for its full hour. Not applied; the profile is unavailable until the cause is found and the owner re-applies it |
+| 151 | `profiles.py`: `fix-loop` becomes available, `available=True` and its `disabled_reason` removed (FL-ENABLE, fix loop request A's second half) | ACCEPTED by the owner 2026-11-09 on one condition: the workflow acceptance group runs against dev right after the release, and the switch-on is reverted at once if its fix-loop check fails. Applied 2026-11-09 (PR 3717) and reverted the same day (PR 3723: the check could not reach the loop). Applied again 2026-11-10 (PR 3759) after two loop bugs were fixed (PRs 3733 and 3743), and REVERTED AGAIN 2026-11-10: the check "workflow: fix-loop" (`scripts/acceptance/groups/workflow.sh`) ran against dev and failed, the loop parked DEPENDENCY_INCOMPLETE for its full hour. APPLIED AGAIN 2026-11-23 on the owner's decision ('Unmeasured on quota park + rerun'), by the pull request that adds this text, with the same condition: the workflow acceptance group runs against dev right after the release, and the switch-on is reverted at once (one commit: this pull request reverted) if its fix-loop check fails. Different this time: the cause was found (the check's `fix` step was parked on its account's quota window, so the loop never started), and the check now reports that case as not measured, not FAIL (`_wf_fix_loop_quota_parked`, merged to main 2026-11-23) |
 | 152 | `models.py`: `Attempt.account_id`, `credential_source` and `credential_tier`, the account and the credential tier (plan or API key) an attempt ran on; request 13 taken up and extended (LLM providers, docs/design/llm-providers.md Q8) | ACCEPTED by the owner 2026-11-09 (accepted by the owner as Q8 of docs/design/llm-providers.md) and APPLIED 2026-11-10 by the pull request that adds this line (lane LP-C1): the three fields at the end of `Attempt`, `CREDENTIAL_TIERS` (`plan`, `api_key`) refused otherwise in `__post_init__`, restated on `AttemptRow` and as `CredentialTier` in `types.ts` and held by `check-contract-parity.sh` section 5; nothing writes or reads them yet (LP-W1 writes, LP-U5 reads) |
 | 153 | `specsign.py`: the plugin record kind `bundle` in `PLUGIN_RECORD_KINDS`, ids `("bundle_id",)`, platform scope only, so a `plugin_bundles/{bundle_id}` record is MAC'd in request 140's canonical form (managed plugins P6, lane 13 of the design's table 17.1) | ACCEPTED by the owner 2026-11-09 (accepted by the owner 2026-11-09, answering docs/design/managed-plugins.md section 18, Q20) and APPLIED 2026-11-09 by the pull request that adds this line (lane plugins-bundle-contract): a bundle record names no tenant and a workspace-scope one has no canonical form |
 | 154 | `profiles.py` / `states.py`: five comment lines name the owner by initials, and take the placeholder "the owner", behaviour unchanged (the repository move) | ACCEPTED by the owner 11 November 2026 and APPLIED by the pull request that adds this line |
 | 155 | `specsign.py`: a `"plans"` block in `SETTINGS_MAC_FIELDS`, `("diagrams", "chat_model_class")`, so a workspace's plan-review settings (`workspace_settings/{tenant_id}.plans`, docs/design/plans-pipeline.md sections 6.4 and 7.8) are signed by the frozen list (PLAN-SETTINGS) | REQUESTED 2026-11-13 by the pull request that adds this line; not applied. Until it is, `canonical_settings_block` refuses the block and swarm-api cannot sign it through the frozen list |
+| 157 | `states.py`: the scheduler may end a re-review whose verdict gate is shut PARKED -> SUCCEEDED, guarded on its own promotion write, without a lease (re-review gate) | REQUESTED 2026-11-23 by the pull request that adds this line; not applied. Until it is, a re-review whose gate is shut is leased and dispatched as today |
+| 158 | `profiles.py`: declare `context_ceiling` as an optional object input on the claude-code runner family, so a step may carry its own lower session limits (per-role session limits) | REQUESTED 2026-11-23 by the pull request that adds this line; not applied. Until it is, swarm-api refuses a step that carries `context_ceiling` and every session runs at the worker's ceilings |
 
 ---
 
@@ -10160,7 +10162,7 @@ rewritten document ends `SPEC_SIGNATURE_INVALID` with reason
 1. `apps/swarm-api/swarm_api/specsigning.py::sign_task_specs`'s 422 message,
    which lists the reasons a value has no canonical form, names this one.
 2. The worker reads its inputs through `check_inputs`'s **return**, not the
-   stored map: `apps/agent-worker/agent_worker/lifecycle.py::_recheck_runner_input`
+   stored map: `apps/agent-worker/agent_worker/publish_guard.py::_recheck_runner_input`
    calls `check_inputs` today and discards what it returns, so the issue
    number the worker uses (`apps/agent-worker/agent_worker/lifecycle.py::Worker._title_from_issue_input`
    and the fetch) is the stored value. Returning the normalised map and
@@ -15561,8 +15563,9 @@ Each must change with it, in the pull request that applies it unless noted:
    (`"codex" not in known_runner_profiles`) and
    `::test_a_disabled_profile_is_refused_as_disabled_not_as_unknown` move to a
    profile that stays disabled (`post-verdict`, `claude-code-review`,
-   `fix-loop`); `tests/unit/docs/test_counts_mockups.py::test_the_fixture_names_a_profile_the_catalogue_marks_unavailable`
-   (`_CODEX in UNAVAILABLE`) is re-pointed the same way.
+   `fix-loop`). The counts mock-up guard that also pinned `_CODEX in
+   UNAVAILABLE` was deleted by issue 74 (a test whose subject is a mock-up,
+   not product behaviour), so there is nothing to re-point there.
 6. **The pool's eligibility, stated in three places, all keyed to
    `CLAUDE_CODE_OAUTH_TOKEN`** (the duplication request 22 names): the
    scheduler's `credentials.SUBSCRIPTION_TOKEN_ENV`
@@ -17540,9 +17543,35 @@ Requested on the owner's pick of 2026-11-08; awaiting the owner's acceptance.
 
 ## 151. `profiles.py`: `fix-loop` becomes available (FL-ENABLE, fix loop request A's second half)
 
-**Status:** PENDING THE OWNER, AFTER FL-ISSUE, FL-UI AND FL-DOCS MERGE.
-Requested on 2026-11-09 by lane FL-ACCEPT, in the pull request that adds this
-section; not applied. Nothing under `apps/common/swarm_common/` is edited by it.
+**Status:** ACCEPTED by the owner on 2026-11-09, on a condition (below).
+APPLIED AGAIN 2026-11-23 on the owner's decision, after two reverts
+(2026-11-09 and 2026-11-10). Requested on 2026-11-09 by lane FL-ACCEPT, in a
+pull request that edited nothing under `apps/common/swarm_common/`.
+
+**Applied again, 2026-11-23, on the owner's decision.** The owner's words:
+'Unmeasured on quota park + rerun'. The pull request that adds this
+paragraph applies "The change" below exactly, and nothing else under
+`apps/common/swarm_common/`: in the `"fix-loop"` entry `available=False`
+becomes `available=True` and the four `disabled_reason` lines are removed.
+The condition is the same as on 2026-11-09: the workflow acceptance group
+runs against dev right after the release, and if its check
+"workflow: fix-loop" fails, the switch-on is reverted at once, as one commit
+(that pull request reverted). What is different this time: the 2026-11-10
+failure's cause was found. The check's `fix` step was PARKED
+`PROVIDER_QUOTA_EXHAUSTED` on its workspace account's quota window, never
+started, so the loop it waits on never started either and timed out the
+hour as DEPENDENCY_INCOMPLETE. The check now reports a loop held by a
+never-started, quota-parked step as not measured, not FAIL
+(`_wf_fix_loop_quota_parked` in `scripts/acceptance/groups/workflow.sh`,
+merged to main 2026-11-23 as "The fix-loop acceptance check reports not
+measured when a never-started step it waits on is quota-parked"), so a
+quota park no longer reverts the switch-on; a real failure still does. "What
+is true today" below describes the profile before this application.
+
+**Reverted again, 2026-11-10.** Applied again on 2026-11-10 (PR 3759) after
+two loop bugs were fixed (PRs 3733 and 3743), and reverted the same day: the
+check ran against dev and failed, the loop PARKED DEPENDENCY_INCOMPLETE for
+its full hour.
 
 **Applied, then reverted, 2026-11-09.** The switch-on was applied on dev at 16:48Z and reverted the same
 day: the revert was accepted by the owner in advance, as the switch-on's own condition (revert at
@@ -17550,9 +17579,9 @@ once if the live acceptance check fails). The check could not run, because every
 of the acceptance group was refused for a repository not granted to its caller, so the loop stayed
 unproven. The profile is unavailable again until that check can run and passes.
 
-### What is true today
+### What was true before it was applied
 
-`RUNNER_PROFILES["fix-loop"]` (entry 124) is `available=False` with a
+`RUNNER_PROFILES["fix-loop"]` (entry 124) was `available=False` with a
 `disabled_reason` that points at docs/design/fix-loop.md. While it is,
 swarm-api refuses any workflow that names it
 (`validation.validate_runner_profile`, which `resolve_fix_loop` calls before
@@ -18093,3 +18122,274 @@ grant's list order are canonical; an absent `expires_at` is omitted, not
 The owner, 13 November 2026: file the per-person signed submissions contract
 request with the owner's acceptance recorded, then start the phase 2 lanes in
 the design's order.
+
+## 157. `states.py`: the scheduler may end a re-review whose verdict gate is shut PARKED -> SUCCEEDED, guarded on its own promotion write, without a lease (re-review gate)
+
+**Status:** REQUESTED 2026-11-23 by the pull request that adds this section;
+not applied. Nothing in the scheduler was changed for it: a re-review whose
+gate is shut is leased and dispatched exactly as today until the owner
+decides.
+
+### What is true today
+
+A re-review step (`swarm_api.validation.rereview_step_for`) is gated on its
+review's verdict: `metadata.dispatch.verdict_gate` names the review task and
+a `verdict_in`. When the review's verdict is outside `verdict_in` (the first
+review said MERGE, or the fix step republished nothing) the gate is shut and
+the worker runs no agent: it reads the gate
+(`agent_worker.lifecycle.Worker._evaluate_verdict_gate`), re-publishes the
+staged verdict as its own artifact (`_republish_staged_verdict`), records
+`result_summary.verdict_gate` with `agent_ran: false` and
+`skipped_agent: "review verdict <V>"`, and ends RUNNING -> SUCCEEDED with
+the `succeeded` event. For that it is promoted PARKED -> READY, admitted
+(capacity reserved in every pool), leased, dispatched and started. One
+audited day had 43 such pods, often the browser profile's.
+
+The scheduler can already decide this gate before any lease, from what the
+platform recorded: `scheduler.runtime.republishes` reads the re-review's
+signed dispatch block and the integrator's `result_summary.verdict_gate`
+(the parent it builds on, SUCCEEDED, naming the same review) and returns the
+shut gate only when the recorded verdict is certainly outside `verdict_in`.
+Today it uses that answer only to run the copy on `claude-code`
+(`REASON_REPUBLISH`, archived issue 2322).
+
+### Why this is a contract request and not a scheduler change
+
+`_ALLOWED` has exactly one edge that ends a task SUCCEEDED without a lease:
+PARKED -> SUCCEEDED (request 52). Its frozen comment scopes it: "only
+swarm-api writes it, guarded on its own claim." The scheduler's promotion is
+PARKED -> READY, and READY -> SUCCEEDED is not an edge. So the scheduler has
+no transition it may write to finish the step: writing PARKED -> SUCCEEDED
+from the scheduler would contradict the accepted text of request 52, and the
+brief for this work says to stop there and ask.
+
+### The requested change
+
+In `apps/common/swarm_common/states.py`, the comment on the PARKED row only;
+the edges are unchanged:
+
+```python
+    # PARKED -> SUCCEEDED: a step the control plane finishes without a worker
+    # (#748, contract request 52). It held no lease, so there is nothing to
+    # release. Written by swarm-api, guarded on its own claim, and by the
+    # scheduler for a re-review whose verdict gate the platform's own record
+    # shows shut, in the same guarded write that would otherwise promote it
+    # (contract request 157).
+```
+
+### What the scheduler would then build (not built here)
+
+In `Scheduler._promote_dependant`, where `runtime.resolve` already calls
+`republishes`: when the shut gate is certain, write PARKED -> SUCCEEDED
+instead of PARKED -> READY, in the same `_write_if_unchanged` guard (same
+state, same park reason), with:
+
+* `result_summary.verdict_gate` = the record the worker writes (`task_id`,
+  `file`, `verdict`, `verdict_in`, `agent_ran: false`, `findings`,
+  `findings_dropped`, and `gate_reading`/`skipped_review` when the review was
+  size-skipped), copied from the integrator's record of the same verdict
+  file; `result_summary.skipped_agent: "review verdict <V>"`;
+  `result_summary.published_by: "control_plane"`;
+* one `succeeded` event, appended only when the guarded write applied, so a
+  second drain or a retried pass meets a SUCCEEDED task, its guard fails,
+  and nothing is written twice;
+* the parents' `task_finished` wake, as the worker's finish rings it, so the
+  merge step and every step that stages from the re-review are promoted.
+
+**One dependency outside the frozen package.** The merge step
+(`on_merge_verdict`) stages the re-review's `verdict.json` through its
+successful attempt's manifest (`agent_worker.inputs.artifact_reference`).
+A step with no attempt has no manifest object to point at, and the scheduler
+does not read GCS. The bytes the worker re-publishes are the first review's
+file, unchanged; the scheduler would record a manifest entry naming that
+file, and `inputs.inline_artifact` (today accepted only on a
+`review_skipped` task) or `artifact_reference` must accept a re-review's
+entry that points at its gate's review's own artifact, in the same tenant
+and workflow. That is a worker change, not a contract one, and lands with
+the scheduler half.
+
+**Fail open.** Everything `republishes` returns None for -- no integrator
+record, another review's record, a malformed gate, a verdict inside
+`verdict_in`, a NOT_YET the clone-bound no-op precheck might shut -- is
+promoted to READY and dispatched as today. The verdict is read only from
+the integrator's `result_summary.verdict_gate`, written by the worker or by
+`swarm_api.verdictpublish`; never from a caller-set field. The worst a
+forged record does is end this tenant's own re-review with the verdict its
+own first review published, which the merge step then re-reads with
+`read_verdict` from the review's own file.
+
+### What it would break if accepted
+
+Nothing that exists: no edge changes, only the comment. Readers that count
+attempts show none for such a step, which is true, as for request 52's
+control-plane publish; `published_by: "control_plane"` says why.
+
+### If it is declined
+
+The 43-pods-a-day cost stays. The step runs on `claude-code` rather than the
+browser (archived issue 2322), so the waste is a small pod, not a browser
+one. The alternative of moving the decision into swarm-api (a third
+`verdictpublish`-style path, holding the re-review PARKED like
+`_held_for_control_publish`) needs no contract change at all, at the cost of
+a hold and a claim on every gated re-review.
+
+### Invariants
+
+- **Invariant 1.** The step goes PARKED -> SUCCEEDED and is never LEASED,
+  DISPATCHED, STARTING or RUNNING, so it creates no demand.
+- **Invariant 2.** No pool is reserved: admission never sees the step. The
+  all-or-nothing reservation of every other step is unchanged.
+- **Invariant 3.** Concurrency counts from LEASED; the step is never LEASED,
+  so nothing is counted or released.
+- **Invariant 5.** No attempt exists, so there is no generation to fence.
+  The write is guarded on the PARKED state and park reason read, so it
+  races neither a promotion (one of the two guarded writes applies) nor a
+  cancel.
+
+### How it would be tested
+
+Committed red before the scheduler half: a shut gate ends SUCCEEDED with no
+reservation, no lease and no dispatch, and the merge step stages the same
+verdict bytes it reads today; an open gate and an undecidable gate are
+promoted READY and dispatched as today; a second drain or a retried
+promotion writes no second SUCCEEDED and no second event.
+
+### Who decides
+
+The owner: accepting it lets the scheduler write the edge. Awaiting the
+owner's acceptance.
+
+
+---
+
+## 158. `profiles.py`: declare `context_ceiling` as an optional object input on the claude-code runner family, so a step may carry its own lower session limits (per-role session limits)
+
+**Status:** REQUESTED 2026-11-23 by the pull request that adds this section;
+not applied. Nothing in `apps/common/swarm_common/` was changed for it, and
+nothing is built until the owner decides: a step that carries
+`context_ceiling` is refused today and stays refused.
+
+### What is true today
+
+The worker already takes a step's own, lower session limits from the step
+input named `context_ceiling`
+(`apps/agent-worker/agent_worker/runners/ceiling.py`, `PAYLOAD_KEY`):
+`{"tokens": N, "tool_calls": M}`, either key optional. `resolve_limits` starts
+from the owner's ceilings, `CONTEXT_CEILING_TOKENS = 200_000` and
+`TOOL_CALL_CEILING = 150`, and lets the step only lower them: a value that is
+not a positive integer is ignored, and a value above the ceiling is clamped
+to it (`CONTEXT_CEILING_HARD_CAP`, `TOOL_CALL_HARD_CAP`). `PROFILE_LIMITS`,
+the worker's own per-profile table, is empty today. Only the claude-code
+runner (`agent_worker.runners.claude_code`) turns the ceiling on
+(`context_ceiling=True`), and `cliagent.run_cli_agent` reads the payload.
+
+But no runner profile declares an input of that name. `RunnerProfile.inputs`
+is the whole of what a caller may send, so swarm-api refuses a step that
+carries `context_ceiling` as a key the profile does not declare, and the
+worker's reader can never see a value.
+
+### Why this is a contract request
+
+`profiles.py` is frozen, and a profile's declared inputs are part of the
+caller-facing surface (invariant 10).
+
+### The requested change
+
+In `apps/common/swarm_common/profiles.py`, one new `RunnerInput` named
+`context_ceiling`, kind `object`, optional (not `required`), declared on the
+profiles whose `runner_argv` is the claude-code runner, the only runner that
+enforces it: `claude-code`, `claude-code-large`, `claude-code-medium`,
+`claude-code-review`, `indexer`, `claude-code-browser` and
+`claude-code-lightpanda`. `codex`, `mock`, `generic`, `browser` and the
+control-plane profiles do not declare it. It must not be added to
+`_CLI_AGENT_INPUTS`, which `codex` also takes and whose runner ignores it, so
+it is a small dict of its own merged into each of those profiles' input dicts,
+as `_MCP_SERVER_INPUTS` is.
+
+How an object input is declared there: kind `"object"` takes `variants`, a
+mapping from the value of the object's **`type` key** to that shape's fields
+(`RunnerInput.check` refuses a value whose `type` is missing, not a string or
+not a name in `variants`, and refuses any other key the shape does not name),
+and an object input with no `variants` is refused at construction. So the
+input is declared with one shape, and a caller writes the `type` key too:
+
+```python
+"context_ceiling": RunnerInput(
+    "object",
+    means="lowers this step's session limits; never raises them",
+    variants={
+        "limits": {
+            "tokens": RunnerInput("integer", minimum=1, maximum=200_000),
+            "tool_calls": RunnerInput("integer", minimum=1, maximum=150),
+        },
+    },
+),
+```
+
+so a step carries `{"context_ceiling": {"type": "limits", "tokens": 120000,
+"tool_calls": 100}}`. `check` returns the value with `type` kept and the
+fields in sorted order; the worker reads only `tokens` and `tool_calls` and
+ignores `type`, so the worker needs no change. The shape's name, `limits`, is
+a suggestion: any single name does the same work.
+
+### What it enables
+
+The control plane could then stamp per-role default limits onto steps. The
+lane's plan: at each place that already resolves a step's role defaults,
+stamp `input.context_ceiling` from a per-role table, keeping the issue-runs
+module to one call. The values would be tuned from the scorecard's per-role
+session measures (`docs/scorecard.md`, "sessions ended at the ceiling %, by
+role", which merged 2026-11-23). The worker needs no change.
+
+### What it would break if accepted
+
+Nothing that exists. The input is optional and no step carries it today, so
+every existing spec is valid as it was. It is inside `input`, so the spec
+signature covers it, and a stamped step's spec bytes differ from an unstamped
+one, which is the point. No default, name or document shape moves.
+
+### What it preserves (CONTRACT.md)
+
+- **Invariant 10.** A caller still names a profile and nothing else that
+  selects images, commands, resources or backend parameters. The input is two
+  bounded integers; it picks no image, command or resource, and it cannot
+  raise a ceiling: the declared bounds stop at the owner's 200,000 and 150,
+  and the worker clamps again (`_lowered`), so a bound this file got wrong
+  would still not raise one.
+- **Invariant 8.** Checkpointing stays mandatory and periodic. The input
+  changes when a session is ended at a turn boundary and a fresh one started
+  from a handoff, which commits the tree first; it does not switch
+  checkpointing off or change its period. A lower limit means more handoffs,
+  each preceded by a commit, never fewer checkpoints.
+- **Invariants 1-3, 5-7, 9.** Not touched: nothing here changes what a step
+  costs the platform before it runs, its lease, its fencing generation, the
+  spot setting, its resources or its tenant.
+
+### The one caution the lane found
+
+The role used for stamping must never be read from a metadata field a caller
+can write. If it were, a caller could name a roomier role and get the higher
+limits, or a role of its own choosing to get others'. The role has to come
+from what the control plane itself resolved for the step (the role it
+resolved its defaults from), the same source the defaults already use.
+
+### If it is declined
+
+There are no per-role limits: every step runs at 200,000 tokens and 150 tool
+calls. Tuning stays possible per profile through the worker's own table,
+`PROFILE_LIMITS` in `ceiling.py`, which needs no contract change, but it
+cannot tell two roles of one profile apart.
+
+### How it would be tested
+
+Not built here. If accepted: a step carrying `context_ceiling` is accepted on
+each of the seven profiles and refused on `codex`; a missing `type`, an
+unknown key, `tokens: 0`, `tokens: 200001`, `tool_calls: 151` and a boolean
+are refused; the declared bounds equal `CONTEXT_CEILING_HARD_CAP` and
+`TOOL_CALL_HARD_CAP`; and the stamp's role is read from the control plane's
+resolved role and never from caller metadata.
+
+### Who decides
+
+The owner: accepting it lets a later lane declare the input and stamp it.
+Awaiting the owner's acceptance.

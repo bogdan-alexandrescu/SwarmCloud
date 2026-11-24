@@ -84,7 +84,7 @@ def test_the_oracle_sequence_a_row_that_answers_while_dispatched_is_started_agai
     assert db.docs[f"tasks/{task_id}"]["state"] not in ("SUCCEEDED", "FAILED", "CANCELLED", "DEAD_LETTERED")
     rows = payload["rows"]
     early = _step("DISPATCHED", last_error="")
-    got = _run(tmp_path, rows["args"], {f"task_id: {task_id}": [early, _step("SUCCEEDED", cost_usd=0.4)]})
+    got = _run(tmp_path, rows["launches"][0]["args"], {f"task_id: {task_id}": [early, _step("SUCCEEDED", cost_usd=0.4)]})
     calls = [c for c in got["calls"] if c["agentType"] == "sc:task"]
     # MUTATION: run.js returns the row's first answer (the defect): one call, DISPATCHED.
     assert len(calls) == 2, "the row that answered while DISPATCHED was not started again"
@@ -145,22 +145,22 @@ def test_the_task_row_is_told_to_answer_only_when_the_bridge_stops():
 def test_a_dispatch_honours_the_plugins_rows_option(swarm, api, db, monkeypatch):  # noqa: F811
     monkeypatch.setenv("SWARM_PLUGIN_ROWS", "per-step")
     rows = _dispatch(swarm)["rows"]
-    assert rows["args"]["rows"] == "per-step"
+    assert rows["launches"][0]["args"]["rows"] == "per-step"
     assert rows["rows"] == "per-step"
 
 
 def test_a_dispatch_honours_the_projects_saved_layout(swarm, api, db, monkeypatch):  # noqa: F811
     monkeypatch.setenv("SWARM_PLUGIN_ROWS", "per-step")
     layout.save("pane")
-    assert _dispatch(swarm)["rows"]["args"]["rows"] == "pane"
+    assert _dispatch(swarm)["rows"]["launches"][0]["args"]["rows"] == "pane"
 
 
 def test_a_dispatchs_own_rows_outranks_the_option_and_the_saved_layout(swarm, api, db, monkeypatch):  # noqa: F811
     monkeypatch.setenv("SWARM_PLUGIN_ROWS", "summary")
     # MUTATION: `rows` not read by swarm_dispatch (the defect): "summary".
-    assert _dispatch(swarm, rows="per-step")["rows"]["args"]["rows"] == "per-step"
+    assert _dispatch(swarm, rows="per-step")["rows"]["launches"][0]["args"]["rows"] == "per-step"
     layout.save("pane")
-    assert _dispatch(swarm, rows="summary", prompt="another lane")["rows"]["args"]["rows"] == "summary"
+    assert _dispatch(swarm, rows="summary", prompt="another lane")["rows"]["launches"][0]["args"]["rows"] == "summary"
     batch = json.loads(server._call(swarm, "swarm_dispatch", {"rows": "per-step", "tasks": [
         {"prompt": "one", "runner_profile": "mock", "label": "lane-1"},
         {"prompt": "two", "runner_profile": "mock", "label": "lane-2"},
@@ -189,11 +189,13 @@ def test_check_names_a_dispatched_task_whose_row_never_started(swarm, api, db, c
     # MUTATION: no rowless line (the defect): KeyError.
     (entry,) = result["rowless_tasks"]
     assert entry["task_id"] == task_id
-    assert entry["launch"] == {key: payload["rows"][key] for key in ("title", "script_path", "args")}
+    (launched,) = payload["rows"]["launches"]
+    assert entry["launch"] == {key: launched[key] for key in ("title", "script_path", "args")}
     assert entry["line"].startswith(f"{task_id} (oracle-rereview) is ")
     assert "with no row" in entry["line"]
-    assert json.dumps({"scriptPath": payload["rows"]["script_path"], "args": payload["rows"]["args"]},
-                      separators=(",", ":")) in entry["line"]
+    # The launch's arguments are named once, in `launch`, never again in the line.
+    assert "{scriptPath: launch.script_path, args: launch.args}" in entry["line"]
+    assert '"attach_tasks"' not in entry["line"]
     (tool,) = [t for t in server.TOOLS if t["name"] == "swarm_check"]
     assert "`rowless_tasks`" in tool["description"]
 

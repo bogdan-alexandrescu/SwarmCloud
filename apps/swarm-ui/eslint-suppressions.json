@@ -670,9 +670,6 @@
     }
   },
   "src/Capacity.tsx": {
-    "max-lines": {
-      "count": 1
-    },
     "sonarjs/cognitive-complexity": {
       "count": 1
     },
@@ -714,6 +711,14 @@
     },
     "sonarjs/prefer-read-only-props": {
       "count": 2
+    }
+  },
+  "src/ChunkBoundary.tsx": {
+    "@typescript-eslint/only-throw-error": {
+      "count": 1
+    },
+    "sonarjs/function-return-type": {
+      "count": 1
     }
   },
   "src/CodeIntelligence.tsx": {
@@ -876,10 +881,15 @@
       "count": 1
     },
     "sonarjs/prefer-read-only-props": {
-      "count": 6
+      "count": 5
     },
     "sonarjs/super-linear-regex": {
-      "count": 5
+      "count": 4
+    }
+  },
+  "src/GuideLink.tsx": {
+    "sonarjs/prefer-read-only-props": {
+      "count": 1
     }
   },
   "src/Handoff.tsx": {
@@ -973,6 +983,16 @@
     },
     "sonarjs/prefer-read-only-props": {
       "count": 14
+    }
+  },
+  "src/InApp.tsx": {
+    "sonarjs/prefer-read-only-props": {
+      "count": 1
+    }
+  },
+  "src/InfoTip.tsx": {
+    "sonarjs/prefer-read-only-props": {
+      "count": 1
     }
   },
   "src/InterviewPage.tsx": {
@@ -1134,16 +1154,16 @@
       "count": 1
     },
     "sonarjs/cognitive-complexity": {
-      "count": 2
+      "count": 3
     },
     "sonarjs/no-alphabetical-sort": {
       "count": 1
     },
     "sonarjs/no-nested-conditional": {
-      "count": 10
+      "count": 11
     },
     "sonarjs/prefer-read-only-props": {
-      "count": 19
+      "count": 21
     }
   },
   "src/LlmProviders.tsx": {
@@ -1309,7 +1329,7 @@
       "count": 2
     },
     "sonarjs/prefer-read-only-props": {
-      "count": 43
+      "count": 42
     }
   },
   "src/PermissionCards.tsx": {
@@ -1456,23 +1476,17 @@
     }
   },
   "src/Profile.tsx": {
-    "max-lines": {
-      "count": 1
-    },
     "react-hooks/exhaustive-deps": {
       "count": 1
     },
     "sonarjs/concise-regex": {
       "count": 1
     },
-    "sonarjs/different-types-comparison": {
-      "count": 1
-    },
     "sonarjs/no-nested-conditional": {
       "count": 4
     },
     "sonarjs/prefer-read-only-props": {
-      "count": 13
+      "count": 12
     }
   },
   "src/ProfileMatrix.tsx": {
@@ -1903,13 +1917,13 @@
       "count": 1
     },
     "sonarjs/no-nested-conditional": {
-      "count": 21
+      "count": 22
     },
     "sonarjs/no-nested-template-literals": {
       "count": 3
     },
     "sonarjs/prefer-read-only-props": {
-      "count": 27
+      "count": 28
     },
     "sonarjs/super-linear-regex": {
       "count": 2
@@ -2041,7 +2055,7 @@
       "count": 3
     },
     "sonarjs/prefer-read-only-props": {
-      "count": 23
+      "count": 21
     }
   },
   "src/Secrets.tsx": {
@@ -2135,6 +2149,9 @@
   "src/Spine.tsx": {
     "@typescript-eslint/no-floating-promises": {
       "count": 1
+    },
+    "import-x/no-duplicates": {
+      "count": 2
     },
     "max-lines": {
       "count": 1
@@ -2383,6 +2400,11 @@
     },
     "sonarjs/prefer-read-only-props": {
       "count": 14
+    }
+  },
+  "src/WaitingOnYouCard.tsx": {
+    "sonarjs/prefer-read-only-props": {
+      "count": 1
     }
   },
   "src/WorkflowChanges.tsx": {
@@ -4518,6 +4540,11 @@
       "count": 2
     }
   },
+  "src/__tests__/chunkboundary.test.tsx": {
+    "sonarjs/prefer-read-only-props": {
+      "count": 1
+    }
+  },
   "src/__tests__/code.card.test.tsx": {
     "testing-library/no-node-access": {
       "count": 21
@@ -5933,6 +5960,14 @@
       "count": 111
     }
   },
+  "src/__tests__/lazycss.test.ts": {
+    "sonarjs/no-alphabetical-sort": {
+      "count": 2
+    },
+    "sonarjs/super-linear-regex": {
+      "count": 2
+    }
+  },
   "src/__tests__/leases.heartbeat.test.ts": {
     "@typescript-eslint/no-base-to-string": {
       "count": 1
@@ -6445,25 +6480,31 @@
   },
   "src/__tests__/llmplans.test.tsx": {
     "@typescript-eslint/no-unnecessary-type-assertion": {
-      "count": 12
+      "count": 15
     },
     "@typescript-eslint/require-await": {
       "count": 2
+    },
+    "max-lines": {
+      "count": 1
+    },
+    "sonarjs/no-identical-functions": {
+      "count": 1
     },
     "sonarjs/no-nested-conditional": {
       "count": 1
     },
     "sonarjs/prefer-specific-assertions": {
-      "count": 2
+      "count": 4
     },
     "sonarjs/super-linear-regex": {
-      "count": 4
+      "count": 5
     },
     "testing-library/no-manual-cleanup": {
       "count": 1
     },
     "testing-library/no-node-access": {
-      "count": 35
+      "count": 53
     },
     "testing-library/no-unnecessary-act": {
       "count": 2
@@ -7138,6 +7179,26 @@
     },
     "testing-library/no-node-access": {
       "count": 8
+    }
+  },
+  "src/__tests__/planlint.held.runs.test.tsx": {
+    "@typescript-eslint/no-base-to-string": {
+      "count": 2
+    },
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    },
+    "@typescript-eslint/require-await": {
+      "count": 1
+    },
+    "sonarjs/prefer-specific-assertions": {
+      "count": 2
+    },
+    "testing-library/no-container": {
+      "count": 1
+    },
+    "testing-library/no-node-access": {
+      "count": 27
     }
   },
   "src/__tests__/pluginDetail.test.tsx": {
@@ -11342,6 +11403,11 @@
       "count": 1
     }
   },
+  "src/__tests__/screensplit.test.ts": {
+    "sonarjs/super-linear-regex": {
+      "count": 1
+    }
+  },
   "src/__tests__/secrets.actionsMount.test.tsx": {
     "@typescript-eslint/no-unnecessary-type-assertion": {
       "count": 6
@@ -11500,7 +11566,7 @@
       "count": 2
     },
     "@typescript-eslint/require-await": {
-      "count": 1
+      "count": 2
     },
     "testing-library/no-manual-cleanup": {
       "count": 1
@@ -12710,6 +12776,26 @@
       "count": 2
     }
   },
+  "src/__tests__/voice.budget.caps.test.tsx": {
+    "@typescript-eslint/require-await": {
+      "count": 1
+    },
+    "sonarjs/no-unused-vars": {
+      "count": 1
+    },
+    "sonarjs/super-linear-regex": {
+      "count": 1
+    },
+    "testing-library/no-container": {
+      "count": 15
+    },
+    "testing-library/no-node-access": {
+      "count": 36
+    },
+    "testing-library/render-result-naming-convention": {
+      "count": 2
+    }
+  },
   "src/__tests__/voice.captions.test.tsx": {
     "@typescript-eslint/require-await": {
       "count": 12
@@ -12853,6 +12939,31 @@
       "count": 1
     }
   },
+  "src/__tests__/voice.session.record.api.test.ts": {
+    "@typescript-eslint/no-base-to-string": {
+      "count": 2
+    },
+    "@typescript-eslint/prefer-promise-reject-errors": {
+      "count": 1
+    },
+    "@typescript-eslint/require-await": {
+      "count": 2
+    }
+  },
+  "src/__tests__/voice.session.record.test.tsx": {
+    "@typescript-eslint/no-base-to-string": {
+      "count": 1
+    },
+    "@typescript-eslint/require-await": {
+      "count": 2
+    },
+    "testing-library/no-node-access": {
+      "count": 5
+    },
+    "testing-library/no-unnecessary-act": {
+      "count": 1
+    }
+  },
   "src/__tests__/voice.session.test.tsx": {
     "@typescript-eslint/no-base-to-string": {
       "count": 1
@@ -12928,6 +13039,23 @@
       "count": 4
     }
   },
+  "src/__tests__/voice.talk.pause.test.tsx": {
+    "@typescript-eslint/require-await": {
+      "count": 9
+    },
+    "sonarjs/no-nested-assignment": {
+      "count": 1
+    },
+    "sonarjs/public-static-readonly": {
+      "count": 1
+    },
+    "sonarjs/void-use": {
+      "count": 1
+    },
+    "testing-library/no-node-access": {
+      "count": 6
+    }
+  },
   "src/__tests__/voice.talk.reopen.test.tsx": {
     "@typescript-eslint/no-unsafe-assignment": {
       "count": 1
@@ -12967,13 +13095,13 @@
       "count": 2
     },
     "@typescript-eslint/no-unsafe-member-access": {
-      "count": 7
+      "count": 9
     },
     "@typescript-eslint/no-unsafe-return": {
       "count": 6
     },
     "@typescript-eslint/require-await": {
-      "count": 33
+      "count": 34
     },
     "max-lines": {
       "count": 1
@@ -13015,6 +13143,17 @@
     },
     "testing-library/no-node-access": {
       "count": 16
+    }
+  },
+  "src/__tests__/voice.talk.warm.test.tsx": {
+    "@typescript-eslint/require-await": {
+      "count": 3
+    },
+    "sonarjs/super-linear-regex": {
+      "count": 1
+    },
+    "testing-library/no-node-access": {
+      "count": 13
     }
   },
   "src/__tests__/voice.working.test.tsx": {
@@ -13066,6 +13205,29 @@
     },
     "testing-library/no-unnecessary-act": {
       "count": 4
+    }
+  },
+  "src/__tests__/voiceTelemetryLatency.test.tsx": {
+    "@typescript-eslint/no-base-to-string": {
+      "count": 1
+    },
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 2
+    },
+    "@typescript-eslint/require-await": {
+      "count": 1
+    },
+    "sonarjs/anchor-precedence": {
+      "count": 1
+    },
+    "sonarjs/prefer-specific-assertions": {
+      "count": 1
+    },
+    "sonarjs/super-linear-regex": {
+      "count": 1
+    },
+    "testing-library/no-node-access": {
+      "count": 3
     }
   },
   "src/__tests__/voiceVad.test.ts": {
@@ -13430,10 +13592,13 @@
   },
   "src/__tests__/vqa2.r15.shell.test.tsx": {
     "testing-library/no-container": {
-      "count": 18
+      "count": 4
     },
     "testing-library/no-node-access": {
       "count": 39
+    },
+    "testing-library/render-result-naming-convention": {
+      "count": 1
     }
   },
   "src/__tests__/vqa2.r16.capacity.test.tsx": {
@@ -14367,7 +14532,7 @@
       "count": 6
     },
     "@typescript-eslint/no-unnecessary-type-assertion": {
-      "count": 41
+      "count": 42
     },
     "@typescript-eslint/no-unsafe-assignment": {
       "count": 2
@@ -14382,7 +14547,7 @@
       "count": 1
     },
     "sonarjs/cognitive-complexity": {
-      "count": 15
+      "count": 16
     },
     "sonarjs/concise-regex": {
       "count": 1
@@ -14784,6 +14949,11 @@
       "count": 1
     }
   },
+  "src/guidePaths.ts": {
+    "sonarjs/super-linear-regex": {
+      "count": 1
+    }
+  },
   "src/help.ts": {
     "max-lines": {
       "count": 1
@@ -15008,7 +15178,7 @@
   },
   "src/types.ts": {
     "@typescript-eslint/no-redundant-type-constituents": {
-      "count": 17
+      "count": 14
     },
     "@typescript-eslint/no-unnecessary-type-assertion": {
       "count": 1
@@ -15060,14 +15230,17 @@
     }
   },
   "src/voice/CostPill.tsx": {
-    "sonarjs/no-nested-conditional": {
-      "count": 3
-    },
-    "sonarjs/no-nested-template-literals": {
+    "sonarjs/cognitive-complexity": {
       "count": 1
     },
+    "sonarjs/no-nested-conditional": {
+      "count": 8
+    },
+    "sonarjs/no-nested-template-literals": {
+      "count": 2
+    },
     "sonarjs/prefer-read-only-props": {
-      "count": 6
+      "count": 7
     }
   },
   "src/voice/DebugTrace.tsx": {
@@ -15129,6 +15302,11 @@
       "count": 2
     }
   },
+  "src/voice/SessionRecord.tsx": {
+    "sonarjs/prefer-read-only-props": {
+      "count": 2
+    }
+  },
   "src/voice/Settings.tsx": {
     "sonarjs/no-nested-conditional": {
       "count": 5
@@ -15159,18 +15337,21 @@
       "count": 1
     },
     "sonarjs/no-nested-conditional": {
-      "count": 2
+      "count": 3
     },
     "sonarjs/prefer-read-only-props": {
       "count": 4
     }
   },
   "src/voice/Telemetry.tsx": {
-    "sonarjs/no-nested-conditional": {
+    "sonarjs/no-alphabetical-sort": {
       "count": 1
     },
+    "sonarjs/no-nested-conditional": {
+      "count": 3
+    },
     "sonarjs/prefer-read-only-props": {
-      "count": 10
+      "count": 11
     }
   },
   "src/voice/WorkingCard.tsx": {
@@ -15212,6 +15393,9 @@
   },
   "src/voice/session.tsx": {
     "@typescript-eslint/unbound-method": {
+      "count": 1
+    },
+    "max-lines": {
       "count": 1
     },
     "sonarjs/cognitive-complexity": {
@@ -15438,6 +15622,14 @@
       "count": 2
     },
     "sonarjs/no-nested-template-literals": {
+      "count": 1
+    }
+  },
+  "src/workspaceName.tsx": {
+    "sonarjs/different-types-comparison": {
+      "count": 1
+    },
+    "sonarjs/prefer-read-only-props": {
       "count": 1
     }
   },

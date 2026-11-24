@@ -41,3 +41,7 @@ swarm-common = { path = "../common", editable = true }
 swarm-redaction = { path = "../redaction", editable = true }
 swarm-agent-worker = { path = "../agent-worker", editable = true }
 swarm-jev = { path = "../jev-client", editable = true }
+
+[tool.uv]
+# Release-age quarantine (#189): resolve only releases at least 14 days old, as the root pyproject.toml does.
+exclude-newer = "14 days"

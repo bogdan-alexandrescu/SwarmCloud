@@ -39,8 +39,11 @@ import { AGE_TICK_MS, useNow } from './useNow'
 import { jevRateOf, parseJevRate, saveJevRate, type JevRate } from './jevUsage'
 // The Config pages' lead (`.ws-lead`, WS-SETTINGS-PAGE), which every Admin
 // page's lead draws with (`AdminLead` below).
+import { NEAR_CEILING } from './poolLook'
 import './styles/workspace-settings.css'
 import './styles/admin.css'
+
+export { NEAR_CEILING } from './poolLook'
 
 /**
  * Pool limits: the concurrency ceilings, editable.
@@ -305,13 +308,6 @@ export function useLeadRead<T>(load: () => Promise<Result<T>>): {
 }
 
 /**
- * NEAR A CEILING: 80% of it in use, or more. Under that a pool still has a
- * fifth of its ceiling free, which is room for the next tasks rather than a
- * reason to call an admin; the mock-up's lead (S10b) is a pool at 92%.
- */
-export const NEAR_CEILING = 0.8
-
-/**
  * What Pool limits leads with (S10b). `unset` first: a pool with no ceiling
  * set refuses every task that takes it (archived issue 374), which is worse than any busy
  * pool. Then the pool with the largest share of its ceiling in use, if it is
@@ -369,7 +365,7 @@ function PoolLeadView({
   if (lead === null) return null
   if (lead.kind === 'clear') {
     // No second sentence: the table under it carries every pool's figures,
-    // and Pool limits is held to a prose budget (prose.operator.test.tsx).
+    // and Pool limits is held to a prose budget (the operator prose test).
     return <AdminLead tone="ok" kicker="Nothing waiting" title="No pool is near its ceiling" />
   }
   const button =
@@ -2469,7 +2465,7 @@ function FoldCard({ fold, className, title, action, children }: {
  * (`CLASSIC_PAT_BLOCKED`, `SSO_NOT_AUTHORISED`, ...) word for word.
  *
  * ITS WORDS SIT BEHIND `?`. Pool limits is held to a prose budget
- * (`prose.operator.test.tsx`), so the fields are named by `aria-label` and a
+ * (the operator prose test), so the fields are named by `aria-label` and a
  * placeholder, and what the token is for is the `github-fallback-token` topic
  * (help.ts), behind the same `HelpCard` badge as the page's other two (visual
  * QA run 4, admin-009: a ghost `?` toggling an inline paragraph read as a
@@ -2651,7 +2647,7 @@ export function AdditionalRepositoryLimitsCard({ fold = false }: { fold?: boolea
 
   return (
     // NO INTRO PARAGRAPH, AND A READ FAILURE IS TWO WORDS: Pool limits is held
-    // to 40 words (prose.operator.test.tsx) and measured 36 without this card
+    // to 40 words (the operator prose test) and measured 36 without this card
     // on 2026-10-18, so the card has four. The heading and the two labelled
     // inputs carry the meaning; when a change applies is in the docblock
     // above, not on screen. A failed read says "Not read", the console's mark
@@ -2913,7 +2909,7 @@ export function AgentBudgetCeilingCard({ fold = false }: { fold?: boolean } = {}
       ) : (
         // The words are drawn with the form only: over a failed read they
         // would explain a control that is not there (and Pool limits is held
-        // to a prose budget, prose.operator.test.tsx).
+        // to a prose budget, the operator prose test).
         <form className="adm-token-form" aria-label="Agent budget ceiling" onSubmit={(e) => void save(e)}>
           <p className="ur-small">
             The most any workspace&rsquo;s per-agent budget can be. It turns nothing on: a workspace that sets no budget
@@ -3165,7 +3161,7 @@ export function ModelPricesCard({ admin, fold = false }: { admin: boolean | null
       ) : data === null ? (
         // Two words, the console's mark for a failed read, with what failed
         // one hover away: Pool limits is held to a word budget
-        // (prose.operator.test.tsx), as the card above says.
+        // (the operator prose test), as the card above says.
         <p className="warn-text" role="alert"
           title={settings.status === 'error' ? `${errorHeading(settings.error)}: ${settings.error.message}` : undefined}>
           Not read

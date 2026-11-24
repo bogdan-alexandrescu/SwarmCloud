@@ -392,9 +392,17 @@ locals {
   # tests/terraform/runner_model.tftest.hcl asserts the four keys and each
   # ID's family word; scripts/lib/check-contract-parity.sh (section 17)
   # applies `admits` to this map.
+  #
+  # fable MOVED to claude-fable-5-2 (owner decision of 2026-11-23) from
+  # claude-fable-5-1. Re-pinning a class follows the checklist in
+  # docs/versions.md ("Re-pinning a model class"): the canary on dev first,
+  # the price in the live `model_prices` setting, then this edit and a
+  # release; rollback is reverting this line and releasing.
+  # tests/unit/scripts/test_model_pins.py holds every class-pin literal under
+  # apps/ (the voice planner's default among them) equal to this map.
   runner_models = {
     opus   = "claude-opus-5-5"
-    fable  = "claude-fable-5-1"
+    fable  = "claude-fable-5-2"
     sonnet = "claude-sonnet-5-5"
     haiku  = "claude-haiku-5-5"
   }
@@ -1656,4 +1664,12 @@ locals {
     # resource here would be a dependency cycle.
     var.enable_console_app_setup ? { GITHUB_HOOKS_URL = "https://${local.github_hooks_name}-${data.google_project.this.number}.${var.region}.run.app/github/events" } : {},
   )
+}
+
+locals {
+  # Seconds a new log-based metric that an alert policy reads waits after it
+  # is created (doctor.tf, voice_alerts.tf), read from the monitoring module
+  # rather than restated: why there is a wait, and why this many seconds, is
+  # in terraform/modules/monitoring/metrics.tf beside log_metric_settle_seconds.
+  log_metric_settle_seconds = module.monitoring.log_metric_settle_seconds
 }

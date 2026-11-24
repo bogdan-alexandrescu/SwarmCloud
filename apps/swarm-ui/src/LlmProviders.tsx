@@ -34,25 +34,11 @@ import { LlmApiKeysBody } from './LlmApiKeys'
 import { LlmPlansScreen } from './LlmPlans'
 import { Screen } from './Shell'
 import { Segmented } from './components'
+import { LLM_SUB_PAGES, llmProvidersAddress, type LlmSubPage } from './llmPaths'
 
-/** Capacity's tab id (App.tsx SECTIONS). */
-export const LLM_PROVIDERS_TAB = 'llm-providers'
-
-/** The tab's two sub-pages, in the control's order; the first is the tab's default. */
-export const LLM_SUB_PAGES = ['plans', 'api-keys'] as const
-export type LlmSubPage = (typeof LLM_SUB_PAGES)[number]
+export { LLM_PROVIDERS_TAB, LLM_SUB_PAGES, llmProvidersAddress, llmSubPage, type LlmSubPage } from './llmPaths'
 
 const SUB_LABEL: Readonly<Record<LlmSubPage, string>> = { plans: 'Plans', 'api-keys': 'API Keys' }
-
-/** A sub-page off an address segment: anything else is Plans, the tab's first. */
-export function llmSubPage(seg: string | null | undefined): LlmSubPage {
-  return seg === 'api-keys' ? 'api-keys' : 'plans'
-}
-
-/** A sub-page's router address (`capacity/llm-providers/<sub>`). */
-export function llmProvidersAddress(sub: LlmSubPage): string {
-  return `capacity/${LLM_PROVIDERS_TAB}/${sub}`
-}
 
 /** Plans | API Keys, each its own address. */
 function SubPages({ sub }: { sub: LlmSubPage }) {
@@ -67,7 +53,7 @@ function SubPages({ sub }: { sub: LlmSubPage }) {
 
 /** What the tab is for, behind its (i) (no visible prose, §6.5). */
 const INFO = (
-  <Info about="LLM Providers" tip="Agents take a plan first, then the shared API key pool; Voice it then falls to its own dedicated OpenAI key. The vendors never stand in for each other." />
+  <Info about="LLM Providers" tip="Agents take a plan first, then the shared API key pool; Voice it then falls to its own OpenAI key. The vendors never stand in for each other." />
 )
 
 /**
@@ -85,7 +71,7 @@ function ApiKeysPage({ nav }: { nav: ReactNode }) {
 }
 
 export function LlmProvidersScreen({ sub }: { sub: LlmSubPage }) {
-  // HEADED WITH THE TAB'S OWN WORDS (test_nav_headings_agree.py), the strip
+  // HEADED WITH THE TAB'S OWN WORDS (a nav-headings guard test holds it), the strip
   // under the head as the picked direction and Pools draw it. ONE HEAD A PAGE
   // (qa.head Q2/Q10): on Plans the table's `Screen` head is the page's,
   // titled "LLM Providers", with its refresh and its age. `Screen` draws the

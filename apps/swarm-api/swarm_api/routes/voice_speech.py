@@ -3,7 +3,7 @@ machine's sweep (docs/design/voice-it-own-speech.md §3.3, §4.4, §4.5).
 
     WS   /v1/voice/sessions/{session_id}/audio
     POST /v1/internal/voice/speech/sweep          -> {enabled, lease, ended, stopped, instance,
-                                                      abandoned}
+                                                      abandoned, budget_ended}
 
 THE AUDIO SOCKET (§3.3 step 2) is the person's, behind the same front door
 and sign-in as every Voice it route: the caller is authenticated as a request
@@ -28,7 +28,10 @@ configured the route admits nobody (503). It ends a session whose lease lost
 its heartbeat, its tab or its idle time and stops an instance no live lease
 holds. Whether or not the engine is on, it also ends every Voice it session
 of any mode left `live` without activity for sessions.LIVE_STALE_SECONDS
-(`abandoned`: how many), so none lingers in lists or holds its person.
+(`abandoned`: how many), so none lingers in lists or holds its person, and
+enforces the spend caps on every live session (voice/budget.py `sweep`):
+one past its cap's two-minute grace ends with the cause `budget_cap`
+(`budget_ended`: how many), the backstop when swarm-voice is down.
 
 WHAT THE START LANE (L6) CALLS. `machine_for(app, ctx)` is the lifecycle a
 `speech` start takes the lease and starts the instance with
@@ -45,7 +48,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Mapping
+import threading
+from typing import Any, Callable, Mapping
 
 from fastapi import APIRouter, Request, WebSocket
 from starlette.concurrency import run_in_threadpool
@@ -54,7 +58,10 @@ from starlette.websockets import WebSocketDisconnect, WebSocketState
 from ..auth import GoogleTokenVerifier
 from ..deps import AppContext
 from ..errors import Forbidden, NotFound, Unauthenticated, UpstreamUnavailable
+from ..voice import budget as vbudget
+from ..voice import ledger as vledger
 from ..voice import readback as vreadback
+from ..voice import record as vrecord
 from ..voice import sessions as vs
 from ..voice import settings as vsettings
 from ..voice import speech_machine as sm
@@ -69,6 +76,10 @@ router = APIRouter(tags=["voice"])
 
 AUDIO_ROUTE = "/v1/voice/sessions/{session_id}/audio"
 SWEEP_ROUTE = "/v1/internal/voice/speech/sweep"
+#: The `event` of the sweep's one state line per run (`_log_sweep_state`):
+#: the log-based metrics behind Voice it's two alerts filter on this literal
+#: (terraform/infra/voice_alerts.tf). Rename one, rename both.
+SWEEP_STATE_EVENT = "voice_sweep_state"
 
 CLOSE_UNAUTHENTICATED = 4401
 CLOSE_NOT_ALLOWED = 4403
@@ -111,6 +122,22 @@ def machine_for(app: Any, ctx: AppContext) -> sm.SpeechMachine:
     return sm.SpeechMachine(ctx.db, compute, config=config, now=ctx.now,
                             marker_key=str(getattr(ctx.settings, "child_key", "") or ""),
                             applied=applied)
+
+
+def _on_a_thread(job: Callable[[], None]) -> None:
+    threading.Thread(target=job, name="speech-warm", daemon=True).start()
+
+
+def warm_runner(app: Any) -> Callable[[Callable[[], None]], None]:
+    """What runs the warm's start after the route has answered (THE WARM,
+    voice/speech_machine.py): a daemon thread, the start being the same
+    blocking one a session's runs in the threadpool. swarm-api keeps its CPU
+    between requests (cpu_idle false), so the thread runs on; an instance
+    that goes away mid-start leaves a lease whose heartbeat goes stale, and
+    the sweep stops it as it stops any abandoned start.
+    `app.state.speech_warm_runner` when one is set (a test's)."""
+    runner = getattr(app.state, "speech_warm_runner", None)
+    return runner if runner is not None else _on_a_thread
 
 
 def _voice_client(app: Any, ctx: AppContext) -> Any:
@@ -313,7 +340,10 @@ async def audio_socket(websocket: WebSocket, session_id: str) -> None:
             machine.fall_back(session, reason=reason)
         await run_in_threadpool(_down)
 
-    turns = getattr(app.state, "speech_turns", None) or sr.ClientTurns(client)
+    # Each spoken turn's two lines are kept, redacted, as the transcript (voice/record.py).
+    turns = vrecord.Recording(getattr(app.state, "speech_turns", None) or sr.ClientTurns(client), ctx.db,
+                              tenant_id=found.tenant_id, person=person, project_id=found.project_id,
+                              now=ctx.now)
     relay = sr.SpeechRelay(
         browser=_BrowserSocket(websocket), dial=vm_dialer(app, config), machine=machine,
         holder=holder, turns=turns, voice=str(chosen.get("tts_voice") or ""),
@@ -364,12 +394,55 @@ async def sweep(request: Request) -> dict[str, Any]:
     sessions = vs.VoiceSessions(ctx.db, _voice_client(app, ctx),
                                 marker_key=str(getattr(ctx.settings, "child_key", "") or ""),
                                 now=ctx.now, machine=machine)
+    guard = vbudget.BudgetGuard(ctx.db, budget_ledger(request, ctx), now=ctx.now,
+                                end=sessions.end_for_budget)
     if machine is None:
         abandoned = len(await run_in_threadpool(sessions.sweep_abandoned))
+        capped = len(await run_in_threadpool(guard.sweep))
+        await _log_sweep_state(sessions, unheld=False)
         return {"enabled": False, "lease": None, "ended": None, "stopped": False, "instance": None,
-                "abandoned": abandoned}
+                "abandoned": abandoned, "budget_ended": capped}
     # The machine's own causes first; what is left live without activity after.
     report = await run_in_threadpool(machine.sweep, VoiceSessionEnder(ctx, _voice_client(app, ctx)))
     abandoned = len(await run_in_threadpool(sessions.sweep_abandoned))
-    log.info("speech sweep %s abandoned=%d", json.dumps(report, sort_keys=True), abandoned)
-    return {"enabled": True, **report, "abandoned": abandoned}
+    # The caps' backstop (voice/budget.py): a session past its grace ends with
+    # `budget_cap` even when swarm-voice never asks again.
+    capped = len(await run_in_threadpool(guard.sweep))
+    unheld = bool(report.pop("unheld", False))
+    log.info("speech sweep %s abandoned=%d budget_ended=%d", json.dumps(report, sort_keys=True),
+             abandoned, capped)
+    await _log_sweep_state(sessions, unheld=unheld)
+    return {"enabled": True, **report, "abandoned": abandoned, "budget_ended": capped}
+
+
+async def _log_sweep_state(sessions: vs.VoiceSessions, *, unheld: bool) -> None:
+    """The one structured line per sweep both Voice it alerts read
+    (terraform/infra/voice_alerts.tf): the longest a still-live session has
+    gone without activity, and whether the machine was found not at rest
+    with nothing holding it. A failed read logs nothing rather than a 0 that
+    would look healthy, and never fails the sweep."""
+    try:
+        idle = await run_in_threadpool(sessions.live_idle_seconds)
+    except Exception as exc:  # noqa: BLE001 -- the sweep's work is done; only the line is lost
+        log.warning("speech sweep state not logged (%s)", type(exc).__name__)
+        return
+    log.info("voice sweep state idle=%ds unheld=%s", idle, unheld,
+             extra={"event": SWEEP_STATE_EVENT, "voice_live_idle_seconds": idle,
+                    "speech_machine_unheld": unheld})
+
+
+def budget_ledger(request: Request, ctx: AppContext) -> vledger.VoiceLedger:
+    """The ledger the sweep enforces the caps over: `app.state.voice_budget_ledger`
+    when one is set (a test's), else the one `GET .../ledger` serves."""
+    ledger = getattr(request.app.state, "voice_budget_ledger", None)
+    if ledger is not None:
+        return ledger
+    from .profile import preferences_store
+
+    # Read only when a live session is enforced: a sweep with none reads nothing.
+    return vledger.VoiceLedger(
+        ctx.db, now=ctx.now,
+        prices=lambda: ctx.store.get_platform_settings()["model_prices"],
+        time_zone=vbudget.saved_zone(
+            lambda email: preferences_store(request, ctx).read(email).time_zone),
+        work=getattr(request.app.state, "voice_work", None))

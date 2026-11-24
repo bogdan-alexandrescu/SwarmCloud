@@ -9,10 +9,9 @@ live-verified apart:
 * **Implemented**: the file and symbol on this commit. "Not implemented" when
   the tree has no code for it, with where it is proposed.
 * **Behaviourally tested**: a test id that exercises the behaviour. A test that
-  only reads a document or a file's text says so. `scripts/agent_quality_inventory.py`
-  checks that every cited pytest id names a test function that exists, and every
-  console test file exists; it cannot say the test ran or passed, which only a
-  CI run says.
+  only reads a document or a file's text says so. A cited id is as of the
+  commit this page names; no test re-checks it against the tree (issue 74
+  retired that census), and only a CI run says a test ran or passed.
 * **Enabled in configuration**: the file and key that switch it, with the
   default. "Always on" means no switch exists. A workspace setting's live value
   is in Firestore and is not read from here.
@@ -94,7 +93,7 @@ Paths are relative to the repository root; `agent_worker/` is
 | Guards run once: the gate skips guards the agent passed on the same tree; a repeat is warned | `prepublish.py::guards_pass_on`; `agent_worker/runners/guards_repeat_hook.py` | `tests/unit/worker/test_prepublish_guards_dedup.py::test_the_gate_skips_the_guards_the_agent_already_passed_on_the_same_tree`, `tests/unit/worker/test_claude_lane_caps.py::test_a_second_guard_run_with_no_edit_between_is_warned` | Always on; the hook warns, never blocks | 73 of 74 lanes ran the guards twice on 2026-10-19/20 (`prepublish.py`): the motivation |
 | Related tests: only the tests a change reaches | `scripts/lib/related_tests.py::python_related`, `ui_related` | `tests/unit/scripts/test_related_tests.py::test_a_ui_only_change_selects_the_vitest_files_that_import_it_directly_or_not`, `tests/unit/scripts/test_related_tests.py::test_a_large_ui_selection_comes_back_as_a_few_bounded_runs` | Run by the agent through `scripts/related-tests.sh`; no switch | not read from here |
 | Changed guards: the fixed guard set plus every test naming a changed path | `scripts/changed-guards.sh` | `tests/unit/scripts/test_changed_guards.py::test_a_fixture_diff_selects_the_guards_and_every_test_that_reads_a_changed_path`, `tests/unit/scripts/test_changed_guards.py::test_a_docs_only_change_selects_only_the_doc_guards` | Run by the gate | not read from here |
-| Publish scan: a credential in the diff stops publishing, named by path and rule, never by value | `agent_worker/publish_scan.py`; `agent_worker/lifecycle.py::final_tree_leak` | `tests/unit/worker/test_publish_scan_cli.py::test_a_planted_generic_secret_is_named_by_path_line_and_rule_and_never_by_value`, `tests/unit/worker/test_publish_scan_cli.py::test_with_no_known_base_a_committed_secret_is_never_reported_clean` | Always on at publish | not read from here |
+| Publish scan: a credential in the diff stops publishing, named by path and rule, never by value | `agent_worker/publish_scan.py`; `agent_worker/publish_guard.py::final_tree_leak` | `tests/unit/worker/test_publish_scan_cli.py::test_a_planted_generic_secret_is_named_by_path_line_and_rule_and_never_by_value`, `tests/unit/worker/test_publish_scan_cli.py::test_with_no_known_base_a_committed_secret_is_never_reported_clean` | Always on at publish | not read from here |
 | Plan coverage (J2) and duplicate-lane hold (J5) | `judge/poststeps.py::plan_post_step` | `tests/unit/worker/test_jev_wiring.py::test_j2_flags_uncovered_requirements_and_j5_holds_a_likely_duplicate` | With `code_intelligence.jev` | not read from here |
 
 ## 6. Work claims and deduplication
@@ -143,7 +142,6 @@ Paths are relative to the repository root; `agent_worker/` is
 | Quality metrics M1-M12 from recorded data | `scripts/lib/quality_metrics.py::build_report` | `tests/unit/scripts/test_quality_metrics.py::test_m6_counts_prs_and_commits`, `tests/unit/scripts/test_quality_metrics.py::test_cost_null_is_not_zero_and_an_incomplete_total_is_a_floor` | Run by `scripts/quality-baseline.sh` | not read from here |
 | Benchmark gate (p50/p95/p99, missing samples) | `scripts/benchstat.py::compare` | `tests/unit/scripts/test_benchstat.py::test_all_missing_fails_against_a_baseline`, `tests/unit/scripts/test_benchstat.py::test_a_regression_beyond_the_threshold_fails` | `benchmarks/thresholds.json` | **None**: `benchmarks/baselines/` holds no baseline yet |
 | Console links in the PR body | `agent_worker/lifecycle.py::pr_body_with_console_links` | `tests/unit/worker/test_pr_body_console_links.py` (file) | `pr_console_links`, false by default | not read from here |
-| This inventory re-checked against the tree | `scripts/agent_quality_inventory.py::report` | `tests/unit/scripts/test_agent_quality_inventory.py::test_every_test_the_agent_quality_documents_cite_exists_on_this_tree` | Run by hand or by `make test` | n/a: reads only the tree |
 
 ## 10. Agent plugins
 

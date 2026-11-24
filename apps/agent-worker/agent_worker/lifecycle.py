@@ -127,19 +127,15 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping, NamedTuple, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from swarm_common.config import Settings
 from swarm_common.models import EndCause, ProviderState, retries_exhausted, utcnow
 from swarm_common.profiles import (
     RESOURCE_CLASSES,
-    RUNNER_PROFILES,
-    InputRefused,
     WorkerAction,
-    check_inputs,
 )
 from swarm_common.states import EventType, ParkReason, TaskState
-from swarm_redaction import MASK as CREDENTIAL_MASK
 from swarm_redaction import credentials as _credentials
 from swarm_redaction import redact as redact_text
 
@@ -150,6 +146,7 @@ from . import children as children_mod
 from . import cifixstart as cifixstart_mod
 from . import continuation as continuation_mod
 from . import publishpr as publishpr_mod
+from . import publish_guard as publish_guard_mod
 from . import egress as egress_mod
 from . import expected_outputs as expected_mod
 from . import gitops as gitops_mod
@@ -174,8 +171,10 @@ from . import territory as territory_mod
 from . import testservices as testservices_mod
 from . import typesafe_shim as typesafe_shim_mod
 from . import usage as usage_mod
-from . import heartbeat as heartbeat_mod
+from . import pythonenv as pythonenv_mod
 from .heartbeat import HeartbeatMixin
+from .checkpointing import CheckpointMixin
+from .spend import SpendMixin
 from . import owner_questions as owner_questions_mod
 from . import questions as questions_mod
 from . import flow_output as flow_output_mod
@@ -211,18 +210,12 @@ from .accountlease import (
     takes_key,
 )
 from .checkpoint import (
-    ARCHIVE_NAME,
-    MANIFEST_NAME,
     CheckpointBackoff,
     CheckpointManager,
     CheckpointRecord,
-    RestoreResourceError,
-    _empty_directory,
-    checkpoint_prefix,
 )
 from .config import WorkerConfig
 from .control import (
-    ARCHIVE_DIGEST_RE,
     CHILD_AWAIT_RESUMES_METADATA_KEY,
     QUOTA_PARK_RESUMES_METADATA_KEY,
     RELEASE_WAIT_MAX_RESUMES,
@@ -231,11 +224,8 @@ from .control import (
     TIME_LIMIT_MAX_CONTINUATIONS,
     ControlPlane,
     ControlSignals,
-    recorded_checkpoint_digests,
 )
 from .errors import (
-    CheckpointError,
-    ConfigError,
     ControlPlaneError,
     ExitCode,
     FencedError,
@@ -257,7 +247,6 @@ from . import specverify
 from .forge import ForgeError, PullRequest, RepoAccess, probe_repository, open_pull_request
 from .forge import PullHead, read_pull_request
 from .gitops import (
-    ATTRIBUTION_MARKERS,
     DETACHED_HEAD,
     EMPTY_CLONE_BASE,
     CloneResult,
@@ -281,7 +270,6 @@ from .gitops import (
     is_branch_ref_name,
     is_full_refname,
     merge_branches,
-    merged_head_kept,
     mirror_worktree,
     moved_branch_tip,
     origin_tips_as_data,
@@ -310,10 +298,8 @@ from .gitops import (
 from .gitops import (
     _NO_HOOKS,
     _SHA_RE,
-    _git_stream,
     _git_text,
     _git_text_full,
-    _worker_identity,
 )
 from .gitidentity import BOT_GIT_IDENTITY, commit_identity, git_identity_env
 from .hardening import FAILED, MemoryProtection
@@ -483,7 +469,7 @@ FORGE_GRANT_UNREADABLE = "forge_grant_unreadable"
 #: whose reason starts "the forge answered <status>", and which say the forge
 #: could not answer now rather than that the token cannot push. Matched on
 #: that reason because the probe returns no status; the wording is pinned by
-#: tests/unit/worker/test_carrier_branches.py through the real probe.
+#: a test that runs the real probe, so a reworded reason fails there.
 _FORGE_TRANSIENT_ANSWER = re.compile(r"^the forge answered (?:429|5\d\d)\b")
 
 #: How many different accounts one attempt will try before it gives up and
@@ -542,9 +528,6 @@ POOL_UNANSWERED = ("broker_unreachable", "broker_client_error")
 #: down for the next quarter of an hour, which is what the park waits.
 POOL_ASKS = 2
 
-#: Moved to `heartbeat.py` (issue 68), where `_heartbeat` reads it; bound here
-#: by assignment so a cite of this file still resolves.
-HEARTBEAT_EVENT_EVERY = heartbeat_mod.HEARTBEAT_EVENT_EVERY
 #: Utilisation points one HEARTBEAT event carries at most, newest kept
 #: (LIVE-UTIL-API, archived issue 1689). 30 x `metrics.POINT_SECONDS` is 150 s, one heartbeat
 #: period at the platform's interval; a beat that came later than that loses
@@ -608,7 +591,7 @@ QUESTION_ANSWER_NAME = "question-answer.txt"
 #: request (its 422 with no open one to reuse), as opposed to a forge that
 #: could not be reached. The publish reads it to tell a refusal, which fails a
 #: pull-request step (`_published_nothing`), from an outage, which does not.
-#: Held to the forge's wording by tests/unit/worker/test_published_nothing.py.
+#: Held to `forge.open_pull_request`'s wording by a test of the publish.
 PULL_REQUEST_REFUSED = "the forge refused the pull request"
 
 #: The `result_summary.git` key `_publish_git` sets when a pull request
@@ -698,9 +681,9 @@ WORKFLOW_REFUSAL_MAX_CHARS = 1500
 #: `mergewake._on_conflict` submits the round with, INTO the signed block,
 #: because the worker acts on no metadata the step-spec signature does not
 #: cover. Restated here because the worker cannot import swarm_api
-#: (`swarm_api.validation.CONFLICT_ROUND_FIELD`);
-#: tests/unit/worker/test_conflict_round_merge_parents.py holds the two
-#: together. A round checks, before it pushes, that it merged the default
+#: (`swarm_api.validation.CONFLICT_ROUND_FIELD`); a test of the conflict
+#: round's merge parents holds the two together, so a rename on either
+#: side fails there. A round checks, before it pushes, that it merged the default
 #: branch (`gitops.verify_merged_default_branch`).
 CONFLICT_ROUND_FIELD = "conflict_round"
 #: The file whose presence makes a clean run that changed nothing a RESULT
@@ -739,15 +722,15 @@ PR_TITLE_FILE = "pr-title.txt"
 PR_BODY_FILE = "pr-body.md"
 #: The runner's pre-publish section (SPEED-D1; `prepublish.PR_SECTION_NAME` and
 #: `prepublish.PR_SECTION_HEADING`, restated because the runner never imports
-#: the worker; tests/unit/worker/test_prepublish_gate.py holds them equal).
+#: the worker; a test of the pre-publish gate holds them equal).
 PREPUBLISH_SECTION_FILE = "prepublish-checks.md"
 #: The runner's deadline, an epoch instant (`prepublish.RUNNER_DEADLINE_ENV`,
-#: restated like the names above; test_prepublish_deadline.py holds them equal).
+#: restated like the names above; a test of the deadline holds them equal).
 RUNNER_DEADLINE_ENV = "SWARM_RUNNER_DEADLINE_EPOCH"
 #: The task document's record of the `timeout_seconds` its spec asked for, when
 #: the API lowered it to the profile's cap (requested of swarm-api in archived issue 2981),
 #: and the runner's name for it (`cliagent.TIMEOUT_ASKED_ENV`, held equal by
-#: test_prepublish_deadline.py).
+#: the same deadline test).
 TIMEOUT_ASKED_FIELD = "timeout_seconds_asked"
 TIMEOUT_ASKED_ENV = "SWARM_TIMEOUT_ASKED_SECONDS"
 
@@ -777,13 +760,13 @@ NO_CONTINUATION_BUDGET = "budget"
 NO_CONTINUATION_CANCEL = "cancel_requested"
 #: The verified task's resolved turn cap (contract request 133, `Task.max_turns`)
 #: and the runner's name for it (`claude_code.MAX_TURNS_ENV`, held equal by
-#: tests/unit/worker/test_runners.py).
+#: a test of the runners).
 MAX_TURNS_FIELD = "max_turns"
 MAX_TURNS_ENV = "SWARM_MAX_TURNS"
 PREPUBLISH_SECTION_HEADING = "## Pre-publish checks failed"
 PREPUBLISH_SECTION_MAX_CHARS = 20000
 #: The runner's advisory section (CTXQ-G; `prepublish.ADVISORY_SECTION_NAME`
-#: and `_HEADING`, held equal by tests/unit/worker/test_prepublish_graph_gate.py):
+#: and `_HEADING`, held equal by a test of the pre-publish graph gate):
 #: test reach, the agent's self-check, what the graph selected. Appended for
 #: the reader; no merge path reads it, and it never marks the checks failed.
 PREPUBLISH_ADVISORY_FILE = "prepublish-advisory.md"
@@ -798,14 +781,8 @@ PR_BODY_MAX_BYTES = 60 * 1024
 #: How much of either file is read at all. Past this the text is cut anyway.
 PR_READ_LIMIT_BYTES = 256 * 1024
 
-#: The subjects of the worker's own commits -- the one holding what the agent
-#: left uncommitted, and the one a fold makes -- when the agent wrote no usable
-#: `pr-title.txt`. With one, that title is the subject instead
-#: (`Worker._worker_commit_message`). NEVER THE TASK ID (archived issue 361): the subject is
-#: the line a reviewer and `git log --oneline` read, and the owner's rule for
-#: pull request titles (2026-09-28) holds for it too. The task id goes in the
-#: body, where the provenance belongs.
-UNCOMMITTED_COMMIT_SUBJECT = "Commit the changes the agent left uncommitted"
+#: The subject of the one commit a fold makes when the agent wrote no usable
+#: `pr-title.txt`; never the task id, like `UNCOMMITTED_COMMIT_SUBJECT`.
 FOLDED_COMMIT_SUBJECT = "Everything the agent changed, as one commit"
 
 #: The retired generated title's shape, `[swarm] task_...`, in any case. A
@@ -815,12 +792,6 @@ _RETIRED_TITLE_RE = re.compile(r"\[swarm\]\s*task_", re.IGNORECASE)
 #: The issue-number title `_title_from_issue_input` writes without an issue
 #: title. Like the retired shape, a worker's default a written title replaces.
 _DEFAULT_ISSUE_TITLE_RE = re.compile(r"^Work on issue #\d+ \(part of #\d+\)$")
-
-#: One path segment of a checkpoint's key, as a manifest's `attempt_id` and
-#: `checkpoint_id` must be before a restore builds a key from them (archived issue 347). A
-#: manifest is bucket data: an id carrying `/` or `..` would name a key that
-#: starts with this task's prefix and leaves it.
-_KEY_SEGMENT_RE = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9_.-]*")
 
 
 def _issue_title_from(path: Path, number: int) -> str | None:
@@ -861,12 +832,6 @@ def _as_issue_number(value: Any) -> int | None:
             return n if n > 0 else None
     return None
 
-#: The most agent commits the publish keeps one by one (archived issue 242). Each costs two
-#: git processes; past this many the agent's history is folded into one worker
-#: commit as it was before, and the run result says which happened.
-MAX_KEPT_COMMITS = 200
-#: The most bytes of one agent commit message kept, after it is cleaned.
-COMMIT_MESSAGE_MAX_BYTES = 16 * 1024
 
 #: The worker-owned repository the token-bearing git commands run in lives under
 #: `ws.private` -- never checkpointed, never uploaded, never named in the agent's
@@ -1005,7 +970,7 @@ def _cut_at_word(text: str, limit: int) -> str:
     return head.rstrip().rstrip(".,;:") + "…"
 
 
-class Worker(HeartbeatMixin):
+class Worker(HeartbeatMixin, CheckpointMixin, SpendMixin):
     """One attempt, start to finish."""
 
     def __init__(self, config: WorkerConfig, deps: WorkerDeps) -> None:
@@ -1056,7 +1021,7 @@ class Worker(HeartbeatMixin):
         # for those two only; the loop and the lease's outage check read
         # `time.monotonic`. A test that runs the loop with one installed starts
         # it at a real `time.monotonic()` reading and only moves it forward
-        # (`tests/unit/worker/virtual_clock.py`), so a beat's stamp stays
+        # (the tests' virtual clock helper), so a beat's stamp stays
         # within the test's own few seconds of the loop's clock.
         self.heartbeat_clock: Callable[[], float] = time.monotonic
         self.heartbeat_wait: Callable[[threading.Event, float], bool] = threading.Event.wait
@@ -1143,6 +1108,13 @@ class Worker(HeartbeatMixin):
         #: When the issue fetch started and ended, seconds since process
         #: start, for `agent_started`. None until a fetch has been joined.
         self._issue_fetch_timing: dict[str, Any] | None = None
+        #: The attempt's one Python environment warm-up (pythonenv.py), run
+        #: at the end of `_prepare`; it remembers it ran, so no later session
+        #: runs it again.
+        self._python_env = pythonenv_mod.PythonEnvWarmup(
+            redact=lambda text: redact_text(self.log.scrub_text(text)),
+            emit=self._note_python_env,
+        )
         #: The pull request this step works on (`_requested_pull_request`),
         #: worked out once: `False` until then, None when it names none.
         self._pull_request_number: int | None | bool = False
@@ -4124,11 +4096,38 @@ class Worker(HeartbeatMixin):
             )
             if decision.park:
                 return functools.partial(self._park_for_quota, decision, source="preflight")
+        # STEP 6d: warm the clone's Python environment, once per attempt
+        # (pythonenv.py says why). After the preflight, so a park pays nothing
+        # for it; the generation and the cancel are read again before it
+        # starts, and the generation again after it ran, so a stale worker
+        # never starts the agent (invariant 5). Never fatal.
+        checkout = ws.checkout() if self._repo_url else None
+        if pythonenv_mod.applies(checkout):
+            self.phases.enter("python_env")
+            warmed = self._python_env.warm(
+                checkout, child_env,
+                may_start=lambda: not self.control.validate_generation().cancel_requested,
+                meanwhile=self._heartbeat_meanwhile,
+            )
+            if warmed is not None and warmed.status in pythonenv_mod.RAN:
+                self.control.validate_generation()
         return child_env
 
     # ------------------------------------------------------------------
     # child supervision
     # ------------------------------------------------------------------
+    def _note_python_env(self, detail: dict[str, Any]) -> None:
+        """The Python warm-up's one event line, on RUNNING with `detail.phase`
+        (as `verify_spec` notes): an event that does not land is logged, and
+        the attempt goes on."""
+        try:
+            self.control.emit(EventType.RUNNING, detail=detail)
+        except FencedError:
+            raise
+        except Exception as exc:
+            self.log.warning("the Python warm-up's event was not written",
+                             error=type(exc).__name__, warmup=detail)
+
     def _run_child_supervised(self, child_env: dict[str, str]) -> ChildResult | Outcome:
         cfg = self.cfg
         ws = self.ws
@@ -5778,242 +5777,6 @@ class Worker(HeartbeatMixin):
                 "could not record the end of this attempt on its own document",
                 error=f"{type(write_exc).__name__}: {write_exc}",
             )
-
-    def _restore_checkpoint(self, task: dict[str, Any]) -> None:
-        """Restore the checkpoint this task's own earlier attempt recorded, or nothing.
-
-        ONLY A RECORDED CHECKPOINT, AND NEVER ON A FIRST ATTEMPT (archived issue 347, owner
-        decision 2026-09-29). This used to fall back to the newest manifest
-        under the task's prefix when the pointer resolved to nothing, and to
-        do so on attempt 1 as well. The tenant's worker account can write
-        anywhere under `tenants/<tenant>/`, so any agent of the tenant could
-        plant a checkpoint under another task's prefix -- an implement step
-        under its parked review step's -- and HOME is `work/`, whose
-        `.claude/` travels in every checkpoint: the planter's settings, and
-        the hooks in them, arrived in the next step, where a hook runs code
-        without persuading any model. Now:
-
-        * a first attempt restores nothing, whatever is under the prefix;
-        * a retry restores only what `_recorded_checkpoint` accepts;
-        * nothing lists the prefix to choose a checkpoint.
-
-        Every refusal starts the attempt from an empty workspace, which is
-        what a first attempt does anyway. The restore's own checks --
-        ownership, digest, the member filter, the escaping-link skip, the
-        size caps -- still apply to whatever is accepted, and a
-        `CheckpointError` from them is a refusal like the rest: an empty
-        workspace, not a failed attempt (archived issue 346).
-        """
-        ws = self.ws
-        assert ws is not None
-        if self.cfg.profile.never_restore_checkpoint:
-            # CONTRACT REQUEST 36 (merge-step.md §10 item 4a): a profile that
-            # sets the flag restores NOTHING, on any attempt, not only the
-            # first -- `claude-code-review` judges the head it checks out, and
-            # a workspace an earlier attempt (or a planter) left behind is
-            # not that head. Before `_recorded_checkpoint`, so not even the
-            # pointer is followed. Checkpointing itself stays on (invariant
-            # 8): only the restore is skipped.
-            self.log.info(
-                "no checkpoint is restored; starting from an empty workspace",
-                reason="the runner profile never restores a checkpoint",
-                runner_profile=self.cfg.runner_profile,
-            )
-            return
-        record = self._recorded_checkpoint(task)
-        if record is None:
-            return
-        try:
-            files = self.checkpoints.restore(record, ws)
-        except RestoreResourceError:
-            # Out of local room, not a refusal: the attempt fails and a retry
-            # resumes this same checkpoint (see `RestoreResourceError`).
-            raise
-        except CheckpointError as exc:
-            # A REFUSED RESTORE IS A CLEAN START, NOT A FAILED ATTEMPT (archived issue 346).
-            # The restore's own checks -- the archive's bytes against the
-            # recorded digest above all, but also ownership, the member filter
-            # and the size caps -- refuse what `_recorded_checkpoint` could
-            # not see: an archive rewritten under an unchanged manifest. That
-            # used to fail the attempt and burn a retry, where every other
-            # refusal starts from an empty workspace; the restore leaves
-            # `work/` empty on a refusal, and this makes sure of it. Not a
-            # download's object-store error, nor an extraction that ran out of
-            # local room (`RestoreResourceError`, above): those say nothing
-            # against the checkpoint, so they still fail the attempt, and a
-            # retry resumes it.
-            _empty_directory(ws.work)
-            self.log.error(
-                "refusing the recorded checkpoint: the restore's own checks failed",
-                checkpoint_id=record.checkpoint_id,
-                from_attempt=record.attempt_id,
-                error=str(exc),
-            )
-            self.log.info(
-                "no checkpoint is restored; starting from an empty workspace",
-                reason="the recorded checkpoint failed the restore's own checks",
-            )
-            return
-        self._restored_from = record
-        self._read_continuation_note()
-        self.control.emit(
-            EventType.CHECKPOINT_RESTORED,
-            {
-                "checkpoint_id": record.checkpoint_id,
-                "from_attempt": record.attempt_id,
-                "files": files,
-                "bytes": record.archive_bytes,
-            },
-        )
-
-    def _recorded_checkpoint(self, task: dict[str, Any]) -> CheckpointRecord | None:
-        """The checkpoint an earlier attempt of THIS task recorded, or None.
-
-        Accepted only when every one of these holds:
-
-        1. the task has had an earlier attempt: its `attempt_count`, which
-           admission increments in the lease's own transaction, is above 1;
-        2. the task's `latest_checkpoint` names one, and it resolves inside
-           this task's own prefix to a manifest naming this tenant and task
-           (`CheckpointManager.find_by_uri`, which refuses anything outside
-           the prefix);
-        3. the pointer, the manifest and the archive all lie where the
-           manifest's own ids put them, so the attempt and checkpoint it
-           names are the ones at that path;
-        4. it is not this attempt's own -- this attempt has recorded nothing;
-        5. the attempt document of the attempt that wrote it exists, is this
-           tenant's and this task's, lists that checkpoint id, and records
-           the archive digest the manifest carries -- as
-           `ControlPlane.record_checkpoint` writes both, before it moves the
-           pointer. The restore then checks the archive's bytes against that
-           digest, so bytes rewritten in the bucket after the attempt
-           recorded them are refused even when manifest and archive were
-           rewritten together.
-
-        WHAT THIS DOES NOT STOP. Firestore has no document-level IAM
-        (docs/multi-tenancy.md), so an agent of the tenant that knows this
-        task's id can write `attempt_count`, `latest_checkpoint` and an
-        attempt document of an id it chose, and satisfy every check above.
-        What it stops is every first attempt, and on a retry the planter
-        that has only the bucket -- the issue's reproduction -- whether it
-        adds a checkpoint beside the recorded one or rewrites the recorded
-        one. The complete fix needs a record the tenant cannot write, which
-        is the signed step specs' work (archived issue 342).
-        """
-        refuse = functools.partial(
-            self.log.info, "no checkpoint is restored; starting from an empty workspace"
-        )
-        count = task.get("attempt_count")
-        # A refunded child await (child tasks, §3.3 step 5) takes one off
-        # `attempt_count`, so the attempt after it can read 1 and still be a
-        # resume. Counted back here; a tenant that can write the counter can
-        # write `attempt_count` itself, so this adds no reach (see below).
-        #
-        # A refunded HAND-OFF park (live-browser §4.3) takes one off the same
-        # way, and is counted back the same way (RESUME-PROGRESS, QA12-14).
-        # It was not: MEASURED 2026-10-13 on task_4defa61c5eea4a5c87f5, the
-        # attempt after a hand-off park read `attempt_count` 1, was taken for
-        # the task's first, restored nothing, and its agent started the task
-        # over -- asking again for the hand-off already done.
-        #
-        # A refunded QUOTA park takes one off the same way (archived issue 2650): the
-        # attempt after a quota park read 1, restored nothing, and the file
-        # its agent wrote before the park never reached the attempt that
-        # succeeded (the workflow group's carry check).
-        resumes = _refunded_resumes(task)
-        if (
-            isinstance(count, bool)
-            or not isinstance(count, int)
-            or count + resumes <= 1
-        ):
-            refuse(reason="first attempt of this task", attempt_count=count)
-            return None
-        pointer = task.get("latest_checkpoint")
-        if not isinstance(pointer, str) or not pointer:
-            refuse(reason="no earlier attempt of this task recorded a checkpoint")
-            return None
-        record = self.checkpoints.find_by_uri(pointer)
-        if record is None:
-            refuse(reason="the recorded checkpoint does not resolve to one of this task's")
-            return None
-        ids = (record.attempt_id, record.checkpoint_id)
-        if not all(isinstance(i, str) and _KEY_SEGMENT_RE.fullmatch(i) for i in ids):
-            self.log.error(
-                "refusing a checkpoint whose ids are not single key segments",
-                attempt_id=str(record.attempt_id)[:200],
-                checkpoint_id=str(record.checkpoint_id)[:200],
-            )
-            refuse(reason="the checkpoint's ids are not single key segments")
-            return None
-        expected = checkpoint_prefix(
-            tenant_id=self.cfg.tenant_id,
-            task_id=self.cfg.task_id,
-            attempt_id=record.attempt_id,
-            checkpoint_id=record.checkpoint_id,
-        )
-        named = pointer.rstrip("/")
-        if (
-            record.manifest_key != f"{expected}/{MANIFEST_NAME}"
-            or record.archive_key != f"{expected}/{ARCHIVE_NAME}"
-            or not (named == expected or named.endswith("/" + expected))
-        ):
-            self.log.error(
-                "refusing a checkpoint that is not where its own ids put it",
-                pointer=pointer,
-                manifest_key=record.manifest_key,
-                archive_key=record.archive_key,
-                expected_prefix=expected,
-            )
-            refuse(reason="the checkpoint's ids do not match its path")
-            return None
-        if record.attempt_id == self.cfg.attempt_id:
-            refuse(reason="the pointer names this attempt, which has recorded nothing")
-            return None
-        # A DIGEST IS A DIGEST BEFORE IT IS COMPARED (archived issue 346). A manifest is
-        # bucket data, and one carrying `archive_sha256: null` matched an
-        # attempt document with no digest for it: None == None.
-        if not isinstance(record.archive_sha256, str) or not ARCHIVE_DIGEST_RE.fullmatch(
-            record.archive_sha256
-        ):
-            self.log.error(
-                "refusing a checkpoint whose manifest carries no archive digest",
-                attempt_id=record.attempt_id,
-                checkpoint_id=record.checkpoint_id,
-            )
-            refuse(reason="the checkpoint's manifest carries no archive digest")
-            return None
-        try:
-            attempt = self.control.fetch_attempt(record.attempt_id)
-        except TenantMismatchError as exc:
-            self.log.error(
-                "refusing a checkpoint whose attempt document is another tenant's",
-                attempt_id=record.attempt_id,
-                error=str(exc),
-            )
-            refuse(reason="the recording attempt is another tenant's")
-            return None
-        listed = attempt.get("checkpoints") if attempt else None
-        # `Attempt.checkpoint_sha256` in its typed shape (contract request 51).
-        # Empty when the document has none -- written before archived pull request 348 -- which is
-        # "no digest recorded", so the retry starts clean.
-        digests = recorded_checkpoint_digests(attempt)
-        if (
-            attempt is None
-            or attempt.get("task_id") != self.cfg.task_id
-            or not isinstance(listed, list)
-            or record.checkpoint_id not in listed
-            or digests.get(record.checkpoint_id) != record.archive_sha256
-        ):
-            self.log.error(
-                "refusing a checkpoint no earlier attempt of this task recorded",
-                attempt_id=record.attempt_id,
-                checkpoint_id=record.checkpoint_id,
-                attempt_document=attempt is not None,
-                digest_recorded=record.checkpoint_id in digests,
-            )
-            refuse(reason="no attempt document of this task lists the checkpoint")
-            return None
-        return record
 
     def _start_issue_prefetch(self, task: dict[str, Any]) -> None:
         """Start the issue fetch in a thread, beside the clone (archived issue 721, P29). Never raises.
@@ -8173,12 +7936,31 @@ class Worker(HeartbeatMixin):
         # by the gate's rule (`verdict_mod.gate_reading`); its file says SKIPPED.
         reading = verdict_mod.gate_reading(read)
         runs = reading in gate.verdict_in
+        # The gate's further reviews (`also_task_ids`): each one's staged
+        # verdict is read as strictly as the first's, and ANY in `verdict_in`
+        # runs the agent -- the security review beside the first review, whose
+        # NOT_YET runs the fix even when the first said MERGE.
+        also_read: list[tuple[inputs_mod.StagedInput, verdict_mod.Verdict, str]] = []
+        for also_id in gate.also_task_ids:
+            also_source = next(
+                (item for item in staged if item.upstream_task_id == also_id), None)
+            if also_source is None:
+                raise InputUnavailable(
+                    f"this step's verdict gate also reads the verdict of task {also_id}, "
+                    "and this step stages no file from that task; the agent was not "
+                    "started and nothing was published"
+                )
+            also_verdict = verdict_mod.read_verdict(
+                ws.work / also_source.path, task_id=also_id, filename=also_source.filename)
+            also_reading = verdict_mod.gate_reading(also_verdict)
+            also_read.append((also_source, also_verdict, also_reading))
+            runs = runs or also_reading in gate.verdict_in
         passed_on = ws.work / source.path
         # The no-op precheck, check (b) (archived issue 2524, the owner 2026-10-28): a NOT_YET
         # that would run the agent does not when this head already holds a
         # commit a review gave MERGE. The MERGE is then the verdict passed on.
         noop = self._noop_precheck_b(staged, source, read) if (
-            runs and read.verdict == "NOT_YET") else None
+            runs and read.verdict == "NOT_YET" and not also_read) else None
         if noop is not None:
             runs, passed_on = False, noop[1]
         self._verdict_staged = (passed_on, source.filename)
@@ -8188,9 +7970,17 @@ class Worker(HeartbeatMixin):
             "verdict": read.verdict,
             "verdict_in": list(gate.verdict_in),
             "agent_ran": runs,
-            "findings": list(read.findings),
-            "findings_dropped": read.findings_dropped,
+            "findings": list(read.findings) + [
+                finding for _src, other, _r in also_read for finding in other.findings],
+            "findings_dropped": read.findings_dropped + sum(
+                other.findings_dropped for _src, other, _r in also_read),
         }
+        if also_read:
+            self._verdict["also"] = [
+                {"task_id": src.upstream_task_id, "file": src.filename,
+                 "verdict": other.verdict, "gate_reading": other_reading}
+                for src, other, other_reading in also_read
+            ]
         if read.skipped is not None:
             self._verdict["gate_reading"] = reading
             self._verdict["skipped_review"] = read.skipped
@@ -11006,13 +10796,13 @@ class Worker(HeartbeatMixin):
         #
         # NEVER A PREFIX. `PLAYWRIGHT_*` would also carry
         # PLAYWRIGHT_SERVICE_ACCESS_TOKEN, a real Playwright credential.
-        # tests/unit/worker/test_image_env_reaches_the_runner.py takes every ENV
-        # in the browser image -- both Dockerfiles, plus the upstream python
-        # base's, recorded there and pinned by digest -- and holds each one to
-        # either this list or a recorded reason the runner must not have it.
-        # The image's pip/npm settings are among the refused: no runner process
-        # runs pip or npm. Whether the AGENTS the runners start should get them
-        # is an open owner decision, recorded in that file.
+        # A test takes every ENV in the browser image -- both Dockerfiles,
+        # plus the upstream python base's, recorded with the test and pinned
+        # by digest -- and holds each one to either this list or a recorded
+        # reason the runner must not have it. The image's pip/npm settings
+        # are among the refused: no runner process runs pip or npm. Whether
+        # the AGENTS the runners start should get them is an open owner
+        # decision, recorded beside that test.
         for passthrough in (
             "PYTHONPATH",
             "VIRTUAL_ENV",
@@ -13203,7 +12993,7 @@ class Worker(HeartbeatMixin):
         task submitted with a larger class than its profile's would otherwise
         have its CPU drawn against a limit its container never had. Restated
         rather than imported (the worker image does not install the
-        scheduler); `tests/unit/worker/test_cpu_sampler.py` compares the two.
+        scheduler); a test of the CPU sampler compares the two.
 
         WHERE IT CAME FROM IS RECORDED AGAIN (contract request #26, accepted
         on #184, 2026-09-26): `cgroup` when the kernel's `cpu.max` said it,
@@ -13260,150 +13050,6 @@ class Worker(HeartbeatMixin):
         needs a label -- never a guess drawn as the container's size.
         """
         return self._sized_resource_class() or self.cfg.profile_resource_class
-
-    def _checkpoint(self, label: str, *, push: bool = True) -> CheckpointRecord | None:
-        """Mandatory checkpoint. A failure here is logged, never swallowed.
-
-        The one thing a failed checkpoint must not do is end the attempt: the
-        agent is still working, and the correct response to "this checkpoint did
-        not upload" is to try again at the next interval, not to throw away the
-        run that is currently succeeding.
-
-        A FENCE IS NOT A FAILED CHECKPOINT. The attempt is over, and
-        `FencedWriteRefused` is raised to say so. It is checked twice. The first
-        check comes before anything is uploaded, because a stale archive in the
-        task's prefix is bytes a superseded attempt should not have written
-        (a restore no longer lists the prefix, archived issue 347, but the archive still
-        costs storage and reads as this task's work). The second is in
-        the pointer's own transaction (`ControlPlane.record_checkpoint`),
-        because a fence can land during the upload.
-
-        THE LEASE IS BEATEN THROUGH ALL OF IT (archived issue 426), not only under the
-        archive (archived issue 286): the owner check, the start event and the pointer's
-        transaction are Firestore calls with budgets of 30-60 s each, and they
-        ran with nothing beating. The carrier push after it beats on its own.
-
-        ONLY THE PERIODIC CHECKPOINT IS EVER SKIPPED (archived issue 637), and that is
-        decided by its label here, so no other caller can ask for it: when the
-        tree is as the last checkpoint left it, nothing is announced or
-        written, None is returned, and `checkpoints.last_unchanged` says so.
-        The final, park, cancellation, interruption, outage and child-await
-        checkpoints are written whatever changed (invariant 8).
-
-        `push=False` takes the checkpoint without the carrier push. Only the
-        SIGTERM exits ask for it (archived issue 453): the forge is not called inside the
-        grace window that the park or terminal write has to land in.
-        """
-        if self.ws is None:
-            return None
-        with self._heartbeat_meanwhile(
-            f"checkpoint ({label})", progress=self.checkpoints.progress.reading
-        ):
-            record = self._write_checkpoint(label, only_if_changed=label == "periodic")
-        if record is None:
-            return None
-        self._last_checkpoint = record
-        if push:
-            self._push_carrier_branch(label)
-        return record
-
-    def _write_checkpoint(
-        self, label: str, *, only_if_changed: bool = False
-    ) -> CheckpointRecord | None:
-        """`_checkpoint`'s owner check, archive and record, under its heartbeat."""
-        assert self.ws is not None  # checked by `_checkpoint`
-        try:
-            if only_if_changed:
-                # The owner check and the start event run once the walk has
-                # found a change, before the first byte is uploaded: an
-                # unchanged tick announces nothing.
-                record = self.checkpoints.create_if_changed(
-                    self.ws, label=label, before_upload=lambda: self._announce_checkpoint(label)
-                )
-                if record is None:
-                    # Still the owner check: the periodic tick is one of the
-                    # places a mid-run fence is met (`_exit_fenced_mid_run`),
-                    # and a tree that stopped changing must not stop that.
-                    self._confirm_owner(label)
-                    return None
-            else:
-                self._announce_checkpoint(label)
-                record = self.checkpoints.create(self.ws, label=label)
-        except (FencedError, TenantMismatchError):
-            raise
-        except CheckpointError as exc:
-            self.log.error("CHECKPOINT FAILED", label=label, error=str(exc))
-            return None
-        except Exception as exc:
-            self.log.exception("checkpoint failed unexpectedly", exc, label=label)
-            return None
-        return self._record_checkpoint(label, record)
-
-    def _announce_checkpoint(self, label: str) -> None:
-        """The owner check and the start event every written checkpoint is preceded by."""
-        self._confirm_owner(label)
-        try:
-            # The announcement is an audit record, written to Firestore; the
-            # archive goes to the bucket. An event that cannot be written must
-            # not cost the checkpoint, and during an outage (archived issue 70) it is the
-            # checkpoint that is needed.
-            self.control.emit(EventType.CHECKPOINT_STARTED, {"label": label})
-        except (FencedError, TenantMismatchError):
-            raise
-        except Exception as exc:
-            self.log.warning(
-                "could not record the checkpoint's start; taking it anyway",
-                label=label,
-                error=f"{type(exc).__name__}: {exc}",
-            )
-
-    def _confirm_owner(self, label: str) -> None:
-        """Raise the fence if this attempt no longer owns its task; a failed read is not one."""
-        try:
-            self.control.ensure_owner(write=f"checkpoint ({label})")
-        except (FencedError, TenantMismatchError):
-            raise
-        except Exception as exc:
-            # A read that could not be made is not a fence. Carry on, as a
-            # checkpoint always has. The pointer's own transaction is still the
-            # authority, and it re-checks.
-            self.log.warning(
-                "could not confirm this attempt still owns its task before "
-                "checkpointing; the pointer write will check again",
-                label=label,
-                error=f"{type(exc).__name__}: {exc}",
-            )
-
-    def _record_checkpoint(self, label: str, record: CheckpointRecord) -> CheckpointRecord | None:
-        """Write a checkpoint's record: the attempt's list and digest, the pointer, the event."""
-        # THE RECORD'S ERRORS STAY HERE (archived issue 70). The archive is in the bucket; the
-        # record -- the attempt's list and digest, the task's pointer, the
-        # event -- is Firestore's, under its budget. A record that could not
-        # be written leaves a checkpoint no restore trusts (archived issue 347), which is
-        # what a failed checkpoint is, and the next interval tries again. It
-        # used to raise into the crash handler, which FAILED the task. A fence
-        # met in the pointer's transaction is still raised: that is not a
-        # failed checkpoint, the attempt is over.
-        try:
-            self.control.record_checkpoint(
-                checkpoint_id=record.checkpoint_id,
-                uri=record.uri,
-                size_bytes=record.archive_bytes,
-                seq=record.seq,
-                archive_sha256=record.archive_sha256,
-            )
-        except (FencedError, TenantMismatchError):
-            raise
-        except Exception as exc:
-            self.log.error(
-                "CHECKPOINT NOT RECORDED: the archive was uploaded and its record "
-                "could not be written, so no restore will use it",
-                label=label,
-                checkpoint_id=record.checkpoint_id,
-                error=f"{type(exc).__name__}: {exc}",
-            )
-            return None
-        return record
 
     # -- carrier: branches (D13) --------------------------------------------
     def _push_carrier_branch(self, label: str) -> None:
@@ -14569,8 +14215,8 @@ class Worker(HeartbeatMixin):
         The ONE list both the live publisher and the final upload walk, so a
         stream's live object (`logs/live/<label>.tail.log`) and its final one
         (`logs/<label>.log`) cannot name it differently. The labels are the
-        API's stream names (`swarm_api.inspect.LOG_STREAMS`), compared by
-        `tests/unit/control_plane/test_agent_stream_parity.py`.
+        API's stream names (`swarm_api.inspect.LOG_STREAMS`), compared by a
+        parity test that imports both, so a renamed stream fails there.
         """
         streams = [("stdout", ws.stdout_path), ("stderr", ws.stderr_path)]
         files = agent_stream_files(self.cfg.runner_profile)
@@ -14938,7 +14584,7 @@ class Worker(HeartbeatMixin):
         on the carrier yet. The first one that did would have read "patches"
         for a dispatch that said "checkpoints".
 
-        `tests/unit/worker/test_dispatch_contract_parity.py` imports swarm-api's
+        A dispatch-contract parity test imports swarm-api's
         own constants and asserts this set matches them, so the next divergence
         fails there instead of in a deployed worker.
         """
@@ -18634,250 +18280,6 @@ class Worker(HeartbeatMixin):
             "stderr_truncated": cut("stderr"),
         }
 
-    # -- spend -------------------------------------------------------------
-    def _child_ended(self, result: ChildResult | None = None) -> None:
-        """Everything that has to happen the moment a runner is gone.
-
-        Called at every site that reaps a runner, so a new site gets every
-        part by calling one thing: the resource sample is stopped and
-        written, the run's spend is taken before a restart can overwrite
-        the result.json it is in, and the run is closed in `_runs` with what
-        it spent. `result` is the reaped runner's, where the site kept it.
-        """
-        self._stop_sampler()
-        before = dict(self._spend)
-        self._collect_spend()
-        if self.budget is not None:
-            self.budget.runner_ended()
-        self._close_run(result, spent_before=before)
-
-    def _open_run(self, *, resumed: bool) -> None:
-        """Start this runner's entry in `_runs` (SWAP-RUNS). Never raises."""
-        account = self._account
-        self._run_open = {
-            "run": len(self._runs) + 1,
-            "started_at": _rfc3339_now(),
-            "account": account.account_id if account is not None else None,
-            "resumed": resumed,
-            # `_just_swapped` is set by a swap and read after the next run
-            # ends, so here it says this run is the one the swap started.
-            "after_swap": bool(self._just_swapped),
-        }
-
-    def _close_run(self, result: ChildResult | None, *, spent_before: dict[str, Any]) -> None:
-        """Close the run `_open_run` started, once. Never raises.
-
-        Its duration and exit are the reaped runner's; its tokens and cost
-        are what `_collect_spend` added for it -- the difference, because a
-        resumed session reports the session's running totals (`_add_spend`).
-        A run that followed a swap also carries `reread`: the seconds and
-        tokens it spent before its first action (`cliagent.is_action`), as
-        the runner's account channel measured them, or everything it spent
-        when it never acted (`reached: false`).
-        """
-        entry, self._run_open = self._run_open, None
-        if entry is None:
-            return
-        try:
-            child = self._child
-            if result is not None:
-                seconds, exit_code, timed_out = (
-                    result.duration_seconds, result.exit_code, result.timed_out)
-            else:
-                # None when there is no child or it never started (issue 56).
-                seconds = child.elapsed_seconds if child is not None else None
-                exit_code = child.poll() if child is not None else None
-                timed_out = False
-            entry["ended_at"] = _rfc3339_now()
-            entry["duration_s"] = round(float(seconds), 3) if seconds is not None else None
-            entry["exit_code"] = exit_code
-            if timed_out:
-                entry["timed_out"] = True
-            tokens = {
-                key: self._spend[key] - spent_before.get(key, 0)
-                for key in _RUN_TOKEN_KEYS
-                if key in self._spend
-            }
-            if tokens:
-                entry["tokens"] = tokens
-            if "total_cost_usd" in self._spend:
-                entry["cost_usd"] = round(
-                    self._spend["total_cost_usd"] - spent_before.get("total_cost_usd", 0), 10)
-            if entry.get("after_swap") and self.ws is not None:
-                entry["reread"] = _reread_of(self._read_account_channel())
-        except Exception as exc:  # pragma: no cover - defensive; teardown path
-            self.log.warning("could not close the run's record", error=str(exc))
-        self._runs.append(entry)
-
-    def _collect_spend(self) -> None:
-        """Add the runner that just ended to this attempt's spend. Never raises.
-
-        ONCE PER RUNNER: `_spend_pending` is set when a runner starts and
-        cleared here, so the `_cleanup` backstop cannot count a run twice.
-
-        Reads result.json knowing it is THIS runner's or nothing: the reply
-        files are cleared before every start (`_run_child_supervised`), so a
-        runner killed before writing leaves no file here rather than a
-        restored one from a previous attempt.
-        """
-        if not self._spend_pending or self.ws is None:
-            return
-        self._spend_pending = False
-        try:
-            result = _read_json(self.ws.result_path) or {}
-            usage = _usage_summary(result.get("output"))
-            unpriced = _unpriced_sessions(result.get("output"))
-            incomplete = _cost_incomplete(result)
-        except Exception as exc:  # pragma: no cover - defensive; teardown path
-            self.log.warning("could not read the runner's spend", error=str(exc))
-            return
-        if incomplete:
-            # A SESSION WHOSE USAGE WAS NOT READ (COST-ACROSS-SESSIONS, part
-            # of archived issue 2688): the runner dropped its partial `total_cost_usd`, so
-            # what follows estimates the capture or reports no cost. Kept
-            # sticky on the attempt's spend and said in the summary
-            # (`result_summary.cost_incomplete`), never inferred from
-            # `cost_estimated` alone, which a priced stopped run also sets.
-            self._spend["cost_incomplete"] = True
-        stopped_cost: float | None = None
-        if "total_cost_usd" in usage and unpriced:
-            # SESSIONS A CONTEXT-CEILING HANDOFF ENDED (archived issue 2896): stopped at a
-            # turn boundary, they printed no result event, and the reported
-            # `total_cost_usd` is the last session's alone. Their per-model
-            # counts are priced by swarm-api like a stopped run's and added,
-            # so the attempt's cost is every session's. Only here: a run with
-            # no reported cost at all is priced from its whole stream below,
-            # which covers these sessions already. They ended before the
-            # last session began, so their cost goes on the session base
-            # below, never into the last session's running total: a later
-            # runner that RESUMES that session must neither lose it nor
-            # count it twice (`_add_spend`).
-            cost, tier_estimated = self.spend_pricer.estimate(unpriced)
-            if cost is None:
-                self.log.warning(
-                    "the cost of the sessions a context-ceiling handoff ended is not "
-                    "reported; the attempt's cost covers its other sessions only",
-                    sessions_models=sorted(unpriced))
-            else:
-                stopped_cost = cost
-                self._spend["cost_estimated"] = True
-                if tier_estimated:
-                    self._spend["tier_estimated"] = True
-        if "total_cost_usd" not in usage:
-            # A RUN STOPPED BEFORE IT COULD SAY (archived issue 627): a CLI killed on a
-            # cancel, a SIGTERM, a fence or a timeout prints no result event.
-            # What its stream showed is summed per model, and only the keys
-            # the run did not report itself are taken, so nothing is counted
-            # twice. SWARM-API PRICES IT (archived issue 1481): the worker sends the usage
-            # per model and takes back a figure or None -- "cost not
-            # reported" -- never one of its own.
-            estimate = self._stopped_run_usage()
-            by_model = estimate.pop("usage_by_model", None) or {}
-            more = {k: v for k, v in estimate.items() if k not in usage}
-            tier_estimated = False
-            if by_model:
-                cost, tier_estimated = self.spend_pricer.estimate(by_model)
-                if cost is not None:
-                    more["total_cost_usd"] = cost
-            if more:
-                usage = {**usage, **more}
-                if "total_cost_usd" in more:
-                    self._spend["cost_estimated"] = True
-                    if tier_estimated:
-                        # A tiered model's tier was picked from summed counts,
-                        # not per request (PRICES-TIER-PROMPT).
-                        self._spend["tier_estimated"] = True
-        self._note_model_mismatch(usage.get("models"))
-        if stopped_cost is not None:
-            self._spend = _add_spend(self._spend, {"total_cost_usd": stopped_cost})
-            if self._session_spend_base is not None:
-                self._session_spend_base = _add_spend(
-                    self._session_spend_base, {"total_cost_usd": stopped_cost})
-        if usage:
-            self._spend = _add_spend(
-                self._spend,
-                usage,
-                session_base=self._session_spend_base if self._spend_resumes_session else None,
-            )
-
-    def _note_model_mismatch(self, models: Any) -> None:
-        """Log `model_mismatch` when the stream ran none of the pinned model.
-
-        docs/design/model-per-step.md §4.6. `Attempt.model` is what the
-        worker was started with; `usage.models` is what the CLI's stream says
-        it ran. The two are different facts, and a pinned CLI that
-        substituted another model shows as a disagreement here. Judged as
-        "the pin is not among them", not "anything else is": the CLI also
-        reports the small model it runs for its own housekeeping beside the
-        one it was told to run, and that is not a substitution. A `[...]`
-        context suffix (`claude-opus-5-5[1m]`) is the same model.
-        """
-        pinned = self.cfg.model
-        if not pinned or not isinstance(models, list) or not models:
-            return
-        reported = sorted(str(m) for m in models)
-        if any(m.split("[", 1)[0] == pinned for m in reported):
-            return
-        self.log.warning(
-            "model_mismatch: the agent's stream reports models other than the pinned one",
-            cause="model_mismatch",
-            job_model=pinned,
-            stream_models=reported,
-        )
-
-    def _note_runner_spend_start(self, *, resumed: bool) -> None:
-        """Say, at a runner's start, whose session its spend will report.
-
-        A runner that starts a NEW session -- every first start, and a restart
-        from the prompt -- marks the spend so far as what was spent before
-        that session. A runner that RESUMES one leaves the mark where the
-        session began, so `_add_spend` can replace the session's earlier
-        figures with its later, cumulative ones (archived issue 667, observer P14).
-        """
-        self._spend_resumes_session = resumed
-        if not resumed or self._session_spend_base is None:
-            self._session_spend_base = dict(self._spend)
-
-    def _stopped_run_usage(self) -> dict[str, Any]:
-        """`_stream_usage` over this profile's agent capture, or {}."""
-        files = agent_stream_files(self.cfg.runner_profile)
-        if files is None or self.ws is None:
-            return {}
-        try:
-            return _stream_usage(self.ws.artifacts / files.stdout)
-        except Exception as exc:  # pragma: no cover - defensive; teardown path
-            self.log.warning("could not estimate the stopped run's spend", error=str(exc))
-            return {}
-
-    def _record_spend(self) -> None:
-        """Write what this attempt has spent onto its attempt document. Never raises.
-
-        Called from every exit (see `_upload_outputs` and `_cleanup`), and
-        writes only when there is something new: `record_spend` merge-sets
-        absolute totals, so writing the same figure twice is harmless and
-        writing a larger one later -- a crash that reaped its runner after the
-        first write -- corrects it.
-
-        Not fatal. An attempt that ran is not a failed attempt because its
-        accounting write failed, and this runs on the teardown path where the
-        lease is about to be released either way.
-        """
-        kept = self._credential_kept
-        if self._writes_forbidden or (not self._spend and kept is None):
-            return
-        snapshot = dict(self._spend)
-        if kept is not None:
-            # Request 152: the credential the attempt KEPT LAST, beside spend.
-            snapshot["credential"] = dict(kept)
-        if snapshot == self._spend_recorded:
-            return
-        try:
-            self.control.record_spend(snapshot)
-        except Exception as exc:
-            self.log.warning("could not record spend", error=f"{type(exc).__name__}: {exc}")
-            return
-        self._spend_recorded = snapshot
-
     # -- metrics -----------------------------------------------------------
     def _start_sampler(self, child: ChildProcess) -> None:
         ws = self.ws
@@ -19425,53 +18827,43 @@ class Worker(HeartbeatMixin):
 # helpers
 # ---------------------------------------------------------------------------
 
-
-
-def _carries_attribution(text: str) -> bool:
-    lowered = text.lower()
-    return any(marker in lowered for marker in ATTRIBUTION_MARKERS)
-
-
-#: U+1F916 ROBOT FACE, which Claude Code's "Generated with" footer opens with.
-#: A line that starts with it is the footer, or what is left of one.
-_ROBOT_FACE = "\U0001f916"
-
-
-def _is_attribution_line(line: str) -> bool:
-    return _carries_attribution(line) or line.lstrip().startswith(_ROBOT_FACE)
-
-
-def strip_attribution(text: str) -> str:
-    """`text` without its attribution lines, or `text` itself when it has none (archived issue 735).
-
-    A line is attribution when it carries one of `gitops.ATTRIBUTION_MARKERS`
-    -- the "Generated with" footer, a `Co-Authored-By:` trailer, a link to
-    the tool -- or starts with the robot face the footer opens with. Those
-    lines are removed and nothing else is: a body with none is returned as
-    the same object, byte for byte. Where lines were removed, runs of blank
-    lines are collapsed to one and the ends trimmed, so the footer's
-    paragraph does not leave a gap.
-
-    The empty string means nothing meaningful was left -- no letter or digit
-    outside the removed lines, as when the body was only a footer, maybe
-    under a `---` rule -- and the caller falls back to the generated body.
-
-    OWNER DECISION, 2026-10-06: strip, don't drop. The worker used to refuse a
-    whole `pr-body.md` for its footer, so a body that said `Closes #N`
-    published without it (16 of 248 pull requests in 7 days).
-    """
-    lines = text.split("\n")
-    kept = [line for line in lines if not _is_attribution_line(line)]
-    if len(kept) == len(lines):
-        return text
-    collapsed: list[str] = []
-    for line in kept:
-        if line.strip() or (collapsed and collapsed[-1].strip()):
-            collapsed.append(line)
-    cleaned = "\n".join(collapsed).strip()
-    if not any(char.isalnum() for char in cleaned):
-        return ""
-    return cleaned
+# -- what guards a publish (issue 68) ----------------------------------------
+#
+# Moved, unchanged, to `publish_guard.py`: the commit replay, attribution
+# stripping, the credential scan of the agent's commits and final tree, the
+# runner input re-check and `_unavailable_cause`. Bound here only the names
+# this file, another module or a test still reads through it; the worker calls
+# each through this binding, so a `monkeypatch.setattr(lifecycle, ...)` of one
+# still takes effect. Read and patch every other name in `publish_guard`
+# itself: a binding nothing reads lets a stale patch succeed and change
+# nothing (issue 193).
+UNCOMMITTED_COMMIT_SUBJECT = publish_guard_mod.UNCOMMITTED_COMMIT_SUBJECT
+_carries_attribution = publish_guard_mod._carries_attribution
+_ROBOT_FACE = publish_guard_mod._ROBOT_FACE
+strip_attribution = publish_guard_mod.strip_attribution
+SCAN_WINDOW_CHARS = publish_guard_mod.SCAN_WINDOW_CHARS
+SCAN_OVERLAP_CHARS = publish_guard_mod.SCAN_OVERLAP_CHARS
+ScanHit = publish_guard_mod.ScanHit
+REGISTERED_SECRET_RULE = publish_guard_mod.REGISTERED_SECRET_RULE
+_DiffLeakScanner = publish_guard_mod._DiffLeakScanner
+_private_key_spans = publish_guard_mod._private_key_spans
+_scan_diff_stream = publish_guard_mod._scan_diff_stream
+is_test_path = publish_guard_mod.is_test_path
+HEADERLESS_KEY_RULE = publish_guard_mod.HEADERLESS_KEY_RULE
+GENERIC_CREDENTIAL_RULES = publish_guard_mod.GENERIC_CREDENTIAL_RULES
+CREDENTIAL_MIN_CHARS = publish_guard_mod.CREDENTIAL_MIN_CHARS
+CREDENTIAL_MIN_ENTROPY_BITS = publish_guard_mod.CREDENTIAL_MIN_ENTROPY_BITS
+_looks_like_a_credential = publish_guard_mod._looks_like_a_credential
+_first_leaking_commit = publish_guard_mod._first_leaking_commit
+_commits_leak = publish_guard_mod._commits_leak
+final_tree_leak = publish_guard_mod.final_tree_leak
+CREDENTIAL_ADVICE = publish_guard_mod.CREDENTIAL_ADVICE
+credential_reason = publish_guard_mod.credential_reason
+credential_refusal = publish_guard_mod.credential_refusal
+replay_agent_commits = publish_guard_mod.replay_agent_commits
+_recheck_runner_input = publish_guard_mod._recheck_runner_input
+_error_chain = publish_guard_mod._error_chain
+_unavailable_cause = publish_guard_mod._unavailable_cause
 
 
 #: Every `@` that could start a GitHub mention, written literally, as a
@@ -19536,7 +18928,7 @@ def _neutralise_mentions(text: str) -> str:
 #: URL is `swarm_api.codec.agent_console_url` / `workflow_console_url` (which
 #: follow apps/swarm-ui/src/paths.ts). The worker does not depend on swarm_api,
 #: so it spells them again here, and
-#: tests/unit/worker/test_pr_body_console_links.py pins the two spellings equal.
+#: a test of the pull-request body's console links pins the two spellings equal.
 _CONSOLE_AGENT_TAB = "live"
 _CONSOLE_URI_COMPONENT_SAFE = "!*'()"
 
@@ -19570,8 +18962,8 @@ def pr_body_with_console_links(
     A Markdown list, so each bare URL autolinks on its own line.
     """
     # Imported here, not at the top: docs/ cite this module's lines by number
-    # (tests/unit/scripts/test_docs_spec_amendments.py), and a line added above
-    # them moves every citation.
+    # (a docs test checks the amended documents' citations), and a line added
+    # above them moves every citation.
     from urllib.parse import quote as _url_quote
 
     base = (origin or "").strip().rstrip("/")
@@ -19585,72 +18977,6 @@ def pr_body_with_console_links(
     return body + "\n\n---\n\nConsole:\n" + "".join(lines)
 
 
-#: A trailer line as git reads one: `Token: value`, the token letters, digits
-#: and hyphens. `Co-Authored-By:`, `Signed-off-by:`, `Change-Id:`.
-_TRAILER_LINE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*[ \t]*:[ \t]")
-
-
-def clean_commit_message(message: str, *, scrub: Callable[[str], str], fallback: str) -> str:
-    """An agent's commit message as the worker pushes it (archived issue 242).
-
-    * every line carrying attribution (`gitops.ATTRIBUTION_MARKERS`) is
-      removed, wherever it is -- the "Generated with" footer is a paragraph of
-      its own, not a trailer;
-    * then the trailer block -- a closing paragraph of `Token: value` lines,
-      as git reads one -- is removed, more than once if there are several;
-      the subject is never taken for one;
-    * registered secrets are scrubbed, then the message is cut to
-      `COMMIT_MESSAGE_MAX_BYTES`;
-    * a message with nothing left is `fallback`, the worker's own.
-
-    NULs are dropped: an argv cannot carry one, and a commit message can.
-    """
-    text = message.replace("\x00", "").replace("\r\n", "\n")
-    lines = [line.rstrip() for line in text.split("\n")]
-    lines = [line for line in lines if not _carries_attribution(line)]
-    paragraphs: list[list[str]] = [[]]
-    for line in lines:
-        if line.strip():
-            paragraphs[-1].append(line)
-        elif paragraphs[-1]:
-            paragraphs.append([])
-    paragraphs = [p for p in paragraphs if p]
-    while len(paragraphs) > 1 and _is_trailer_block(paragraphs[-1]):
-        paragraphs.pop()
-    cleaned = scrub("\n\n".join("\n".join(p) for p in paragraphs)).strip()
-    if not cleaned:
-        return fallback
-    encoded = cleaned.encode("utf-8")
-    if len(encoded) > COMMIT_MESSAGE_MAX_BYTES:
-        cleaned = (
-            encoded[:COMMIT_MESSAGE_MAX_BYTES].decode("utf-8", errors="ignore").rstrip()
-            + f"\n\n[cut at {COMMIT_MESSAGE_MAX_BYTES} bytes by the worker]"
-        )
-    return cleaned
-
-
-def _is_trailer_block(paragraph: list[str]) -> bool:
-    """True when every line is a trailer, or continues the one above it."""
-    if not _TRAILER_LINE.match(paragraph[0]):
-        return False
-    return all(_TRAILER_LINE.match(line) or line[:1] in (" ", "\t") for line in paragraph)
-
-
-#: How much added text one window of the leak scan holds (`_DiffLeakScanner`).
-#: OWNER DECISION, 2026-09-29 (archived pull request 259): a diff is scanned WHOLE however big it
-#: is, in windows of this size, rather than refused or cut at a cap. Sized so
-#: a window is cheap to hold and to run every rule over, not as a limit.
-SCAN_WINDOW_CHARS = 4 * 1024 * 1024
-
-#: How much of one window is scanned again at the start of the next, so a
-#: credential straddling the cut is still seen whole in one of them. It must
-#: be at least the longest credential match and the longest registered
-#: secret; the callers add the longest registered secret to this. Every
-#: credential rule matches within one line, and a key/value assignment or a
-#: provider token is far under 64 KiB. A PEM block's marker is what its rule
-#: finds, and the marker is 40 characters.
-SCAN_OVERLAP_CHARS = 64 * 1024
-
 #: The agent's environment variable holding the base the publish diffs from
 #: (`Worker._build_child_env`), so `python -m agent_worker.publish_scan` scans
 #: the same added text the worker will. Without it the CLI guessed HEAD on a
@@ -19659,11 +18985,11 @@ SCAN_OVERLAP_CHARS = 64 * 1024
 #: never trusted for the push: the publish keeps reading `_publish_base`.
 CLONE_BASE_ENV = "SWARM_CLONE_BASE"
 #: The branch the runner rebases onto before publishing (SPEED-D1;
-#: `prepublish.PREPUBLISH_BASE_ENV`, held equal by test_prepublish_gate.py).
+#: `prepublish.PREPUBLISH_BASE_ENV`, held equal by a pre-publish gate test).
 PREPUBLISH_BASE_ENV = "SWARM_PREPUBLISH_BASE"
 #: The branch the clone left HEAD on (`_start_branch`), named to the runner
 #: so the pre-publish gate can hand a moved HEAD back to the agent
-#: (`prepublish.START_BRANCH_ENV`, held equal by test_prepublish_moved_head.py).
+#: (`prepublish.START_BRANCH_ENV`, held equal by a test of the moved HEAD).
 START_BRANCH_ENV = "SWARM_START_BRANCH"
 #: Where the worker writes the step's signed work contract's body for the
 #: runner's JC2 (`Worker._stage_work_contract`), under the attempt's work/.
@@ -19680,29 +19006,6 @@ CONTRACT_VERDICT_SUMMARY_KEY = "contract_verdict"
 CredentialHit = _credentials.CredentialHit
 
 
-class ScanHit(NamedTuple):
-    """The first leak a diff scan found: the file, the rule, and the line of
-    the new file it is on. This is what a refusal names (archived issue 373), and it holds
-    no part of the value."""
-
-    path: str
-    rule: str
-    line: int
-
-
-#: The predicate both publish scans ask about each file's added text:
-#: `(path, text) -> CredentialHit | None` (`Worker._leaks_in_added_text`).
-#: The path is the file's, so the guard can be tiered by it (archived issue 373).
-LeakPredicate = Callable[[str, str], "CredentialHit | None"]
-
-#: The rule name a refusal gives for a task's registered secret.
-REGISTERED_SECRET_RULE = "registered_secret"
-
-#: The new-file start line, and line count, of a `-U0` hunk header:
-#: `@@ -a[,b] +c[,d] @@`.
-_HUNK_NEW_START = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))?")
-
-
 def _first_difference(original: str, scrubbed: str) -> int:
     """Where `scrubbed` first differs from `original`: the start of the first
     registered value the scrub replaced, near enough to name its line."""
@@ -19711,304 +19014,6 @@ def _first_difference(original: str, scrubbed: str) -> int:
         if original[index] != scrubbed[index]:
             return index
     return limit
-
-
-class _DiffLeakScanner:
-    """Scans a `git diff` stream's ADDED text, file by file, in bounded windows.
-
-    `feed` takes the diff's bytes as they arrive (`gitops._git_stream`), in
-    chunks of any size; `close` ends the stream and returns the first hit --
-    the file, the rule `leaks` named, and the new file's line (`ScanHit`) --
-    or None. `leaks` is asked with the file's path, so the guard is tiered by
-    it (archived issue 373). Nothing is held but the
-    current window, the overlap carried from the one before, and one line's
-    first few characters -- a 40 MB single-line file costs a window, not 40 MB.
-
-    A `+++ ` line is a file's header only before its first `@@`, and every
-    `+` line after is content: an added line whose own text is `++ AKIA...`
-    prints as `+++ AKIA...`, and reading it as a header would let a
-    credential through behind two plus signs. A deleted file
-    (`+++ /dev/null`) adds nothing. Bytes are decoded incrementally as UTF-8 with
-    replacement, and no newline translation happens, so a lone `\\r` stays
-    inside its line (archived pull request 259 review, M2).
-
-    WINDOWS OVERLAP. When a file's added text passes `window` characters, it
-    is scanned and all but its last `overlap` characters are dropped; those
-    are scanned again with what follows. The carry starts at a line boundary
-    when one is within another `overlap` of the cut, so a match at the start
-    of a window reads the true character before it. On a single line longer
-    than that the carry starts mid-line, where a pattern starting the window
-    counts as starting a token: a possible false hit, which folds or refuses
-    -- the safe direction.
-
-    ONLY WHAT A SECOND DIFF ALSO ADDS (`within`, the merged-main floor). Given
-    a map of each file's added line ranges from another diff with the same
-    new side (`added` of a scan of `floor..HEAD`), an added line is scanned
-    only when its new-file line is in one of them: a line the other old side
-    already holds is never asked about. The lines kept are scanned exactly as
-    an unfiltered diff of them would be -- windows, overlap, and the line a
-    hit names -- and `added` records only them.
-    """
-
-    _HEADS = ("diff --git ", "+++ ", "@@")
-
-    def __init__(
-        self,
-        leaks: LeakPredicate,
-        *,
-        window: int,
-        overlap: int,
-        within: dict[str, list[tuple[int, int]]] | None = None,
-    ) -> None:
-        import codecs
-
-        self._leaks = leaks
-        self._window = max(window, 2 * overlap + 1)
-        self._overlap = overlap
-        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-        self.hit: ScanHit | None = None
-        self._path = ""
-        # WHERE A HIT IS, IN THE FILE'S OWN LINES (archived issue 373): the refusal names the
-        # line. `_file_lines` counts the added lines fed so far, `_window_line`
-        # is the added-line index the current window starts at, and `_hunks`
-        # maps the added-line index each `@@` hunk starts at to the new-file
-        # line it starts at. With `-U0` a hunk's added lines are consecutive.
-        self._file_lines = 0
-        self._window_line = 0
-        self._hunks: list[tuple[int, int]] = []
-        self._in_header = True
-        self._mode: str | None = None  # None (line start), "add", "header", "skip"
-        self._head = ""
-        self._header_line = ""
-        self._buf: list[str] = []
-        self._buf_len = 0
-        self._carry = ""
-        # WHERE EACH FILE GAINED LINES (archived issue 361 box 79): the new file's path
-        # (unquoted) to its added line ranges, `(first line, count)`, one per
-        # hunk. `-U0` shows no line the branch kept, so an added key body
-        # between an unchanged BEGIN/END pair carries no marker here; the
-        # caller reads the new file around these ranges
-        # (`_added_inside_a_private_key`).
-        self.added: dict[str, list[tuple[int, int]]] = {}
-        self._added_key = ""
-        # The `within` filter: how the current hunk's added lines are taken
-        # ("all", "none" or "some"), and for "some" the new-file line of the
-        # next added line, the kept spans `(first, last)` still ahead, whether
-        # a line is open and kept, and the last kept line (a gap starts a new
-        # entry in `_hunks`, so a hit still names its own line).
-        self._within = within
-        self._take = "all"
-        self._line_no = 0
-        self._spans: list[tuple[int, int]] = []
-        self._line_open = False
-        self._line_kept = False
-        self._last_kept: int | None = None
-
-    def feed(self, data: bytes) -> None:
-        if self.hit is None:
-            self._text(self._decoder.decode(data))
-
-    def close(self) -> ScanHit | None:
-        if self.hit is None:
-            self._text(self._decoder.decode(b"", final=True))
-        if self.hit is None:
-            self._end_line()
-            self._flush_file()
-        return self.hit
-
-    # -- parsing -------------------------------------------------------------
-
-    #: Runs of whole content lines, taken in one step rather than a line at a
-    #: time: a 40 MB diff is millions of lines, and a Python step per line
-    #: made the scan the slowest thing in the publish. Inside a hunk a line
-    #: starting `+` is added content, and `-`, ` ` or `\\` is not; neither
-    #: run can hold a `diff --git` or `@@` line, which start otherwise.
-    _ADDED_RUN = re.compile(r"(?:\+[^\n]*\n)+")
-    _OTHER_RUN = re.compile(r"(?:[-\\ ][^\n]*\n)+")
-
-    def _text(self, text: str) -> None:
-        i, n = 0, len(text)
-        while i < n and self.hit is None:
-            if self._mode is None and not self._head and not self._in_header:
-                run = self._ADDED_RUN.match(text, i)
-                if run is not None:
-                    # Each line's one `+` prefix goes: the first by the
-                    # slice, every other as the character after a newline.
-                    self._add(run.group()[1:].replace("\n+", "\n"))
-                    i = run.end()
-                    continue
-                run = self._OTHER_RUN.match(text, i)
-                if run is not None:
-                    i = run.end()
-                    continue
-            newline = text.find("\n", i)
-            end = n if newline < 0 else newline
-            if self._mode is None:
-                need = 11 - len(self._head)
-                take = text[i : min(end, i + need)]
-                self._head += take
-                i += len(take)
-                complete = i == end and newline >= 0
-                if not complete and len(self._head) < 11 and i >= n:
-                    if any(p.startswith(self._head) for p in self._HEADS):
-                        return  # undecided until more arrives
-                self._classify()
-                continue
-            segment = text[i:end]
-            if self._mode == "add":
-                self._add(segment)
-            elif self._mode in ("header", "hunk") and len(self._header_line) < 64 * 1024:
-                self._header_line += segment
-            i = end
-            if newline >= 0:
-                i += 1
-                self._end_line()
-
-    def _classify(self) -> None:
-        head = self._head
-        if head.startswith("diff --git "):
-            self._flush_file()
-            self._path, self._in_header, self._mode = "", True, "skip"
-        elif head.startswith("@@"):
-            self._in_header, self._mode, self._header_line = False, "hunk", head
-        elif self._in_header:
-            if head.startswith("+++ "):
-                self._mode, self._header_line = "header", head
-            else:
-                self._mode = "skip"
-        elif head.startswith("+"):
-            self._mode = "add"
-            self._add(head[1:])
-        else:
-            self._mode = "skip"
-
-    def _end_line(self) -> None:
-        if self._mode is None and self._head:
-            self._classify()
-        if self._mode == "add":
-            self._add("\n")
-        elif self._mode == "header":
-            name = self._header_line[4:].rstrip("\r")
-            quoted = len(name) > 1 and name.startswith('"') and name.endswith('"')
-            if quoted:
-                name = name[1:-1]
-            self._path = name[2:] if name.startswith("b/") else name
-            self._added_key = _c_unquote(self._path) if quoted else self._path
-        elif self._mode == "hunk":
-            start = _HUNK_NEW_START.match(self._header_line)
-            if start is not None:
-                count = 1 if start.group(2) is None else int(start.group(2))
-                if self._within is None:
-                    self._hunks.append((self._file_lines, int(start.group(1))))
-                    if count and self._added_key and self._added_key != "/dev/null":
-                        self.added.setdefault(self._added_key, []).append(
-                            (int(start.group(1)), count)
-                        )
-                else:
-                    self._begin_filtered_hunk(int(start.group(1)), count)
-        self._mode, self._head, self._header_line = None, "", ""
-
-    def _begin_filtered_hunk(self, first: int, count: int) -> None:
-        """Set how the hunk starting at new-file line `first`, adding `count`
-        lines, is taken under `within`: its lines the other diff also adds."""
-        last = first + count - 1
-        spans: list[tuple[int, int]] = []
-        if count and self._added_key and self._added_key != "/dev/null":
-            assert self._within is not None
-            for start, length in self._within.get(self._added_key, ()):
-                low, high = max(first, start), min(last, start + length - 1)
-                if low <= high:
-                    spans.append((low, high))
-        spans.sort()
-        for low, high in spans:
-            self.added.setdefault(self._added_key, []).append((low, high - low + 1))
-        if spans == [(first, last)]:
-            self._take = "all"
-            self._hunks.append((self._file_lines, first))
-        elif not spans:
-            self._take = "none"
-        else:
-            self._take = "some"
-            self._line_no, self._spans = first, spans
-            self._line_open, self._line_kept, self._last_kept = False, False, None
-
-    # -- scanning ------------------------------------------------------------
-
-    def _add(self, text: str) -> None:
-        if not text or self._take == "none":
-            return
-        if self._take == "some":
-            self._add_some(text)
-            return
-        self._add_kept(text)
-
-    def _add_some(self, text: str) -> None:
-        """`text` of a hunk only some of whose lines `within` keeps: each
-        line's pieces go to the scan when its new-file line is kept."""
-        pos, n = 0, len(text)
-        while pos < n and self.hit is None:
-            newline = text.find("\n", pos)
-            end = n if newline < 0 else newline + 1
-            if not self._line_open:
-                self._line_open = True
-                line = self._line_no
-                while self._spans and self._spans[0][1] < line:
-                    self._spans.pop(0)
-                self._line_kept = bool(self._spans) and self._spans[0][0] <= line
-                if self._line_kept:
-                    if self._last_kept != line - 1:
-                        self._hunks.append((self._file_lines, line))
-                    self._last_kept = line
-            if self._line_kept:
-                self._add_kept(text[pos:end])
-            if newline >= 0:
-                self._line_open = False
-                self._line_no += 1
-            pos = end
-
-    def _add_kept(self, text: str) -> None:
-        self._file_lines += text.count("\n")
-        self._buf.append(text)
-        self._buf_len += len(text)
-        if self._buf_len >= self._window:
-            self._scan(last=False)
-
-    def _scan(self, *, last: bool) -> None:
-        text = self._carry + "".join(self._buf)
-        self._buf, self._buf_len = [], 0
-        found = self._leaks(self._path, text) if text else None
-        if found:
-            self.hit = ScanHit(
-                self._path or "a file",
-                found.rule,
-                self._file_line(self._window_line + text.count("\n", 0, found.offset)),
-            )
-            return
-        if last:
-            self._carry = ""
-            return
-        cut = max(len(text) - self._overlap, 0)
-        line_start = text.rfind("\n", max(cut - self._overlap, 0), cut)
-        carry_from = line_start + 1 if line_start >= 0 else cut
-        self._window_line += text.count("\n", 0, carry_from)
-        self._carry = text[carry_from:]
-
-    def _file_line(self, added_index: int) -> int:
-        """The new file's 1-based line number of the added line at `added_index`."""
-        line = added_index + 1
-        for first, start in self._hunks:
-            if first > added_index:
-                break
-            line = start + (added_index - first)
-        return line
-
-    def _flush_file(self) -> None:
-        if self._buf:
-            self._scan(last=True)
-        self._carry = ""
-        self._file_lines, self._window_line, self._hunks = 0, 0, []
-        self._added_key = ""
-        self._take = "all"
 
 
 def _config_seal(repo: Path) -> str | None:
@@ -20024,210 +19029,6 @@ def _config_seal(repo: Path) -> str | None:
         return hashlib.sha256(handle.read()).hexdigest()
 
 
-def _c_unquote(body: str) -> str:
-    """A path git C-quoted in a diff header (the quotes already removed), as
-    the path itself: `\\t`, `\\"`, `\\\\` and octal byte escapes undone."""
-    simple = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92}
-    raw = body.encode("utf-8", "surrogateescape")
-    out = bytearray()
-    i = 0
-    while i < len(raw):
-        byte = raw[i]
-        if byte == 92 and i + 1 < len(raw):
-            following = chr(raw[i + 1])
-            if following in simple:
-                out.append(simple[following])
-                i += 2
-                continue
-            octal = raw[i + 1 : i + 4]
-            if len(octal) == 3 and all(48 <= b <= 55 for b in octal):
-                out.append(int(octal, 8) & 0xFF)
-                i += 4
-                continue
-        out.append(byte)
-        i += 1
-    return out.decode("utf-8", "replace")
-
-
-def _private_key_spans(text: str) -> list[tuple[int, int]]:
-    """The spans of `text` main's private-key rule masks, as `(start, end)`.
-
-    `swarm_redaction.rules.mask_private_keys` (decoded=False, not inside a
-    key), step for step and with its own helpers, so "inside a key" means
-    exactly what the private-key rule means everywhere else on the platform
-    (owner decision, 2026-10-01). A test rebuilds `mask_private_keys`'s output
-    from these spans for every shape it masks.
-    """
-    from swarm_redaction.rules import _PEM_BEGIN, _PEM_END, _PEM_HINT, _block_end, _tail_start
-
-    if _PEM_HINT not in text:
-        return []
-    ends = [(m.start(), m.end()) for m in _PEM_END.finditer(text)]
-    end_starts = [start for start, _ in ends]
-    end_ends = [end for _, end in ends]
-    spans: list[tuple[int, int]] = []
-
-    def orphans(low: int, high: int) -> None:
-        piece = text[low:high]
-        if _PEM_HINT not in piece:
-            return
-        pos = 0
-        # An orphan END is a key's tail even with nothing before it to take
-        # (`_mask_orphan_ends`, archived issue 361 box 82): its span may be empty.
-        for marker in _PEM_END.finditer(piece):
-            start = _tail_start(piece, marker.start(), pos)
-            spans.append((low + start, low + marker.start()))
-            pos = marker.start()
-
-    pos = search = 0
-    while True:
-        begin = _PEM_BEGIN.search(text, search)
-        if begin is None:
-            break
-        orphans(pos, begin.start())
-        stop = _block_end(text, begin.end(), end_starts, end_ends, to_end=False)
-        spans.append((begin.end(), stop))
-        pos = stop
-        search = max(stop, begin.end())
-    orphans(pos, len(text))
-    return spans
-
-
-#: The most of one file the private-key context check reads (archived issue 361 box 79). A
-#: bigger file holding a key marker, with lines added to it, is refused: the
-#: check cannot tell, so it fails closed.
-KEY_CONTEXT_MAX_BYTES = 32 * 1024 * 1024
-#: How many paths one `git grep` is given.
-_KEY_CONTEXT_PATHS_PER_GREP = 200
-
-
-def _added_inside_a_private_key(
-    added: dict[str, list[tuple[int, int]]],
-    *,
-    git: list[str],
-    rev: str,
-    repo: Path,
-    private_dir: Path,
-    logs_dir: Path,
-    timeout_seconds: int,
-    logger: Any,
-) -> ScanHit | None:
-    """The first added line that falls inside a private key of the NEW file
-    `rev` holds, or None (archived issue 361 box 79, security pass 2026-10-09).
-
-    The scans read a `-U0` diff, which shows no line the branch kept: a key
-    body put between an existing, unchanged BEGIN/END pair (a test stub
-    replaced by a real key) adds no marker, so the private-key rule never saw
-    one, and the key was published. This asks the whole new file instead:
-    `git grep` names the files at `rev` holding a marker; for each that gained
-    lines, the file is streamed (never stored) and main's private-key spans
-    (`_private_key_spans`) are laid over the added ranges. An added line
-    inside a span is refused as `private_key_block`, on its line.
-    """
-    if not added:
-        return None
-    from swarm_redaction.rules import _PEM_HINT
-
-    kwargs: dict[str, Any] = {
-        "repo": repo, "private_dir": private_dir, "logs_dir": logs_dir,
-        "timeout_seconds": timeout_seconds, "logger": logger,
-    }
-    paths = sorted(added)
-    marked: list[str] = []
-    for index in range(0, len(paths), _KEY_CONTEXT_PATHS_PER_GREP):
-        chunk = paths[index : index + _KEY_CONTEXT_PATHS_PER_GREP]
-        code, listing, truncated = _git_text_full(
-            [*git, "grep", "-l", "-z", "--no-color", "--no-textconv", "-F", "-e", _PEM_HINT,
-             rev, "--", *(":(literal)" + path for path in chunk)],
-            slug="publish-key-context-grep", **kwargs,
-        )
-        # `git grep` exits 1 when nothing matched.
-        if code not in (0, 1) or truncated:
-            raise GitError("could not search the branch's files for private-key markers")
-        prefix = rev + ":"
-        for entry in listing.split("\0"):
-            if entry:
-                marked.append(entry[len(prefix):] if entry.startswith(prefix) else entry)
-    for path in marked:
-        ranges = added.get(path)
-        if not ranges:
-            continue
-        chunks: list[bytes] = []
-        size = [0]
-
-        def keep(data: bytes) -> None:
-            if size[0] <= KEY_CONTEXT_MAX_BYTES:
-                chunks.append(data)
-            size[0] += len(data)
-
-        code = _git_stream(
-            [*git, "cat-file", "blob", f"{rev}:{path}"],
-            slug="publish-key-context-read", consume=keep, **kwargs,
-        )
-        if code != 0:
-            raise GitError("could not read a file the branch adds lines to")
-        if size[0] > KEY_CONTEXT_MAX_BYTES:
-            return ScanHit(path, "private_key_block", ranges[0][0])
-        text = b"".join(chunks).decode("utf-8", "replace")
-        spans = _private_key_spans(text)
-        if not spans:
-            continue
-        for start, end in spans:
-            first = text.count("\n", 0, start) + 1
-            last = first + text.count("\n", start, max(end - 1, start))
-            for line, count in ranges:
-                if line <= last and line + count - 1 >= first:
-                    return ScanHit(path, "private_key_block", max(line, first))
-    return None
-
-
-def _scan_diff_stream(
-    argv: list[str],
-    *,
-    leaks: LeakPredicate,
-    overlap: int,
-    repo: Path,
-    private_dir: Path,
-    logs_dir: Path,
-    slug: str,
-    timeout_seconds: int,
-    logger: Any,
-    new_rev: str | None = None,
-    git: list[str] | None = None,
-    within: dict[str, list[tuple[int, int]]] | None = None,
-) -> tuple[int, ScanHit | None]:
-    """Run a `git diff` and scan everything it adds; (exit code, the first hit or None).
-
-    With `new_rev` (the diff's new side) and `git` (the git argv prefix), a
-    diff that added nothing credential-shaped is also asked whether an added
-    line sits inside a private key of the new file
-    (`_added_inside_a_private_key`, archived issue 361 box 79).
-
-    With `within`, only the added lines it also names are scanned
-    (`_DiffLeakScanner`), and only they are asked the private-key question.
-    """
-    scanner = _DiffLeakScanner(
-        leaks, window=SCAN_WINDOW_CHARS, overlap=overlap, within=within
-    )
-    code = _git_stream(
-        argv,
-        repo=repo,
-        private_dir=private_dir,
-        logs_dir=logs_dir,
-        slug=slug,
-        timeout_seconds=timeout_seconds,
-        logger=logger,
-        consume=scanner.feed,
-    )
-    hit = scanner.close()
-    if code == 0 and hit is None and new_rev is not None and git is not None:
-        hit = _added_inside_a_private_key(
-            scanner.added, git=git, rev=new_rev, repo=repo, private_dir=private_dir,
-            logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
-        )
-    return code, hit
-
-
 # -- the tiered, path-aware publish guard (archived issue 373) ------------------------------
 #
 # The guard -- `_credential_in` and every helper it asks, the tiers, the
@@ -20238,11 +19039,6 @@ def _scan_diff_stream(
 # test reads is bound by assignment, so a cite of this file still resolves.
 _credential_in = _credentials.credential_in
 CREDENTIAL_RULES = _credentials.CREDENTIAL_RULES
-is_test_path = _credentials.is_test_path
-HEADERLESS_KEY_RULE = _credentials.HEADERLESS_KEY_RULE
-GENERIC_CREDENTIAL_RULES = _credentials.GENERIC_CREDENTIAL_RULES
-CREDENTIAL_MIN_CHARS = _credentials.CREDENTIAL_MIN_CHARS
-CREDENTIAL_MIN_ENTROPY_BITS = _credentials.CREDENTIAL_MIN_ENTROPY_BITS
 _IDENTIFIER_DIGITS_MAX = _credentials._IDENTIFIER_DIGITS_MAX
 _PLACEHOLDER = _credentials._PLACEHOLDER
 _REFERENCE_SHAPE = _credentials._REFERENCE_SHAPE
@@ -20251,381 +19047,10 @@ _decodes_as_a_jwt = _credentials._decodes_as_a_jwt
 _ends_the_value = _credentials._ends_the_value
 _is_a_reference = _credentials._is_a_reference
 _is_an_identifier = _credentials._is_an_identifier
-_looks_like_a_credential = _credentials._looks_like_a_credential
 _match_counts = _credentials._match_counts
 _on_a_comment_line = _credentials._on_a_comment_line
 _runtime_template = _credentials._runtime_template
 _shannon_bits = _credentials._shannon_bits
-
-
-def _first_leaking_commit(
-    *,
-    shas: list[str],
-    keep: str | None,
-    leaks: LeakPredicate,
-    git: list[str],
-    repo: Path,
-    private_dir: Path,
-    logs_dir: Path,
-    timeout_seconds: int,
-    logger: Any,
-    overlap: int = SCAN_OVERLAP_CHARS,
-    floor: str = "",
-    upstream: str = "",
-) -> int | None:
-    """The 1-based index of the first agent commit whose ADDED text `leaks`, or None.
-
-    `floor` is the clone base the first commit must sit on ("" for an empty
-    repository, whose first commit has no parent). A commit whose first
-    parent is not the entry before it in `shas` (or `floor`) is returned as
-    a hit too: the list is not the chain the replay would write.
-
-    Each commit is diffed against the tree it will sit on once replayed --
-    the entry before it, which the chain check makes its first parent (the
-    empty tree for a parentless first commit) -- with `--text` so a file git would call
-    binary is still shown byte for byte, and `--no-renames` so a moved file's
-    content is shown rather than only its new name. `leaks` is asked about
-    what each file ADDS, `+` removed: a removed line was in the parent's tree
-    already. The worker's own `keep` commit is skipped here; its tree is the
-    final tree, which `final_tree_leak` scans before any push.
-
-    `upstream` is the default-branch commit the lane merged, proven on the
-    forge (`Worker._scan_floor`, archived issue 453), or "". A merge whose second parent is
-    that commit or one of its ancestors is diffed against its second parent:
-    what it adds over a published tree, so `main`'s own lines never fold the
-    lane's history. Every other commit, a merge of anything else included,
-    is diffed against its first parent as before.
-    """
-
-    def run(argv: list[str], slug: str, cap: int = 4 * 1024 * 1024) -> tuple[int, str, bool]:
-        return _git_text_full(
-            argv,
-            repo=repo,
-            private_dir=private_dir,
-            logs_dir=logs_dir,
-            slug=slug,
-            timeout_seconds=timeout_seconds,
-            logger=logger,
-            max_bytes=cap,
-        )
-
-    empty_tree: str | None = None
-    for index, sha in enumerate(shas, 1):
-        code, raw, _ = run([*git, "cat-file", "commit", sha], "publish-scan-read")
-        if code != 0:
-            raise GitError(f"could not read commit {sha[:12]}")
-        header = raw.partition("\n\n")[0]
-        parents = [line[len("parent "):].strip() for line in header.split("\n") if line.startswith("parent ")]
-        # EACH COMMIT IS SCANNED AGAINST THE TREE IT WILL ACTUALLY SIT ON
-        # (archived pull request 259 re-review, grafts). The replay writes commit i on the
-        # rewritten commit i-1 (or the base for the first), so the diff that
-        # matters is against THAT, and it is the same as the commit's own
-        # first parent only when the list is an unbroken chain. A list that
-        # skips a commit -- `.git/info/grafts`, which `rev-list` and
-        # `merge-base` follow and `GIT_GRAFT_FILE=/dev/null` now switches off
-        # (`gitops._git_env`) -- would have scanned each commit against a
-        # parent the push never sends, and shipped a skipped commit's secret
-        # in the next kept tree. A broken chain folds: the index is returned.
-        expected = shas[index - 2] if index > 1 else (floor or None)
-        actual = parents[0] if parents else None
-        if actual != expected:
-            return index
-        if sha == keep:
-            continue
-        if expected is not None:
-            before = expected
-            if upstream and len(parents) == 2:
-                code, _, _ = run(
-                    [*git, "merge-base", "--is-ancestor", parents[1], upstream],
-                    "publish-scan-upstream",
-                )
-                if code == 0:
-                    before = parents[1]
-        else:
-            if empty_tree is None:
-                code, made, _ = run([*git, "hash-object", "-t", "tree", "/dev/null"], "publish-scan-empty")
-                empty_tree = made.strip()
-                if code != 0 or not _SHA_RE.match(empty_tree):
-                    raise GitError("could not name the empty tree")
-            before = empty_tree
-        # EVERY BYTE OF THE DIFF IS SCANNED, AND NONE IS STORED (owner
-        # decision, 2026-09-29): streamed from git through a pipe into
-        # overlapping windows (`_DiffLeakScanner`), so a big diff is neither
-        # refused for its size nor scanned only in part, and no file holds
-        # the value it was scanned for.
-        code, hit = _scan_diff_stream(
-            [
-                *git, "-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff",
-                "--no-textconv", "--text", "--no-renames", "--submodule=short", "--src-prefix=a/",
-                "--dst-prefix=b/", "-U0", before, sha, "--",
-            ],
-            leaks=leaks,
-            overlap=overlap,
-            new_rev=sha,
-            git=git,
-            repo=repo,
-            private_dir=private_dir,
-            logs_dir=logs_dir,
-            slug="publish-scan-diff",
-            timeout_seconds=timeout_seconds,
-            logger=logger,
-        )
-        if code != 0:
-            raise GitError(f"could not diff commit {sha[:12]} against its parent")
-        if hit is not None:
-            return index
-    return None
-
-
-def _commits_leak(
-    shas: list[str],
-    *,
-    leaks: LeakPredicate,
-    git: list[str],
-    repo: Path,
-    private_dir: Path,
-    logs_dir: Path,
-    timeout_seconds: int,
-    logger: Any,
-    overlap: int = SCAN_OVERLAP_CHARS,
-) -> bool:
-    """Whether any of `shas` ADDS text `leaks` finds, each diffed against its
-    own first parent (the empty tree for a root).
-
-    The scan of a branch the agent merged (`gitops.merged_head_kept`, archived issue 3359
-    review): kept as a parent, each of its commits is pushed as written, so
-    each is read, as `_first_leaking_commit` reads HEAD's own line.
-    """
-    empty_tree: str | None = None
-    for sha in shas:
-        code, listed = _git_text(
-            [*git, "rev-list", "--parents", "-n", "1", sha], repo=repo,
-            private_dir=private_dir, logs_dir=logs_dir, slug="publish-merged-scan-parents",
-            timeout_seconds=timeout_seconds, logger=logger,
-        )
-        parents = listed.split()
-        if code != 0 or not parents or parents[0] != sha:
-            raise GitError(f"could not read the parents of merged commit {sha[:12]}")
-        if len(parents) > 1:
-            before = parents[1]
-        else:
-            if empty_tree is None:
-                code, made = _git_text(
-                    [*git, "hash-object", "-t", "tree", "/dev/null"], repo=repo,
-                    private_dir=private_dir, logs_dir=logs_dir, slug="publish-merged-scan-empty",
-                    timeout_seconds=timeout_seconds, logger=logger,
-                )
-                empty_tree = made.strip()
-                if code != 0 or not _SHA_RE.match(empty_tree):
-                    raise GitError("could not name the empty tree")
-            before = empty_tree
-        code, hit = _scan_diff_stream(
-            [
-                *git, "-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff",
-                "--no-textconv", "--text", "--no-renames", "--submodule=short", "--src-prefix=a/",
-                "--dst-prefix=b/", "-U0", before, sha, "--",
-            ],
-            leaks=leaks,
-            overlap=overlap,
-            new_rev=sha,
-            git=git,
-            repo=repo,
-            private_dir=private_dir,
-            logs_dir=logs_dir,
-            slug="publish-merged-scan-diff",
-            timeout_seconds=timeout_seconds,
-            logger=logger,
-        )
-        if code != 0:
-            raise GitError(f"could not diff merged commit {sha[:12]} against its parent")
-        if hit is not None:
-            return True
-    return False
-
-
-def final_tree_leak(
-    *,
-    repo: Path,
-    base: str | None,
-    leaks: LeakPredicate,
-    private_dir: Path,
-    logs_dir: Path,
-    timeout_seconds: int,
-    logger: Any,
-    git_binary: str = "git",
-    overlap: int = SCAN_OVERLAP_CHARS,
-    floor: str | None = None,
-) -> str | None:
-    """Why the branch about to be pushed must not be, or None when it may.
-
-    OWNER DECISION, 2026-09-28 (archived pull request 259 review, M4). The per-commit scan
-    (`_first_leaking_commit`) decides only between keeping the agent's
-    commits and folding them; it skips the worker's own commit of
-    uncommitted work, and a fold pushes the final tree unscanned. So a key
-    the agent committed and never deleted -- or wrote and never committed --
-    reached the forge in the one commit the worker wrote. This reads what
-    the push would add, `base..HEAD` diffed as one span AFTER the replay or
-    the fold, so it covers every commit's tree the push carries: each kept
-    commit is scanned by the per-commit pass and the final tree here.
-
-    `leaks` is asked about the text each FILE adds, with the `+` removed, so
-    a line the branch removes -- the repository's own, already public --
-    never refuses it. The answer names the FILE and never the value: the
-    reason becomes the attempt's error, which the retry and a human both
-    read. The whole diff is scanned however big it is, streamed in
-    overlapping windows (`_DiffLeakScanner`; owner decision, 2026-09-29):
-    size alone never refuses a publish, and no file holds the diff.
-
-    `repo` is the worker's clean repository (`gitops.prepare_publish_repo`,
-    owner decision 2026-09-29): the agent's objects were fetched into it with
-    object checking, and it holds no commit-graph, grafts, shallow file,
-    replace refs or config of the agent's -- a forged commit-graph entry made
-    `git diff` in the clone compare a tree the push never sends. The
-    `GIT_NO_REPLACE_OBJECTS=1`, `GIT_GRAFT_FILE` and `core.commitGraph=false`
-    of `gitops._git_env`, and the explicit `--src-prefix`/`--dst-prefix` and
-    `core.quotePath=false`, stay as a second belt.
-
-    `floor`, when given, is a commit of the repository's default branch the
-    lane merged, proven on the forge (`Worker._scan_floor`, archived issue 453). Every line
-    its tree holds is published already. So is every line of the clone base's
-    tree: `base` is the commit the worker recorded when it cloned from the
-    forge (`Worker._publish_base`), never a value the agent names. So only a
-    line the branch adds over BOTH is asked about (publish scan, merged-main
-    floor, 2026-11-10): `floor..HEAD` is read first for the line ranges it
-    adds, and `base..HEAD` is then scanned on those lines alone
-    (`_DiffLeakScanner`'s `within`). The floor used to REPLACE the base, so on
-    a stacked branch -- whose base is a parent branch already on the forge,
-    holding lines the default branch does not -- every such line was scanned
-    again as if the lane had added it, and the lane was refused for a
-    parent's line it never wrote. What is asked is never more than either
-    diff alone would ask.
-    """
-    g = [git_binary, *_NO_HOOKS, "-c", "core.quotePath=false"]
-    run_kwargs: dict[str, Any] = {
-        "repo": Path(repo),
-        "private_dir": private_dir,
-        "logs_dir": logs_dir,
-        "timeout_seconds": timeout_seconds,
-        "logger": logger,
-    }
-    code, _head, _ = _git_text_full(
-        [*g, "rev-parse", "--verify", "--quiet", "HEAD"], slug="publish-final-head", **run_kwargs
-    )
-    if code != 0:
-        # Nothing is committed, so the push has nothing to send.
-        return None
-    if base == EMPTY_CLONE_BASE:
-        code, made, _ = _git_text_full(
-            [*g, "hash-object", "-t", "tree", "/dev/null"], slug="publish-final-empty", **run_kwargs
-        )
-        before = made.strip()
-        if code != 0 or not _SHA_RE.match(before):
-            raise GitError("could not name the empty tree")
-    elif base and _SHA_RE.match(base.strip()):
-        before = base.strip()
-    else:
-        raise GitError(
-            "the clone base is unknown, so the worker cannot read what the push "
-            "would add; nothing was pushed"
-        )
-
-    def diff(old: str) -> list[str]:
-        return [
-            *g, "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--text",
-            "--no-renames", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", "-U0",
-            old, "HEAD", "--",
-        ]
-
-    within: dict[str, list[tuple[int, int]]] | None = None
-    if floor and _SHA_RE.match(floor.strip()) and floor.strip() != before:
-        # What the branch adds over the floor, as line ranges only: the
-        # predicate asks nothing, and no added text is kept.
-        ranges = _DiffLeakScanner(
-            lambda _path, _text: None, window=SCAN_WINDOW_CHARS, overlap=overlap
-        )
-        code = _git_stream(
-            diff(floor.strip()), slug="publish-final-floor-diff", consume=ranges.feed,
-            **run_kwargs,
-        )
-        ranges.close()
-        if code != 0:
-            raise GitError("could not diff the branch against the merged default branch")
-        within = ranges.added
-    code, hit = _scan_diff_stream(
-        diff(before),
-        leaks=leaks,
-        overlap=overlap,
-        new_rev="HEAD",
-        git=g,
-        slug="publish-final-diff",
-        within=within,
-        **run_kwargs,
-    )
-    if code != 0:
-        raise GitError("could not diff the branch against the clone base")
-    if hit is not None:
-        # What the refusal says, and why: `credential_refusal`.
-        return credential_refusal(hit)
-    return None
-
-
-#: What a refusal and the repair turn tell the agent to do (SCAN-FP, archived issue 2030;
-#: the owner's decision, 2026-10-23). NEVER to split, join or encode the literal:
-#: that defeats the scan rather than removing the value, and some
-#: repositories forbid it, which left a peer application's agent no way through.
-CREDENTIAL_ADVICE = "remove the value, or read it at runtime from configuration"
-
-
-def credential_reason(rule: str, path: str) -> str:
-    """Why a line `rule` matched in the file at `path` looked like a
-    credential, as the refusal and the repair turn say it (archived issue 2030). Fixed text
-    by the rule and the path's tier: never any part of the value."""
-    in_tests = is_test_path(path)
-    if rule == REGISTERED_SECRET_RULE:
-        return "it is the value of a secret registered for this task"
-    if rule == "private_key_block":
-        return "it is a private key block"
-    if rule == HEADERLESS_KEY_RULE:
-        return "it is private key material with no BEGIN or END marker"
-    if rule == "jwt":
-        return "it is a JSON Web Token: its header decodes and names an algorithm"
-    if rule in GENERIC_CREDENTIAL_RULES:
-        if in_tests:
-            return (
-                "it is a literal given to a credential's name, at least "
-                f"{CREDENTIAL_MIN_CHARS} characters of letters and digits with at least "
-                f"{CREDENTIAL_MIN_ENTROPY_BITS} bits of entropy per character"
-            )
-        return (
-            "it is a literal given to a credential's name, and not a reference: not a "
-            "${name} slot, one lowercase word, or a lowercase hyphen-joined name ending "
-            "-token, -api-key, -secret or -git"
-        )
-    if in_tests:
-        return (
-            f"it matches the {rule} vendor format, with no placeholder word "
-            "(example, test, fake, dummy) or run of x in it"
-        )
-    return f"it matches the {rule} vendor format"
-
-
-def credential_refusal(hit: ScanHit) -> str:
-    """The final-tree scan's refusal for `hit`: the file, the rule, the line,
-    why it looked like a credential, and `CREDENTIAL_ADVICE`.
-
-    The rule and the line tell the retry what to remove (archived issue 373); the value is
-    never in it, and the caller scrubs the reason anyway. The PATH is the
-    agent's choice, so it is shown masked and cut (`_reason_path`, archived issue 361 box
-    71); the reason is judged on the real path. The opening words stay whole:
-    swarm-api's outcome classifier (`outcomes._PUBLISH_REFUSED_RE`) reads them.
-    """
-    reason = credential_reason(hit.rule, hit.path)
-    hit = hit._replace(path=_reason_path(hit.path))
-    # One literal, whole: test_outcomes_refusal_and_intended_class.py pins it.
-    return (
-        f"the final tree adds a credential in {hit.path} (rule "
-        f"{hit.rule}, line {hit.line}): {reason}; {CREDENTIAL_ADVICE}"
-    )
 
 
 #: `credential_refusal`'s file, rule and line, read back out of a reason that
@@ -20652,34 +19077,6 @@ def credential_locator(reason: str) -> str | None:
     return f"rule {found['rule']} at {found['path']}:{found['line']}"
 
 
-#: The longest a refusal shows a file's path, in characters (archived issue 361 box 71).
-REASON_PATH_MAX_CHARS = 160
-#: A run of token characters in a path, judged as a possible credential.
-_PATH_TOKEN = re.compile(r"[A-Za-z0-9+=_\-]{16,}")
-
-
-def _reason_path(path: str) -> str:
-    """`path` as a refusal may show it (archived issue 361 box 71, security pass 2026-10-09).
-
-    The path is the AGENT's choice, and the reason reaches the task's error,
-    its result summary and the log, where the caller's scrub replaces only
-    REGISTERED secrets: a file named after a token it minted was echoed
-    whole. So the shown path has every non-printable character replaced, every
-    credential-shaped run masked -- `swarm_redaction.redact`'s rules (a
-    `ghp_` name) and any run `_looks_like_a_credential` accepts (a random
-    directory name) -- and is cut to `REASON_PATH_MAX_CHARS`, keeping the
-    end, where the file's own name is.
-    """
-    shown = "".join(c if c.isprintable() else "?" for c in path) or "a file"
-    shown = redact_text(shown).text
-    shown = _PATH_TOKEN.sub(
-        lambda m: CREDENTIAL_MASK if _looks_like_a_credential(m.group()) else m.group(), shown
-    )
-    if len(shown) > REASON_PATH_MAX_CHARS:
-        shown = "..." + shown[-(REASON_PATH_MAX_CHARS - 3) :]
-    return shown
-
-
 def _recorded_start_branch(value: Any) -> str | None:
     """A checkpoint manifest's `start_branch` when it is one the worker could
     have written there -- `DETACHED_HEAD` or a `refs/heads/` name -- else None,
@@ -20687,261 +19084,6 @@ def _recorded_start_branch(value: Any) -> str | None:
     if value == DETACHED_HEAD or is_branch_ref_name(value):
         return str(value)
     return None
-
-
-def replay_agent_commits(
-    *,
-    repo: Path,
-    base: str | None,
-    keep: str | None,
-    task_id: str,
-    scrub: Callable[[str], str],
-    author_name: str,
-    author_email: str,
-    private_dir: Path,
-    logs_dir: Path,
-    timeout_seconds: int,
-    logger: Any,
-    git_binary: str = "git",
-    leaks: LeakPredicate | None = None,
-    overlap: int = SCAN_OVERLAP_CHARS,
-    upstream: str = "",
-    on_forge: Callable[[str], bool] | None = None,
-) -> int | None:
-    """Rewrite each commit on HEAD's first-parent line since `base` as the worker's (archived issue 242).
-
-    Returns how many of the AGENT's commits were kept -- `keep`, the worker's
-    own commit from `commit_dirty`, is rewritten too and not counted -- or
-    None when this history cannot be kept commit by commit, and the caller
-    folds it as before (`gitops.fold_agent_commits`):
-
-    * HEAD does not descend from `base` (the agent reset or checked out
-      another line): nothing tells its commits from the repository's. Since
-      archived issue 2094 the harvest publishes nothing for such a HEAD before this runs
-      (`Worker._head_moved`), so this is the fold's last line of defence;
-    * more than `MAX_KEPT_COMMITS` of them;
-    * `leaks` finds a credential in the text any agent commit ADDS to a file
-      (archived pull request 259 review), read whole in windows overlapping by `overlap`. A kept commit keeps its TREE, so a key the agent added
-      in one commit and deleted in the next would be pushed in the first
-      one's tree even though the final tree is clean -- and a pushed object
-      on a public forge is published for good. The fold pushes only the
-      final tree. Only the offending commit's index is logged, never any of
-      its content. A diff of any size is scanned whole (owner decision,
-      2026-09-29), so size alone never folds a history.
-
-    WHAT IS KEPT, AND WHAT IS NOT. Each commit keeps its TREE, exactly -- so
-    the tests-only commit of a red-first change is still tests only, and CI
-    can run it -- and its message, cleaned (`clean_commit_message`) and
-    ended with the worker's line, "Made by the worker for task <id>." (archived issue 2505
-    review: the merge step reads that line to tell a platform head from a
-    person's push). Its
-    author, committer, dates and signature are the worker's: the commit is
-    made with `git commit-tree` under `_worker_identity`, and archived pull request 219's rule that
-    the worker writes every commit it pushes holds, checked again at the push
-    by `verify_worker_authorship`. A merge the agent made keeps its merged
-    tree, and keeps each parent after the first that
-    `_published_merge_parents` keeps: `upstream` or one of its ancestors --
-    a commit of the default branch proven on the forge
-    (`Worker._scan_floor`), already published (archived issue 1321) -- or any other branch
-    the base does not contain whose own commits carry no Claude attribution,
-    such as a merge train's branch (archived issue 3359). A side branch the agent committed
-    on as Claude is dropped: every commit on that side would otherwise be
-    pushed as it was written. Dropping main's parent was archived issue 1321: a conflict
-    fix round's `git merge origin/main` reached the forge with one parent,
-    GitHub kept the old merge base and the pull request still conflicted;
-    dropping train/an's was archived issue 3359, every conflict the lane resolved raised
-    again when its pull request merged back. A parent `on_forge` says the
-    forge holds is kept whatever its commits say: it is published already
-    (archived issue 3359 again, 6 November 2026, a train branch with one attributed
-    commit made outside the platform).
-
-    The index and working tree are not touched; `reset --soft` moves the
-    branch onto the rewritten line, which ends in the same tree HEAD had.
-    An unknown `base` refuses, exactly as the fold does.
-
-    `repo` is the worker's clean repository, never the agent's clone
-    (`gitops.prepare_publish_repo`, owner decision 2026-09-29): the list, the
-    scan and the rewrite read only objects fetched with object checking, and
-    none of the agent's grafts, shallow file, replace refs, commit-graph or
-    config.
-    """
-    empty = base == EMPTY_CLONE_BASE
-    if not empty and (not base or not _SHA_RE.match(base.strip())):
-        raise GitError(
-            "the clone base is unknown, so the worker cannot tell the agent's "
-            "commits from the repository's; nothing was pushed rather than "
-            "commits whose author and message the worker did not write"
-        )
-    floor = "" if empty else (base or "").strip()
-    g = [git_binary, *_NO_HOOKS, *_worker_identity(author_name, author_email)]
-
-    def run(argv: list[str], slug: str) -> tuple[int, str]:
-        return _git_text(
-            argv,
-            repo=Path(repo),
-            private_dir=private_dir,
-            logs_dir=logs_dir,
-            slug=slug,
-            timeout_seconds=timeout_seconds,
-            logger=logger,
-        )
-
-    if empty:
-        code, _ = run([*g, "rev-parse", "--verify", "--quiet", "HEAD"], "publish-keep-born")
-        if code != 0:
-            return 0
-        span = "HEAD"
-    else:
-        code, _ = run([*g, "merge-base", "--is-ancestor", floor, "HEAD"], "publish-keep-descends")
-        if code == 1:
-            logger.warning(
-                "the agent's branch does not descend from the clone base; its "
-                "commits are folded into one worker commit"
-            )
-            return None
-        if code != 0:
-            raise GitError("could not tell whether the agent's work descends from the clone base")
-        span = f"{floor}..HEAD"
-
-    code, text = run([*g, "rev-list", "--first-parent", "--reverse", span], "publish-keep-list")
-    if code != 0:
-        raise GitError("could not list the commits made since the clone base")
-    shas = text.split()
-    if not shas:
-        return 0
-    if len(shas) > MAX_KEPT_COMMITS:
-        logger.warning(
-            "the agent made more commits than are kept one by one; they are "
-            "folded into one worker commit",
-            commits=len(shas),
-            cap=MAX_KEPT_COMMITS,
-        )
-        return None
-
-    if leaks is not None:
-        index = _first_leaking_commit(
-            shas=shas,
-            keep=keep,
-            leaks=leaks,
-            overlap=overlap,
-            floor=floor,
-            git=g,
-            repo=Path(repo),
-            private_dir=private_dir,
-            logs_dir=logs_dir,
-            timeout_seconds=timeout_seconds,
-            logger=logger,
-            upstream=upstream,
-        )
-        if index is not None:
-            logger.warning(
-                "an agent commit's diff carries a registered secret; the agent's "
-                "commits are folded into one worker commit of the final tree",
-                commit_index=index,
-                commits=len(shas),
-            )
-            return None
-
-    # A merged branch kept as a parent is pushed commit by commit, and the
-    # scan above reads only HEAD's first-parent line: its commits are scanned
-    # too, and a branch one of them leaks from is not kept (archived issue 3359 review).
-    history_leaks: Callable[[list[str]], bool] | None = None
-    if leaks is not None:
-        scan_leaks = leaks
-        history_leaks = lambda commits: _commits_leak(  # noqa: E731
-            commits, leaks=scan_leaks, overlap=overlap, git=g, repo=Path(repo),
-            private_dir=private_dir, logs_dir=logs_dir,
-            timeout_seconds=timeout_seconds, logger=logger,
-        )
-
-    parent = floor or None
-    kept = 0
-    for index, sha in enumerate(shas, 1):
-        code, raw = run([*g, "cat-file", "commit", sha], "publish-keep-read")
-        if code != 0:
-            raise GitError(f"could not read commit {sha[:12]}")
-        header, _, message = raw.partition("\n\n")
-        trees = [line[len("tree "):] for line in header.split("\n") if line.startswith("tree ")]
-        tree = trees[0].strip() if trees else ""
-        if not _SHA_RE.match(tree):
-            raise GitError(f"could not read the tree of commit {sha[:12]}")
-        merged = _published_merge_parents(
-            run, g, header, upstream=upstream, base=floor, logger=logger,
-            history_leaks=history_leaks, on_forge=on_forge,
-        )
-        if sha == keep:
-            # The worker's own message, from `commit_dirty`.
-            text = message.replace("\x00", "").strip()
-            text = text or UNCOMMITTED_COMMIT_SUBJECT
-        else:
-            kept += 1
-            text = clean_commit_message(
-                message,
-                scrub=scrub,
-                fallback=f"swarm: commit {index} of {len(shas)} from {task_id}",
-            )
-            # Every commit the worker pushes ends with its line (archived issue 2505
-            # review): the committer is the dispatcher since archived issue 765, so this
-            # line is all that tells the merge step a kept agent commit is
-            # the platform's (`merge.WORKER_COMMIT_LINE`), not a person's push.
-            text = f"{text}\n\nMade by the worker for task {task_id}."
-        argv = [*g, "commit-tree", tree]
-        if parent:
-            argv += ["-p", parent]
-        for other in merged:
-            argv += ["-p", other]
-        argv += ["-m", text]
-        code, made = run(argv, "publish-keep-write")
-        made = made.strip()
-        if code != 0 or not _SHA_RE.match(made):
-            raise GitError(f"could not rewrite commit {sha[:12]} as the worker's")
-        parent = made
-    code, _ = run([*g, "reset", "--soft", parent or ""], "publish-keep-reset")
-    if code != 0:
-        raise GitError("could not move the branch onto the worker's rewritten commits")
-    logger.info(
-        "kept the agent's commits, each rewritten as the worker's",
-        kept=kept,
-        rewritten=len(shas),
-    )
-    return kept
-
-
-def _published_merge_parents(
-    run: Callable[[list[str], str], tuple[int, str]],
-    g: list[str],
-    header: str,
-    *,
-    upstream: str,
-    base: str,
-    logger: Any,
-    history_leaks: Callable[[list[str]], bool] | None = None,
-    on_forge: Callable[[str], bool] | None = None,
-) -> list[str]:
-    """The merge parents of a commit (its `header`) the replay keeps (archived issue 1321, archived issue 3359).
-
-    Every parent after the first that `gitops.merged_head_kept` keeps, the
-    fold's rule too: one `base` does not already contain, and either `upstream`
-    or one of its ancestors -- the default branch's commit the lane merged,
-    proven on the forge (`Worker._scan_floor`) -- or a branch whose own
-    commits carry no Claude attribution, such as the `origin/train/an` a lane
-    merged into its pull request. Dropping that parent pushed train/an's tree
-    without its history, and merging the pull request back raised every
-    conflict the lane had resolved again (archived issue 3359). A side branch the agent
-    committed on as Claude is still dropped: its commits would be pushed as
-    they were written. So is one `history_leaks` finds a credential in --
-    unless `on_forge` says the forge holds it already.
-    """
-    parents = [line[len("parent "):].strip() for line in header.split("\n")
-               if line.startswith("parent ")]
-    kept: list[str] = []
-    for other in parents[1:]:
-        if not _SHA_RE.match(other):
-            continue
-        if merged_head_kept(run, g, other, base=base, upstream=upstream, logger=logger,
-                            history_leaks=history_leaks, on_forge=on_forge):
-            kept.append(other)
-    return kept
 
 
 def _read_input_as_checked(task: dict[str, Any], runner_profile: str) -> None:
@@ -20956,78 +19098,6 @@ def _read_input_as_checked(task: dict[str, Any], runner_profile: str) -> None:
     checked = _recheck_runner_input(runner_profile, task.get("input"))
     if checked is not None:
         task["input"] = checked
-
-
-def _recheck_runner_input(runner_profile: str, stored: Any) -> dict[str, Any] | None:
-    """Refuse a stored `input` its profile's declaration refuses. Every profile.
-
-    The same rule swarm-api and the plugin's bridge apply at submission,
-    `swarm_common.profiles.check_inputs`, asked of the input as stored, without
-    its `prompt` (which every profile takes and no declaration names). A
-    refusal is `ConfigError`, which exits 78, "cannot start": the task fails
-    with `EndCause.CANNOT_START`, and the reconciler does not retry it, because
-    every retry would read the same document and be refused the same way.
-
-    NO PROFILE IS EXEMPT (the owner, on archived pull request 345, 2026-09-29). The mock reads keys
-    no caller may send -- `spend`, `provider`, `credential_revoked_times` and
-    the others with which it acts out a provider -- and the worker's unit suite
-    used to write them into the stored input. It hands them to the runner
-    through a test-only seam now (tests/unit/worker/conftest.py, `simulated`),
-    so a mock task is held to its declaration like any other.
-
-    The message names the key and the bound, never the value: a refused URL
-    may carry `user:password@`, and this text is stored as the task's error.
-
-    Returns the input AS CHECKED -- the stored map with every declared key
-    replaced by `check_inputs`' normalised value, the prompt kept -- or None
-    when nothing is stored (contract request 58).
-    """
-    profile = RUNNER_PROFILES[runner_profile]
-    raw = stored if stored is not None else {}
-    if not isinstance(raw, dict):
-        raise ConfigError(
-            f"the task's input is a {type(raw).__name__}, not an object; runner profile "
-            f"{runner_profile!r} cannot read it (checked again by the worker, contract "
-            "request 32)"
-        )
-    try:
-        # `prompt` and `territory` are the platform's, taken by every profile
-        # and named by no declaration (`territory_mod`, TERRITORY-WARN).
-        checked = check_inputs(
-            profile,
-            {
-                key: value for key, value in raw.items()
-                if key not in ("prompt", territory_mod.TERRITORY_INPUT_KEY)
-            },
-        )
-    except InputRefused as refused:
-        bound = f"; expected {refused.expected}" if refused.expected else ""
-        raise ConfigError(
-            f"the task's input is refused by runner profile {runner_profile!r}: "
-            f"{_refused_key_names(refused.keys)}{bound} (checked again by the worker, "
-            "contract request 32)"
-        ) from None
-    if stored is None:
-        return None
-    return {**raw, **checked}
-
-
-#: The most refused key names `_recheck_runner_input`'s message lists, and the
-#: most characters of each (archived issue 346). The names are the CALLER'S: a stored input
-#: of 10,000 keys of 10,000 characters each made a 100 MB task error.
-_REFUSED_NAMES_SHOWN = 10
-_REFUSED_NAME_CHARS = 64
-
-
-def _refused_key_names(keys: Sequence[str]) -> str:
-    """`keys` for an error message: the first `_REFUSED_NAMES_SHOWN`, each cut
-    to `_REFUSED_NAME_CHARS` characters, then "and N more" for the rest."""
-    shown = [
-        key if len(key) <= _REFUSED_NAME_CHARS else key[:_REFUSED_NAME_CHARS] + "..."
-        for key in (str(key) for key in keys[:_REFUSED_NAMES_SHOWN])
-    ]
-    rest = len(keys) - len(shown)
-    return ", ".join(shown) + (f" and {rest} more" if rest > 0 else "")
 
 
 #: Rounds of one terminal write when Firestore aborts it on contention, each
@@ -21311,96 +19381,6 @@ def _action_frames(exc: BaseException, limit: int = 6) -> str:
     return " > ".join(frames[-limit:])
 
 
-def _error_chain(exc: BaseException) -> list[BaseException]:
-    """`exc`, then what it was raised from or during (`__cause__`, `__context__`).
-
-    Breadth first, bounded at 16, and cycle-safe. A library can raise
-    something else on the way up: Firestore's rollback of a transaction whose
-    begin failed raises a ValueError whose `__context__` is the RetryError,
-    and google-auth raises RefreshError FROM the TransportError.
-    """
-    seen: set[int] = set()
-    chain: list[BaseException] = []
-    pending: list[BaseException] = [exc]
-    while pending and len(seen) < 16:
-        current = pending.pop(0)
-        if id(current) in seen:
-            continue
-        seen.add(id(current))
-        chain.append(current)
-        for linked in (current.__cause__, current.__context__):
-            if linked is not None:
-                pending.append(linked)
-    return chain
-
-
-def _unavailable_cause(exc: BaseException) -> BaseException | None:
-    """The error in `exc`'s chain that says a dependency could not be reached, or None.
-
-    UNAVAILABLE ONLY, not every Google API error. Counted: RetryError (a
-    budget ran out), EVERY ServerError, RESOURCE_EXHAUSTED and 429, ABORTED
-    (contention that outlasted the transaction's own retries), CANCELLED, and
-    google-auth's transport and timeout errors or any it marks retryable.
-    These say the call did not complete, and the next attempt may find the
-    service back.
-
-    EVERY ServerError, not a list of them: UNAVAILABLE, DEADLINE_EXCEEDED,
-    INTERNAL, 502 and 504, and also gRPC UNKNOWN, DATA_LOSS and UNIMPLEMENTED.
-    The first version named five and left those three out. UNKNOWN is what
-    Firestore's client raises when a stream is reset under it ("Stream
-    removed"), and the startup Retry does not retry it. So a stream reset
-    FAILED the task for good after the generation check, and ended it through
-    a 78 at the check (review of archived pull request 59). Each of the three could be permanent,
-    UNIMPLEMENTED above all. But a wrong guess here costs one bounded retry,
-    and the other wrong guess ends the task. CANCELLED is the RPC being
-    dropped, not an answer.
-
-    Not counted: PERMISSION_DENIED, NOT_FOUND, INVALID_ARGUMENT,
-    FAILED_PRECONDITION, UNAUTHENTICATED and a non-retryable RefreshError.
-    Those are answers: the service was reached and said no, and it will say no
-    to the next attempt too. The attempt owns its task at this point (step 1
-    passed), so it fails it with the reason, as it did before the startup
-    budget. Step 1 is different, and `_exit_control_plane_unreachable` turns
-    anything that is not a named refusal (`_refusal_cause`) into a retry:
-    without the generation check, the attempt does not know that the task is
-    its to fail.
-
-    The whole chain is searched (`_error_chain`).
-    """
-    try:
-        from google.api_core import exceptions as core
-    except ImportError:
-        return None
-    transient: tuple[type[BaseException], ...] = (
-        core.RetryError,
-        # UNAVAILABLE, DEADLINE_EXCEEDED, INTERNAL, UNKNOWN, DATA_LOSS,
-        # UNIMPLEMENTED, 502, 504: every 5xx and every server-side gRPC code.
-        core.ServerError,
-        core.TooManyRequests,  # ResourceExhausted is a subclass
-        core.Aborted,
-        core.Cancelled,
-    )
-    try:
-        from google.auth import exceptions as auth
-    except ImportError:
-        auth = None  # type: ignore[assignment]
-    auth_transient: tuple[type[BaseException], ...] = ()
-    if auth is not None:
-        auth_transient = tuple(
-            kind
-            for kind in (getattr(auth, "TransportError", None), getattr(auth, "TimeoutError", None))
-            if isinstance(kind, type)
-        )
-
-    for current in _error_chain(exc):
-        if isinstance(current, transient):
-            return current
-        if auth is not None and isinstance(current, auth.GoogleAuthError):
-            if isinstance(current, auth_transient) or getattr(current, "retryable", False):
-                return current
-    return None
-
-
 def _refusal_cause(exc: BaseException) -> BaseException | None:
     """The error in `exc`'s chain that says the service was reached and REFUSED, or None.
 
@@ -21466,7 +19446,7 @@ def _config_backend(config: Any) -> str | None:
 
 #: The GKE attempt's `<namespace>/<job>`, rendered into the Job by
 #: `scheduler.dispatch.GkeJobDispatcher._manifest` (GKE_EXECUTION_NAME_ENV
-#: there; tests/unit/worker/test_gke_execution_name_recorded.py holds the two
+#: there; a test that records the GKE execution name holds the two
 #: spellings together, as this image cannot import the scheduler).
 EXECUTION_NAME_ENV = "SWARM_EXECUTION_NAME"
 
@@ -21518,31 +19498,14 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 
 # -- what an attempt used: token counts and cost (issue 68) ---------------------------
 #
-# Moved, unchanged, to `usage.py`. Each name a caller or a test reads is bound
-# by assignment, so a cite of this file still resolves.
-_USAGE_KEYS = usage_mod._USAGE_KEYS
-_SUMMED_SPEND = usage_mod._SUMMED_SPEND
-_SESSION_SPEND = usage_mod._SESSION_SPEND
+# Moved, unchanged, to `usage.py`. Bound here only the names a test still
+# reads through it: `_add_spend`, `_stream_usage` and `_usage_summary`. The
+# worker's spend methods (`spend.py`) import theirs from `usage`; read every
+# other name in `usage` itself; a binding nothing reads let a stale
+# `monkeypatch.setattr(lifecycle, ...)` succeed and change nothing (issue 193).
 _add_spend = usage_mod._add_spend
-_UNNAMED_MODEL = usage_mod._UNNAMED_MODEL
-_PROMPT_BUCKET_TOKENS = usage_mod._PROMPT_BUCKET_TOKENS
-_MAX_PROMPT_BUCKETS = usage_mod._MAX_PROMPT_BUCKETS
-_ESTIMATE_READ_LIMIT = usage_mod._ESTIMATE_READ_LIMIT
 _stream_usage = usage_mod._stream_usage
-_BUCKET_FIELDS = usage_mod._BUCKET_FIELDS
-_has_usage_keys = usage_mod._has_usage_keys
-_unpriced_sessions = usage_mod._unpriced_sessions
-_cost_incomplete = usage_mod._cost_incomplete
 _usage_summary = usage_mod._usage_summary
-MODEL_USAGE_KEY = usage_mod.MODEL_USAGE_KEY
-SUBAGENT_COST_KEY = usage_mod.SUBAGENT_COST_KEY
-_MODEL_USAGE_FIELDS = usage_mod._MODEL_USAGE_FIELDS
-_TOKEN_WEIGHTS = usage_mod._TOKEN_WEIGHTS
-_is_number = usage_mod._is_number
-_model_usage_rows = usage_mod._model_usage_rows
-_weighted_tokens = usage_mod._weighted_tokens
-_subagent_cost_usd = usage_mod._subagent_cost_usd
-_add_model_usage = usage_mod._add_model_usage
 
 
 def _workspace_label(ws: workspace_mod.Workspace, path: Path) -> str:
@@ -21555,8 +19518,6 @@ def _workspace_label(ws: workspace_mod.Workspace, path: Path) -> str:
         return path.relative_to(ws.root).as_posix()
     except ValueError:
         return path.name
-
-
 
 
 #: BROWSER-USE-FLAG (part of archived issue 2322): the `result_summary` keys the worker
@@ -21636,15 +19597,6 @@ def _tail_text(path: Path, limit: int = 2000) -> str:
     return path.read_text(errors="replace")[-limit:]
 
 
-#: The token counts a run's entry in `_runs` carries, each its own share.
-_RUN_TOKEN_KEYS = (
-    "input_tokens",
-    "output_tokens",
-    "cache_creation_input_tokens",
-    "cache_read_input_tokens",
-)
-
-
 def _runs_summary(runs: list[dict[str, Any]], swaps: list[dict[str, Any]]) -> dict[str, Any]:
     """`runs`, `swaps` and `swap_cost` for a summary, or {} (SWAP-RUNS, archived issue 2457).
 
@@ -21702,42 +19654,6 @@ def _runs_duration(runs: list[dict[str, Any]]) -> dict[str, Any]:
     if len(known) < len(runs):
         out["duration_partial"] = True
     return out
-
-
-def _reread_of(channel: dict[str, Any]) -> dict[str, Any]:
-    """A run's re-read cost from its account channel (`cliagent.AccountStreamWatcher`).
-
-    `reached: true` with the seconds and tokens spent before the run's first
-    action and the tool it was; `reached: false` with everything the run
-    spent when it never acted; `measured: false` when the channel said
-    nothing (a runner that wrote none). Numbers only, never stream text.
-    """
-    def figures(block: Any) -> dict[str, Any] | None:
-        if not isinstance(block, dict):
-            return None
-        seconds = block.get("seconds")
-        tokens = block.get("tokens")
-        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
-            return None
-        counts = {
-            key: int(tokens[key])
-            for key in _RUN_TOKEN_KEYS
-            if isinstance(tokens, dict) and isinstance(tokens.get(key), int)
-            and not isinstance(tokens.get(key), bool)
-        }
-        return {"seconds": round(float(seconds), 3), "tokens": counts}
-
-    first = channel.get("first_action")
-    reached = figures(first)
-    if reached is not None:
-        tool = first.get("tool") if isinstance(first, dict) else None
-        if isinstance(tool, str) and tool:
-            reached["tool"] = tool[:80]
-        return {"reached": True, **reached}
-    spent = figures(channel.get("spent"))
-    if spent is not None:
-        return {"reached": False, **spent}
-    return {"measured": False}
 
 
 def _rfc3339_now() -> str:

@@ -48,7 +48,7 @@ PERSON = "person@example.com"
 BROKER = "http://broker.test"
 OPENAI_HOSTS = {"chatgpt.com", "api.openai.com"}
 FRONT_PIN = "claude-haiku-5-5"
-PLANNER_PIN = "claude-fable-5-1"
+PLANNER_PIN = "claude-fable-5-2"
 
 
 class Sleeper:
@@ -190,6 +190,8 @@ class FakePlanner:
         self.calls: list[dict] = []
         self.gate = asyncio.Event()
         self.forgotten: list[str] = []
+        #: The sessions the planner was told to let its account and child go for.
+        self.cooled: list[tuple[str, str]] = []
         self.running = 0
         self.most = 0
         #: The planner model each delegation was asked for (None: the pin).
@@ -197,7 +199,7 @@ class FakePlanner:
         #: Every read the front ran (`Planner.read`).
         self.reads: list[dict] = []
 
-    async def delegate(self, *, person, grant, transcript, delegation_id=None, model=None):  # noqa: ANN001
+    async def delegate(self, *, person, grant, transcript, delegation_id=None, model=None, admitted=False):  # noqa: ANN001
         self.calls.append({"person": person, "grant": grant, "transcript": list(transcript),
                            "delegation_id": delegation_id})
         self.models.append(model)
@@ -217,6 +219,9 @@ class FakePlanner:
 
     def forget(self, session_id: str) -> None:
         self.forgotten.append(session_id)
+
+    def cool(self, session_id: str, why: str) -> None:
+        self.cooled.append((session_id, why))
 
 
 def _grant() -> SessionGrant:

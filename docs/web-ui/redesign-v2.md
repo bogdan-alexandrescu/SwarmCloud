@@ -133,7 +133,7 @@ its order.
   (`apps/swarm-ui/src/styles.css` (`IS GONE FROM HERE AND FROM THE NAV BLOCK`) says why).
 
 The "Fencing fields" row's last sentence still holds: no screen reads
-`current_generation` itself. The type now sits at `apps/swarm-ui/src/types.ts` (`THE FENCING GENERATION.`).
+`current_generation` itself. The field is declared at `apps/swarm-api/swarm_api/wire_types.py` (`THE FENCING GENERATION.`), from which the console's `Task` type is generated (part of #72).
 
 **The six questions in §8: five answered, Q2 half answered**
 
@@ -223,8 +223,8 @@ peak_rss_bytes                     firestore=123456789      api=123456789
 `peak_rss_bytes` is the control: the harness is correct, the round-trip works, and
 exactly the five spend fields are dropped.
 
-The write path is fine. `apps/agent-worker/agent_worker/lifecycle.py::Worker._collect_spend` extracts usage and
-`apps/agent-worker/agent_worker/lifecycle.py::Worker._record_spend` calls
+The write path is fine. `apps/agent-worker/agent_worker/spend.py::SpendMixin._collect_spend` extracts usage and
+`apps/agent-worker/agent_worker/spend.py::SpendMixin._record_spend` calls
 `control.record_spend`, which merge-sets those five keys with a
 `not isinstance(v, bool)` guard (`apps/agent-worker/agent_worker/control.py::ControlPlane.record_spend`). The numbers reach Firestore
 and die at the decoder.

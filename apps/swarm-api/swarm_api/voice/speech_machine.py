@@ -83,6 +83,28 @@ TAB_CLOSED_SECONDS is `tab_closed`; a running lease past its idle time is
 Each stop writes one `voice_audit` row with its machine minutes, counted from
 the start call (so the boot is in them and the ledger never under-counts).
 
+THE WARM (owner, 2026-11-23; §4.1 "The warm request"). When a person opens
+Talk and own speech is the engine their session would use, the page asks once
+for the machine to be started in the background, so the first spoken turn does
+not wait out the cold start. `begin_warm` takes the lease for NO session, in one
+transaction, only when nothing holds it: `warm: true`, a `warm_<hex>` holder,
+no project, the person and tenant who asked, and Settings' idle time as any
+take writes it. A person warms at most once per WARM_EVERY_SECONDS (a
+`warm-<marker id>` document beside the lease, so no email names a document),
+and a held lease is left exactly as it is: no generation, no heartbeat, no
+activity. `finish_warm` (the route's background runner) is the same start a
+session runs, from the take on; once the machine is RUNNING the lease records
+`warmed_at` and `activity_at`, and from then the unchanged idle rule alone
+ends it: nobody heartbeats a lease no socket serves, so `holds` and
+`due_cause` read a warmed lease by `activity_at` + `idle_seconds` and nothing
+else (`swept` still applies while its start beats, as for every start). A
+session's take adopts a warm lease (never MachineInUse): a new generation, the
+warm's `started_at` kept so the session's Speech machine line counts from the
+warm's start call, and the warm's thread fenced out at its next write. A warm
+lease ends no session: the sweep stops its machine and tells swarm-voice
+nothing. The warm is the voice feature's own infrastructure, like every start
+here: no task, no capacity reservation, no task lease is read or written.
+
 Nothing here reads or writes a secret: the speech server checks swarm-api's
 Google ID token (§3.2), which `speech_relay` mints per socket.
 """
@@ -135,7 +157,7 @@ AT_REST = frozenset({TERMINATED, "STOPPED"})
 END_BY_PERSON = vs.END_BY_PERSON
 END_IDLE = "idle"
 END_TAB_CLOSED = "tab_closed"
-END_BUDGET_CAP = "budget_cap"
+END_BUDGET_CAP = vs.END_BUDGET_CAP
 END_SWEPT = "swept"
 # Not session ends: the session falls back to text instead (§4.1, §4.7).
 FALLBACK_NO_L4 = "no_l4"
@@ -159,6 +181,29 @@ HEARTBEAT_SECONDS = 30.0
 TAB_CLOSED_SECONDS = 60.0
 #: The idle time when the lease carries none: Settings' default, five minutes.
 DEFAULT_IDLE_SECONDS = cat.idle_seconds(cat.DEFAULTS["idle"]) or 300
+
+#: THE WARM: the lease field that marks a lease taken for no session, and
+#: the holder's session id prefix (never a Voice it session id, `vs_`).
+WARM = "warm"
+WARM_PREFIX = "warm_"
+#: The most often one person's Talk page starts the machine: a page reloaded
+#: in a loop starts it once per half hour at most. A warm nobody uses runs at
+#: most READY_SECONDS + Settings' longest idle (15 min) + the two-minute
+#: sweep, 21 minutes, so this interval is longer than one whole warm and a
+#: loop can never keep the machine up without a pause (owner condition
+#: 2026-11-23: the idle stop is unchanged, and a warm does not extend it).
+WARM_EVERY_SECONDS = 30 * 60
+#: The rate limit's document in COLLECTION, one per person: `warm-<marker id>`.
+WARM_MARK = "warm-"
+#: What `begin_warm` did: started a warm; nothing, as a lease holds the
+#: machine; nothing, as this person warmed under WARM_EVERY_SECONDS ago.
+#: The route adds the two it decides before asking: own speech is not the
+#: engine selected (or not deployed), and the person already has a session.
+WARM_STARTED = "started"
+WARM_HELD = "held"
+WARM_RATE_LIMITED = "rate_limited"
+WARM_NOT_SELECTED = "not_own_speech"
+WARM_LIVE_SESSION = "live_session"
 
 AUDIT_STOPPED = "voice_speech_machine_stopped"
 AUDIT_NO_L4 = "voice_speech_no_l4"
@@ -624,10 +669,27 @@ def live_sockets(lease: Mapping[str, Any], now: datetime) -> list[str]:
     return sorted(s for s, at in _sockets(lease).items() if (_aware(at) or cutoff) > cutoff)
 
 
+def warmed(lease: Mapping[str, Any] | None) -> bool:
+    """A warm lease whose start finished (THE WARM): no socket serves it, so
+    nothing heartbeats it, and the idle rule alone decides it."""
+    return bool(lease) and lease.get(WARM) is True and _aware(lease.get("warmed_at")) is not None
+
+
+def _idle_due(lease: Mapping[str, Any], now: datetime) -> bool:
+    """The idle rule (§4.5): no activity for the lease's idle time."""
+    activity = _aware(lease.get("activity_at"))
+    idle = lease.get("idle_seconds")
+    idle = idle if isinstance(idle, int) and idle > 0 else DEFAULT_IDLE_SECONDS
+    return activity is not None and now - activity >= timedelta(seconds=idle)
+
+
 def holds(lease: Mapping[str, Any] | None, now: datetime) -> bool:
-    """Whether the lease still holds the machine for its session."""
+    """Whether the lease still holds the machine for its session (a warmed
+    lease: until its idle time is up)."""
     if not lease or lease.get("state") not in HOLDING:
         return False
+    if warmed(lease):
+        return not _idle_due(lease, now)
     beat = _aware(lease.get("heartbeat_at"))
     return beat is not None and now - beat < timedelta(seconds=HEARTBEAT_STALE_SECONDS)
 
@@ -637,6 +699,8 @@ def due_cause(lease: Mapping[str, Any] | None, now: datetime) -> str | None:
     socket for a minute (`tab_closed`), or no activity for its idle time."""
     if not lease or lease.get("state") not in HOLDING:
         return None
+    if warmed(lease):
+        return END_IDLE if _idle_due(lease, now) else None
     # A tab that closed cleanly is `tab_closed` even once the heartbeat it
     # stopped writing has also gone stale; `swept` is the lease nobody let go.
     detached = _aware(lease.get("detached_at"))
@@ -645,12 +709,8 @@ def due_cause(lease: Mapping[str, Any] | None, now: datetime) -> str | None:
         return END_TAB_CLOSED
     if not holds(lease, now):
         return END_SWEPT
-    if lease.get("state") == RUNNING:
-        activity = _aware(lease.get("activity_at"))
-        idle = lease.get("idle_seconds")
-        idle = idle if isinstance(idle, int) and idle > 0 else DEFAULT_IDLE_SECONDS
-        if activity is not None and now - activity >= timedelta(seconds=idle):
-            return END_IDLE
+    if lease.get("state") == RUNNING and _idle_due(lease, now):
+        return END_IDLE
     return None
 
 
@@ -713,7 +773,10 @@ class SpeechMachine:
                     "This Voice it session is not the person's live session.",
                     detail={"reason": vs.NOT_LIVE})
             now = self._now()
-            if holds(lease, now) and lease.get("session_id") != session.session_id:
+            # A warm lease is nobody's session: a session adopts it (THE WARM).
+            adopting = lease.get(WARM) is True and lease.get("state") in HOLDING
+            if holds(lease, now) and lease.get("session_id") != session.session_id \
+                    and not adopting:
                 raise MachineInUse("the speech machine is in use",
                                    detail={"reason": "speech_machine_in_use"})
             generation = int(lease.get("generation") or 0) + 1
@@ -722,7 +785,8 @@ class SpeechMachine:
                 "project_id": session.project_id, "person": session.person,
                 "generation": generation, "state": STARTING, "zone": self.config.zone,
                 "stockouts": [],
-                "started_at": now, "heartbeat_at": now, "activity_at": now,
+                # Adopted: the minutes count from the warm's start call (§13).
+                "started_at": (_aware(lease.get("started_at")) or now) if adopting else now, "heartbeat_at": now, "activity_at": now,
                 "idle_seconds": int(idle_seconds), "sockets": {}, "detached_at": None,
                 "start_phases": {}, "stopped_at": None, "minutes": None, "cause": None,
                 "machine": machine or cat.DEFAULTS["machine"],
@@ -730,6 +794,71 @@ class SpeechMachine:
             return Holder(session_id=session.session_id, generation=generation)
 
         return _take(self._db.transaction())
+
+    # -- the warm (THE WARM)
+
+    def begin_warm(self, *, tenant_id: str, person: str,
+                   chosen: Mapping[str, str]) -> tuple[str, Holder | None]:
+        """Take the lease for no session when nothing holds it and this person
+        has not warmed under WARM_EVERY_SECONDS ago; (WARM_STARTED, the holder
+        `finish_warm` starts the machine as), else (WARM_HELD or
+        WARM_RATE_LIMITED, None), writing nothing. One transaction, no Compute
+        call: the route answers at once."""
+        ref = self._ref
+        mark_ref = self._db.collection(COLLECTION).document(
+            WARM_MARK + vs.marker_id(self._marker_key, person))
+
+        @firestore.transactional
+        def _begin(txn: Any) -> tuple[str, Holder | None]:
+            snap = _snapshot(txn.get(ref))
+            mark_snap = _snapshot(txn.get(mark_ref))
+            lease = (snap.to_dict() or {}) if snap.exists else {}
+            mark = (mark_snap.to_dict() or {}) if mark_snap.exists else {}
+            now = self._now()
+            if holds(lease, now):
+                return WARM_HELD, None
+            last = _aware(mark.get("at"))
+            if last is not None and now - last < timedelta(seconds=WARM_EVERY_SECONDS):
+                return WARM_RATE_LIMITED, None
+            generation = int(lease.get("generation") or 0) + 1
+            session_id = WARM_PREFIX + secrets.token_hex(8)
+            txn.set(ref, {
+                "session_id": session_id, "tenant_id": tenant_id, "project_id": "",
+                "person": person, WARM: True, "warmed_at": None,
+                "generation": generation, "state": STARTING, "zone": self.config.zone,
+                "stockouts": [],
+                "started_at": now, "heartbeat_at": now, "activity_at": now,
+                "idle_seconds": int(idle_seconds_of(chosen)), "sockets": {}, "detached_at": None,
+                "start_phases": {}, "stopped_at": None, "minutes": None, "cause": None,
+                "machine": str(chosen.get("machine") or "") or cat.DEFAULTS["machine"],
+            })
+            txn.set(mark_ref, {"at": now})
+            return WARM_STARTED, Holder(session_id=session_id, generation=generation)
+
+        return _begin(self._db.transaction())
+
+    def finish_warm(self, holder: Holder, *, tenant_id: str, person: str,
+                    chosen: Mapping[str, str]) -> bool:
+        """The start `begin_warm` took the lease for, the same as a session's
+        from the take on; then `warmed_at` and `activity_at`, from which the
+        idle rule runs. False, raising nothing, when the machine did not come
+        up (the start released or stopped it) or a session's take adopted the
+        lease meanwhile (fenced: nothing more is written)."""
+        session = SessionRef(tenant_id=tenant_id, person=person, project_id="",
+                             session_id=holder.session_id)
+        try:
+            self._bring_up_for(holder, session, chosen, idle_seconds_of(chosen))
+            self._fenced(holder, lambda _lease, now: {"state": RUNNING, "warmed_at": now,
+                                                      "activity_at": now, "heartbeat_at": now})
+        except (SpeechFallback, StaleLease) as exc:
+            log.info("speech machine warm did not finish (%s)", type(exc).__name__)
+            return False
+        except Exception as exc:  # noqa: BLE001 -- a background warm never raises
+            log.warning("speech machine warm failed (%s)", type(exc).__name__)
+            self.stop(holder, cause=FALLBACK_NOT_READY)
+            return False
+        log.info("speech machine warmed generation=%s", holder.generation)
+        return True
 
     def _fenced(self, holder: Holder, change: Callable[[dict[str, Any], datetime], dict[str, Any] | None],
                 *, holding: bool = True) -> dict[str, Any]:
@@ -971,6 +1100,12 @@ class SpeechMachine:
         idle = idle_seconds_of(chosen)
         holder = self.take(session, idle_seconds=idle,
                            machine=str(chosen.get("machine") or ""))
+        return self._bring_up_for(holder, session, chosen, idle)
+
+    def _bring_up_for(self, holder: Holder, session: SessionRef, chosen: Mapping[str, str],
+                      idle: int) -> Started:
+        """The start after its take: a session's (`start`) and a warm's
+        (`finish_warm`) alike."""
         began = self._clock()
         deadline = began + READY_SECONDS
         beat = [began]
@@ -1102,7 +1237,8 @@ class SpeechMachine:
         if lease.get("generation") != holder.generation or lease.get("session_id") != holder.session_id \
                 or lease.get("state") not in HOLDING:
             return False
-        if ender is not None:
+        # A warm lease serves no session: there is none to end (THE WARM).
+        if ender is not None and lease.get(WARM) is not True:
             try:
                 ender.end(lease, cause)
             except Exception as exc:  # noqa: BLE001 -- the machine still stops
@@ -1138,6 +1274,9 @@ class SpeechMachine:
         report["instance"] = found[0].status if found else None
         if holds(lease, now):
             return report
+        # The route logs this and drops it from its answer: a machine found
+        # not at rest with nothing holding it (terraform/infra/voice_alerts.tf).
+        report["unheld"] = any(i.status not in AT_REST for i in found)
         # No live lease: every machine in a listed zone that is not at rest
         # is stopped (there is one; a crash mid-move may have left two).
         for instance in found:

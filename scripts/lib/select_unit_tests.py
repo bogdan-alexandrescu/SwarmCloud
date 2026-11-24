@@ -357,7 +357,7 @@ def _mounts(text: str, rel: str) -> bool:
     return "include_router(" in text and re.search(rf"\b{re.escape(stem)}\.router\b", text) is not None
 
 
-def import_closure(root: Path, changed_py: list[str]) -> set[str]:
+def import_closure(root: Path, changed_py: list[str], edges=None) -> set[str]:
     """Every module under apps/, scripts/ and tests/unit that imports a changed
     module, through any chain of imports, and every test a reached conftest.py
     reaches.
@@ -377,7 +377,12 @@ def import_closure(root: Path, changed_py: list[str]) -> set[str]:
       under the same terms).
 
     Measured on main at 0409b8d (2026-11-03): one swarm-api route reached
-    1,428 of 1,707 test files before these rules."""
+    1,428 of 1,707 test files before these rules.
+
+    `edges` stands in for import_edges, the same function of (rel, text):
+    related_tests.py passes one that remembers its answers by the file's
+    content, since parsing every file is most of a run's time."""
+    edges = edges or import_edges
     files = [*_python_files(root, "apps"), *_python_files(root, "scripts"), *_python_files(root, "tests/unit")]
     rels = [str(p.relative_to(root)) for p in files]
     text = {rel: (root / rel).read_text(errors="replace") for rel in rels}
@@ -390,7 +395,7 @@ def import_closure(root: Path, changed_py: list[str]) -> set[str]:
 
     importers: dict[str, dict[str, frozenset[str] | None]] = {}
     for rel in rels:
-        for name, owners in import_edges(rel, text[rel]).items():
+        for name, owners in edges(rel, text[rel]).items():
             importers.setdefault(name, {})[rel] = owners
     state: dict[str, tuple[str, frozenset[str]] | None] = dict.fromkeys(changed_py)
     reached: dict[str, tuple[str, frozenset[str]] | None] = {}

@@ -74,8 +74,8 @@ a grant alone: `gate` holds it as a pending read-back and answers 202
 `X-Swarm-Voice-Readback: <id>` naming a confirmed, unused read-back of this
 session whose method, route and body hash match. The route declares
 `routes.voice_readback.readback_gate`, which reads the body and calls `gate`;
-tests/unit/voice/test_readback.py fails when a gated route on these lists
-does not, and when a non-GET route on them is unclassed.
+every gated route on these lists must actually gate, and a non-GET route on
+them must be classed.
 
 THE WORK FEED (voice-it.md §3.12.5). Every granted call writes one masked
 `work.step` event on its session's stream, right after its audit row
@@ -174,6 +174,9 @@ ALLOWED_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/v1/failure-findings/{finding_id}"),
     ("GET", "/v1/runtimes"),
     ("GET", "/v1/voice/cards/schema"),
+    # The project's status view (routes/voice_status.py): its cards and roster,
+    # the person's own project page; a grant reads only its session's project.
+    ("GET", "/v1/voice/projects/{project_id}/status"),
 })
 
 
@@ -201,6 +204,10 @@ WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # rows (`record_work`, routes/voice.py `work`); the route refuses any
     # caller that did not come through a grant, and any other session.
     vwork.WORK_ROUTE,
+    # The planner's brief after each turn (voice/projectbrief.py): one field of
+    # the session's own project, refused at a spend cap and to any caller that
+    # did not come through a grant.
+    ("POST", "/v1/voice/sessions/{session_id}/brief"),
 })
 
 

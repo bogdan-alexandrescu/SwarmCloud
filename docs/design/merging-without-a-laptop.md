@@ -420,7 +420,7 @@ which is the laptop's job moved to a browser.
 |---|---|---|---|
 | `train_size` (maximum) | 4 | 1–10 | Today's value. Four riders cost one CI run, and a red one costs about two more to find the culprit. |
 | `gather_min` (gather size) | 2 | 1–`train_size` | One rider is direct mode with extra steps. Two halve the CI runs without holding a quiet repository. |
-| `gather_wait_minutes` (wait) | 10 | 0–60 | A ready pull request boards after this even if `gather_min` is not reached, so a lone change is never held long. The repository-level train's 6-or-20 suits this repository's volume, not a typical one. |
+| `gather_wait_minutes` (wait) | 10 | 0–60 | A ready pull request boards after this even if `gather_min` is not reached, so a lone change is never held long. The repository-level train's 8-or-5 (8 ready or 5 minutes, from 23 November 2026) suits this repository's volume, not a typical one. |
 | `max_train_age_minutes` | 90 | today's | Unchanged. |
 | `required_start_minutes` | 15 | 5–60 | §6.3 step 2. |
 | `base_red_wait_minutes` | 60 | 0–240 | The script's `MERGE_TRAIN_MAIN_RED_WAIT_MINUTES`. |

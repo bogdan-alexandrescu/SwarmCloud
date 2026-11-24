@@ -1,13 +1,15 @@
 """The planner's Claude subscription account, leased from the quota broker for
-ONE delegation turn (docs/design/voice-it.md §3.6), and own speech's fast
+a session's delegation turns while it is kept warm (plannerwarm.py) and for ONE
+turn where that falls back (docs/design/voice-it.md §3.6), and own speech's fast
 front's, leased for the WHOLE session (docs/design/voice-it-own-speech.md
 §14.1): the same routes, told apart by `holder`.
 
 THE OWNER'S CHOICE (2 November 2026): "we have a pool of account for
 anthropic, lets use one of the accounts there". The planner runs on a Claude
 subscription account from the person's own workspace pool, through Claude Code
-(claudeturn.py), the way a worker runs an agent: one lease per turn, so the
-account counts one agent while the turn runs and none after it.
+(claudeturn.py), the way a worker runs an agent: the account counts one agent
+while a turn runs and for plannerwarm.WARM_IDLE_SECONDS after it, and none
+after that.
 
 THE BROKER'S ROUTES (apps/quota-broker; the worker's are
 agent_worker/accountlease.py's):
@@ -23,7 +25,7 @@ agent_worker/accountlease.py's):
 * `POST /v1/voice/lease/{account_id}/renew` and `.../release`
   `{"assignment_id", "voice_session_id"}`: the voice hold routes, which keep
   or give back any hold stamped with that voice session. A renewal's
-  credential is not read: the turn keeps the token it started with.
+  credential is not read: the child keeps the token it started with.
 
 THE FALLBACK ORDER (docs/design/llm-providers.md §5.3). The assign says it
 can run on a key (`key_tier`), so the broker walks the person's workspace's
@@ -36,8 +38,8 @@ which is the walk minus that account.
 
 A FULL POOL IS A REFUSAL, NEVER A WAIT: `PoolFull` carries the broker's reason
 and the voice says it. A swarm-voice that dies holds nothing for long: the
-hold lapses on the broker's TTL, which a turn (planner.TURN_SECONDS) never
-outlives without a renewal.
+hold lapses on the broker's TTL, which neither a turn (planner.TURN_SECONDS)
+nor a warm child outlives without a renewal.
 
 AUTHENTICATION is accountlease.VoiceBroker's: the metadata server's ID token for
 the broker's audience. NOTHING SECRET LEAVES: the access token is held in a
@@ -199,12 +201,15 @@ class PlannerAccounts:
                 log.warning("voice session %s: planner lease renewal failed: %s", lease.voice_session_id, exc)
 
     @contextlib.asynccontextmanager
-    async def lease(self, *, person: str, voice_session_id: str) -> AsyncIterator["PlannerHold"]:
+    async def lease(self, *, person: str, voice_session_id: str,
+                    exclude: tuple[str, ...] = ()) -> AsyncIterator["PlannerHold"]:
         """Hold one account for the body of the `async with`, renewed while it
         runs and released in a finally, whatever the turn did. A turn whose
         account is spent moves the hold on (`PlannerHold.move`); whichever
-        account holds it at the end is the one released."""
-        hold = PlannerHold(self, person, await self.assign(person=person, voice_session_id=voice_session_id))
+        account holds it at the end is the one released. `exclude`: the account
+        the turn's warm child left as spent (plannerwarm.py)."""
+        hold = PlannerHold(self, person, await self.assign(person=person, voice_session_id=voice_session_id,
+                                                           exclude=exclude))
         try:
             yield hold
         finally:

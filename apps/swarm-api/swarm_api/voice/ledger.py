@@ -87,6 +87,20 @@ log = logging.getLogger(__name__)
 #: The owner's caps (§1 decision record): $100 a session, $300 a day.
 SESSION_CAP_USD = 100.0
 DAY_CAP_USD = 300.0
+#: The share of a cap at which the voice warns once and a Budget card appears
+#: (§3.8, enforced by voice/budget.py; the owner's decision of 23 November 2026).
+WARN_SHARE = 0.8
+#: How long a session stays open after it reaches a cap, so the owner can
+#: finish the sentence or raise the cap on the card; then it ends with the
+#: cause `budget_cap` (§3.8: "two more minutes").
+CAP_GRACE_SECONDS = 120
+#: What one delegation's planner run is held against the caps when the voice
+#: asks to start it (`/work` `started`, voice/budget.py `admit_work`): the
+#: check asks whether one more planner turn at this estimate, times
+#: RESERVE_FACTOR, still fits. Nothing is recorded for it: the turn's own usage
+#: is what the ledger counts afterwards (reserved, not spent, on a
+#: subscription account). A planner turn at Opus prices is well under it.
+DELEGATION_ESTIMATE_USD = 1.0
 #: The worker's guard kills a step at 120% of its budget (agent-budget.md §5),
 #: so 120% of a step's budget is the most it can spend.
 RESERVE_FACTOR = 1.2
@@ -113,10 +127,15 @@ DAY = "day"
 LINES = ("talk", "planner", "speech_machine", "work_running", "work_finished", "followups")
 NOT_COUNTED = ("pod compute for lanes", "CI runner minutes", "deploys")
 
-#: `detail.reason` of a refusal; the code is the established `conflict`
-#: (tests/unit/control_plane/test_new_refusals_ship_off.py).
+#: `detail.reason` of a refusal; the code is the established `conflict`.
 SESSION_CAP_REACHED = "voice_session_cap"
 DAY_CAP_REACHED = "voice_day_cap"
+#: The session already reached a cap and is in its grace: nothing more starts.
+SESSION_CAPPED = "voice_budget_capped"
+#: The session document's field holding what enforcement did (voice/budget.py):
+#: when each cap was warned of, when one was reached and when the grace ends.
+#: Events, never a total: the figures are always this module's computation.
+BUDGET_FIELD = "budget"
 
 #: Why a session's Speech machine figure is null: a stop whose machine had
 #: no catalogue price (null is not zero, as for an unmeasured attempt).
@@ -419,6 +438,16 @@ class VoiceLedger:
         """The session's and the day's lines. The same 404 for another
         tenant's session, another person's, and a missing one."""
         vstore.check_id(session_id, "vs_", "session_id")
+        return self._compute(tenant_id=tenant_id, person=person, session_id=session_id)
+
+    def compute_day(self, *, tenant_id: str, person: str) -> dict[str, Any]:
+        """The day's lines alone, before any session exists: what a start is
+        checked against (voice/budget.py `refuse_start`). The same reads and
+        the same arithmetic as `compute`."""
+        view = self._compute(tenant_id=tenant_id, person=person, session_id=None)
+        return {k: v for k, v in view.items() if k not in (SESSION, "session_id", BUDGET_FIELD)}
+
+    def _compute(self, *, tenant_id: str, person: str, session_id: str | None) -> dict[str, Any]:
         now = self._now()
         zone_name = self._time_zone(person)
         tz = zone(zone_name)
@@ -427,13 +456,15 @@ class VoiceLedger:
         session = _Totals(SESSION_CAP_USD)
         day = _Totals(DAY_CAP_USD)
         found = False
+        enforced: Any = None
         #: {session_id: (in this session, on this day)} for the Speech machine line.
         machine_owners: dict[str, tuple[bool, bool]] = {}
 
         for project_id, _project in self._projects(tenant_id, person):
             sessions = self._children(project_id, vs.SESSIONS, tenant_id, person)
-            found = found or any(sid == session_id for sid, _ in sessions)
             for sid, doc in sessions:
+                if session_id is not None and sid == session_id:
+                    found, enforced = True, doc.get(BUDGET_FIELD)
                 cost = modelprices.per_minute_cost(TALK_MODEL, talk_seconds(doc, now)) or 0.0
                 mine, today_session = sid == session_id, day_of(doc.get("created_at"), tz) == today
                 if mine:
@@ -499,7 +530,7 @@ class VoiceLedger:
                     day.add("followups", spent=task.cost_usd)
                     day.notes["followup_tasks"] += 1
 
-        if not found:
+        if session_id is not None and not found:
             raise NotFound(f"voice session {session_id!r} not found")
         # A read that fails raises: a start is refused rather than admitted
         # past a cap the ledger could not compute.
@@ -521,6 +552,7 @@ class VoiceLedger:
             "computed_at": now.isoformat(),
             SESSION: session.view(),
             DAY: day.view(),
+            BUDGET_FIELD: budget_view(enforced),
             "not_counted": list(NOT_COUNTED),
         }
 
@@ -559,6 +591,19 @@ class VoiceLedger:
                             "spent_usd": cap["spent_usd"], "reserved_usd": cap["reserved_usd"],
                             "requested_usd": new, "would_be_usd": after})
         return {**reservation, "day": ledger["date"]}
+
+
+def budget_view(state: Any) -> dict[str, Any]:
+    """What enforcement recorded on a session (`BUDGET_FIELD`), as the console
+    reads it: the caps warned of, the cap reached (or None) and when the
+    session ends for it."""
+    state = state if isinstance(state, Mapping) else {}
+    warned = state.get("warned") if isinstance(state.get("warned"), Mapping) else {}
+    capped = state.get("capped") if isinstance(state.get("capped"), Mapping) else {}
+    ends_at = _aware(capped.get("ends_at"))
+    return {"warned": [key for key in (SESSION, DAY) if key in warned],
+            "capped": capped.get("line") if capped.get("line") in (SESSION, DAY) else None,
+            "ends_at": ends_at.isoformat() if ends_at else None}
 
 
 def _follows(starts: Sequence[tuple[datetime | None, Any]], created_at: datetime | None) -> Any:

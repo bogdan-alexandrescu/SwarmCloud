@@ -1172,7 +1172,13 @@ def watch_progress(
     interval = POLL_SECONDS
     latest: dict[str, dict[str, Any]] = {}
     read_ok: set[str] = set()
-    wake_before = {t: (keys.get(t) or "").rsplit("|", 1)[0] for t in task_ids}
+    # The wake key is the token key's FIRST segment (`_wake_key` never holds a
+    # `|`). Not "all but the last": a fix-loop step's key carries one segment
+    # more (`<wake>|<waiting words>|<round k of N>`, `progress_line`), so that
+    # read-back never matched and every poll of every call was a change -- a
+    # summary row spent 120k tokens in four minutes on calls that returned at
+    # once, and the stage follow spun on reads (issue 238).
+    wake_before = {t: (keys.get(t) or "").split("|", 1)[0] for t in task_ids}
     parent_states: dict[str, Any] = {}
     parents_before: dict[str, Any] = {}
     backoff = RATE_LIMIT_BACKOFF_SECONDS
@@ -1441,8 +1447,8 @@ def watch_progress(
 # --------------------------------------------------------------------------
 
 #: The buckets a summary line sorts a state into -- run.js's SUMMARY_RUNNING,
-#: SUMMARY_DONE and SUMMARY_FAILED, and a unit test holds the three equal
-#: (test_plugin_row_split_2.py). Capacity-holding states run (invariant 3:
+#: SUMMARY_DONE and SUMMARY_FAILED, held equal to the three by a unit test.
+#: Capacity-holding states run (invariant 3:
 #: concurrency counts from LEASED), a success is done, the other terminal
 #: states failed, and every other state -- waiting, parked, ready, not read
 #: yet -- is queued. The row used to count these itself, from a list in
@@ -1621,8 +1627,7 @@ def watch_summary(
 #: first (stageCensus in apps/swarm-ui/src/dag.ts leads with them too), then
 #: what holds capacity, then what waits. A success is not news on a row whose
 #: job is to notice the finish, so the line leaves it out; the pane counts it.
-#: run.js's STAGE_WORDS say the same, and a unit test holds the two equal
-#: (test_sc_browser_rows.py).
+#: run.js's STAGE_WORDS say the same, held equal to it by a unit test.
 STAGE_WORDS = ("failed", "running", "parked", "waiting")
 
 

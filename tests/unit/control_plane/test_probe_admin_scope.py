@@ -276,6 +276,69 @@ def test_it_may_narrow_a_member(client, clock):
     assert me(client, "bob", "eng")["me"]["role"] == "viewer"
 
 
+def test_its_own_stored_admin_grant_is_capped_at_member_off_the_list(client, db):
+    """docs/design/workspace-roles.md section 8, "Its own stored admin grant
+    is capped too": a platform admin names the listed probe principal eng's
+    admin; it is still admin only on PROBE_ADMIN_ROUTES and member, marked
+    probe_admin, everywhere else (`RoleStore.resolve`)."""
+    name_admin(client, PROBE)
+    body = me(client, "probe", "eng")
+    assert (body["me"]["role"], body["me"]["source"]) == ("admin", "probe_admin")
+    store = client.app.state.ctx.roles
+    auth = AuthContext(principal=Principal(email=PROBE, subject="s", domain="example.com"),
+                       tenant_id="eng", is_admin=False, tenant_principal=ENG_GROUP)
+    off_list = store.resolve(auth, fresh=True)
+    assert (off_list.role, off_list.probe_admin) == ("member", True)
+    assert store.person_role("eng", PROBE, fresh=True).role == "admin"
+    response = client.request("DELETE", "/v1/workspace/members/person",
+                              headers=h("probe", "eng"),
+                              json={"email": "bob@example.com", "reason": "probe"})
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == "probe_admin_not_permitted"
+
+
+@pytest.mark.parametrize("change", ["narrow", "clear"])
+def test_an_admin_grant_stored_between_its_check_and_its_write_is_refused(client, clock,
+                                                                          monkeypatch, change):
+    """The race the security re-check found (epic 21): ops names alice eng's
+    admin AFTER the probe admin's role write passed its early check and
+    BEFORE its transaction writes. bob, another admin of eng in its group,
+    means the last-admin guard alone would let the narrowing through; the
+    probe admin's refusal is decided again inside the transaction, on the
+    role read after the guard, so it is 403 and alice stays admin."""
+    name_admin(client, "bob@example.com")
+    clock.tick(seconds=1)
+    if change == "clear":
+        assert client.put("/v1/admin/workspaces/eng/roles/person", headers=h("ops"),
+                          json={"email": "alice@example.com", "role": "viewer"}
+                          ).status_code == 200
+        clock.tick(seconds=1)
+    real = roles.probe_admin_admin_target
+    raced: list[int] = []
+
+    def check_then_race(*args, **kwargs):
+        real(*args, **kwargs)
+        clock.tick(seconds=1)
+        raced.append(client.put("/v1/admin/workspaces/eng/roles/person", headers=h("ops"),
+                                json={"email": "alice@example.com", "role": "admin"}
+                                ).status_code)
+        clock.tick(seconds=1)
+
+    monkeypatch.setattr(roles, "probe_admin_admin_target", check_then_race)
+    if change == "narrow":
+        response = client.put("/v1/workspace/roles/person", headers=h("probe", "eng"),
+                              json={"email": "alice@example.com", "role": "viewer"})
+    else:
+        response = client.request("DELETE", "/v1/workspace/roles/person",
+                                  headers=h("probe", "eng"),
+                                  json={"email": "alice@example.com"})
+    monkeypatch.setattr(roles, "probe_admin_admin_target", real)
+    assert raced == [200]
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == "role_admin_required"
+    assert me(client, "alice", "eng")["me"]["role"] == "admin"
+
+
 # -- an empty setting changes nothing --------------------------------------------
 
 def test_an_empty_setting_changes_nothing(unlisted):

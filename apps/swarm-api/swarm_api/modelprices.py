@@ -78,7 +78,7 @@ MAX_TIER_CEILING = 100_000_000
 #: `b * width` tokens. Every request in a row is on the same side of a ceiling
 #: that is a multiple of it, and every ceiling the pricing page listed on
 #: 2026-10-19 (100,000; and 128,000, 200,000, 272,000 elsewhere) is. MUST
-#: equal `agent_worker.lifecycle._PROMPT_BUCKET_TOKENS`; a test holds it.
+#: equal `agent_worker.usage._PROMPT_BUCKET_TOKENS`; a test holds it.
 PROMPT_BUCKET_TOKENS = 1_000
 #: The most `prompt_buckets` rows one model's usage carries: a million-token
 #: context at one row per 1,000 tokens, with room.
@@ -118,9 +118,9 @@ def _seed(inp: float, out: float, read: float) -> dict[str, Any]:
 
 #: Where the figures `_published` seeds were read: the provider's pricing
 #: page (`schedtypes.model_prices_refresh.PRICING_PAGE_URL`), as saved on the
-#: day it was fetched in tests/unit/control_plane/pricing_page_2026-10-19.md,
-#: whose "Model pricing" table lists each figure below. Base input, output,
-#: cache hits and the 5-minute cache write, USD per million tokens.
+#: day it was fetched, whose "Model pricing" table lists each figure below.
+#: Base input, output, cache hits and the 5-minute cache write, USD per
+#: million tokens.
 _PAGE = "https://platform.claude.com/docs/en/about-claude/pricing.md"
 _PAGE_READ = "2026-10-19"
 
@@ -143,11 +143,24 @@ def _published(inp: float, out: float, read: float, write: float,
 
 
 #: Today's figures, exactly as `_LIST_PRICES` held them (module docstring),
-#: and the two `_published` from the saved pricing page.
+#: and the two `_published` from the saved pricing page, and
+#: `claude-fable-5-2`, at the owner's stated price (its comment).
 #: Two that look wrong are not: `claude-mythos-5-1` is the Project Glasswing
 #: counterpart of Fable 5.1, at Fable 5.1's price, and `claude-opus-5-5` is
 #: priced BELOW Opus 5 ($4/$20).
 SEED: dict[str, dict[str, Any]] = {
+    # The fable class's pin since 2026-11-23 (owner decision). The owner
+    # stated $8 input and $40 output on 2026-11-23, not read from the pricing
+    # page (the saved page, _PAGE_READ, predates it). He gave no cache
+    # figures: cache read ($0.20) and cache write ($10.00) are DERIVED from his
+    # input price at claude-fable-5-1's ratios (0.025 and 1.25 of input), not
+    # stated by him. The weekly `model-prices-refresh` rewrites the live entry
+    # once the page lists it at other figures.
+    "claude-fable-5-2": {**_seed(8.0, 40.0, 0.20), "as_of": "2026-11-23",
+                         "updated_by": "owner, 2026-11-23: input and output "
+                                       "stated; cache figures derived from "
+                                       "his input price"},
+    # The pin before it: kept, so tasks already recorded on it are priced.
     "claude-fable-5-1": _seed(10.0, 50.0, 0.25),
     "claude-mythos-5-1": _seed(10.0, 50.0, 0.25),
     "claude-fable-5": _seed(10.0, 50.0, 1.0),

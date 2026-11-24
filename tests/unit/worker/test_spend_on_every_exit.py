@@ -240,15 +240,16 @@ def test_a_cancelled_attempt_records_what_its_runner_reported(db, worker_factory
         simulated={"spend": {"usage": USAGE, "total_cost_usd": COST}},
     )
     worker, _, _ = worker_factory(control_poll_seconds=1, timeout_seconds=30)
+    real_mark = worker._mark_agent_started
 
-    def cancel() -> None:
-        time.sleep(1.5)
+    def cancel_once_running() -> None:
+        # Once the agent process exists, so the loop meets it mid-run at its
+        # next control poll; never on a wall-clock guess at when that is.
+        real_mark()
         db.doc("tasks/task_1")["cancel_requested"] = True
 
-    thread = threading.Thread(target=cancel)
-    thread.start()
+    worker._mark_agent_started = cancel_once_running  # type: ignore[method-assign]
     exit_code = worker.run()
-    thread.join()
 
     assert exit_code == ExitCode.CANCELLED
     assert_recorded(db)

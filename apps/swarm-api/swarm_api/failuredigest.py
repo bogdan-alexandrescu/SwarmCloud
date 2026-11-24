@@ -175,8 +175,8 @@ QUESTION_UNANSWERED_ERROR = "owner question unanswered"
 
 #: §2 `person_push` (archived issue 2505, the owner 2026-10-27): a merge step a person on its
 #: pull request pushed over. The worker's refusal code
-#: (`agent_worker.merge.SUPERSEDED_BY_PERSON_PUSH`, held equal by
-#: tests/unit/worker/test_merge_person_push.py) in `result_summary.merge.
+#: (`agent_worker.merge.SUPERSEDED_BY_PERSON_PUSH`, held equal by a test) in
+#: `result_summary.merge.
 #: refusal.code` -- the step still ends FAILED merge_refused while `EndCause`
 #: has no member for it -- and the same string as the end cause, which is
 #: what contract request SUPERSEDED_BY_PERSON_PUSH asks for, so the rule
@@ -186,8 +186,7 @@ SUPERSEDED_BY_PERSON_PUSH = "superseded_by_person_push"
 #: §2 `person_ready_removal` (archived issue 3602): a merge step whose train-parked pull
 #: request a person took `ready` off by hand -- a deliberate decision, not a
 #: defect. The worker's refusal code (`agent_worker.merge.
-#: READY_REMOVED_BY_PERSON`, held equal by
-#: tests/unit/control_plane/test_failure_digest.py) in `result_summary.merge.
+#: READY_REMOVED_BY_PERSON`, held equal by a test) in `result_summary.merge.
 #: refusal.code`; the step ends FAILED merge_refused while the frozen
 #: `EndCause` has no member for it, and the same string as the end cause is
 #: matched too. The platform's own removal (the gate's or the train's) is

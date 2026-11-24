@@ -17,8 +17,7 @@ never be read as another:
     tenant identity that found the id could rewrite.
 
 The scheduler restates `nonce` (its image does not carry this package);
-`tests/unit/control_plane/test_child_tasks_scheduler.py` holds the two equal
-(`test_the_scheduler_mints_the_nonce_swarm_api_verifies`).
+a test holds the two equal.
 
 The state routes (docs/design/tenant-settings-integrity.md §4.1, §4.5) reuse
 the key under their own request purpose, `swarm-state-req/v1`, and a v2

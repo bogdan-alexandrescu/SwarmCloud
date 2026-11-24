@@ -16,8 +16,8 @@ as the audit entry, the same record the status route reads. Confirmed means
 `tenants/u-<user>` is `kind: user` and its principal is the submitter's email:
 the frozen slug keeps only the local part, so `dave@example.org` and
 `dave@example.com` both derive `u-dave`, and only the principal says whose it is.
-`candidates` restates the order; tests/unit/worker/test_jev_runner.py holds it
-to swarm-api's function over every combination.
+`candidates` restates the order; a test holds it to swarm-api's function
+over every combination.
 
 READ HOW. As this worker's own service account, like every other tenant
 credential (`secrets`). A key in the task tenant is readable: swarm-api's
@@ -27,7 +27,7 @@ terraform/bootstrap/typesafe_user_keys.tf grants that group's worker account
 on that one secret (an owner apply, per listed row). Without the grant the
 read is PERMISSION_DENIED, logged as `jev_key_unreadable` by secret id and
 error type, and the tenant key is tried next. Nothing here asks swarm-api for
-a key: no route serves a credential (test_no_route_serves_credentials.py).
+a key: no route serves a credential.
 
 HANDED OVER HOW -- the narrowest working path. The key goes into ONE file,
 `private/jev-typesafe.key`, mode 0600, created afresh (O_EXCL, O_NOFOLLOW).

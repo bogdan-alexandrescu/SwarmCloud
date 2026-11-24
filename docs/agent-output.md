@@ -535,6 +535,23 @@ context, so a long session costs roughly the square of its length, and
   starts a fresh session from a handoff instead. So do the runner's own
   finish pass, wrap-up pass, repair turns and pre-publish gate
   turns, whose handoff ends with what that pass was going to ask.
+* **An account swap hands off sooner.** A swap's `--resume` writes the
+  session's whole prompt to the new account's cache at the cache-write
+  price, while a handoff writes only the note. So a swap is judged against
+  half the ceiling (`SWAP_HANDOFF_CONTEXT_TOKENS`, 100,000, and never more
+  than a lowered ceiling) rather than the ceiling itself. Past half, the cold
+  write costs more than the headroom a resume keeps, and the session would
+  reach the ceiling and be handed off within that headroom anyway. A
+  credential reload stays on the same account with a warm cache, so it is
+  still judged against the ceiling. A swap's fresh session counts toward
+  `MAX_FRESH_SESSIONS`, and once those are spent the swap resumes as before.
+  The runner never resumes a session that a handoff already ended: the
+  state file lists those sessions (`handed_off_sessions`), which covers a
+  swap that arrives before the fresh session has reported its own id. Which
+  way the swap went (`resumed` or `handed_off`) is written to `swap` in the
+  ceiling record and to `swap_path` on the account channel. The worker copies
+  `swap_path` to the run the swap started (`result_summary.runs[].swap_path`,
+  next to `after_swap` and `reread`), so the scorecard can count each path.
 * **The record.** `result_summary.runner.output.context_ceiling` holds the
   limits, the fresh sessions started, and one entry per stop: where it
   happened (`turn_boundary` or `resume`), why (`context_tokens` or
@@ -822,7 +839,7 @@ also name a **model class**, one of four classes from the frozen
 | class | pinned ID | meant for |
 |---|---|---|
 | `opus` | `claude-opus-5-5` | the default: coding and implementation |
-| `fable` | `claude-fable-5-1` | planning |
+| `fable` | `claude-fable-5-2` (from `claude-fable-5-1`, owner 2026-11-23) | planning |
 | `sonnet` | `claude-sonnet-5-5` | summarising, reformatting |
 | `haiku` | `claude-haiku-5-5` | classifying, extracting |
 
@@ -887,7 +904,7 @@ How a step gets its model, and what refuses it:
   land in `result_summary.runner.usage.models`, the model or models it says it
   actually used. When those name none of the pinned model, the worker logs
   `model_mismatch` with both values
-  (`apps/agent-worker/agent_worker/lifecycle.py::Worker._note_model_mismatch`),
+  (`apps/agent-worker/agent_worker/spend.py::SpendMixin._note_model_mismatch`),
   and the console's attempt view shows both. The outcome ledger groups cost
   by `model` and by `model_class` from these fields.
 * Changing a class's model is an edit to `local.runner_models` and a release;

@@ -49,6 +49,7 @@ Three reasons, in the order they cost the most:
 | `auto-merge.yml` | `pull_request_target` when a label is added (acts only on `ready`) and when a pull request is merged; `workflow_run: completed` of every pull-request workflow, and the `workflow_dispatch` that sends ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch, a failing check or a missing merge App, with a comment; waits while a check still runs; otherwise enables native squash auto-merge under the PR's title); `re-evaluate ready pull requests when a run finishes` dispatches it again for each `ready` pull request at a finished run's head ([below](#a-ready-label-that-lands-while-checks-run-is-re-evaluated)); on `closed`, `close the merged pull request's issues` closes the open issues a merge's closing keywords name ([below](#a-merge-closes-the-issues-its-keywords-name)). **To be retired** once the workflow `merge` step is proven (owner, 2026-10-04) |
 | `iam-refusal-probe.yml` | **manual dispatch on `main` only**, by the owner, once ([below](#the-deployers-refusal-is-proven-once-by-a-probe-the-owner-dispatches)) — never on a push, a pull request or a schedule | `deployer is refused an unlisted role` |
 | `publish-release.yml` | **manual dispatch on `main` only**, with a release name and a main commit whose `release` run succeeded ([the owner] 2026-10-30, "Move publishing into CI now"; [runbooks/release.md](runbooks/release.md)) — never on a push, a pull request or a schedule. `publish` waits in the GitHub environment `release` (a required reviewer) and authenticates as the deployer, which is why the file is on `wif.tf`'s `deployer_workflows`; in `swarmcloud-prod` that identity holds only the three roles `scripts/release-home.sh --ci-publisher` grants. It publishes; it never promotes | `check the version and the commit` · `publish <version> to the release home` |
+| `coverage.yml` | **once a day at 10:23 UTC** (`schedule`) and manual dispatch, **on `main` only** — never on a push, a pull request or a train, never a required check, and nothing on the merge path waits for it ([below](#coverage-floors)) | `plan the shards` · `unit tests with coverage (k/N)` · `swarm-ui component tests with coverage (k/N)` · `coverage floors` (combines and judges against `coverage-floors.json`) · `report the coverage` (the per-package summary; a red night opens or updates one `bug` issue, the next green night closes it) |
 
 Three details in that table are easy to misread and each has bitten someone:
 
@@ -199,7 +200,13 @@ credentials, and nothing here would change to show it. A commit cannot move.
 `scripts/check-action-pins.sh` refuses any other form, by file and line, and
 runs as a step of the `release workflow wiring (actionlint)` check above; its
 header says how to resolve a tag to its commit. To bump an action, resolve the
-new tag and change the SHA and the comment together.
+new tag and change the SHA and the comment together. It reads `uses` in block
+style only: `uses:`, `"uses":` or `'uses':` after an optional `- `, with the
+value on the same line. Every other shape of a `uses` key outside a comment
+line (a flow mapping `- {uses: ...}`, a space before the colon, a value on a
+later line) is refused as unreadable, even when what it names is pinned: a
+line-reader that skipped those shapes would pass them in silence (issue 190).
+Write `uses` in block style.
 
 **The tools CI installs are pinned too.** Every `astral-sh/setup-uv` step
 installs the uv the images copy in (`ARG UV_IMAGE` in `images/*/Dockerfile`),
@@ -2477,11 +2484,49 @@ The release sets a new account's IAM policy in the same apply that creates it:
 those need bootstrap's grant on it, and bootstrap cannot grant on an account
 that does not exist yet. So for a **new tenant**:
 
-1. `scripts/register-tenant.sh --group <group>` creates `swarm-agent-worker-<tenant>`
-   and checks the grant (step 2b). If the account **already existed**, step 2b
-   refuses to go on when it carries any IAM binding the platform does not make,
-   any conditioned binding, or a user-managed key — see "Adoption is limited to
-   the tenant worker" below.
+1. `scripts/register-tenant.sh --group <group> --terraform-tenant` creates
+   `swarm-agent-worker-<tenant>` and checks the grant (step 2b). If the account
+   **already existed**, step 2b refuses to go on when it carries any IAM binding
+   the platform does not make, any conditioned binding, or a user-managed key —
+   see "Adoption is limited to the tenant worker" below.
+
+   `--terraform-tenant` is what keeps step 4's release from failing. That
+   release creates three objects a full registration also makes, and creates
+   them with no import: the QA target credential secret
+   `swarm-tenant-<tenant>-qa` (`terraform/infra/qa_targets.tf`,
+   `google_secret_manager_secret.qa_target`) and the documents
+   `tenants/<tenant>` and `pools/tenant:<tenant>`
+   (`terraform/modules/firestore/bootstrap.tf`,
+   `google_firestore_document.tenant` and `.pool`). Made first by the script,
+   each answers 409 "already exists" and the release keeps failing until
+   someone repairs it (issue 141). With the flag the script makes everything
+   else as usual — the account the release adopts, its grants, its namespace —
+   and leaves those three to the release; until the release nobody resolves to
+   the tenant, because the group resolves only once the release adds it to `var.tenants` as a
+   directory group, which is what `TENANT_GROUPS` in
+   `terraform/infra/locals.tf` is set from. The run's closing
+   lines say the same: the worker account, grants and namespace are made, and
+   the tenant record and pool come with the release. Its provider keys wait for
+   the release too: the release creates `swarm-tenant-<tenant>-<provider>` for
+   each provider in `var.tenants[*].providers`
+   (`terraform/modules/secret_manager`), so `scripts/create-secrets.sh` run
+   first answers 409 on a fourth object, and `--add-provider` before the
+   release dies with "tenants/<tenant> does not exist". After the release,
+   `scripts/create-secrets.sh --tenant <tenant> --provider <provider> --stdin`
+   finds the release's secret and only adds a version, and
+   `scripts/register-tenant.sh --tenant <tenant> --add-provider <provider>`
+   is run only if `tenants/<tenant>` lacks the provider. The run also skips its
+   Firestore database check, since it writes nothing there; an unreadable
+   database still stops it at the preflight. Import blocks were not the fix:
+   an `import` of an object that does not exist fails the plan, and these exist
+   only when the script ran first. Without the flag the script makes all three,
+   as a tenant Terraform never manages needs; a workspace registered that way
+   which later becomes a Terraform tenant needs those three objects deleted
+   before the release (a Terraform tenant is registered with the flag from the
+   start). An environment that sets
+   `bootstrap_firestore_documents = false` gets no documents from the release
+   either: once the release has run, re-run the registration there without the
+   flag, which writes them and finds the release's QA secret already in place.
 2. Write the new settings. The deployment's tfvars is not in this repository:
    it lives only in the state bucket, as `config/dev/dev.tfvars`. Copy the
    current one out, add the tenant to its `tenants` block, and have the copy
@@ -4260,6 +4305,151 @@ so a refresh is due when a slice is added, split or made faster, or when the
 `pick` lines in a run's log (`shard k runs n, ~s s of measured test time
 (shards: ...)`) stop matching the shards' real test times.
 
+## Coverage floors
+
+**Why.** Until issue 64 nothing measured test coverage: there was no
+pytest-cov, no `fail_under`, and `vitest.config.ts` said "no coverage
+instrumentation". A change that deleted tests, or added code no test ran,
+went unnoticed. Now each package's **line** coverage has a floor in
+[`coverage-floors.json`](../coverage-floors.json), measured every night.
+
+### Where it runs: nightly, off the merge path
+
+[`.github/workflows/coverage.yml`](../.github/workflows/coverage.yml) runs
+once a day at **10:23 UTC**, and by hand (`workflow_dispatch`), on `main`
+only. **It adds zero time to a merge**: `application.yml` measures nothing,
+no pull-request check, merge-train job or `ci-gate` need waits for it, and
+it is not a required check. It has no `pull_request`, `push` or
+`merge_group` trigger, so a pull request or a train can never start it.
+
+The first design (2026-11-23) measured inside `application.yml`'s unit and
+component-test shards on every whole-suite run and judged it in a job
+`ci-gate` waited on. The whole suite runs once per merge, on the merge train
+(median 12 minutes that day), so coverage.py's tracer in every shard would
+have slowed every merge. The owner: "we should also make sure we have a fast
+CI. if our changes end up making merging changes slow or become a
+bottleneck, this will go against having everything move faster." So the
+suites run a second time, once a day, with coverage on.
+
+**Why 10:23 UTC.** The owner's pick (2026-11-23): the night in US Pacific
+time. It is not the quiet hour for merges. Of the 55 merges to `main` from
+2026-11-18 to 11-23, 36 landed between 07:00 and 15:00 UTC, and none at 19,
+20 or 21 UTC, the longest quiet stretch. The run takes about 20 runner-pool
+VMs for half an hour, so a train running at that hour shares the pool with
+it; nothing on the merge path waits for the run itself. `:23` keeps it off
+the top of the hour, when GitHub's scheduler is busiest and delays scheduled
+runs. If trains are seen queueing for runners at that hour, move it to
+20:23 UTC: the cron line is the only place it is set.
+
+**Two runs never overlap**: one `concurrency` group, `cancel-in-progress:
+false`, so a night (or a dispatch) that starts while another runs waits for
+it. **Permissions** are `contents: read` for the workflow; only the `report`
+job adds `issues: write`, plus `actions: read` to find the last green run.
+
+### What it runs
+
+* `plan the shards`: `scripts/lib/unit_shards.py count` over the whole
+  suite (`PYTHON_MODE=all`) and `scripts/lib/ui_shards.py count`, the counts
+  `application.yml`'s `changes` job computes.
+* `unit tests with coverage (k/N)`: the unit suite **sharded**, split by
+  `unit_shards.py pick` exactly as `python-unit` splits it, with the same
+  Node and user-namespace steps, under pytest-cov (`--cov --cov-report=`,
+  configured by `[tool.coverage.run]` in `pyproject.toml`). Sharded, not one
+  job: ~8,600 s of measured test time is over half an hour on one 4-vCPU
+  runner before the tracer's cost, and a job that long hides a hang. Each
+  shard uploads `unit-<k>.coverage`, its xdist workers' data combined.
+* `swarm-ui component tests with coverage (k/N)`: the component suite split
+  by `ui_shards.py pick`, with `SWARM_UI_COVERAGE_DIR` set, which turns on
+  vitest's v8 coverage in `vitest.config.ts` (inert when unset: in
+  `application.yml`, `make test`, an agent's related-tests run). Each shard
+  uploads istanbul's `coverage-final.json`.
+* `coverage floors` (the `judge` job): `scripts/coverage-floors.sh`.
+  `coverage combine` of the unit shards (paths are relative to the checkout,
+  `relative_files`, so shards on different runners combine), a
+  statement-by-statement merge of the component shards' JSON
+  (`scripts/lib/coverage_floors.py`; a line is covered when any statement on
+  it ran in any shard), then the judgement. Fewer data files than shards (a
+  shard failed or timed out) is an **incomplete** measurement, never read
+  as lost coverage. It uploads `coverage-reports` (per-package
+  `python.json`, `ui.json` and the verdict lines) for 30 days, and fails the
+  run when a package is under its floor or the measurement is incomplete.
+* `report the coverage`: `scripts/coverage-report.sh`, below.
+
+**Expected duration: about 25-35 minutes**, not yet measured. A merge-train
+unit shard takes ~12 minutes; the C tracer (Python 3.11 has no
+`sys.monitoring`) adds a share to each, and the shards run side by side, so
+the night takes about one traced shard plus the judge (~2 minutes). Each
+shard's ceiling is 60 minutes. Write the measured number here after the
+first runs.
+
+### What each night reports
+
+**The summary, every night**: a table of every package -- its suite, the
+measured coverage (covered/total lines), its floor and the verdict word --
+then the verdict lines:
+
+* `BELOW` under the floor; `MISSING` a floored package the report that ran
+  does not have (its tests or its code were deleted): both make the night red;
+* `RAISE` 2+ points over the floor, `ok` at or above, under 2 points;
+* `UNMEASURED` a null floor: the measurement and the floor to set;
+* `NO FLOOR` a package the file does not list; `not judged` its suite did
+  not run.
+
+A floors file the script cannot read whole -- not JSON, an unknown key, a
+floor that is not a number from 0 to 100, a null floor without a `note` --
+exits 2: no entry is ever skipped while the rest pass.
+`tests/unit/scripts/test_coverage_floors.py` holds each rule, and
+`tests/unit/scripts/test_coverage_workflow.py` the workflow and the report.
+
+**A red night opens ONE issue**, labelled `bug`, titled as a fact --
+`apps/<dir> line coverage is under its floor on main`, or `N packages' line
+coverage is under their floors on main` -- in the bug form's sections. Its
+body starts with the hidden marker `<!-- swarm-coverage: nightly line
+coverage is under a floor -->`, which is how a later night finds it (never
+by title, the way `accept.yml` files its red-acceptance issue). It names
+the commit measured, the run, every `BELOW`/`MISSING` line, and **the
+commits merged since the last green run** of `coverage.yml` (`git log
+<last green SHA>..<this SHA>`, at most 100 listed). A later red night
+retitles it and comments the same section; it never opens a second. **The
+next green night comments on it and closes it.** An incomplete measurement
+files nothing and closes nothing: a failed shard is not fallen coverage, and
+the red run says so by itself.
+
+### Filling and raising the floors
+
+**None is set yet (2026-11-23).** The first lane was asked to measure each
+floor by running the suites with coverage in the agent container; neither
+fit: one eighth of the unit suite (`unit_shards.py pick`, shard 1 of 8,
+`-n 5`, `--cov`) had not finished after 10 minutes, nor had one sixth of the
+component suite. So every floor is `null` with that note, and no number was
+invented. Until floors are set a night only reports (verdict `unset`) and
+its summary prints, with that run's id filled in, the command that sets
+them:
+
+```bash
+gh run download <run-id> -n coverage-reports -D "$TMPDIR/coverage-reports"
+python3 scripts/lib/coverage_floors.py fill --floors coverage-floors.json \
+  --about "Nightly coverage run <url>, <date>: whole-suite unit and component tests, line coverage" \
+  --report "$TMPDIR/coverage-reports/python.json" --report "$TMPDIR/coverage-reports/ui.json"
+```
+
+`fill` sets each null floor (and each package the file does not list) to the
+measurement less one point, rounded down, and records `measured`: high
+enough that deleting a test file's worth of coverage turns the night red,
+low enough that ordinary churn does not. Commit the file in a pull request.
+
+**A ratchet, not a target.** When a night says `RAISE`, run the same command
+with `--raise`: it also lifts every floor 2+ points under what was measured,
+which is how a gain is kept. Lowering a floor is allowed, on purpose, with
+the reason in the commit.
+
+**The pins.** `pytest-cov==7.1.0` (uploaded 2026-03-21) and its `coverage`
+7.17.2 in `uv.lock` (2026-11-04); `@vitest/coverage-v8` 3.2.7, exactly the
+`vitest` it serves (the two must match). Each was resolved under the 14-day
+release-age quarantine (`[tool.uv] exclude-newer`, `apps/swarm-ui/.npmrc`
+`min-release-age`): the newest package the coverage provider added to
+`package-lock.json` was published 2026-11-08.
+
 ## Flaky tests and the quarantine
 
 **Owner decision, 2026-10-14: "Fix the known flakes and quarantine new
@@ -4299,7 +4489,12 @@ skipped, while its issue is worked:
 * **`tests/unit/conftest.py`** marks every listed test `flaky` at collection
   (the marker is registered in `pyproject.toml`), through
   `tests/unit/flaky_quarantine.py`. A malformed list stops collection with its
-  line number rather than quarantine the wrong thing.
+  line number rather than quarantine the wrong thing, and so does an entry
+  naming a test that does not exist: a renamed test would otherwise leave its
+  entry quarantining nothing while the real flake gates again. The loader
+  reads existence from the files on disk, not from the collected items, so a
+  shard that collects a subset loads the same list. The check lived in a test
+  of its own until issue 74 folded it into the loader.
 * **The unit job** runs the gating suite with `-m "not flaky"`, then runs the
   shard's quarantined tests in `quarantined unit tests (report only, never fail
   the gate)`. That step's failure is a warning annotation and a line in the
@@ -4312,9 +4507,8 @@ skipped, while its issue is worked:
   2026-11-21 audit it read the shard's file count, so with the list empty
   every shard still started a second pytest to select nothing.
 * **`tests/unit/scripts/test_flaky_quarantine.py`** holds the parser, the
-  marking, the job's two steps, and that every listed test exists: a renamed
-  test would otherwise leave its entry quarantining nothing while the real
-  flake gates again.
+  marking, the job's two steps, and that the conftest stops collection on a
+  malformed list or one naming a test that is not there.
 
 The list covers `tests/unit` only. The UI suite and the integration suite have
 no quarantine; a flake there is fixed at its cause.
@@ -4384,7 +4578,40 @@ offline, path-filtered job) and `checkov`. The deployment-values guard on the
 diff is not a job of these three workflows
 ([design/generic-repository.md](design/generic-repository.md)), so this rule
 does not touch it; a SwarmCloud lane also meets it in its worker's
-pre-publish gate (`scripts/changed-guards.sh`).
+pre-publish gate, as the gate's `deployment-values` check (since 2026-11-23;
+before that this sentence named `scripts/changed-guards.sh`, which never ran
+the guard, and a lane met it first on the merge train).
+
+**The gate's `deployment-values` check runs the guard the way the train
+does.** A lane's pull request runs no CI before the merge train, so the gate
+is the only check before it, and a finding there is fixed in the agent's fix
+turn instead of ejecting the pull request. The check runs
+`scripts/guards/deployment-values.sh --diff <base> --mode enforce` over the
+lines the change adds, from the **base commit's** copy of `scripts/guards/`
+and `scripts/lib/` -- security.yml checks the guard out from the base sha and
+the change "as data only", so the allowlist it reads,
+`scripts/guards/placeholders.json`, is **main's**, never the pull request's.
+Uncommitted and untracked files, which the worker commits at publish, are
+scanned too: the gate checks the tree it would publish out as a detached
+temporary worktree and removes it after. A worker holds no pattern list, so
+the guard runs its shape layer and exits 3 (`name layer skipped`): the gate
+reads that as the shape layer passing, the names left to CI; exit 1 is a
+finding the agent fixes, exit 2 an error.
+
+**A public host lands on main first.** When the finding is a `url-host`
+rule, the fix turn is told plainly: adding the host to `placeholders.json`
+in the same pull request does not help, because the train reads main's copy
+and ejects the pull request anyway. Use a placeholder host (`example.com`,
+`example.org`, `example.net`) or drop the URL; a public host the repository
+really needs goes to main first, in its own small pull request that adds it
+to the allowlist, and only then into a change that names it.
+
+The gate's `publish-scan` check runs `scripts/publish-scan.sh --base <base>`
+beside it, the worker's own credential scan, so a credential-shaped literal
+is fixed in the fix turn rather than failing the attempt at the worker's
+final leak scan after it. Both checks take about a second (0.5 s and 0.8 s,
+measured 2026-11-23) and run before `scripts/changed-guards.sh`, whose time
+box never skips them.
 
 **The rule is written once**, as the `what this change reaches` job's `full`
 output: `true` when the event is not `pull_request`, when the head branch
@@ -4490,8 +4717,16 @@ clause is false on each.
 
 **Larger trains.** With the lane's own run gone, the train's run is the only
 test a change gets, so a train gathers more: it boards once 8 pull requests
-would board or once the oldest has been `ready` 15 minutes, up to 40 in one
-train (the owner, 13 November 2026: maximum merge speed) (`min_prs` and `max_wait_minutes` in
+would board or once the oldest has been `ready` 5 minutes, up to 40 in one
+train (the owner, 13 November 2026: maximum merge speed, with a 15-minute
+window; cut to 5 on 23 November 2026 by the improvement plan "a lone pull
+request boards the train sooner": over the 30 days to that date the time from
+the last review or fix finishing to merged had a median of 1.4 hours, and a
+lone ready pull request always waited the full 15 minutes before a train even
+started. The cost is more, smaller trains, so more CI minutes per merged pull
+request; it is judged on the weekly scorecard's trains per day and merge
+latency, and the fallback is `max_wait_minutes` 15, one line. No check is added
+or made slower) (`min_prs` and `max_wait_minutes` in
 `apps/swarm-api/swarm_api/merge_train_gather.json`, `MAX_PRS` in
 [`scripts/merge-train.sh`](../scripts/merge-train.sh); the repository
 variables `MERGE_TRAIN_MIN_PRS`, `MERGE_TRAIN_MAX_WAIT_MINUTES` and
@@ -5249,7 +5484,11 @@ runner instead, which does hold the sandbox token:
   carrying a task id, a body without its task id, a change outside
   `tests/acceptance/fixtures/`, a diff that does not remove `return a - b` from
   `calc.py`, a direct-pr change to anything but `calc.py`, or an integrate body
-  that lists no merged branch or leaves one out. It only reads; the sweep still
+  that lists no merged branch or leaves one out. Those `calc.py` rules are the
+  claude-code group's. The git-tools pull requests and the workflow group's
+  fix-loop pull request each get their own rules
+  ([acceptance.md](acceptance.md#pull-requests-on-the-sandbox)). A pull request
+  no check owns fails as unclassified. It only reads; the sweep still
   runs when it fails. Finding no pull request at all is printed with a workflow
   warning, not a failure: a claude-code group without a provider credential
   SKIPs without opening one.
@@ -5472,8 +5711,12 @@ path adds its own path and basename to what a test may name (the
 selector's `doc_closure` above): a test that resolves a doc's citations names
 the doc, not the file it cites. It runs them in **one** `pytest -q -n auto -p no:warnings` call
 (collecting `tests/unit/scripts` whole costs ~135 s, so files, not
-directories), then `scripts/lib/check-contract-parity.sh`, with 540 s and 60 s
-deadlines so one call stays under the ten minutes a lane allows a command. It
+directories), then `scripts/lib/check-contract-parity.sh`, with 540 s and 180 s
+deadlines (under the pre-publish gate the parity check is a part of its own,
+bounded again by what is left of the gate's budget). A deadline hit prints a
+`ran past N s` line for each of the three -- pytest, vitest, parity -- and the
+result record says `timed_out`, so the gate leaves the part to CI instead of
+spending its one fix turn on a timeout nobody can fix. It
 prints the last lines of the output and keeps the full log only on failure. An
 empty diff runs nothing and exits 0; a base that does not resolve exits 2
 rather than reading as an empty diff.
@@ -5616,13 +5859,115 @@ why the related set is cut into parts like the rest.
 
 The contract-parity check took 66 s alone in that container, past the
 script's own 60 s `PARITY_SECONDS`, so it failed in some of these runs whichever way the
-guards ran; that limit predates this change and is not changed by it.
+guards ran. The limit is 180 s since 2026-11-23 (owner's improvement plan), and an
+overrun now prints `contract parity ran past 180 s`: before, it printed only
+`contract parity failed (exit 124)`, which the gate read as a failure to fix.
+
+### The generated-types and test-pointer checks
+
+Three merge trains went red on 2026-11-23 on things a lane could have caught
+in its own container: twice the console's generated API types
+(`apps/swarm-ui/src/generated/api-types.ts`) were stale after a lane changed a
+request model, and once a docstring under `apps/` named a test file. A lane's
+pull request runs no CI of its own, so the train was the first place either
+ran, and each red train cost every pull request aboard about half an hour and
+a bisection. So the pre-publish gate runs both, ahead of the guard script
+(`lane_drift_checks` in `agent_worker/prepublish.py`):
+
+| Check | Command | Runs when the change touches | Budget |
+|---|---|---|---|
+| `api-types` | `uv run python scripts/gen_api_types.py --check` | a file the generator reads, as the generator itself prints them with `python3 scripts/gen_api_types.py --inputs` (the script, the repository packages building the document imports, `uv.lock`, the generated file) | 45 s |
+| `test-pointers` | `python3 scripts/check_test_pointers.py --root .` (the whole tree, as the train runs it) | anything under `apps/` or `tests/` (a new test's name can turn a comment nobody touched into a pointer) | 15 s |
+
+**The trigger list is the generator's, not the gate's.** `INPUTS` in
+`scripts/gen_api_types.py` names what the output is a function of, and the
+drift test holds its package entries equal, both ways, to the repository
+modules that building the document actually loads, in a fresh interpreter;
+`--inputs` prints the list with the standard library only, so the trigger
+costs one interpreter start. A generator that cannot print it is checked on
+every change.
+
+**A failure goes to the fix turn with its fix.** A stale file is handed back
+with the one command that fixes it: run `uv run python scripts/gen_api_types.py`
+from the repository root and commit what it writes. A pointer is handed back
+as `path:line: text`, with "keep the reason, drop the pointer": rewrite the
+comment to say why the code is as it is, without naming the test.
+
+**An overrun is left to CI.** Each check runs under its own budget (and never
+past the step's deadline). One killed at it with no failure of its own is
+`skipped`, named on the round's record (`left_to_ci`) and under "Left to CI"
+in the pull request's advisory section, never passed and never sent to the
+agent: the way a guard part stopped at the guard budget, the contract-parity
+part among them, is left to CI.
+
+**Measured** on 2026-11-23 in a 6-CPU lane container, three runs each
+(`time` around the gate's own command):
+
+| Check | Cold | Warm |
+|---|---|---|
+| `api-types` | 13.52 s, 11.05 s, 12.10 s (a new uv project environment each run, as every gate round has) | 10.03 s, 8.71 s, 8.71 s (one environment reused) |
+| `test-pointers`, whole tree | 3.16 s, 3.05 s, 3.07 s (no bytecode cache) | 3.18 s, 3.05 s, 3.08 s |
+| `--inputs` (the trigger) | 0.096 s, 0.097 s, 0.081 s | (one interpreter start; no cache to warm) |
+
+Most of `api-types` is importing swarm-api to build the document, which is
+why it is conditional. `test-pointers` over 20 named files took 0.83-0.89 s,
+most of it reading the tests tree, so a whole-tree run (about 3 s) is kept:
+it is what the train runs, and it catches the pointer a new test name makes.
+
+**The budget arithmetic** (held by a test against the gate's constants). The
+gate starts with as little as `MIN_GATE_SECONDS` = 120 s left, and every check
+keeps `CHECK_MARGIN_SECONDS` = 30 s back, so at that floor 90 s are the
+checks'. Ahead of the guard script now run `deployment-values` and
+`publish-scan` (0.5 s + 0.8 s measured, 2 s held) and these two at their full
+budgets (45 s + 15 s): 62 s, leaving the guard script 28 s, over the
+`MIN_CHECK_SECONDS` = 10 s it needs to start. At their measured worst the two
+take 13.5 s + 3.2 s = 16.7 s, leaving it about 71 s. Each budget is over three
+times its slowest measured run (45 ≥ 3 × 13.6, 15 ≥ 3 × 3.2), so a normal
+run is never cut. `GUARDS_BUDGET_SECONDS` (600 s) is wall time from the guard
+check's own start, so nothing ahead of it shortens it; only the step's
+deadline is shared. None of this is on the merge path: it runs in the lane's
+own container before it publishes.
+
+### The install manifest completeness test
+
+A merge train went red on 2026-11-23 on
+`tests/unit/install/test_manifest_complete.py::test_every_reference_is_listed`,
+ejecting six pull requests' worth of checks: a lane had added Terraform
+resources that `install/manifest.yaml` does not list. The test collects every
+Terraform resource, environment variable reference, secret, image, scheduler
+job and Kubernetes object in the tree and fails on one no manifest entry
+lists. A lane's new resource changes a `.tf` file the test never names, so no
+diff selects it and the train was the first place it ran. It is now in
+`GUARD_TESTS` in `scripts/changed-guards.sh`, which the pre-publish gate runs
+on every change, so the agent that adds an unlisted reference is told in its
+own fix turn: add an entry, or an `ignored:` line with a reason.
+
+**Measured** on 2026-11-23 in a 6-CPU lane container:
+
+| Run | Without it | With it | Added |
+|---|---|---|---|
+| The guard set's pytest pass, `-n 6`, as the script runs it (first pair) | 79.15 s | 94.87 s | 15.7 s |
+| The same, second pair | 84.29 s | 107.01 s | 22.7 s |
+| The file alone, one pytest worker (a gate part's share) | | 15.12 s | |
+| The file alone, `-n 6` | | 20.75 s | |
+
+About 10 s of it is the tree collection, a module-scoped fixture: under
+`-n 6` each worker that draws one of the file's seven tests collects again,
+which is why it adds more to a six-worker pass than it takes alone on one.
+The whole guard script on the same tree took 140 s before the change (85.7 s
+of it pytest). The gate's guard check has `GUARDS_BUDGET_SECONDS` = 600 s, so
+it fits with about 7 minutes to spare; at the gate's 120 s floor what the
+budget does not reach is left to CI, as for every guard part. It is OVER the
+"at most 10 CI-seconds a file" the guard list asks of its entries (pull-request
+CI reads the same array); `test_docs_describe_what_was_built` (52.9
+CI-seconds) is the other exception.
 
 ### While it works, a SwarmCloud agent runs only the related tests
 
 ```bash
 scripts/related-tests.sh             # print the related test files and the runs that test them
 scripts/related-tests.sh --run       # run those, one after another, in the foreground
+scripts/related-tests.sh --closure   # where the selection is capped, print the full closure, not the capped list
 scripts/related-tests.sh --base <rev> | --files <list>|-
 ```
 
@@ -5650,8 +5995,63 @@ end ([why](working-in-this-repository.md#swarmcloud-agent-tests)).
 Python: `select_unit_tests.py`'s rules, imported rather than restated -- the
 change's own tests, every test that imports a changed module through any chain
 of imports, every test whose text names a changed path or a script that names
-one -- but **without** its fall-back to the whole suite: where CI would run
-everything, this keeps the files it can name and leaves the rest to CI.
+one -- but **without** its fall-back to the whole suite. The selection is
+**capped** (RELATED-CAP, owner plan 2026-11-23) on either of two triggers:
+where CI would run everything for the change itself (`fallback_reason`: a
+`conftest.py`, `pyproject.toml`, `uv.lock`, the frozen contract, a workflow,
+more than 40 paths), or **on size**, where the closure's recorded CI weight is
+more than one 540 s run (`SIZE_CAP_WEIGHT`, owner answer 2026-11-23, "Also on
+size"; the weights are `tests/unit/scripts/unit_test_durations.json`, the same
+ones the runs are cut by, and a file it does not record counts at the median,
+never as zero, so unrecorded files cannot make a large selection look small;
+when the file is missing, unreadable or records nothing there is no weight to
+trust -- every file at one second read a large selection as light -- so the
+selection is capped and the note says why). A selection at or under one run is unchanged. Either way the capped selection
+is the change's own tests, the tests that import a changed module **directly** (one
+hop; for a `conftest.py`, the tests beside it), the code graph's `tests_for`
+and the tests whose text names a changed path. **It is never empty while the
+closure holds a test** (owner answer 2026-11-23, "Widen by hops until
+non-empty"): a capped selection with no test file adds the next hop of
+importers inside the closure -- the tests that import a module that imports
+the changed module -- and so on hop by hop, and stops at the first hop that
+yields any test (past the last hop, the closure's tests that reach the change
+only by text). The agent worker's checkpointing module is the example: its
+tests all reach it through the lifecycle module, so it capped at 0 files; it
+now selects 163 at hop 2 of 593 (main at 7fc7aaa). A widened hop heavier than
+one 540 s run is kept, because never empty beats never heavy, and the note
+says so. A change no module imports and with no tests still selects nothing,
+and its note says the closure is empty too. A warning gives the capped count,
+the hop when it widened (`capped at N test file(s) at hop 2 of the 593`) and
+the closure's count, and says CI (the merge train) runs the closure;
+`--closure` prints the closure, byte for byte as before. **The pre-publish
+gate carries that warning into its report**: with a cut test map it asks
+`related-tests.sh` for its import pick, and when the pick was capped the
+"Widened:" line of `prepublish-checks.md` (appended to the pull request's
+body) and graph-pytest's output say `capped its selection at N of the M test
+file(s) ...; the merge train runs the rest, so M-N are left to CI, not
+passed` -- before, the gate kept only the file lines, so a test outside the
+cap failed on the merge train with no word of it here. Why: over 30 days model time was a fifth of a
+task's wall-clock and tests most of the rest; the closure was up to 2,094 files
+(1,844 for `swarm_common/models.py`), no 540 s run held it, `--run` stopped at
+its first overrun with "narrow it", which an agent cannot do, and the
+pre-publish gate inherited the same list. Measured on three merged changes
+against main at 8dc58b4: 8dc58b4 (`pyproject.toml`) 430 to 51 files, 38b31a8
+(`pyproject.toml`) 407 to 89, daf2a8e (31 paths, a workflow) 888 to 254. On
+size, measured on main at 7fc7aaa: `agent_worker/lifecycle.py` 831 files
+(3,954 recorded CI-seconds, eight runs) to 189 (686 s, two runs; 163 tests
+import it directly), `scripts/lib/common.sh` through the script closure
+(3,784 s) to 110. CI's own selection (`select_unit_tests.py`) is unchanged by
+either trigger. The selector remembers each
+file's parsed imports by the hash of its path, its text and
+`select_unit_tests.py` (`EdgeCache`, under `swarm-related-tests-<uid>` in
+`$TMPDIR`, else the system temp directory; `RELATED_TESTS_CACHE_DIR=off` turns
+it off): parsing was 20 of a run's 24 s, now 4-7 s once warm. Nothing is keyed
+on a commit's tree, which leaves out the uncommitted files a lane's selection
+is about. The directory is created mode 0700 with the numeric user id in its
+name, and one another user owns or can write is not used: with `TMPDIR` unset
+it is in a temp directory every user of the host shares. A cache file that
+cannot be read -- nested too deep for `json` included -- is no cache, and a
+malformed entry is parsed again and written back, so it is parsed once.
 swarm-ui: the change's own test files and every vitest file that reaches a
 changed module through relative imports (`import ... from`, `export ... from`,
 `import '...'`, `import('...')`, `vi.mock('...')`), transitively -- the graph

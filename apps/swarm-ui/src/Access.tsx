@@ -12,8 +12,8 @@ import { UrCap, UrRadio, UrRefresh, UrRegion, useUrRead } from './RepositoriesPa
 import { notServed, type CapCell } from './RepositoriesData'
 import { githubTokenState } from './githubTokenState'
 import { PageHead } from './Shell'
-import { InfoTip } from './People'
-import { WorkspaceTabWords } from './Profile'
+import { InfoTip } from './InfoTip'
+import { WorkspaceTabWords } from './workspaceName'
 import { usePhoneTables } from './capacityPoll'
 import type {
   AccessDisableResponse, AccessGrant, AccessMode, AccessOverview, AccessOwner, AccessRepository, GitHubConnection,
@@ -1466,7 +1466,7 @@ function GitHubQuotaLines({ quota }: { quota: GitHubQuota[] }) {
  * A lead, on the info tint as S2 draws it: `.ac-lead`, the one Config lead
  * style (the tint in styles/config.css; its buttons' borders, which clear 3:1
  * on the tint, in styles.css after the button floor). CONFIG-LEAD-TINT;
- * measured in contrast.config-lead.test.tsx.
+ * measured by a contrast test.
  *
  * S2B'S SHAPE (VQ-038 minor, GITHUB-ACCESS-S2B): the kicker over the title
  * over the sentence on the left, the one button at the right, which wraps

@@ -205,8 +205,8 @@ def run_command(argv: Sequence[str], stdin: str | None = None,
 
 
 #: kubernetes/label_prefix.py's token, its refusal and its prefix rule, held
-#: equal to the release's by tests/unit/install/test_cluster_step.py: the engine
-#: needs them before the bundle is fetched, so they are stated once here.
+#: equal to the release's: the engine needs them before the bundle is
+#: fetched, so they are stated once here.
 LABEL_PREFIX_PLACEHOLDER = "__LABEL_PREFIX__"
 LABEL_PREFIX_UNSET = (
     "the label-key prefix is not configured: set SWARM_LABEL_PREFIX, or SWARM_ORG_DOMAIN "

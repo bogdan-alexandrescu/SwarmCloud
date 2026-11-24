@@ -20,8 +20,8 @@ pydantic checks it in lax Python mode -- `parse_index`'s `model_validate` over
 `parse_index`'s `field: message` lines, the first 20. A worker that refused a
 document promotion accepts would cost a turn for nothing; one that accepted a
 document promotion refuses would cost the run, as before.
-tests/unit/worker/test_index_output_repair.py holds the two equal, field for
-field and line for line, over a corpus of every rule; change both together.
+A test holds the two equal, field for field and line for line, over a
+corpus of every rule; change both together.
 """
 
 from __future__ import annotations

@@ -45,6 +45,7 @@ from swarm_mcp import config, launch, sc, server, workflows
 
 from test_auto_attach import _BY_PROMPT
 from test_plugin_agents_and_workflows import _PLUGIN, _RUN_JS, _node, _step
+import sc_skill_text
 
 _MANIFEST = _PLUGIN / ".claude-plugin" / "plugin.json"
 _SKILL = _PLUGIN / "skills" / "sc" / "SKILL.md"
@@ -376,7 +377,7 @@ def test_for_tasks_follows_100_and_lists_the_rest_with_their_workspace(_plugin_r
     out = launch.for_tasks(entries)
     assert len(out["launches"]) == 100 and out["task_ids"] == [f"task_{n:03d}" for n in range(100)]
     assert all(len(copy["args"]["attach_tasks"]) == 1 and copy["args"]["max_rows"] == 1 for copy in out["launches"])
-    first = dict(out["args"]["attach_tasks"][0])
+    first = dict(out["launches"][0]["args"]["attach_tasks"][0])
     assert first.pop("details").startswith("Workspace: u-owner · ")
     assert first == {"task_id": "task_000", "title": "lane 0", "workspace": "u-owner"}
     assert [n["workspace"] for n in out["not_followed"]] == ["u-owner"] * 3
@@ -468,7 +469,7 @@ def test_entries_with_nothing_to_order_by_keep_their_order_within_each_workspace
 def test_the_skill_doc_says_100_and_that_scrolling_is_claude_codes():
     import re
 
-    text = " ".join(_SKILL.read_text().split())
+    text = " ".join(sc_skill_text.text().split())
     assert not re.search(r"at most (10|30)\b", text) and "past 10 workflows" not in text
     assert "max_live_rows" in text and "at most 100" in text and "1-200" in text and "1-50" not in text
     assert "newest first, grouped by workspace" not in text and "closest to finish first" in text

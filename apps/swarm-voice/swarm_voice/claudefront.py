@@ -36,6 +36,16 @@ the front says its `total` and names at most three rows by title, spoken, never
 as a bulleted list and never by a delegation. Anything that draws, shows,
 plans or acts is still delegated: the front holds no draw, visual or act tool.
 
+THIS PROJECT'S STATUS IS THE FRONT'S TOO (the plan item "voice, better
+answers"). "What is running" or "did that finish" about the project itself
+went to the planner: a leased account and a turn of up to 240 s for a
+status line. The front now holds `project_status` (tools_read.py), the
+project's own cards and roster as the person's project page shows them, read
+through the same grant and `Planner.read` as every other read and fenced as
+data: swarm-api applies the roster route's own person, workspace and project
+checks, and refuses a grant any project but its session's. The front answers
+from it and delegates only work.
+
 ONE ACCOUNT FOR THE SESSION. `PlannerAccounts(broker, holder="voice-front")`
 assigns one Claude account of the person's own workspace pool at the start,
 renews it every 240 s while the session lives and releases it on end, idle,
@@ -51,6 +61,16 @@ nothing held: main.py falls back to text mode (§4.1). A dead child or a lost
 hold mid-session re-leases ONCE, excluding that account, with the last turns
 as the first message; if that fails too the turn raises `FrontDown`, the
 page's `engine down` (§4.5).
+
+EARLY FIRST SENTENCE (voice-it-own-speech.md §3.3 step 5, §12.6). `turn`
+takes `on_sentence`: the child streams its text deltas (claudeturn
+`--include-partial-messages`, `Conversation.say(on_text=)`), `EarlySentence`
+finds the first complete sentence, scrubs it and makes it spoken as the reply
+is, and hands it out once while the turn still runs. The recorded reply starts
+with it (`EarlySentence.reply`) and the answer's `rest` is what is left to
+speak, so what is spoken early is what the transcript records, once.
+`turn_lines` is the same turn as NDJSON for swarm-api's relay (main.py's
+`/turns` with `stream: true`).
 
 DELEGATIONS RUN IN THE BACKGROUND, one at a time per session, at most two
 waiting behind it; a third is refused to the model, which says so. The turn
@@ -69,7 +89,10 @@ to this module, so no `progress` is sent. Each report goes through the grant
 the delegation started with, carries only its id and state, and is posted in
 the background: the turn and the delegation's result never wait on it. A
 delegation that never ran (still waiting when the session ended) reports
-nothing.
+nothing. The one wait is `started`, which swarm-api is asked before the
+delegation runs (worksink.py `admit`, the spend caps of voice-it.md §3.8): at
+a cap it is refused, nothing runs and its spoken answer is the cap's one
+sentence (worksink.CAP_SENTENCES).
 
 NO OPENAI. Nothing here, nor the planner, calls an OpenAI host; the only
 network the front's own code reaches is the quota broker (and the planner's
@@ -82,12 +105,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
+import re
 import secrets
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -97,7 +122,7 @@ from .credential import CredentialError
 from .grant import SessionGrant
 from .planner import SAY_NO_GRANT, SAY_NO_LEASE, SAY_NO_POOL, SAY_POOL_FULL
 from .plannerlease import FRONT_HOLDER, LeaseFailed, PlannerAccounts, PlannerLease, PoolFull
-from .worksink import DONE, FAILED, REFUSED, STARTED, WorkSink
+from .worksink import CAP_SENTENCES, DONE, FAILED, REFUSED, WorkSink
 
 if TYPE_CHECKING:
     from .planner import Planner, TurnResult
@@ -134,6 +159,9 @@ FRONT_MODELS: tuple[str, ...] = (claudeturn.FRONT_MODEL, "claude-sonnet-5", "cla
 #: The planner's spoken refusals: a delegation that ends on one is `refused`.
 PLANNER_REFUSALS = (SAY_NO_GRANT, SAY_NO_LEASE, SAY_NO_POOL, SAY_POOL_FULL)
 
+#: The streamed turn's media type (`turn_lines`): one JSON object per line.
+TURN_LINES_TYPE = "application/x-ndjson"
+
 SAY_EMPTY = "I didn't catch an answer to that; could you say it again?"
 SAY_BUSY = "refused: two requests are already waiting for the planner; tell the person to wait for them"
 
@@ -149,6 +177,9 @@ FRONT_INSTRUCTIONS = (
     "its `total`, and never count with `search`; to say which ones, name at most three of its rows "
     "by title in the same sentence and say how many more there are. Say only what the read "
     "returned. "
+    "When the person asks about this project's own work (what is running, did that finish, what "
+    "is waiting on them, what is on its cards), call `project_status` once and answer from its "
+    "cards and roster in this turn; a status question is never delegated. "
     "When the person asks for something to be planned, drawn, shown on screen, explained in "
     "depth, or done (a task, a merge, a cancel, an approval), call the `delegate` tool with "
     "what they asked for in one sentence, then say in a few words that you are on it, for example "
@@ -235,6 +266,64 @@ class FrontAnswer:
     reply: str
     delegation_id: str | None = None
     cards: list[dict[str, Any]] = field(default_factory=list)
+    #: The first sentence already handed to `on_sentence` while the turn ran
+    #: (EARLY FIRST SENTENCE); `reply` always starts with it.
+    early: str | None = None
+
+    @property
+    def rest(self) -> str:
+        """What is left to speak: `reply` without the early sentence."""
+        if self.early and self.reply.startswith(self.early):
+            return self.reply[len(self.early):].strip()
+        return self.reply
+
+
+class EarlySentence:
+    """The turn's streamed text, watched for its first complete sentence: a
+    run of `.`, `!` or `?` (and closing quotes or brackets) followed by
+    whitespace. That sentence, scrubbed and made spoken as the reply is
+    (`prompts.spoken` over the whole text so far, so a token cut across two
+    deltas is still masked), is handed to `on_sentence` once."""
+
+    _END = re.compile(r"[.!?]+[\"')\]]*\s")
+
+    def __init__(self, on_sentence: Callable[[str], None], known: Callable[[], tuple[str, ...]]) -> None:
+        self._on_sentence = on_sentence
+        self._known = known
+        self._text = ""
+        self.sent: str | None = None
+
+    def __call__(self, piece: str) -> None:
+        if self.sent is not None:
+            return
+        self._text += piece
+        scrubbed = prompts.scrub(self._text, self._known())
+        # Whitespace at the very end still counts: "running. " has ended.
+        flat = " ".join(scrubbed.split()) + (" " if scrubbed[-1:].isspace() else "")
+        found = self._END.search(flat)
+        if found is None:
+            return
+        sentence = prompts.spoken(flat[:found.end()].strip(), secrets_=self._known())
+        if not sentence:
+            return
+        self.sent = sentence
+        try:
+            self._on_sentence(sentence)
+        except Exception as exc:  # noqa: BLE001 -- the turn goes on; its reply is spoken whole
+            log.warning("voice front: the early sentence was not handed out (%s)", type(exc).__name__)
+            self.sent = None
+            self._on_sentence = lambda _sentence: None
+
+    @staticmethod
+    def reply(early: str | None, spoken: str) -> str:
+        """The turn's recorded reply: `spoken` (the result made spoken), with
+        the early sentence first when it is not already its start (a sentence
+        said before a read: the CLI's result is the last message only)."""
+        if not early:
+            return spoken
+        if spoken.startswith(early):
+            return spoken
+        return f"{early} {spoken}".strip()
 
 
 class FrontSession:
@@ -443,9 +532,13 @@ class FrontSessions:
 
     # -- one sentence -------------------------------------------------------
 
-    async def turn(self, voice_id: str, text: str) -> FrontAnswer:
+    async def turn(self, voice_id: str, text: str, *,
+                   on_sentence: Callable[[str], None] | None = None) -> FrontAnswer:
         """Answer one final at once. Raises FrontSessionEnded, ValueError or
-        FrontDown; the person's text is never logged."""
+        FrontDown; the person's text is never logged. `on_sentence`, when
+        given, is handed the reply's first complete sentence while the turn
+        is still running (EARLY FIRST SENTENCE), once; the answer's `early`
+        names it and its `rest` is what is left to speak."""
         session = self._held.get(voice_id)
         if session is None or session.ended:
             raise FrontSessionEnded(voice_id)
@@ -461,26 +554,40 @@ class FrontSessions:
                 raise FrontSessionEnded(voice_id)
             session.last_turn_at = self._clock()
             session.delegated = None
-            outcome = await self._say(session, text)
+            early = EarlySentence(on_sentence, lambda: self._known(session)) if on_sentence else None
+            try:
+                outcome = await self._say(session, text, on_text=early)
+            except FrontDown:
+                if early is not None and early.sent:
+                    # Already spoken: the transcript records it, once.
+                    session.turns = [*session.turns, ("person", text), ("voice", early.sent)][-HISTORY_TURNS:]
+                raise
             if session.ended:
                 raise FrontSessionEnded(voice_id)
             known = self._known(session)
-            reply = prompts.spoken(outcome.result_text, secrets_=known) or SAY_EMPTY
+            sent = early.sent if early is not None else None
+            spoken = prompts.spoken(outcome.result_text, secrets_=known)
+            reply = EarlySentence.reply(sent, spoken) or SAY_EMPTY
             session.add_usage(session.front_model, outcome.usage)
             session.turns = [*session.turns, ("person", text), ("voice", reply)][-HISTORY_TURNS:]
             session.last_turn_at = self._clock()
             turn_id = "vf_" + secrets.token_hex(12)
             log.info("voice session %s: front turn %s answered (%d chars, delegated %s)", voice_id, turn_id,
                      len(reply), session.delegated is not None)
-            return FrontAnswer(turn_id, reply, session.delegated)
+            return FrontAnswer(turn_id, reply, session.delegated, early=sent)
 
-    async def _say(self, session: FrontSession, text: str) -> claudeturn.ChildOutcome:
+    @staticmethod
+    def _ask(conversation: Any, text: str, on_text: Callable[[str], None] | None) -> Awaitable[Any]:
+        return conversation.say(text, on_text=on_text) if on_text is not None else conversation.say(text)
+
+    async def _say(self, session: FrontSession, text: str, *,
+                   on_text: Callable[[str], None] | None = None) -> claudeturn.ChildOutcome:
         """The child's answer to `text`; a dead child or a lost hold re-leases
         once, excluding that account, with the last turns first."""
         conversation = session.conversation
         if conversation is not None and conversation.alive and not session.lost:
             try:
-                return await asyncio.wait_for(conversation.say(text), self._turn_seconds)
+                return await asyncio.wait_for(self._ask(conversation, text, on_text), self._turn_seconds)
             except (claudeturn.ChildGone, asyncio.TimeoutError) as exc:
                 log.warning("voice session %s: the front's child failed (%s)", session.voice_id,
                             type(exc).__name__)
@@ -498,7 +605,7 @@ class FrontSessions:
                         type(exc).__name__)
             raise FrontDown(session.voice_id) from None
         try:
-            return await asyncio.wait_for(session.conversation.say(self._resume(session, text)),
+            return await asyncio.wait_for(self._ask(session.conversation, self._resume(session, text), on_text),
                                           self._turn_seconds)
         except (claudeturn.ChildGone, asyncio.TimeoutError):
             # No child runs on it now, so the account is given back at once.
@@ -555,7 +662,19 @@ class FrontSessions:
             session.running, delegation.state = delegation, "running"
             # The grant it started with: the session's end clears session.grant.
             grant = session.grant
-            self._report(grant, delegation, STARTED)
+            refused = await self._admit(grant, delegation)
+            if refused is not None:
+                # At a spend cap (worksink.py): one sentence, nothing started.
+                session.running, delegation.state, delegation.spoken = None, "done", CAP_SENTENCES[refused]
+                delegation.done.set()
+                self._trim(session)
+                cool = getattr(self._planner, "cool", None)
+                if cool is not None:
+                    # No further turn runs: its account and child are not kept for one.
+                    cool(session.voice_id, "a spend cap")
+                log.info("voice session %s: delegation %s refused at a cap (%s)", session.voice_id,
+                         delegation.delegation_id, refused)
+                continue
             given = self._given(session, delegation)
             result: "TurnResult | None" = None
             ended = FAILED
@@ -585,6 +704,13 @@ class FrontSessions:
             log.info("voice session %s: delegation %s %s (%d card(s))", session.voice_id,
                      delegation.delegation_id, delegation.state, len(delegation.cards))
 
+    async def _admit(self, grant: SessionGrant | None, delegation: Delegation) -> str | None:
+        """Ask swarm-api whether the delegation may start (its `started`,
+        worksink.py `admit`): the cap's refusal reason, else None."""
+        if self._work is None:
+            return None
+        return await self._work.admit(grant, delegation.delegation_id)
+
     def _report(self, grant: SessionGrant | None, delegation: Delegation, state: str) -> None:
         """Hand `state` to the work sink; it posts in the background."""
         if self._work is not None:
@@ -599,7 +725,8 @@ class FrontSessions:
         assert self._planner is not None
         return await self._planner.delegate(person=session.person, grant=session.grant,
                                             transcript=self._given(session, delegation),
-                                            delegation_id=delegation.delegation_id, model=session.planner_model)
+                                            delegation_id=delegation.delegation_id, model=session.planner_model,
+                                            admitted=self._work is not None)
 
     def _traced(self, session: FrontSession, delegation: Delegation, given: list[tuple[str, str]],
                 result: "TurnResult | None") -> None:
@@ -661,6 +788,53 @@ class FrontSessions:
         if self._work is not None:
             # The ends the shutdown cut short are posted before the client closes.
             await self._work.drain()
+
+
+async def turn_lines(front: FrontSessions, voice_id: str, text: str) -> AsyncIterator[str]:
+    """One spoken turn as NDJSON lines, for swarm-api's relay (EARLY FIRST
+    SENTENCE): `{"t":"sentence","text"}` as soon as the first sentence is
+    complete, then `{"t":"answer", turn_id, reply, cards, early[,
+    delegation_id]}`; a turn that fails is one `{"t":"error", status,
+    message}` with the status the unary route would have answered. Never a
+    word of the person's in a log."""
+    sentences: asyncio.Queue[str] = asyncio.Queue()
+    task = asyncio.ensure_future(front.turn(voice_id, text, on_sentence=sentences.put_nowait))
+    try:
+        while not task.done() or not sentences.empty():
+            if sentences.empty():
+                getter = asyncio.ensure_future(sentences.get())
+                await asyncio.wait({task, getter}, return_when=asyncio.FIRST_COMPLETED)
+                if not getter.done():
+                    getter.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await getter
+                    continue
+                sentence = getter.result()
+            else:
+                sentence = sentences.get_nowait()
+            yield json.dumps({"t": "sentence", "text": sentence}) + "\n"
+        try:
+            answered = task.result()
+        except FrontSessionEnded:
+            yield json.dumps({"t": "error", "status": 404, "message": "no such speech conversation"}) + "\n"
+            return
+        except ValueError as exc:
+            yield json.dumps({"t": "error", "status": 422, "message": str(exc)}) + "\n"
+            return
+        except FrontDown:
+            log.warning("voice session %s: the fast front is down", voice_id)
+            yield json.dumps({"t": "error", "status": 502, "message": "the fast front is down"}) + "\n"
+            return
+        said: dict[str, Any] = {"t": "answer", "turn_id": answered.turn_id, "reply": answered.reply,
+                                "cards": list(answered.cards), "early": answered.early}
+        if answered.delegation_id:
+            said["delegation_id"] = answered.delegation_id
+        yield json.dumps(said) + "\n"
+    finally:
+        if not task.done():
+            # The caller went (swarm-api's relay closed): the turn is not
+            # cut, it is answered and recorded as the unary route's would be.
+            task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
 
 
 def delegations_router(front: FrontSessions | Callable[[], FrontSessions | None],

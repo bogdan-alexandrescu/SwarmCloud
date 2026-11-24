@@ -21,8 +21,9 @@ fix workflows ended at the pull request. What these tests hold:
      backend: the steps the API derives carry only what the caller already
      sent for its review (invariant 10).
 
-These hold the re-review shape, which "on_merge_verdict" still appends while
-the `fix-loop` profile ships unavailable (contract request 124). With it
+These hold the re-review shape, which "on_merge_verdict" still appends
+wherever the `fix-loop` profile is unavailable (contract request 151
+reverted), so every test here switches it off itself (`_loop_disabled`). With it
 available, a NOT_YET-gated fix gets the fix loop, 3 rounds, and a merge that
 reads the loop instead (the owner 2026-11-09, docs/design/fix-loop.md §9 Q8
 (b)): tests/unit/control_plane/test_fix_loop_by_default.py.
@@ -34,15 +35,19 @@ network, no emulator: every agent step is `mock`.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from swarm_api import repositories
 from swarm_api.validation import (
+    FIX_LOOP_PROFILE,
     INPUT_LAYOUT_BY_PARENT,
     MERGE_POLICIES,
     REREVIEW_PREAMBLE,
     REREVIEW_ROUNDS,
 )
+from swarm_common.profiles import RUNNER_PROFILES
 
 from .conftest import auth_header
 
@@ -313,6 +318,14 @@ def test_a_caller_still_cannot_send_an_execution_parameter(client, field):
     spec["steps"][1][field] = "anything"
     response = _post(client, spec)
     assert response.status_code == 422, response.text
+
+
+@pytest.fixture(autouse=True)
+def _loop_disabled(monkeypatch):
+    """`fix-loop` switched off for this test, as it is wherever contract request 151 is reverted."""
+    monkeypatch.setitem(RUNNER_PROFILES, FIX_LOOP_PROFILE,
+                        replace(RUNNER_PROFILES[FIX_LOOP_PROFILE], available=False,
+                                disabled_reason="fix-loop is not available in this test."))
 
 
 @pytest.fixture(autouse=True)

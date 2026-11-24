@@ -203,8 +203,7 @@ VERDICT_FILE = "verdict.json"
 #: The `verdict` a skipped review's verdict.json carries (archived issue 4101), beside its
 #: `skipped` reason. Not one of `validation.REVIEW_VERDICTS`: no review writes
 #: it, and no gate or spec may name it. `agent_worker.verdict.SKIPPED_VERDICT`
-#: and `verdictpublish.SKIPPED_VERDICT` restate it; test_review_gate.py holds
-#: them equal.
+#: and `verdictpublish.SKIPPED_VERDICT` restate it; a test holds them equal.
 SKIPPED_VERDICT = "SKIPPED"
 #: The key of a skipped review's verdict.json that says why it was skipped.
 SKIPPED_REASON_KEY = "skipped"
@@ -389,6 +388,17 @@ class Decision:
     shots: tuple[str, ...] = field(default=())
     handed: tuple[str, ...] = ()
     renders: tuple[str, ...] = ()
+    #: A parent's file list was cut short: what it touched is not all known
+    #: (`stepclass.review_role` reads it; `REASON_CUT` only when nothing
+    #: decided the review first).
+    truncated: bool = False
+    #: For the MODEL CLASS only (`stepclass.review_role`), never for whether
+    #: the review runs: the risk paths found over every parent's `own_files`
+    #: AND `files` (`files_of`) -- a risk path a merge commit brought in from
+    #: a side branch is in `files` and not in `own_files` -- and whether some
+    #: parent's `files` could not be read whole.
+    class_risk_hits: tuple[str, ...] = ()
+    files_unread: bool = False
 
     @property
     def text(self) -> str:
@@ -477,6 +487,36 @@ def change_of(document: Any) -> tuple[list[str], int | None, bool]:
     return paths, lines, git.get("files_truncated") is True
 
 
+def files_of(document: Any) -> tuple[list[str], bool]:
+    """`(paths, read whole)` from every `files` row's `path` and `old_path`.
+
+    Not whole when `files` is absent, not a list, or cut short
+    (`files_truncated`), and not whole when any row is malformed: not a map,
+    its `path` not a non-empty string, or an `old_path` that is set but not
+    one -- a row skipped would hide its path from the risk-path check, so the
+    review keeps the default class instead (`stepclass.ROLE_REVIEW_UNREAD`).
+    For the review's model class (`Decision.class_risk_hits`), which reads
+    `files` even where `change_of` reads `own_files`.
+    """
+    git = _mapping(_mapping(_mapping(document).get("result_summary")).get("git"))
+    rows = git.get("files")
+    if not isinstance(rows, list):
+        return [], False
+    paths: list[str] = []
+    whole = git.get("files_truncated") is not True
+    for row in rows:
+        if not isinstance(row, Mapping):
+            whole = False
+            continue
+        for key in ("path", "old_path"):
+            value = row.get(key)
+            if isinstance(value, str) and value:
+                paths.append(value)
+            elif key == "path" or value is not None:
+                whole = False
+    return paths, whole
+
+
 def shots_of(document: Any) -> list[str]:
     """The images a parent published under `shots/`, by artifact name."""
     entries = _mapping(_mapping(document).get("result_summary")).get("artifacts")
@@ -556,6 +596,8 @@ def resolve(
     empty_by_design = False
     total = 0
     cut = False
+    class_hits: dict[str, None] = {}
+    files_unread = False
     while queue:
         task_id = queue.pop(0)
         if task_id in seen:
@@ -578,6 +620,11 @@ def resolve(
         for path in paths:
             if any(matches(path, glob) for glob in gate.risk_paths):
                 hits.setdefault(path.lstrip("/"), None)
+        listed, whole = files_of(document)
+        files_unread = files_unread or not whole
+        for path in paths + listed:
+            if any(matches(path, glob) for glob in gate.risk_paths):
+                class_hits.setdefault(path.lstrip("/"), None)
         shots.update(dict.fromkeys(shots_of(document)))
         if task_id in direct:
             handed.update(dict.fromkeys(n.strip() for n in handed_of(document)))
@@ -593,7 +640,8 @@ def resolve(
             queue.append(upstream)
     common = {"changed_lines": total, "min_lines": gate.min_lines, "read": tuple(visited),
               "unreadable": tuple(unknown), "shots": tuple(shots), "handed": tuple(handed),
-              "renders": tuple(renders)}
+              "renders": tuple(renders), "truncated": cut,
+              "class_risk_hits": tuple(class_hits), "files_unread": files_unread}
     if hits:
         return Decision(True, REASON_RISK, risk_hits=tuple(hits), **common)
     if total > gate.min_lines:
@@ -721,8 +769,8 @@ def gated(metadata: Any) -> bool:
     """The steps the scheduler holds for this gate: any carrying a `review_gate` block.
 
     Restated as part of `scheduler.loop.held_for_control_publish`; the two
-    are held equal over the same documents by test_review_gate.py. A block
-    `policy_of` cannot read is still held, and then declined: the review runs.
+    are held equal over the same documents by a test. A block `policy_of`
+    cannot read is still held, and then declined: the review runs.
     """
     return isinstance(_mapping(metadata).get(REVIEW_GATE_METADATA_KEY), Mapping)
 

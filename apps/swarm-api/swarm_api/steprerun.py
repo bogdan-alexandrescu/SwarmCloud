@@ -44,15 +44,24 @@ or PARKED on its parents as submission stores it, no attempts, no lease, generat
 (`specsigning.sign_task_specs`, contract request 34) because the id is inside
 the signed bytes. `metadata.rerun_of` records the task it replaces.
 
+VERIFIED BEFORE IT IS COPIED (issue 207). A tenant's agents can write any task
+document of their tenant, and the copy is signed again over every signed
+field, so each step to re-run must verify as stored first
+(`specsigning.stored_refusal`, the review gate's verify-before-resign rule);
+one that does not refuses the whole re-run 409 `step_spec_unverified` before
+anything is signed or written. With no signer, nothing is verified and the
+copies are written unsigned, as submission writes them there.
+
 INVARIANTS. The new tasks are READY or PARKED and cost nothing until admission leases
 them (invariants 1 and 3); admission reserves their capacity as it does any
-step's (2). Each new task starts at generation 0 with its own attempts (5).
+step's (2). A refused re-run writes no task and reserves nothing. Each new task starts at generation 0 with its own attempts (5).
 The runner profile, image and resources are the step's own, copied from what
 swarm-api resolved at submission; the caller names a step, never a spec (10).
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Mapping, Sequence
@@ -62,7 +71,10 @@ from swarm_common.states import TERMINAL_STATES, TaskState, assert_transition
 
 from .codec import task_from_dict
 from .errors import Conflict, NotFound
-from .validation import AFTER_PRS_METADATA_KEY
+from .stepclass import CLASS_CHOSEN_BY_KEY, REVIEW_AT_GATE, gate_decided
+from .validation import AFTER_PRS_METADATA_KEY, RUNTIME_METADATA_KEY
+
+log = logging.getLogger(__name__)
 
 #: The states a step must have ended in to be offered a re-run.
 RERUNNABLE_STATES: frozenset[TaskState] = frozenset(
@@ -113,6 +125,8 @@ WORKFLOW_CANCELLED = "workflow_cancelled"
 WORKFLOW_STILL_RUNNING = "workflow_still_running"
 STEP_NOT_FAILED = "step_not_failed"
 STEP_RERUN_RACED = "step_rerun_raced"
+#: A step to re-run whose stored spec no longer verifies (issue 207).
+STEP_SPEC_UNVERIFIED = "step_spec_unverified"
 
 
 def raced(workflow_id: str) -> Conflict:
@@ -239,18 +253,57 @@ def clone(old: Task, ids: Mapping[str, str], now: datetime) -> Task:
     remapped["updated_at"] = now
     metadata = dict(remapped.get("metadata") or {})
     metadata[RERUN_OF_METADATA_KEY] = old.id
+    if gate_decided(metadata):
+        # A first review's class is the gate's, from the diff it reads
+        # (`stepclass`): the clone reviews a new diff, so it goes back to the
+        # profile's default and is marked to be decided again -- never the
+        # class the gate picked for the step it re-runs.
+        remapped["model_class"] = None
+        remapped["model"] = None
+        metadata[CLASS_CHOSEN_BY_KEY] = REVIEW_AT_GATE
+        runtime = metadata.get(RUNTIME_METADATA_KEY)
+        if isinstance(runtime, dict) and isinstance(runtime.get("alternate"), dict):
+            metadata[RUNTIME_METADATA_KEY] = {
+                **runtime, "alternate": {**runtime["alternate"], "model_class": None,
+                                         "model": None}}
     remapped["metadata"] = metadata
     return task_from_dict(remapped)
 
 
+def unverified(workflow_id: str, step_id: str, task_id: str, why: str) -> Conflict:
+    """A step to re-run whose stored spec does not verify: a tenant's agent
+    rewrote a signed field since swarm-api signed it, so swarm-api will not
+    sign a copy of it. `why` names the check, never a value of the document."""
+    return Conflict(
+        f"step {step_id!r}'s stored spec does not verify, so it is not re-run; "
+        "submit the workflow again",
+        detail={"workflow_id": workflow_id, "step_id": step_id, "task_id": task_id,
+                "why": why, "reason": STEP_SPEC_UNVERIFIED},
+    )
+
+
 def build(
-    workflow: Workflow, tasks: Mapping[str, Task], step_id: str, *, now: datetime
+    workflow: Workflow, tasks: Mapping[str, Task], step_id: str, *, now: datetime,
+    refusal: Callable[[Task], str | None],
 ) -> tuple[list[str], dict[str, str], list[Task]]:
     """(the steps re-run, old task id -> new task id, the new tasks in
     workflow order). The steps' order is the submission's topological one,
-    so a new task is never written before a new parent it names."""
+    so a new task is never written before a new parent it names.
+
+    Every step to re-run is verified as stored BEFORE any is copied
+    (`refusal`, the service's `specsigning.stored_refusal`: the same
+    verify-before-resign rule as the review gate's): the copy is signed
+    again over every signed field, `input` included, so a field rewritten
+    since submission would otherwise come back signed by swarm-api."""
     steps = plan(workflow, tasks, step_id)
     by_step = {s.step_id: s for s in workflow.steps}
+    for s in steps:
+        old = tasks[by_step[s].task_id or ""]
+        why = refusal(old)
+        if why is not None:
+            log.warning("workflow %s step %s is not re-run: task %s %s",
+                        workflow.workflow_id, s, old.id, why)
+            raise unverified(workflow.workflow_id, s, old.id, why)
     ids = {by_step[s].task_id or "": new_id("task") for s in steps}
     new_tasks = [clone(tasks[by_step[s].task_id or ""], ids, now) for s in steps]
     return steps, ids, new_tasks
@@ -260,6 +313,7 @@ def rerun(
     *,
     store: Any,
     sign: Callable[[Sequence[Task]], None],
+    refusal: Callable[[Task], str | None],
     tenant_id: str,
     workflow_id: str,
     step_id: str,
@@ -271,7 +325,7 @@ def rerun(
     workflow = store.get_workflow(tenant_id, workflow_id, submitted_by=None)
     task_ids = [s.task_id for s in workflow.steps if s.task_id]
     tasks = store.tasks_by_id(tenant_id, task_ids)
-    steps, ids, new_tasks = build(workflow, tasks, step_id, now=now)
+    steps, ids, new_tasks = build(workflow, tasks, step_id, now=now, refusal=refusal)
     sign(new_tasks)
     by_step = {s.step_id: s for s in workflow.steps}
     replaced = {s: {"from": by_step[s].task_id or "", "to": ids[by_step[s].task_id or ""]}

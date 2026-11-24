@@ -1,8 +1,10 @@
 """What an attempt used: its token counts and cost, summed across its runs.
 
 Moved out of `lifecycle.py` unchanged (issue 68, the first slice of splitting
-that file by concern). `lifecycle` re-exports every name here, so a caller or a
-test that reads `lifecycle._usage_summary` and the rest still resolves.
+that file by concern). `lifecycle` binds only the names a test still reads
+through it -- `_add_spend`, `_stream_usage` and `_usage_summary` (issue 193);
+the worker's spend methods (`spend.py`) import theirs from here; read every
+other name here.
 """
 
 from __future__ import annotations
@@ -343,8 +345,7 @@ def _usage_summary(output: Any) -> dict[str, Any]:
     # none of those keys and returned {} for every attempt -- while its unit
     # test, which feeds the raw CLI shape, passed. A test exercising a shape
     # production never produces is worse than no test: it reports a working
-    # extractor when there is none. tests/unit/worker/test_usage_summary.py now
-    # also feeds the real envelope.
+    # extractor when there is none. The test now also feeds the real envelope.
     #
     # Preferring whichever level actually carries the keys, rather than always
     # descending, keeps this correct for a runner that returns the CLI JSON

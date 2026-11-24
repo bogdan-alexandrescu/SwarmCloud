@@ -146,7 +146,8 @@ describe('the Talk pane', () => {
     })
     expect(pc.sent.map((s) => s.track)).toEqual([mic])
     expect(pc.channels.map((c) => c.label)).toEqual(['oai-events'])
-    const [target, method, body] = fetchMock.write.mock.calls[0] ?? []
+    // The start, not the page's warm request on open (warm.ts).
+    const [target, method, body] = fetchMock.write.mock.calls.find(([t]) => t.url === '/v1/voice/sessions') ?? []
     expect(target.url).toBe('/v1/voice/sessions')
     expect(method).toBe('POST')
     expect(body).toEqual({ offer_sdp: 'v=0 fake-offer' })
@@ -269,7 +270,17 @@ describe('the Talk pane', () => {
   it('keeps the resumed project for the next try when the first start is refused', async () => {
     const resumed = 'vp_' + '8'.repeat(32)
     window.sessionStorage.setItem(RESUME_KEY, resumed)
-    fetchMock.write.mockResolvedValueOnce({ status: 'error', error: { kind: 'unavailable', httpStatus: 503, code: null, message: 'Voice it is not deployed.' } })
+    // The first start is refused; the page's warm request on open (warm.ts) is answered as usual.
+    let refused = false
+    fetchMock.write.mockImplementation(async (target: { url: string }) => {
+      if (target.url === '/v1/voice/sessions' && !refused) {
+        refused = true
+        return { status: 'error', error: { kind: 'unavailable', httpStatus: 503, code: null, message: 'Voice it is not deployed.' } }
+      }
+      return target.url === '/v1/voice/sessions'
+        ? { status: 'ok', data: { session_id: SESSION, answer_sdp: 'v=0 fake-answer' }, fetchedAt: Date.now() }
+        : { status: 'ok', data: null, fetchedAt: Date.now() }
+    })
     render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await start()
     await start()
@@ -685,7 +696,8 @@ describe('the Talk pane on our own speech', () => {
     serveOwn({ mode: 'speech' })
     render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await startOwn()
-    const [target, method, body] = fetchMock.write.mock.calls[0] ?? []
+    // The start, not the page's warm request on open (warm.ts).
+    const [target, method, body] = fetchMock.write.mock.calls.find(([t]) => t.url === '/v1/voice/sessions') ?? []
     expect([target.url, method, body]).toEqual(['/v1/voice/sessions', 'POST', {}])
     expect(FakePeer.all).toHaveLength(0)
     expect(FakeSocket.last.url).toMatch(new RegExp(`^wss?://[^/]+/v1/voice/sessions/${SESSION}/audio$`))

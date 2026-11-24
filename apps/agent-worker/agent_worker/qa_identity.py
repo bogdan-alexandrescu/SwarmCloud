@@ -52,7 +52,7 @@ from swarm_common.profiles import RUNNER_PROFILES
 from .egress_ticket import RETRY_MAX_SECONDS, RETRY_SECONDS
 
 #: `swarm_api.qa_identity.QA_IDENTITY_PURPOSE`, restated (this image does not
-#: carry swarm-api); tests/unit/worker/test_qa_identity_worker.py holds them equal.
+#: carry swarm-api); the two are held equal.
 QA_IDENTITY_PURPOSE = "swarm-qa-identity-request/v1"
 
 #: The input key the frozen catalogue declares on `claude-code-browser`

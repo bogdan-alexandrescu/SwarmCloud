@@ -194,7 +194,7 @@ fails when a profile's backend moves and this table does not.
 | `post-verdict` | `CLOUD_RUN_JOB` | no Job (`profiles_without_a_job`); disabled |
 | `claude-code-review` | `CLOUD_RUN_JOB` | no Job (`profiles_without_a_job`); retired |
 | `await-input` | `CLOUD_RUN_JOB` | no Job (`profiles_without_a_job`): a `control_plane` profile that nothing runs on any backend, so the backend is the catalogue's statement only (contract requests 93 and 94, docs/design/human-steps.md); available since request D (contract request 105, HW-ENABLE) |
-| `fix-loop` | `CLOUD_RUN_JOB` | no Job (`profiles_without_a_job`): the second `control_plane` profile, on the same terms as `await-input` (contract request 124, docs/design/fix-loop.md); shipped unavailable until FL-ACCEPT passes |
+| `fix-loop` | `CLOUD_RUN_JOB` | no Job (`profiles_without_a_job`): the second `control_plane` profile, on the same terms as `await-input` (contract request 124, docs/design/fix-loop.md); available since contract request 151 was applied again on 2026-11-23, reverted at once if FL-ACCEPT fails on dev |
 
 So `mock` is the one enabled profile still started on Cloud Run: it reaches no
 internet, so the GKE Autopilot migration's option A left it there, and `post-verdict` and
@@ -439,6 +439,16 @@ coderabbit review --agent --base main  # against a named base
 
 Nothing runs it for the lane. The platform does not start a review, read
 its findings or gate a pull request on them: the CLI is a tool, like `gh`.
+
+**The hosted CodeRabbit app does not review pull requests here** (issue 140).
+`.coderabbit.yaml` at the repository root sets `reviews.auto_review.enabled`
+and `drafts` to `false`, and the CLI reads the same file for the lane's local
+review. Why: lane PRs fold into merge trains and the train's CI is the gate, so
+a hosted review would cost quota and comment noise and gate nothing. The
+installed app still posts a `CodeRabbit` status; it is not a required check,
+nothing in the merge train or auto-merge waits on it, and its `success` with
+"Review skipped" says nothing about the code: never read it as reviewed.
+`tests/unit/worker/test_coderabbit_config.py` keeps the file from drifting.
 
 **What is installed.** The vendor's 0.9.1 linux/amd64 release, pinned and
 sha256-checked in `images/agent-runtime-base/Dockerfile` (which records where

@@ -5,19 +5,21 @@ What is skipped, expected to fail or quarantined on main at
 open defects documented in the program's areas, each with where it is recorded.
 An experiment reads this page first: a failure listed here is not the
 experiment's finding, and a skipped test is not a passing one. The skip table
-in [§3](#3-every-skip-by-location) is kept to the current tree, not the
-baseline's: the check below fails when the two differ.
+in [§3](#3-every-skip-by-location) is kept by hand to the current tree, not
+the baseline's.
 
 ## 1. Skipped, expected-to-fail and quarantined tests
 
 Every skip, expected failure and `importorskip` in a `.py` file under `tests/`
 is listed in [the table below](#3-every-skip-by-location), one row per file, test
 and kind, with its reason; every `tests/flaky.txt` entry is listed in
-[the quarantine](#the-quarantine). `scripts/agent_quality_inventory.py` finds
-them in code only (a marker named in a comment or a string is not one), and
-`tests/unit/scripts/test_agent_quality_inventory.py` fails, naming it, for a
-live skip or quarantine this page does not list (with the row to add) and for a
-row the tree no longer has.
+[the quarantine](#the-quarantine). Only a marker in code counts (one named in
+a comment or a string is not one). The table is kept by hand: since issue 74
+no test fails for a skip it does not list or a row the tree no longer has,
+because that census's subject was this page, not the product, and docs drift
+reddened code pull requests. `tests/flaky.txt` itself is still checked: an
+entry naming a test that does not exist stops collection
+(`tests/unit/flaky_quarantine.py`).
 
 There is no count on this page, on purpose (the owner, 6 November 2026): two green
 changes that each add a skip and bump a count conflict or fail when they land
@@ -112,10 +114,9 @@ finding for the package that owns it.
 
 ## 3. Every skip, by location
 
-The rows `scripts/agent_quality_inventory.py` checks. Add a row when you add a
-skip (the failing test prints it), delete it when you delete the skip, and
-rewrite its reason freely: only the file, test and kind are matched. Keep rows
-in path order, so two changes' rows land in different places.
+Add a row when you add a skip, delete it when you delete the skip, and
+rewrite its reason freely: a row is its file, test and kind. Keep rows in path
+order, so two changes' rows land in different places.
 
 | File | Test | Kind | Reason |
 |---|---|---|---|
@@ -163,7 +164,6 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/control_plane/test_state_colour_discriminability.py` | `<module>` | `skipif` | apps/swarm-ui/src/styles.css is not present |
 | `tests/unit/control_plane/test_stop_and_output_ui_surface.py` | `<module>` | `skipif` | apps/swarm-ui is not checked out |
 | `tests/unit/control_plane/test_subscription_headroom_surface.py` | `<module>` | `skipif` | apps/swarm-ui is not checked out |
-| `tests/unit/control_plane/test_task_fencing_round_trip.py` | `test_the_ui_declares_the_fencing_fields_on_task` | `skipif` | apps/swarm-ui/src is not present |
 | `tests/unit/control_plane/test_task_fencing_round_trip.py` | `test_the_ui_no_longer_records_the_fields_as_unavailable` | `skipif` | apps/swarm-ui/src is not present |
 | `tests/unit/control_plane/test_ui_fixture_input_contract.py` | `<module>` | `skipif` | apps/swarm-ui/src is not present |
 | `tests/unit/control_plane/test_url_refusal_whatwg.py` | `_node` | `skip_call` | node is not installed here; CI runs this table |
@@ -171,7 +171,6 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/control_plane/test_workflow_graph_ui_surface.py` | `<module>` | `skipif` | apps/swarm-ui/src is not present |
 | `tests/unit/control_plane/test_workflow_step_input_surface.py` | `<module>` | `skipif` | apps/swarm-ui/src is not present |
 | `tests/unit/control_plane/test_workflow_step_measurements.py` | `<module>` | `skipif` | apps/swarm-ui is not checked out |
-| `tests/unit/docs/test_counts_mockups.py` | `test_counts_mockup_names_only_profiles_and_accounts_that_run` | `skipif` | no docs/web-ui/mockups/counts-*.html on main: nothing to check |
 | `tests/unit/hooks/test_hooks_create_secret.py` | `<module>` | `skipif` | create-secrets.sh needs bash |
 | `tests/unit/hooks/test_hooks_image.py` | `test_build_images_finds_the_recipe_and_reads_what_it_copies` | `skipif` | build-images.sh needs jq |
 | `tests/unit/hooks/test_hooks_image.py` | `test_target_selection_reaches_it_only_for_its_own_inputs` | `skipif` | build-images.sh needs jq |
@@ -231,6 +230,7 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/scripts/test_concurrency_sampler_by_file.py` | `<module>` | `skipif` | jq is required |
 | `tests/unit/scripts/test_create_secrets_egress.py` | `<module>` | `skipif` | create-secrets.sh needs bash |
 | `tests/unit/scripts/test_create_secrets_git_wf.py` | `<module>` | `skipif` | create-secrets.sh needs bash |
+| `tests/unit/scripts/test_create_secrets_join_person.py` | `<module>` | `skipif` | create-secrets.sh needs bash |
 | `tests/unit/scripts/test_create_secrets_search_key.py` | `<module>` | `skipif` | create-secrets.sh needs bash |
 | `tests/unit/scripts/test_create_secrets_tailscale_oauth.py` | `<module>` | `skipif` | create-secrets.sh needs bash |
 | `tests/unit/scripts/test_deploy_promotion_mark.py` | `<module>` | `skipif` | the scripts need bash and jq |
@@ -387,6 +387,7 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/worker/test_prepublish_graph_gate.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_prepublish_guards_dedup.py` | `<module>` | `skipif` | git and jq are needed to run the guard script |
 | `tests/unit/worker/test_prepublish_guards_timebox.py` | `<module>` | `skipif` | git and jq are needed to run the guard script |
+| `tests/unit/worker/test_prepublish_lane_guards.py` | `<module>` | `skipif` | git runs the guard's diff |
 | `tests/unit/worker/test_prepublish_render_stderr.py` | `<module>` | `skipif` | needs a POSIX shell |
 | `tests/unit/worker/test_prepublish_test_services.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_prepublish_tree_restore.py` | `<module>` | `skipif` | git is not installed |

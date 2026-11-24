@@ -59,3 +59,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["swarm_api"]
+
+[tool.uv]
+# Release-age quarantine (#189): resolve only releases at least 14 days old, as the root pyproject.toml does.
+exclude-newer = "14 days"

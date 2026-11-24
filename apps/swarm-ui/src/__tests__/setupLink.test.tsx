@@ -21,8 +21,9 @@
 // Stubbed fetch only; no network, no credentials. Tokens are built at runtime.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { visible } from './repofixture'
+import { screenLoaded } from './screenLoaded'
 import { SETUP_LINK_PATH, setupLinkToken } from '../paths'
 
 type Json = Record<string, unknown>
@@ -63,6 +64,7 @@ async function mount(path: string) {
   const mod = await import('../App')
   window.history.replaceState(null, '', path)
   render(<mod.App />)
+  await screenLoaded()
 }
 
 // TEXT AND SELECTOR QUERIES, not `*ByRole`: a role query walks the whole
@@ -247,35 +249,67 @@ function liveLinks(token: string) {
   return { world, calls }
 }
 
-/** The page's 10 s retries, run at 40 ms so a case waits for them in real time. */
-function quickRetries() {
-  const real = globalThis.setTimeout
-  return vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number, ...rest: unknown[]) =>
-    real(fn, ms === 10_000 ? 40 : ms, ...rest)) as unknown as typeof setTimeout)
+/**
+ * The page's 10 s retries, HELD instead of timed (SetupLink.tsx `retryClock`):
+ * the case fires each one after it has changed what the fake answers, so no
+ * real clock races an assertion. Import it after `mount`, which resets the
+ * modules. (A spy on the global `setTimeout` that ran every 10 s delay at 40 ms
+ * also cut Testing Library's own 10 s deadlines to 40 ms, and this case went
+ * red whenever the App took longer than that to draw.)
+ */
+async function heldRetries() {
+  const { retryClock } = await import('../SetupLink')
+  type Handle = ReturnType<typeof retryClock.after>
+  const held = new Map<Handle, () => void>()
+  let next = 0
+  const after = vi.spyOn(retryClock, 'after').mockImplementation((fn) => {
+    next += 1
+    const handle = next as unknown as Handle
+    held.set(handle, fn)
+    return handle
+  })
+  const cancel = vi.spyOn(retryClock, 'cancel').mockImplementation((handle) => {
+    held.delete(handle)
+  })
+  return {
+    /** Run the one retry the page has waiting; a page that waits for none fails here. */
+    async fire() {
+      await waitFor(() => expect(held.size).toBe(1), WAIT)
+      const [handle, fn] = [...held][0]!
+      held.delete(handle)
+      await act(async () => fn())
+    },
+    restore() {
+      after.mockRestore()
+      cancel.mockRestore()
+    },
+  }
 }
 
 describe('a link whose workspace is not ready (audit 4d, F6)', () => {
   it('keeps the link unused on 409, says why, and opens it by itself once the workspace is ready', async () => {
     const token = rand(43)
     const { world, calls } = liveLinks(token)
-    const timers = quickRetries()
     await mount(`/admin/setup/link/${token}`)
+    const retries = await heldRetries()
     fireEvent.click(await button('Open the link'))
     // MUTATION: read the 409 as a dead link -> the person is sent back to the admin for a new one.
     await screen.findByText('Your workspace is still being set up.', {}, WAIT)
     expect(visible(document.body)).not.toMatch(/already been used/)
     world.ready = true
-    // MUTATION: wait for another click -> the page sits on the 409.
+    // MUTATION: wait for another click -> no retry is waiting, and the page sits on the 409.
+    await retries.fire()
     await waitFor(() => expect(calls.filter((c) => c.url === '/v1/setup/links/redeem' && c.method === 'POST').length).toBeGreaterThanOrEqual(2), WAIT)
     await waitFor(() => expect(calls.some((c) => c.url === '/v1/accounts/authorize')).toBe(true), WAIT)
     world.member = true
     // MUTATION: give up on the first 403 -> "Start the sign-in again" is a click the person must find.
+    await retries.fire()
     const link = (await screen.findByText('Open the Claude sign-in page', {}, WAIT)).closest('a')!
     expect(link.getAttribute('href')).toBe('https://claude.example.test/oauth/authorize')
     // The link was spent exactly once.
     expect(world.spent).toBe(true)
     expect(visible(document.body)).not.toMatch(/already been used/)
-    timers.mockRestore()
+    retries.restore()
   })
 })
 

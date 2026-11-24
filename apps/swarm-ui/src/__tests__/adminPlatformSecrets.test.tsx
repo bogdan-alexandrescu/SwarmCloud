@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
 import { adminGroups, adminPagesFor } from '../Spine'
+import { screenLoaded } from './screenLoaded'
 
 const AT = '2026-10-20T09:30:00+00:00'
 const fakeValue = () => ['pf', 'sec'].join('-') + 'Nb3'.repeat(12)
@@ -53,6 +54,7 @@ describe('the Platform secrets tab is absent for a non-admin', () => {
     // MUTATION: list the tab for every Admin reader -> fails.
     expect(document.querySelector('a[href="/admin/platform-secrets"]')).toBeNull()
     expect(visible(document.body)).not.toMatch(/Platform secrets/)
+    await screenLoaded()
   })
 })
 

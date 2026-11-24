@@ -48,9 +48,8 @@ id, the IAP audience and, when served, the secret. `oauth_client_id` and
 
 THE REPOSITORY IS READ ONLY IN DEVELOPER MODE. Layer 4 exists for the owner
 working inside this checkout, and is off unless SWARM_MCP_CONFIG_FROM=repo is
-set -- `tests/unit/mcp/test_contexts.py` watches every file the process opens
-to hold that line, because a tfvars read that silently fails looks exactly like
-one that never happened.
+set -- every file the process opens is watched to hold that line, because a
+tfvars read that silently fails looks exactly like one that never happened.
 
 THE PLUGIN OVERRIDES, BUT NEVER STEALS `current`. Inside the MCP server the
 plugin's deployment is the one used (layer 5 beats layer 6) -- that is what
@@ -95,9 +94,6 @@ LEGACY_HOST_VARS = ("SWARM_API_HOST", "API_HOST")
 #: names and nothing else; it used to spell each key again as a literal, so a
 #: rename made here and in the manifest together passed every test that
 #: compared the two lists while the bridge went on reading the old name.
-#: `tests/unit/mcp/test_plugin_user_config.py` now substitutes an answer into
-#: the manifest's own env mapping for each key, the way Claude Code does, and
-#: asks `resolve` where each one landed.
 PLUGIN_URL = "deployment_url"
 PLUGIN_CLIENT_ID = "oauth_client_id"
 PLUGIN_CLIENT_SECRET = "oauth_client_secret"
@@ -148,8 +144,8 @@ DEFAULT_ROWS = ROWS_SUMMARY
 #: still one row, an agent of its own in the session, so the cap stays a cap:
 #: 200 is the most, and 1 the least, and the ones a cap leaves out are the ones
 #: furthest from finishing (`board.order`). plugin/workflows/run.js restates
-#: all three (`MAX_ATTACHED_WORKFLOWS`, `MAX_LIVE_ROWS_LIMIT`, `liveRowCap`)
-#: and test_sc_rows_workspace_and_cap.py holds them equal.
+#: all three (`MAX_ATTACHED_WORKFLOWS`, `MAX_LIVE_ROWS_LIMIT`, `liveRowCap`),
+#: held equal to these by a unit test.
 DEFAULT_MAX_LIVE_ROWS = 100
 MAX_LIVE_ROWS_LIMIT = 200
 
@@ -333,7 +329,9 @@ class Deployment:
     iap_audience: str = ""
     #: How the client checks plugin/deployment version skew (`discovery.py`):
     #: SKEW_REQUIRED when the document supplied a value the user did not
-    #: configure, SKEW_CHECKED when every value was configured, "" for none.
+    #: configure, SKEW_DISCOVERED when it did but a stored context also
+    #: knows the client id, SKEW_CHECKED when every value was configured or
+    #: the stored context supplied it, "" for none.
     skew: str = ""
 
 
@@ -342,6 +340,10 @@ class Deployment:
 #: skew whenever the document can be read.
 SKEW_REQUIRED = "required"
 SKEW_CHECKED = "checked"
+#: The document supplied the client id, but this machine's stored context
+#: for the same address holds one too, so a document unreadable later is
+#: reported as not checked and never blocks a call (plan 2026-11-23, item 1).
+SKEW_DISCOVERED = "discovered"
 
 
 def validate_name(name: str) -> str:
@@ -725,8 +727,17 @@ def plugin_deployment(
     user configured no client id, the deployment's discovery document supplies
     it, its IAP audience and (only if the operator serves it) its secret. A
     configured value always wins. A *.run.app address is a solo deployment,
-    which has no IAP and no document, and is never asked for one."""
+    which has no IAP and no document, and is never asked for one.
+
+    The client id's order is the configured option, then the document, then
+    the stored context for the same address (a terminal's `sc login` writes
+    it). An unreadable document is fatal only when all three are empty, and
+    then says what to do (`discovery.NO_CLIENT_ID`); with a stored id the
+    skew is not checked, with the reason, and never blocks a call (defect
+    reproduced 2026-11-23: a deployment that does not serve the document
+    failed every call although this machine knew its client id)."""
     known = _by_url(config, plugin.url)
+    stored_id = known.oauth_client_id if known else ""
     client_id = env_id or plugin.client_id
     client_secret = env_secret or plugin.client_secret
     iap_audience = ""
@@ -737,11 +748,17 @@ def plugin_deployment(
         if client_id:
             skew = SKEW_CHECKED
         else:
-            client_id, client_secret, iap_audience = discovery.fill(
-                plugin.url, client_id="", client_secret=client_secret, cache=cache
-            )
-            skew = SKEW_REQUIRED
-    client_id = client_id or (known.oauth_client_id if known else "")
+            try:
+                client_id, client_secret, iap_audience = discovery.fill(
+                    plugin.url, client_id="", client_secret=client_secret, cache=cache
+                )
+            except discovery.DiscoveryUnreachable as exc:
+                if not stored_id:
+                    raise discovery.without_client_id(exc) from exc
+                skew = SKEW_CHECKED
+            else:
+                skew = SKEW_DISCOVERED if stored_id else SKEW_REQUIRED
+    client_id = client_id or stored_id
     return Deployment(
         context=known.name if known else context_name_for(plugin.url),
         url=plugin.url,

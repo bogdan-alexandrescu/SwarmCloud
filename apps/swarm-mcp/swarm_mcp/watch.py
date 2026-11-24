@@ -24,8 +24,7 @@ under the bridge's own per-user directory (`config.config_dir`), never in the
 repository. The project is the git top level of the session's directory
 (CLAUDE_PROJECT_DIR when Claude Code sets it, else the bridge's cwd), with
 symlinks resolved, so a session opened in a subdirectory is the same
-project. The hook derives the same key the same way, in bash
-(`tests/unit/mcp/test_sc_watch.py` holds the two together).
+project. The hook derives the same key the same way, in bash.
 
 IT ARMS ITSELF (SC-AUTO-WATCH, owner request 2026-10-14): "/sc watch should
 automatically be set if there is at least one workflow being worked on in sc
@@ -61,8 +60,15 @@ DEFAULT_INTERVAL_MINUTES = 30
 MIN_INTERVAL_MINUTES = 5
 MAX_INTERVAL_MINUTES = 24 * 60
 
-#: What each firing runs.
-CHECK_PROMPT = "/sc check"
+#: What each firing runs: the plugin's own check command (plugin/commands/
+#: check.md), about a kilobyte, rather than `/sc check`, which reached the
+#: whole sc skill (about 83 KB) on every firing (improvement plan 2026-11-23).
+CHECK_PROMPT = "/sc:check"
+#: What a watch armed before 0.5.88 fires. It still works -- `/sc check`
+#: routes to the same command -- so a job with either prompt IS the watch:
+#: never a second one beside it, and `watch off` cancels both.
+LEGACY_CHECK_PROMPT = "/sc check"
+_EITHER = f"`{CHECK_PROMPT}` or `{LEGACY_CHECK_PROMPT}`"
 STATE_DIR = "sc-watch"
 PROJECT_DIR_ENV = "CLAUDE_PROJECT_DIR"
 #: How the hook hands the remembered interval to `sc workflows
@@ -239,13 +245,13 @@ def arm_call(environ: Mapping[str, str] | None = None) -> dict[str, Any] | None:
         minutes = DEFAULT_INTERVAL_MINUTES
     return {
         "unless": (
-            "CronList first: if a job whose prompt is `/sc check` exists, the watch is already "
+            f"CronList first: if a job whose prompt is {_EITHER} exists, the watch is already "
             "armed in this session -- make neither call, never a second job"
         ),
         "save_with": {"tool": "swarm_check_schedule", "args": {"interval": interval_text(minutes)}},
         "tool": "CronCreate",
         "args": {"cron": cron_for(minutes), "prompt": CHECK_PROMPT, "recurring": True},
-        "then_say": f"the watch is armed: a `/sc check` every {minutes} minutes (`/sc watch off` stops it)",
+        "then_say": f"the watch is armed: a `{CHECK_PROMPT}` every {minutes} minutes (`/sc watch off` stops it)",
     }
 
 
@@ -285,7 +291,7 @@ def arm_sentence() -> str:
     ever set for the project (SC-AUTO-WATCH)."""
     return (
         "Then arm the sc plugin's watch for this project, since SwarmCloud work of yours is "
-        f"running: CronList first, and unless a job whose prompt is `{CHECK_PROMPT}` already "
+        f"running: CronList first, and unless a job whose prompt is {_EITHER} already "
         f"exists, run `/sc watch` (a `{CHECK_PROMPT}` every {DEFAULT_INTERVAL_MINUTES} minutes; "
         "`/sc watch off` turns it off for this project)."
     )
@@ -293,7 +299,7 @@ def arm_sentence() -> str:
 
 def rearm_sentence(minutes: int) -> str:
     return (
-        f"The sc plugin's watch is on for this project: a `/sc check` every {minutes} minutes. "
+        f"The sc plugin's watch is on for this project: a `{CHECK_PROMPT}` every {minutes} minutes. "
         "Claude Code's scheduled prompts end with each session, so run "
         f"`/sc watch {interval_text(minutes)}` now to re-arm it (`/sc watch off` turns it off)."
     )
@@ -325,8 +331,8 @@ def tool(args: dict[str, Any], environ: Mapping[str, str] | None = None) -> dict
             "was_on": was_on,
             "saved": "off until `/sc watch` again: no attach or run arms it in the meantime",
             "cancel_with": (
-                "CronList, then CronDelete {id} for every job whose prompt is `/sc check`; a "
-                "`/loop ... /sc check` started by hand ends with Esc"
+                f"CronList, then CronDelete {{id}} for every job whose prompt is {_EITHER}; a "
+                f"`/loop ... {CHECK_PROMPT}` started by hand ends with Esc"
             ),
         }
     if args.get("interval") is None and "interval" not in args:
@@ -354,7 +360,7 @@ def tool(args: dict[str, Any], environ: Mapping[str, str] | None = None) -> dict
         "prompt": CHECK_PROMPT,
         "arm_with": {"tool": "CronCreate",
                      "args": {"cron": cron_for(minutes), "prompt": CHECK_PROMPT, "recurring": True}},
-        "replace_first": "CronList, then CronDelete {id} for any job whose prompt is `/sc check`, so one watch runs",
+        "replace_first": f"CronList, then CronDelete {{id}} for any job whose prompt is {_EITHER}, so one watch runs",
         "without_cron": f"/loop {interval_text(minutes)} {CHECK_PROMPT}",
         "saved_to": str(path),
         "expires": "CronCreate's recurring jobs end with the session and after 7 days; the next session is "

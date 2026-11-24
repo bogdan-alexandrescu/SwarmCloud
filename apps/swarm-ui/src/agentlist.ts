@@ -17,7 +17,7 @@ import type { Task, TaskState } from './types'
  * address and `Agents.tsx` draws the tabs and the state segment; a second
  * spelling of either list is how an address comes to name a tab the screen
  * does not have. It is not in `Agents.tsx` because App's route parser needs
- * the values at runtime and `nav.links.test.tsx` replaces that module with a
+ * the values at runtime and the nav-links test replaces that module with a
  * recorder -- a value imported from it would be undefined there.
  */
 

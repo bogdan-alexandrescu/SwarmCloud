@@ -43,6 +43,7 @@ import pytest
 from swarm_mcp import cli, launch, server, workflows
 
 from test_plugin_agents_and_workflows import _HARNESS, _PLUGIN, _RUN_JS, _node, _step
+import sc_skill_text
 
 _REPO = Path(__file__).resolve().parents[3]
 _DAG_TS = _REPO / "apps" / "swarm-ui" / "src" / "dag.ts"
@@ -460,7 +461,7 @@ def test_an_attach_launch_takes_the_stored_title_else_the_unit_else_the_id(_plug
                          (_stored(), "wf_9")):
         reply = json.loads(server._call(_Recorder(stored), "swarm_workflow_launch", {"attach": "wf_9"}))
         assert reply["title"] == f"SC ∴ {name} · 2 steps"
-        assert reply["args"] == {"attach": "wf_9", "title": name, "rows": "summary", "titled_copy": reply["script_path"]}
+        assert reply["launches"][0]["args"] == {"attach": "wf_9", "title": name, "rows": "summary", "titled_copy": reply["script_path"]}
         assert _meta_of(Path(reply["script_path"]))["name"] == reply["title"]
 
 
@@ -522,7 +523,7 @@ def test_attach_all_through_the_bridge_writes_one_run_per_workflow(_plugin_root,
 
 
 def test_the_sc_skill_launches_attach_all_as_one_run_per_workflow():
-    text = " ".join(_SKILL.read_text().split())
+    text = " ".join(sc_skill_text.text().split())
     assert "swarm_workflow_launch" in text
     section = text[text.index("### `attach --all`"):]
     section = section[:section.index("### ", 5)]

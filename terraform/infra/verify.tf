@@ -81,8 +81,12 @@ locals {
 # same in every environment, and the gate has no reason to hold it in prod.
 # docs/audits/2026-09-22/race-test-needs-a-write.md has the comparison.
 #
-# Secret access is deliberately still absent. Nothing in the suites reads a
-# secret, and the mock runner profile this tenant uses needs no provider key.
+# Secret access is deliberately still absent, with ONE exception:
+# acceptance_join.tf, where enable_acceptance_join_person is on (dev only,
+# default false), grants this identity secretAccessor on
+# swarm-accept-join-person and on no other secret, for the join acceptance
+# probe's person credential. Nothing else in the suites reads a secret, and the
+# mock runner profile this tenant uses needs no provider key.
 resource "google_cloud_run_v2_service_iam_member" "verify_invokes_api" {
   project  = var.project_id
   location = var.region

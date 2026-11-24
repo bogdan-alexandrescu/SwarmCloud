@@ -16,7 +16,7 @@
 # compiler, no pip, no shell tools beyond the base, no credential and one
 # network client, plugin_intake/bucket.py: the standard library's http.client
 # to the metadata server and Cloud Storage only, every other socket refused
-# (tests/test_intake_pinned.py holds the imports). It runs as uid 10001 with a
+# (a test holds the imports to that list). It runs as uid 10001 with a
 # read-only root filesystem: it writes only to the plugins bucket, through the
 # Cloud Storage API.
 # The same base every service image pins (apps/swarm-graph/Dockerfile).

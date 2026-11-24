@@ -1,10 +1,13 @@
 import './styles/help.css'
 import { useEffect, useRef, useState, type Ref } from 'react'
-import { HELP, HELP_GROUPS, HELP_PLACES, HELP_ROUTE, TOPIC_IDS, topicFor, type HelpGroupId, type TopicId } from './help'
+import { HELP, HELP_GROUPS, HELP_PLACES, HELP_ROUTE, TOPIC_IDS, topicFor, type TopicId } from './help'
 import { addressToPath } from './paths'
 import { EmptyState } from './components'
 import { CountNote, PageHead } from './Shell'
-import { GuideLink } from './Guide'
+import { GuideLink } from './GuideLink'
+import { helpPageOf } from './helpPage'
+
+export { helpPageOf } from './helpPage'
 
 /**
  * THE HELP SECTION (docs/web-ui/ui-audit-and-build-prompt.md §B7.3).
@@ -27,7 +30,7 @@ import { GuideLink } from './Guide'
  * curated subset -- the same record the cards read, walked in order. That is
  * the property the brief asked for: a topic cannot exist in a card and be
  * missing from this page, because there is only one list. A `#help/<id>` link
- * from a card is therefore never dead, and `tests/help.test.ts` asserts it for
+ * from a card is therefore never dead, and a help test asserts it for
  * every card in the tree.
  *
  * Every figure and every enum member on this page is READ from the module that
@@ -164,20 +167,6 @@ export function HelpScreen({ topic }: { topic: string }) {
       )}
     </>
   )
-}
-
-/**
- * The group page a Help route tail opens: the group itself, a topic's group,
- * or -- for `/help` and for a topic this build lacks -- the first group, so a
- * page is always one group and the panel always marks it. App.tsx reads this
- * to light the panel's entry.
- */
-export function helpPageOf(tail: string): HelpGroupId {
-  const named = HELP_GROUPS.find((g) => g.id === tail)
-  if (named !== undefined) return named.id
-  const t = topicFor(tail)
-  if (t !== null) return t.group
-  return HELP_GROUPS.find((g) => TOPIC_IDS.some((id) => HELP[id].group === g.id))!.id
 }
 
 /** Every text a topic is searched in, in the order a match is looked for. */

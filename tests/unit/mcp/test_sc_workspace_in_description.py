@@ -35,6 +35,7 @@ import pytest
 from swarm_mcp import launch, sc, server, workflows
 
 from test_plugin_agents_and_workflows import _PLUGIN
+import sc_skill_text
 
 _MANIFEST = _PLUGIN / ".claude-plugin" / "plugin.json"
 _SKILL = _PLUGIN / "skills" / "sc" / "SKILL.md"
@@ -144,7 +145,7 @@ def test_an_attached_workflow_is_named_by_its_workflow_alone(_plugin_root, monke
     assert out["title"] == name == "SC ∴ nightly · 3 steps"
     assert description.startswith("Workspace: eng@example.com (eng) · ")
     # The row's own workspace still travels to run.js for its step rows.
-    assert out["args"]["workspace"] == "eng@example.com"
+    assert out["launches"][0]["args"]["workspace"] == "eng@example.com"
 
 
 # --------------------------------------------------------------------------
@@ -252,7 +253,7 @@ def _flat(text: str) -> str:
 
 
 def test_the_skill_doc_states_the_title_format_launch_writes(_plugin_root):
-    text = _flat(_SKILL.read_text(encoding="utf-8"))
+    text = _flat(sc_skill_text.text())
     assert "SC · [<workspace>]" not in text, "the run's name carries no workspace any more"
     assert "`SC ∴ <name> · N steps`" in text and "`SC · <label>`" in text and "`SC ∴ <name>`" in text
     assert "`Workspace: <workspace> (<tenant>) · Started by: " in text and "`Workspace: not reported`" in text

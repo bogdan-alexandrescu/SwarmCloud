@@ -11,9 +11,8 @@ unread.
 
 EVERY SECTION IS BUILT FROM AN ALLOW-LIST. Nothing here spreads a source
 document into the response, so a field a source gains tomorrow (a secret's
-name, a token id) does not reach the page by default.
-`tests/unit/control_plane/test_profile_no_credentials.py` plants a sentinel in
-every secret-shaped field of every source and looks for it.
+name, a token id) does not reach the page by default. A test plants a
+sentinel in every secret-shaped field of every source and looks for it.
 
 ONLY THE CALLER'S OWN THINGS (invariant 9). Per workspace the caller can act
 in, only documents keyed by (that workspace, this email): the GitHub

@@ -15,7 +15,7 @@ import { QA_TARGETS_PAGE, QaTargetsScreen } from './QaTargets'
 import type { ForgeGap, ForgeRepoStatus, RepoCounts } from './api'
 import type { AccessGrant } from './types'
 import type { QaLink } from './qaTargetsApi'
-import { useRoleGate } from './Profile'
+import { useRoleGate } from './roleGate'
 import { PageHead } from './Shell'
 import { timeAgo } from './types'
 import './styles/repositories.css'
@@ -83,7 +83,7 @@ export function RepositoriesScreen({ view, go, qaLink }: { view: string | null; 
   }
   if (repo !== null && repo !== '') return <RepositoryDetail key={repo} repoId={repo} tab={q.get('tab')} go={go} pr={q.get('pr')} graph={{ view: q.get('view'), q: q.get('q') }} />
   // The list's heading is written HERE, as a literal, because
-  // tests/unit/control_plane/test_nav_headings_agree.py reads the tab's
+  // a nav-headings guard test reads the tab's
   // heading out of this function's source: the tab says Repositories, so the
   // page it opens is headed Repositories.
   return (

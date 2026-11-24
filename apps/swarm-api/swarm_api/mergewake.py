@@ -423,7 +423,7 @@ from .redaction import redact
 from .repositories import parse_repository
 from .rollup import SKIPPED_SUMMARY_KEY, derived_state_write
 from .schemas import WorkflowCreate
-from . import sessiontag
+from . import sessiontag, stepclass
 from .validation import (
     CONFLICT_ROUND_METADATA_KEY,
     DISPATCH_METADATA_KEY,
@@ -442,8 +442,7 @@ log = logging.getLogger(__name__)
 
 #: The marker inside `metadata.merge_wait` (`validation.MERGE_WAIT_METADATA_KEY`,
 #: the worker's park record) that the scheduler wakes on
-#: (`scheduler.loop.MERGE_WAKE_MARKER`). tests/unit/worker/test_merge_action.py
-#: holds the restatements equal.
+#: (`scheduler.loop.MERGE_WAKE_MARKER`). A test holds the restatements equal.
 WAKE_MARKER = "wake_requested_at"
 
 TASKS = "tasks"
@@ -453,9 +452,9 @@ WORKFLOWS = "workflows"
 #: first, each `{round, head, claimed_at, workflow_id, task_id}` or, for a
 #: round whose submission was refused, `error` in place of the ids. Written
 #: only by this tick; read by the worker
-#: (`agent_worker.merge.MERGE_FIX_METADATA_KEY`, held equal by
-#: tests/unit/worker/test_merge_fix_round.py). Beside `merge_wait`, not in
-#: it: the worker's park rewrites `merge_wait` whole.
+#: (`agent_worker.merge.MERGE_FIX_METADATA_KEY`, held equal by a test).
+#: Beside `merge_wait`, not in it: the worker's park rewrites `merge_wait`
+#: whole.
 MERGE_FIX_METADATA_KEY = "merge_fix"
 #: The worker's park code after an update-branch whose new head GitHub had
 #: not made yet (`agent_worker.merge.BRANCH_UPDATE_PENDING`).
@@ -475,23 +474,23 @@ HEAD_MOVE_CODES = frozenset({BRANCH_UPDATE_PENDING, WORKFLOW_PATCH_PENDING})
 MERGE_QUEUED = "merge_queued"
 
 #: The park code of a merge step waiting for its repository's merge slot
-#: (`agent_worker.mergeslot.MERGE_SLOT_WAIT`, merge race archived issue 295, held equal by
-#: tests/unit/worker/test_merge_slot.py). Not a reading of its checks: they
-#: were green when it parked, so reading them would wake it for nothing every
-#: CI_READ_SECONDS. The holder's release marks it when the slot is handed to
-#: it, and the worker's fallback instant covers a lost mark; the tick skips it.
+#: (`agent_worker.mergeslot.MERGE_SLOT_WAIT`, merge race archived issue 295,
+#: held equal by a test). Not a reading of its checks: they were green when it
+#: parked, so reading them would wake it for nothing every CI_READ_SECONDS. The
+#: holder's release marks it when the slot is handed to it, and the worker's
+#: fallback instant covers a lost mark; the tick skips it.
 MERGE_SLOT_WAIT = "merge_slot_wait"
 #: The park code of a merge step waiting on its repository's merge train
-#: (`agent_worker.mergetrain.TRAIN_WAITING`, TRAIN-WS; held equal by
-#: test_merge_train_rules.py). Its checks were green when it registered; the
-#: train coordinator (`mergetrain.tick_tenant`, on this same tick) marks it
-#: when its entry lands, is ejected or is returned. The tick skips it.
+#: (`agent_worker.mergetrain.TRAIN_WAITING`, TRAIN-WS; held equal by a test).
+#: Its checks were green when it registered; the train coordinator
+#: (`mergetrain.tick_tenant`, on this same tick) marks it when its entry lands,
+#: is ejected or is returned. The tick skips it.
 MERGE_TRAIN_WAITING = "merge_train_waiting"
 #: The park code of a green head the repository's merge train ejected twice
 #: (archived issue 3313, `agent_worker.merge.TRAIN_FIX_PENDING`; held equal by
-#: test_merge_wake_train_round.py): the worker's one re-board there is spent
-#: and a CI-fix round is left. Its checks are green, so they are never read
-#: as red: `_on_train` submits the round with the train run's failing jobs.
+#: a test): the worker's one re-board there is spent and a CI-fix round is
+#: left. Its checks are green, so they are never read as red: `_on_train`
+#: submits the round with the train run's failing jobs.
 TRAIN_FIX_PENDING = "train_fix_pending"
 #: The worker's park while a CI-fix round claimed at its head runs
 #: (`agent_worker.merge.CI_FIX_RUNNING`, held equal there too).
@@ -517,8 +516,7 @@ DEQUEUED = "dequeued"
 #: request ended outside the workflow, `wake_requested_at` / `wake_reason`.
 #: `agent_worker.merge.OWNER_QUESTIONS_OPEN` / `OWNER_HOLD_KEY` /
 #: `PULL_REQUEST_MERGED` / `PULL_REQUEST_CLOSED` and
-#: `scheduler.loop.OWNER_HOLD_KEY`, held equal by
-#: tests/unit/control_plane/test_merge_outside_ends.py.
+#: `scheduler.loop.OWNER_HOLD_KEY`, held equal by a test.
 OWNER_QUESTIONS_OPEN = "owner_questions_open"
 OWNER_QUESTIONS_PHASE = "owner_questions"
 OWNER_HOLD_KEY = "owner_hold"
@@ -549,8 +547,7 @@ CONFLICTING = "conflicting"
 #: again whenever a round moves the head, so it alone does not bound rounds
 #: across a base that keeps moving. Held equal to
 #: `agent_worker.merge.CONFLICT_ROUNDS_KEY` / `MERGE_CONFLICT_ROUNDS_MAX` /
-#: `MERGE_CONFLICT_ROUNDS_TOTAL_MAX` by
-#: tests/unit/worker/test_merge_conflict_round.py.
+#: `MERGE_CONFLICT_ROUNDS_TOTAL_MAX` by a test.
 CONFLICT_ROUNDS_KEY = "conflict_rounds"
 MERGE_CONFLICT_ROUNDS_MAX = 2
 MERGE_CONFLICT_ROUNDS_TOTAL_MAX = 6
@@ -574,7 +571,7 @@ RERUNS_KEY = "reruns"
 #: writes. `agent_worker.merge.OWNER_PICK_FIX_PENDING` / `_RUNNING` /
 #: `PICK_ROUNDS_KEY` / `MERGE_PICK_ROUNDS_MAX` / `PICK_LINE_PREFIX` /
 #: `OWNER_PICK_NOT_BUILT` and `agent_worker.owner_questions.PICKS_BUILT_NAME`,
-#: held equal by tests/unit/worker/test_merge_pick_fix_round.py.
+#: held equal by a test.
 OWNER_PICK_FIX_PENDING = "owner_pick_fix_pending"
 OWNER_PICK_FIX_RUNNING = "owner_pick_fix_running"
 PICK_FIX_CODES = frozenset({OWNER_PICK_FIX_PENDING, OWNER_PICK_FIX_RUNNING})
@@ -1455,6 +1452,7 @@ def _on_red(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], ref: IssueRe
             excerpt=excerpt,
             step_input={},
             resource_class=resource_class,
+            class_models=stepclass.class_models_of(ctx),
             metadata={"merge_fix_round": {
                 "merge_task": task_id,
                 "round": round_no,
@@ -1486,6 +1484,7 @@ def _on_conflict(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], ref: Is
             rounds=MERGE_CONFLICT_ROUNDS_MAX,
             files=_conflicting_files(ctx.forge_writer, ref, read.pull, token),
             resource_class=resource_class,
+            class_models=stepclass.class_models_of(ctx),
             metadata={CONFLICT_ROUND_METADATA_KEY: {
                 "merge_task": task_id,
                 "round": round_no,
@@ -1608,6 +1607,7 @@ def _on_train(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], wait: Mapp
             excerpt=excerpt,
             step_input={},
             resource_class=resource_class,
+            class_models=stepclass.class_models_of(ctx),
             metadata={"merge_fix_round": {
                 "merge_task": task_id,
                 "round": round_no,
@@ -2079,6 +2079,7 @@ def conflict_fix_continuation(
     metadata: Mapping[str, Any],
     files: Sequence[str] | None = None,
     resource_class: str | None = None,
+    class_models: Mapping[str, str] | None = None,
 ) -> WorkflowCreate:
     """One conflict fix round: a one-step `direct-pr` claude-code workflow continuing
     `continues_task`, on the pull request's own branch (archived issue 1076).
@@ -2094,7 +2095,10 @@ def conflict_fix_continuation(
     `files` (SPEED-D2) are the files both sides changed, from GitHub, so
     DATA between two nonce lines, redacted; None when they were not read.
     `resource_class` is the continued step's, or None for the profile's.
+    `class_models` (the deployment's pins) gives the round its role's class
+    (`stepclass`, the owner 2026-11-23: `sonnet`), else the profile's default.
     """
+    choice = stepclass.choose(stepclass.ROLE_CONFLICT_FIX, STEP_PROFILE, class_models)
     if not _SAFE_BRANCH.fullmatch(base or "") or ".." in base:
         raise ValueError("the pull request's base branch name is not one a round may quote")
     prompt = (
@@ -2135,6 +2139,8 @@ def conflict_fix_continuation(
             "runner_profile": STEP_PROFILE,
             "input": {"prompt": prompt},
             **({"resource_class": resource_class} if resource_class else {}),
+            **choice.fields(),
+            "metadata": choice.metadata(),
         }],
         "metadata": {
             # Never a merge inside a round: the merge step merges it, once

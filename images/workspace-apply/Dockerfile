@@ -178,10 +178,12 @@ RUN rm -rf /usr/lib/google-cloud-sdk/platform/bundledpythonunix \
 # install through dpkg. Named GKE_PLUGIN_*, not GKE_AUTH_PLUGIN_*: Trivy DS-0031
 # reads "AUTH" in an ARG name as a secret.
 #
-# kubectl 1.36.6: the version agent-runtime-base pins and docs/versions.md
-# names for operators, one minor ahead of the 1.35 control plane as kubectl's
-# skew policy allows. The static binary from dl.k8s.io; checksum from
-# https://dl.k8s.io/release/v1.36.6/bin/linux/amd64/kubectl.sha256.
+# kubectl 1.37.2: the version agent-runtime-base pins (the first build that
+# links x/net v0.57.0, which fixes CVE-2026-39821; 2026-11-24), one minor
+# ahead of the platform's 1.36 control plane as kubectl's skew policy allows;
+# it needs a 1.36 or newer control plane (docs/versions.md). The static binary
+# from dl.k8s.io; checksum from
+# https://dl.k8s.io/release/v1.37.2/bin/linux/amd64/kubectl.sha256.
 #
 # amd64 only, like every image here: Cloud Build's default pool is amd64, and
 # so is Cloud Run.
@@ -191,8 +193,8 @@ ARG GCLOUD_VERSION=591.0.0
 ARG GKE_PLUGIN_VERSION=592.0.0
 ARG GKE_PLUGIN_POOL_ID=a8fc8016eccf144b786a0d64a6f464aa
 ARG GKE_PLUGIN_SHA256=3a1da42673e0df59b86958c817d2369ef89d5b435767d1fea85e453707007df4
-ARG KUBECTL_VERSION=1.36.6
-ARG KUBECTL_SHA256=29818b6729dc9262b692307470d0558d027725e738be5dd47c760261868a2634
+ARG KUBECTL_VERSION=1.37.2
+ARG KUBECTL_SHA256=c04487523e7aa7d1493f7808174c899db93d7a9cf57531420cd76b9bd415f8f4
 RUN mkdir -p /tmp/toolbox \
  && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/gke-gcloud-auth-plugin.deb \
       "https://packages.cloud.google.com/apt/pool/cloud-sdk/google-cloud-cli-gke-gcloud-auth-plugin_${GKE_PLUGIN_VERSION}-0_amd64_${GKE_PLUGIN_POOL_ID}.deb" \

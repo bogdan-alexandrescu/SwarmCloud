@@ -28,7 +28,7 @@ import { useState, type ReactNode } from 'react'
 
 import { HelpCard } from './HelpCard'
 import { agentPath } from './OverviewRegions'
-import { InfoTip } from './People'
+import { InfoTip } from './InfoTip'
 import { addressToPath } from './paths'
 import { clockTime, formatDuration, type Task, type TaskState, type Waiting, type WaitingHistoryEntry } from './types'
 
@@ -340,7 +340,7 @@ function OwnerQuestionFacts({ d, task }: { d: Record<string, unknown>; task: Tas
             {asked} open ·{' '}
             {/* A button, not a hash anchor to the card's id: the console still
                 routes legacy hash addresses, so that anchor sent the page to
-                Overview (nav.links.test.tsx, which reads the source, so the
+                Overview (the nav-links test holds it and reads the source, so the
                 anchor is not even spelled out here). This scrolls instead. */}
             <button
               type="button"

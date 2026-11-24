@@ -232,6 +232,59 @@ _RULE_ORDER = {PLUGIN_FILES_MISSING: 0, "deploy_behind": 0, "merge_refused": 0, 
 
 ALL = ("all", "*")
 
+#: How a session reads one flagged item, by rule: the reading rule that lived
+#: only in the sc skill's prose (plugin/skills/sc/reference/check.md, its rule
+#: table, kept there word for word), so `/sc:check` -- about a kilobyte --
+#: reports right without loading the skill (improvement plan 2026-11-23).
+#: Each item's `say` is its report line, then this.
+RULE_SAY = {
+    "no_heartbeat": "give its heartbeat, its last event and its age (exact, or \"at least\")",
+    "waiting_for_capacity": ("it is waiting for the pool that binds it, not broken: it holds nothing while it "
+                             "waits (invariant 1)"),
+    "parked": "only a person moves it on: give the park reason and its console link",
+    "merge_train_stalled": ("name evidence.failed_checks; when it is null, say the checks were NOT read "
+                            "(checks_unread_because says why); `next` is the PR link"),
+    "merge_refused": ("give the PR link; when pull_request_state is null, say the PR's state was NOT read "
+                      "(pull_request_state_unread_because says why)"),
+    "state_disagrees": "its stored and derived state disagree on whether it is finished (the stale RUNNING cache)",
+    AWAITING_INPUT: "the step is parked past its expires_at: the expiry sweep is not running",
+    "deploy_behind": ("give the deployed commit and its age, the commits behind, and the release run's "
+                      "conclusion and failed jobs; a field reading 'not read: ...' was NOT read -- say so, "
+                      "never \"no failed jobs\""),
+    PLUGIN_FILES_MISSING: "only a reload ends it: type /reload-plugins in this session",
+}
+
+#: The reply's one reading paragraph: what the skill's `check` section said
+#: in prose, in the order `/sc:check` reports (plugin/commands/check.md).
+HOW_TO_READ = (
+    "Read-only: report and attach; never cancel, retry, release or re-dispatch. Report `flagged` first, "
+    "in its order (STUCK before STALE), one line each: its `say`, then its evidence, console link and "
+    "`next`. Then `awaiting_input`, as information and never as stuck (a waiting step holds no capacity): "
+    "one line each, `[<workspace>] <workflow_id> · <step_id> · <reason>` and its `next`. Then put EACH "
+    "`owner_questions` question to the person with AskUserQuestion -- its options as given, the "
+    "`recommended` one marked \"(recommended)\", its `context` beside it -- and record each pick with "
+    "swarm_task_answer {task_id, question_index, choice}; never pick an answer yourself. `unchecked` was NOT "
+    "checked: say so, never call it fine. Nothing flagged: say \"nothing stuck or stale in <repository>\" "
+    "with the count of running workflows and tasks. `nothing_running`: say it in one line and leave the "
+    "watch armed. Each `rowless_tasks` entry: say its `line` and make its Workflow call (`launch`). Then "
+    "make `attach_with`'s ONE call, with `exclude`: the ids of every [SwarmCloud] row live in this session, "
+    "and one Workflow call per entry of its `launches`; when that launched any, arm the watch with its "
+    "reply's `arm_watch`."
+)
+
+
+def say(item: dict[str, Any]) -> str:
+    """One flagged item's report line, `[<workspace>] <id> · <kind> ·
+    <reason>`, then how its rule is read (RULE_SAY)."""
+    where = f"[{item['workspace']}] " if item.get("workspace") else ""
+    named = item.get("workflow_id") or item.get("task_id")
+    head = f"{where}{named} · " if named else where
+    line = f"{head}{item.get('kind')} · {item.get('reason')}"
+    rule = item.get("rule")
+    note = RULE_SAY.get(rule) if isinstance(rule, str) else None
+    return f"{line} -- {note}" if note else line
+
+
 
 # --------------------------------------------------------------------------
 # The repository scope
@@ -2167,7 +2220,10 @@ def run(
     if deployed["flag"]:
         flagged.append(deployed["flag"])
     flagged.sort(key=lambda item: _RULE_ORDER.get(item["rule"], 9))
+    for item in flagged:
+        item["say"] = say(item)
     out: dict[str, Any] = {
+        "how_to_read": HOW_TO_READ,
         "checked_at": _iso(now),
         "read_only": True,
         "repository": scope["key"],
@@ -2224,6 +2280,12 @@ def run(
     rowless = launch.rowless(out["running"]["single_tasks"])
     if rowless:
         out["rowless_tasks"] = rowless
+    # The push path (`sc await --mine`): run in the background, it exits on
+    # the first of this session's running work to finish or need a person.
+    from . import awaitchange
+
+    out[awaitchange.FIELD] = awaitchange.await_command(
+        mine=bool(out["running"]["workflows"] or out["running"]["single_tasks"]))
     if not out["running"]["workflows"] and not out["running"]["single_tasks"]:
         # Said, not acted on (SC-AUTO-WATCH, owner 2026-10-14): an armed watch
         # with nothing to watch costs one read per interval, so the check

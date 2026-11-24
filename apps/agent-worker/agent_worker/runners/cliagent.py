@@ -451,6 +451,14 @@ class CliAgentSpec:
     #: session from a handoff, never `--resume` (TOKEN-CEILING, the owner
     #: 2026-10-27, archived issue 2524; `ceiling`). Reads claude-code's stream-json usage.
     context_ceiling: bool = False
+    #: The CLI's flag that appends to its system prompt, or None. When set,
+    #: the paragraphs `run_cli_agent` adds that never vary per task (the
+    #: ceiling's handoff note, the publishing paragraph) go in that flag's
+    #: value -- the runner's own, when its `extra_args` pass one, else a new
+    #: one -- rather than in the user prompt (the owner's "Shorter sessions"
+    #: plan, finding 1, 2026-11-23): cached once as system prefix, never
+    #: restated by a fresh session's first message. codex has none.
+    system_prompt_flag: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -746,6 +754,16 @@ class AccountStreamWatcher:
         self._usage: dict[str, dict[str, int]] = dict(carry._usage) if carry is not None else {}
         self._anonymous = carry._anonymous if carry is not None else 0
         self.first_action: dict[str, Any] | None = carry.first_action if carry is not None else None
+        #: Which path the swap that restarted this runner took
+        #: (`ceiling.SWAP_PATHS`), or None when no swap did: on the channel
+        #: under `ceiling.SWAP_PATH_KEY`, for the worker's swap record.
+        self.swap_path: str | None = carry.swap_path if carry is not None else None
+
+    def note_swap_path(self, path: str | None) -> None:
+        """Set the swap's path; the next write puts it on the channel."""
+        if path != self.swap_path:
+            self.swap_path = path
+            self._dirty = True
 
     def poll(self) -> str | None:
         stop: str | None = None
@@ -888,6 +906,7 @@ class AccountStreamWatcher:
                 # and seconds the run has spent so far, which is the re-read
                 # cost of a run that never got to act.
                 "first_action": self.first_action,
+                ceiling_mod.SWAP_PATH_KEY: self.swap_path,
                 "spent": {
                     "seconds": round(time.monotonic() - self._origin, 3),
                     "tokens": self._tokens(),
@@ -2014,6 +2033,22 @@ def _attempt_spend(
     return out
 
 
+def with_system_paragraphs(argv: Sequence[str], flag: str, paragraphs: Sequence[str]) -> list[str]:
+    """`argv` with `paragraphs` appended to `flag`'s value, a blank line
+    between each, or with `flag` added when `argv` has none. One flag only:
+    the CLI keeps one appended system prompt, so a second would replace the
+    first. Never the `--resume` value nor anything a caller wrote: `argv` is
+    the runner's own."""
+    out = list(argv)
+    text = "\n\n".join(paragraphs)
+    if flag in out[:-1]:
+        at = out.index(flag) + 1
+        out[at] = f"{out[at]}\n\n{text}" if out[at] else text
+    else:
+        out += [flag, text]
+    return out
+
+
 def run_cli_agent(
     ctx: RunnerContext,
     spec: CliAgentSpec,
@@ -2130,6 +2165,9 @@ def run_cli_agent(
     # whether the session it was asked to resume ended over the ceiling. One
     # that did is NOT resumed: this run starts a fresh session from a handoff.
     ceiling_watcher: ceiling_mod.CeilingWatcher | None = None
+    # An account swap restarted this runner (not a credential reload, a time
+    # limit or an answered question): its path is recorded below.
+    swapped = bool(resume) and os.environ.get(RESUME_REASON_ENV, "").strip() == RESUME_MOVED
     ceiling_state_path: Path | None = None
     ceiling_seed: dict[str, Any] | None = None
     resumed_over: str | None = None
@@ -2157,10 +2195,28 @@ def run_cli_agent(
         # NEVER FOR A PARKED QUESTION: the answered question is in that
         # session alone, and a fresh session from a handoff would drop it.
         answered = os.environ.get(RESUME_REASON_ENV, "").strip() == RESUME_ANSWERED
+        # AN ACCOUNT SWAP OF A LARGE SESSION HANDS OFF (wave 3, shorter
+        # sessions): judged against half the ceiling
+        # (`ceiling.SWAP_HANDOFF_CONTEXT_TOKENS`), a credential reload against
+        # the ceiling. The fresh session is one of the same capped fresh
+        # sessions: with none left (`armed` false) the swap resumes as before.
         if resume and ceiling_watcher.armed and not answered:
-            resumed_over = ceiling_mod.over_state(ceiling_seed, resume, ceiling_watcher.limits)
+            resumed_over = ceiling_mod.over_state(
+                ceiling_seed, resume, ceiling_watcher.limits, swap=swapped)
             if resumed_over is not None:
+                ceiling_watcher.note_handed_off(resume)
                 resume = ""
+        if swapped:
+            ceiling_watcher.note_swap(
+                ceiling_mod.SWAP_HANDED_OFF if resumed_over is not None
+                else ceiling_mod.SWAP_RESUMED,
+                context_tokens=ceiling_mod.seed_numbers(ceiling_seed)["context_tokens"],
+            )
+    # Which path the swap took, for the account channel (`ceiling.SWAP_PATHS`).
+    swap_path = (
+        (ceiling_mod.SWAP_HANDED_OFF if resumed_over is not None else ceiling_mod.SWAP_RESUMED)
+        if swapped else None
+    )
     if cwd != ctx.work_dir and not resume:
         from .. import contextpack  # lazy: most starts have nothing staged
 
@@ -2198,10 +2254,17 @@ def run_cli_agent(
     # step's time-limit line is not in it: a fresh session is told what is
     # left when it starts, not the whole step's limit.
     task_prompt = expected_mod.with_instructions(prompt, told, ctx.artifacts_dir, staged)
+    # The standing paragraphs this function adds, for the system prompt when
+    # the CLI has the flag (`CliAgentSpec.system_prompt_flag`), else for the
+    # user prompt as before.
+    standing: list[str] = []
     if ceiling_watcher is not None:
         # The platform's note on the ceiling: a fresh session may carry the
         # task on, from the handoff note the agent keeps (archived issue 2524).
-        task_prompt = f"{task_prompt}\n\n{ceiling_mod.HANDOFF_NOTE}"
+        if spec.system_prompt_flag:
+            standing.append(ceiling_mod.HANDOFF_NOTE)
+        else:
+            task_prompt = f"{task_prompt}\n\n{ceiling_mod.HANDOFF_NOTE}"
     # The step's wall clock (archived issue 2139): last for a task with no repository,
     # just before the platform paragraph for one with a repository.
     first_prompt = f"{task_prompt}\n\n{time_limit_line(limits.timeout_seconds)}"
@@ -2211,13 +2274,24 @@ def run_cli_agent(
         first_prompt = f"{TIME_LIMIT_RESUME_PROMPT}\n\n{first_prompt}"
     if cwd != ctx.work_dir and step_publishes(os.environ):
         # A task with a repository (Proposal A, owner decision 2026-10-08):
-        # the platform paragraph, last. Not on a resume: the session
-        # already holds it. Nor on a step the worker says publishes nothing
+        # the platform paragraph, last. In a user prompt, not on a resume:
+        # the session already holds it; in the system prompt (claude-code),
+        # on every start, which is still once per session. Nor on a step the worker says publishes nothing
         # (`step_publishes`): 88 of 90 measured steps wrote pr-title.txt
         # and pr-body.md because this paragraph asked, where no pull
         # request was ever opened.
-        task_prompt = f"{task_prompt}\n\n{PUBLISH_PARAGRAPH}"
-        first_prompt = f"{first_prompt}\n\n{PUBLISH_PARAGRAPH}"
+        if spec.system_prompt_flag:
+            standing.append(PUBLISH_PARAGRAPH)
+        else:
+            task_prompt = f"{task_prompt}\n\n{PUBLISH_PARAGRAPH}"
+            first_prompt = f"{first_prompt}\n\n{PUBLISH_PARAGRAPH}"
+    if standing and spec.system_prompt_flag:
+        # In EVERY start of this step: the first, a resume, a finish pass and
+        # a fresh session from a handoff all start from `base_argv`, so each
+        # session is told each paragraph exactly once, and its user prompt
+        # (a handoff's `task_prompt` included) no longer restates them.
+        argv = with_system_paragraphs(argv, spec.system_prompt_flag, standing)
+        base_argv = with_system_paragraphs(base_argv, spec.system_prompt_flag, standing)
     if resume:
         argv += [spec.resume_flag, resume]
         # A resumed session is told the time it has left, as a fresh start is
@@ -2393,6 +2467,8 @@ def run_cli_agent(
         run_limits = replace(limits, timeout_seconds=timeout_seconds)
         run_watcher = _account_watcher(spec, stdout_path, last_watcher[0])
         last_watcher[0] = run_watcher
+        if run_watcher is not None and swap_path is not None:
+            run_watcher.note_swap_path(swap_path)
         if ceiling_watcher is not None:
             ceiling_watcher.begin(fresh=fresh, seed=seed)
             # The session count, for a runner restarted inside this attempt.

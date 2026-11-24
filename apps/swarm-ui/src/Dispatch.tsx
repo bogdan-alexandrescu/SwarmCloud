@@ -97,7 +97,7 @@ export interface DispatchChoiceProps {
  * A SECOND COPY OF A SERVER RULE, KEPT FOR ONE REASON AND HELD TO THE FIRST.
  * The form only ever WARNS with it -- the API owns the refusal and names it --
  * so a drift here shows a wrong caution rather than blocking a valid submission.
- * `dispatch.test.ts` reads the validator's tuple out of `validation.py` and
+ * A dispatch test reads the validator's tuple out of `validation.py` and
  * fails when the two disagree, so the drift is caught rather than shipped.
  */
 export const REPOSITORY_SCHEMES: readonly string[] = ['https://', 'ssh://', 'git@']

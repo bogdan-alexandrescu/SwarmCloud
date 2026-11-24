@@ -51,6 +51,9 @@ from .test_issue_run_ci import (  # noqa: F401  (fixtures, imported to be used)
 from .test_issue_run_keyword import SAME, _review_writes, _verdict
 from .test_issue_runs import FULL_PLAN, _approve, _create, _docs, _finish_planner, _run
 
+#: Holds the one-re-review shape: `fix-loop` switched off (tests/unit/conftest.py).
+pytestmark = pytest.mark.usefixtures("fix_loop_off")
+
 
 def _checking(client, db, objects, writes, *, verdict: str = "MERGE",
               rereview: str | None = None) -> dict:

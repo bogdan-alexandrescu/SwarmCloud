@@ -403,7 +403,7 @@ function Plot({
         {/* THE LINE. `defined` is hard-coded and there is no prop that can
             change it: d3 ends the current subpath at an absence and starts a
             new one after it, so no stroke ever crosses a gap. Removing this
-            one accessor makes `honesty.chart.test.tsx` fail by name -- that
+            one accessor makes the chart honesty test fail by name -- that
             is the mutation this wrapper is here to survive. */}
         {drawsALine && (
           <LinePath<ChartPoint>
@@ -473,7 +473,7 @@ function ChartHead({ title }: { title: string }) {
 // THE PRIMITIVES EVERY OTHER CHART IS BUILT FROM
 // ---------------------------------------------------------------------------
 //
-// WHY THEY LIVE IN THIS FILE. `chart.tokenspend.test.tsx` fails if any module
+// WHY THEY LIVE IN THIS FILE. A chart test fails if any module
 // other than this one imports the charting library, and that rule is worth
 // more than a tidy file layout: it is what keeps the absent-value rules in one
 // place. The phase bars, the peak-memory step line, the checkpoint strip and

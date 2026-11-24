@@ -83,9 +83,13 @@ If all three hold, the tick starts **one** `workflow_dispatch` of
 run is a tick like a scheduled one: the gathering rule does not change, and
 the run reads every pull request afresh.
 
-**Where the window is read from: one place.** The gather's defaults (6 pull
-requests, 20 minutes) are stated once, in
-`apps/swarm-api/swarm_api/merge_train_gather.json`. `scripts/merge-train.sh`
+**Where the window is read from: one place.** The gather's defaults (8 pull
+requests, 5 minutes) are stated once, in
+`apps/swarm-api/swarm_api/merge_train_gather.json`. The 5 minutes (15 until
+23 November 2026) are what a lone ready pull request waits at most before a
+train boards; the cost is more, smaller trains and so more CI minutes per
+merged pull request, judged on the weekly scorecard's trains per day and merge
+latency, and the fallback is the old value, one line in that file. `scripts/merge-train.sh`
 reads its defaults from that file in `gather_knobs_valid`, used only by
 `tick` and `gather`; auto-merge.yml runs `judge` from a checkout of
 `scripts/` alone and never needs it. The swarm-api image installs only

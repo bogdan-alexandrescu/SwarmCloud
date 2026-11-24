@@ -42,7 +42,7 @@ def test_the_step_ref_is_sent_through_submit_beside_the_workflows_ref():
     sent = []
 
     class Client:
-        def request(self, method, path, payload=None):
+        def request(self, method, path, payload=None, timeout=60):  # noqa: ARG002
             sent.append(copy.deepcopy(payload))
             return {"workflow": {"workflow_id": "wf_1", "steps": []}}
 

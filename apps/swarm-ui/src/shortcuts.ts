@@ -9,7 +9,7 @@
  * (SubmitChooser.tsx) -- read their keys from it, so a key cannot be added to
  * a handler and left out of Help without the handler changing here first.
  * The keys that act inside one view (the log, the diff, the agent list) are
- * held to their handlers by `src/__tests__/qa.g1.help.test.tsx`, which reads
+ * held to their handlers by a help test, which reads
  * each handler's source for the key this table says it answers.
  *
  * Pure data: no React, and nothing from `help.ts`, which imports this.

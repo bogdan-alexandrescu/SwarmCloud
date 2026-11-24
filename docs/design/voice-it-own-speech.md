@@ -134,6 +134,26 @@ ChatGPT plan, is only the fallback when this engine cannot start (§4.1).
    answer carries `delegation_id`; swarm-api's relay waits on swarm-voice's `GET /delegations/{id}`
    (at most `planner.TURN_SECONDS`, 240 s) and speaks the planner's two sentences at the next
    silence, its cards streaming on SSE as today. A newer utterance never waits for it.
+
+   **The first sentence goes early** (the latency cut of 23 November 2026). The relay asks for the
+   turn streamed (`{"text", "stream": true}`): the front's child runs with
+   `--include-partial-messages`, `claudefront.EarlySentence` watches its text deltas for the first
+   complete sentence (`.`, `!` or `?` followed by whitespace), made spoken and scrubbed as the reply
+   is, and swarm-voice sends it as `{"t":"sentence"}` on an NDJSON answer before the turn's
+   `{"t":"answer"}` line. The relay hands it to `speak` at once, while the front is still writing;
+   at the answer it speaks only the rest. The transcript (the front's recorded reply, and the
+   page's `say.start` lines) starts with that sentence, so what was spoken early is recorded once
+   and never spoken again. A sentence the front wrote before a read is still spoken and recorded
+   first (the CLI's result is the last message only). A barge-in or a stop after it: the `cancel`
+   (or the closed socket) ends its synthesis, and nothing more of that turn is spoken. A swarm-voice
+   without the stream answers plain JSON, which the relay speaks whole, as before.
+
+   **A planner line wakes the relay.** One line-speaker task per relay speaks planner lines; an
+   `asyncio.Event` wakes it the moment a line arrives (the held `GET /delegations/{id}` returning)
+   or silence begins (`utt.end`). Lines are keyed by delegation id, so the same line arriving twice
+   or a doubled wake-up speaks it once; the wake is cleared before the queue is read, so a line
+   queued while another is spoken is not missed. A slow fallback recheck every 5 s
+   (`speech_relay.LINE_RECHECK_SECONDS`) catches a wake-up lost all the same.
 6. **Barge-in.** New speech while the agent talks: the browser stops playback at once and sends
    `barge`; swarm-api sends `cancel` to the VM's synthesis. A planner turn in flight is not
    cancelled (voice-it.md §3.9).
@@ -171,7 +191,16 @@ lease renewals share that CPU (voice-it.md §3.4).
    free for the front (a refusal, never a wait); for `gpt-live`, no OpenAI key. Text mode runs on
    the ChatGPT plan, but it is not this engine: no `speech` session reaches OpenAI (Q3). The session
    is not re-opened; its document gets `mode: "text"` and `fallback: {from, reason}`, and the page
-   draws one line (§9.2).
+   draws one line (§9.2). **The warm request** (owner, 2026-11-23): so the first spoken turn does
+   not wait out this cold start, Talk posts `POST /v1/voice/speech/warm` once when it opens, and
+   swarm-api starts the stopped machine in the background through this same start, for no session,
+   only for a caller a Start would admit (the Voice it list, swarm-voice deployed, the day cap, no
+   live session) with `own` the engine selected, and at most once per person per 30 minutes
+   (`WARM_EVERY_SECONDS`). The idle stop is unchanged: a warmed machine nobody talks to stops by
+   the same rule, `idle_minutes` after the start finished, so it runs at most 4 + 15 + 2 = 21
+   minutes (`READY_SECONDS`, Settings' longest idle, the sweep's two minutes; 11 at the default
+   idle), about $0.25 on the default g2-standard-4 ($0.71 an hour), and a session that starts meanwhile adopts
+   it and pays its minutes from the warm's start call (§13).
 
 ### 4.2 Starting the machine
 
@@ -689,6 +718,43 @@ Two directions each, drawn in the real console before any build; the design does
   and one session's detail (start phases, percentiles, peaks, minutes, cost, crashes); Days
   (minutes, cost, utterances, p90 latency, stock-outs); empty and error states.
 
+### 12.6 Reply latency: end of speech to first audio, on both engines
+
+The first step of the voice latency work is to measure, then cut. One record per spoken turn holds
+**the span from the person's end of speech to the first audio of the reply**, on each engine, and
+the parts of it the code can tell apart without guessing. A duration that could not be measured is
+recorded as **not measured** (null), never as 0, and counted as such.
+
+| Engine | Span | Parts | Taken in |
+| --- | --- | --- | --- |
+| Own speech (`own`) | the browser's `utt.end` (sent at the voice detector's end of the utterance and at the push-to-talk release alike) to the first audio byte of the reply sent to the browser | `recognition_ms`: `utt.end` to the recogniser's final; `front_first_token_ms`: **always not measured**: the relay sees the front's first complete sentence, never its first token; `front_ms`: the final to the reply's first speech handed to synthesis as `speak` (the read-back matcher and the front's time to its first complete sentence, which is the early sentence of §3.3 step 5 when the front streams one, else its whole round trip); `synthesis_ms`: that to the first audio byte sent | swarm-api, `voice/speech_relay.py` |
+| GPT-Live (`gpt-live`) | the sideband's person `*.speech_stopped` to `session.output_audio.started` | none: the sideband shows no part of the span | swarm-voice, `latency.py`, posted on the session grant's trace write |
+
+**Clocks.** Each span is taken on one side only, on that process's monotonic clock, so no two clocks
+are ever compared and there is no skew to bound. The own-speech relay stamps every point itself as
+the frame passes it (the browser's `utt.end` and the machine's final arriving, the `speak` leaving,
+the first audio byte leaving), so the browser's microphone-to-socket leg is outside the span. The
+hosted voice's two events arrive on the same sideband socket and are stamped on arrival, so that
+socket's transit is common to both and cancels; the WebRTC leg to the browser is not on the socket
+and is not in the span. When one of the two hosted events never comes in a session, the turn is
+recorded with the span not measured; nothing is estimated.
+
+**Content.** A record is `engine`, `turn_id`, `session_id` and durations, nothing else: no
+transcript, no reply text, no audio. `speech_telemetry.ALLOWED["turn"]` refuses any other field (a
+422 that names the field and keeps nothing), and the unit tests hold the record's keys.
+
+**Cost to a turn.** The relay hands its record to the telemetry sink inline, which stores off the
+event loop; swarm-voice posts in its own task, never awaited by the sideband. Measuring adds no wait.
+
+**Where to read it.** `GET /v1/voice/telemetry/latency?from=&to=&tz=[&scope=platform]` (the same
+readers as §12.4) serves, per engine, over the sessions that started in the range, `turns`, then for
+the span and each part `{count, p50, p90, not_measured}` (nearest rank, computed on read from the
+sessions' documents, nothing stored twice). **Voice it › Telemetry › Reply latency** shows them for
+the page's range as a table with the p50s as bars; each definition is the row's tooltip. The records
+live in the sessions' documents (`voice_speech_sessions/{session}.latency`, a hosted session's
+document marked `engine: gpt-live` and kept out of Sessions and Days) and their samples, retained as
+§12.3 says.
+
 ## 13. Cost and budget
 
 * The ledger gains one computed line, **Speech machine**: the minutes from the start call to the
@@ -751,8 +817,11 @@ child per sentence.
   the middle term is the model's. Haiku is the smallest, fastest class, and the front's work (one or
   two sentences, one choice: answer or `delegate`) is a mechanical step, what that class is for;
   `opus` and `fable` would slow every sentence for planning the front never does. M8 checks it.
-* **The planner runs the planning class, `fable`** (`claude-fable-5-1`), as Q3 says, on both
-  engines, through `VOICE_PLANNER_MODEL` (the owner is asked to confirm its cost in questions.json).
+* **The planner runs the planning class, `fable`** (`claude-fable-5-2` since the owner's re-pin of
+  2026-11-23, `claude-fable-5-1` before it), as Q3 says, on both
+  engines, through `VOICE_PLANNER_MODEL`, which Terraform renders from `local.runner_models.fable`;
+  `claudeturn.MODEL`, the default with no variable, is held equal to that pin by
+  tests/unit/scripts/test_model_pins.py (the owner is asked to confirm its cost in questions.json).
 * **One warm child per session.** `claude -p --input-format stream-json --output-format
   stream-json`, started at the session's start with claudeturn.py's rules (built environment, `--tools
   ""`, `--strict-mcp-config` with only `delegate` and the read tools, private HOME, scrubbed output); each final is one
@@ -767,6 +836,33 @@ child per sentence.
 * **Waits on the broker.** `plannerlease.py` sends `holder`, `person` and `voice_session_id` to
   `/v1/accounts/assign`, whose `AccountAssign` forbids extra fields (read 2026-11-05); the planner
   has the same gap. A hold with no task id is served only by an account that serves every class.
+
+### 14.2 Status answers and the project brief
+
+* **The front answers status questions about its project itself.** "What is running" or "did that
+  finish" used to be delegated: the front could not read the project's own cards and roster, so a
+  status line cost a planner lease and a turn of up to 240 s. The front now holds `project_status`
+  (swarm_voice/tools_read.py), `GET /v1/voice/projects/{project_id}/status`
+  (swarm-api routes/voice_status.py): the project's cards, the cards waiting on the person and its
+  roster, what the person's own project page shows. **No new reach:** it applies the roster route's
+  person, workspace and project checks, a grant reads only its own session's project (any other is
+  403), and the tool takes no input, so the model cannot name another project. The front delegates
+  only work.
+* **The planner leaves a brief and reads it back.** Every `speak` carries `brief`, the project's
+  state and open threads as the turn leaves them; after the turn ends it is written once
+  (`POST /v1/voice/sessions/{session_id}/brief`, at most 2,048 bytes, refused when credential-shaped)
+  to the project document's `planner_brief`, kept apart from the `brief` object whose `open` list
+  notes-to-work writes. The next delegation, in this session or a later one, reads it through the
+  status view and gets it in its turn message, so it does not start cold.
+* **The brief is data.** A model wrote it from tool results and a person's words, so wherever it is
+  read back it is fenced as quoted data (`prompts.fence("project_brief", ...)`), like a transcript.
+* **Costs stay in the caps.** The brief is the turn's own output: no model call of its own, its
+  tokens in the turn's `usage`. A capped session writes none: a capped delegation runs no turn, and
+  the write asks the caps first and is refused (409) at a cap.
+* **How to read the effect.** Two measures should move: delegations per session (`work.delegation`
+  `started` events per session; status questions no longer add one) and first-audio latency on
+  status questions (§12.6's end-of-speech-to-first-audio record; a status answer is now one front
+  turn with one read, not a delegation).
 
 ## 15. The installer's part (Day One)
 

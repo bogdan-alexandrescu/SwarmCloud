@@ -151,6 +151,9 @@ def test_a_two_run_attempt_reports_the_summed_duration_both_runs_and_the_swap(
     assert reread["tokens"] == _sum(READ_ONE, READ_TWO)
     assert reread["seconds"] >= 0.5
     assert "reread" not in runs[0], "the first run followed no swap"
+    # Which path the swap took, beside it: a small session is resumed.
+    assert runs[1]["swap_path"] == "resumed"
+    assert "swap_path" not in runs[0]
     assert summary["swap_cost"] == {
         "reread_seconds": reread["seconds"],
         "reread_tokens": _sum(READ_ONE, READ_TWO),

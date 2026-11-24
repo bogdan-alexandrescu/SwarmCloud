@@ -157,10 +157,9 @@ ARCHIVE_DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 _UNPINNED = object()
 
 #: Child tasks (docs/design/child-tasks.md §6.4), restated from
-#: `swarm_api.validation`, which this image does not carry;
-#: tests/unit/worker/test_child_tasks_worker.py holds them equal. The awaits a
-#: parent has had refunded, and the marker on a child cancelled because of
-#: its parent.
+#: `swarm_api.validation`, which this image does not carry; a test holds them
+#: equal. The awaits a parent has had refunded, and the marker on a child
+#: cancelled because of its parent.
 CHILD_AWAIT_RESUMES_METADATA_KEY = "child_await_resumes"
 CHILD_CASCADE_METADATA_KEY = "child_cascade"
 
@@ -168,8 +167,7 @@ CHILD_CASCADE_METADATA_KEY = "child_cascade"
 #: §3.8): the waits whose attempt `park_release_wait` refunded, and the bound
 #: on them. Restated as `swarm_api.attemptstate.RELEASE_WAIT_RESUMES` and
 #: `RELEASE_WAIT_MAX_RESUMES`, the routes' park's own key and bound, and
-#: reserved from callers by `swarm_api.validation`;
-#: tests/unit/worker/test_release_wait_refund.py holds them equal.
+#: reserved from callers by `swarm_api.validation`; a test holds them equal.
 #: 4, NOT THE CI WAIT'S 60: the CI bound counts the wakes of ONE wait, which
 #: its 15-minute fallback wakes over and over (60 is about 15 h of one pull
 #: request). A release wait is woken once, by the merge-wake tick on a
@@ -184,9 +182,9 @@ RELEASE_WAIT_MAX_RESUMES = 4
 #: PROVIDER_QUOTA_EXHAUSTED parks whose attempt `park` refunded, and the bound
 #: on them. Restated as `swarm_api.attemptstate.QUOTA_PARK_RESUMES` and
 #: `QUOTA_MAX_RESUMES`, which say why 5, and reserved from callers by
-#: `swarm_api.validation`; tests/unit/worker/test_quota_park_refund.py holds
-#: them equal. A MODULE CONSTANT, NOT A PARAMETER: no caller of `park` picks
-#: the bound, and on the routes' path swarm-api's own value decides.
+#: `swarm_api.validation`; a test holds them equal. A MODULE CONSTANT, NOT A
+#: PARAMETER: no caller of `park` picks the bound, and on the routes' path
+#: swarm-api's own value decides.
 QUOTA_PARK_RESUMES_METADATA_KEY = "quota_park_resumes"
 QUOTA_MAX_RESUMES = 5
 
@@ -197,9 +195,8 @@ QUOTA_MAX_RESUMES = 5
 #: TIME_LIMIT_MAX_CONTINUATIONS were; past it the park spends an attempt. Restated as
 #: `swarm_api.attemptstate.TIME_LIMIT_CONTINUATIONS` and
 #: `TIME_LIMIT_MAX_CONTINUATIONS`, which say why 2, and reserved from callers
-#: by `swarm_api.validation`; tests/unit/worker/test_time_limit_continuation.py
-#: holds them equal. The lifecycle continues no further than the bound: the
-#: third stop at the limit fails the task.
+#: by `swarm_api.validation`; a test holds them equal. The lifecycle continues
+#: no further than the bound: the third stop at the limit fails the task.
 TIME_LIMIT_DETAIL_KEY = "time_limit"
 TIME_LIMIT_CONTINUATIONS_METADATA_KEY = "time_limit_continuations"
 TIME_LIMIT_MAX_CONTINUATIONS = 2
@@ -207,8 +204,8 @@ TIME_LIMIT_MAX_CONTINUATIONS = 2
 #: A merge step's CI wait (lane MS2, docs/merge-step.md "Revised 2026-10-06"
 #: §1): `metadata.merge_wait` on the task, written by `park_ci_pending`. Read by
 #: swarm-api's wake tick (`swarm_api.mergewake`), which adds the marker below,
-#: and by the scheduler's `_promote_ci_waits`, which wakes on it.
-#: tests/unit/worker/test_merge_action.py holds the three restatements equal.
+#: and by the scheduler's `_promote_ci_waits`, which wakes on it. A test holds
+#: the three restatements equal.
 MERGE_WAIT_METADATA_KEY = "merge_wait"
 
 #: Where a park records its uploads for the attempt that finishes the task
@@ -485,9 +482,9 @@ def ci_wait_span(metadata: Mapping[str, Any], last: Mapping[str, Any], head: str
 # NOTHING that admits, leases or counts capacity reads them (invariants 2, 3).
 # The rules are swarm-api's (`swarm_api.attempt_totals.attempt_totals`,
 # `swarm_api.task_accounts.account_after`), restated here because the worker
-# is a separate image; tests/unit/worker/test_stored_task_totals.py holds the
-# stored copy equal to swarm-api's derivation on both write paths. A view that
-# cannot be computed is not written, and never fails the write it rides on.
+# is a separate image; a test holds the stored copy equal to swarm-api's
+# derivation on both write paths. A view that cannot be computed is not
+# written, and never fails the write it rides on.
 
 ATTEMPT_TOTALS_FIELD = "attempt_totals"
 CURRENT_ACCOUNT_FIELD = "current_account"
@@ -683,6 +680,12 @@ class TransactionRunner(Protocol):
 #: library's own number for the commit, so a body gets the same tries whichever
 #: of its RPCs the contention lands on; each run still has the library's five
 #: commits. Bounded as well by the call's deadline (`_aborted_deadline`).
+#: A run whose five commits were ALL aborted counts as one aborted run too
+#: (issue 313): on 2026-11-24 a quota park lost its commit five times inside
+#: one run, the library's "Failed to commit transaction in 5 attempts." went
+#: straight up, and the task ended FAILED. Nothing was committed, so the body
+#: is run again on fresh reads, under this bound, this backoff and this
+#: deadline (`_commit_exhausted`).
 TRANSACTION_ABORTED_RUNS = 5
 
 #: The first wait between two aborted runs, doubled for each next one: 0.25,
@@ -733,13 +736,31 @@ class FirestoreTransactionRunner:
     def run(
         self, fn: Callable[[Any], Any], *, call_options: Mapping[str, Any] | None = None
     ) -> Any:
-        """`fn` in one transaction, run again on an ABORTED read or begin.
+        """`fn` in one transaction, run again whenever Firestore ABORTS it.
 
         See `TRANSACTION_ABORTED_RUNS`. A fresh transaction each run: the
         library rolled the aborted one back before the abort reached here.
-        Only `Aborted` is caught. The library's own "commit aborted five
-        times" is a `ValueError` and is raised as it is; so is every other
-        error, a fence among them.
+        Two errors are aborts: `Aborted` itself (a read's or the begin's) and
+        the library's own commit-exhausted `ValueError`, recognised by
+        `_commit_exhausted` alone (issue 313). Every other error, a fence
+        among them, is raised as it is, on the run that met it.
+
+        WHY RUNNING THE BODY AGAIN CANNOT APPLY ANYTHING TWICE. Both errors
+        mean nothing was committed: an aborted read never reached a commit,
+        and an aborted commit was refused whole -- Firestore applies a
+        transaction's writes all at once or not at all, and ABORTED is the
+        "not at all". The next run is the whole body again on a new
+        transaction, so it re-reads every document: a task a newer attempt
+        has taken meanwhile is refused by the body's own fence (invariant 5),
+        and whatever the body writes is computed from what is there now. The
+        caller sees one call that either committed once or raised, so the
+        order of its steps around the call (checkpoint, park, release, exit:
+        invariant 4) is the order it always was.
+
+        When the runs or the deadline are spent, what goes up is an `Aborted`
+        that says so -- how many runs, over how long -- with the last abort
+        as its cause, so a task that fails this way names contention rather
+        than the library's bare "Failed to commit transaction in 5 attempts.".
         """
         from google.api_core import exceptions as core_exceptions  # lazy: grpc
         from google.cloud import firestore  # lazy: unit tests never import grpc
@@ -748,18 +769,88 @@ class FirestoreTransactionRunner:
         def _inner(txn: Any) -> Any:
             return fn(txn)
 
-        deadline = _abort_clock() + _aborted_deadline(call_options)
+        started = _abort_clock()
+        allowed = _aborted_deadline(call_options)
+        deadline = started + allowed
         delay = _ABORT_BACKOFF_SECONDS
         runs = 1
         while True:
+            transaction = self._transaction(call_options)
             try:
-                return _inner(self._transaction(call_options))
-            except core_exceptions.Aborted:
-                if runs >= TRANSACTION_ABORTED_RUNS or _abort_clock() + delay > deadline:
+                return _inner(transaction)
+            except core_exceptions.Aborted as exc:
+                last: BaseException = exc
+            except ValueError as exc:
+                if not _commit_exhausted(exc, transaction):
                     raise
+                last = exc
+            spent = runs >= TRANSACTION_ABORTED_RUNS
+            if spent or _abort_clock() + delay > deadline:
+                raise _contention_exhausted(
+                    runs,
+                    _abort_clock() - started,
+                    allowed if not spent else None,
+                    last,
+                ) from last
             _abort_sleep(delay)
             delay *= 2
             runs += 1
+
+
+def _commit_exhausted(exc: ValueError, transaction: Any) -> bool:
+    """Whether `exc` is `firestore.transactional` giving up on an ABORTED commit.
+
+    THE SHAPE, read from google-cloud-firestore 2.30.0 (the version uv.lock
+    pins for the worker image), `transaction._Transactional.__call__`: after
+    `transaction._max_attempts` commits each raised `Aborted`, it raises
+    `ValueError(_EXCEED_ATTEMPTS_TEMPLATE.format(transaction._max_attempts))
+    from last_exc`, the template being `base_transaction._EXCEED_ATTEMPTS_TEMPLATE`
+    ("Failed to commit transaction in {:d} attempts."). All three are held
+    here: the exact class, the exact text for THIS transaction's attempts,
+    and an `Aborted` as its direct cause. A body's own `ValueError`, or the
+    library's other `ValueError`s (a transaction that cannot begin, commit or
+    roll back, a read after a write), fail at least one and go up untouched.
+    A library version that changes the shape fails the test that drives the
+    library's own `transactional`, rather than retrying the wrong thing.
+    """
+    from google.api_core import exceptions as core_exceptions  # lazy: grpc
+    from google.cloud.firestore_v1.base_transaction import (  # lazy: grpc
+        _EXCEED_ATTEMPTS_TEMPLATE,
+    )
+
+    if type(exc) is not ValueError:
+        return False
+    if not isinstance(exc.__cause__, core_exceptions.Aborted):
+        return False
+    attempts = getattr(transaction, "_max_attempts", None)
+    if not isinstance(attempts, int) or isinstance(attempts, bool):
+        return False
+    return exc.args == (_EXCEED_ATTEMPTS_TEMPLATE.format(attempts),)
+
+
+def _contention_exhausted(
+    runs: int, elapsed: float, deadline: float | None, last: BaseException
+) -> Exception:
+    """The `Aborted` a runner raises when it stops running an aborted body.
+
+    An `Aborted`, so every caller that already treats contention as
+    contention (the lifecycle's terminal rounds, which also walk the cause
+    chain) goes on doing so; its text says what happened in words a task's
+    error can carry. `deadline` is the call's deadline when that, and not
+    the bound on runs, is what stopped it.
+    """
+    from google.api_core import exceptions as core_exceptions  # lazy: grpc
+
+    why = (
+        f"stopped at the call's {deadline:.1f} s deadline"
+        if deadline is not None
+        else f"its bound of {TRANSACTION_ABORTED_RUNS} runs reached"
+    )
+    return core_exceptions.Aborted(
+        f"Firestore aborted this transaction on contention on each of {runs} runs "
+        f"over {elapsed:.1f} s ({why}); nothing was committed. "
+        f"Last: {type(last).__name__}: {last}"
+    )
 
 
 def _commit_retry(retry: Any) -> Any:
@@ -795,9 +886,8 @@ def _with_budget(base: type) -> type:
     These three overrides make the same requests the library makes, with the
     budget added. They read the same private attributes the library's own
     methods read (`_client._firestore_api`, `_id`, `_write_pbs`), and uv.lock
-    pins the library version they were read from.
-    `tests/unit/worker/test_startup_window_under_real_transactions.py` runs
-    them inside the library's own `firestore.transactional`.
+    pins the library version they were read from. A test runs them inside
+    the library's own `firestore.transactional`.
 
     TWO CHANGES TO ROLLBACK, besides the budget. `firestore.transactional`
     calls `_rollback` from `except BaseException`, and whatever `_rollback`

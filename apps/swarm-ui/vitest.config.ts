@@ -77,8 +77,8 @@ export default defineConfig({
     // than an orphan file nobody runs.
     //
     // AND `test/*.test.tsx`: the live-browser lanes' acceptance tests live
-    // where docs/design/live-browser.md §9 names them (`test/LiveThumb.test.tsx`
-    // and its siblings). `test/` otherwise holds the node runner's `.mjs`
+    // where docs/design/live-browser.md §9 names them (the live thumbnail's
+    // test and its siblings). `test/` otherwise holds the node runner's `.mjs`
     // files, which this glob does not match.
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'test/**/*.test.tsx'],
     setupFiles: ['src/__tests__/setup.ts'],
@@ -90,8 +90,8 @@ export default defineConfig({
     unstubGlobals: true,
     unstubEnvs: true,
     // CSS IS PROCESSED RATHER THAN STUBBED. Two files depend on it:
-    // `brand.test.tsx` asserts B17 -- "an identifier is never restyled" --
-    // and `shell.test.tsx` asserts the shell's regions (B3), the density pass
+    // the brand tests assert B17 -- "an identifier is never restyled" --
+    // and the shell tests assert the shell's regions (B3), the density pass
     // (B4.3) and the measured-zero axis (B20). Both do it by injecting the
     // SHIPPED `styles.css` into the test document and reading
     // `getComputedStyle()` off the element the component actually rendered.
@@ -106,9 +106,29 @@ export default defineConfig({
     // and no test imports `main.tsx`, so this processes one file and injects
     // nothing anywhere by itself.
     css: true,
-    // No watcher, no browser, no coverage instrumentation: this runs inside
-    // `make test`, which is a gate rather than a development loop.
+    // No watcher, no browser: this runs inside `make test`, which is a gate
+    // rather than a development loop.
     reporters: ['default'],
+    // COVERAGE ONLY WHEN SWARM_UI_COVERAGE_DIR NAMES WHERE TO WRITE IT (issue
+    // 64, docs/ci.md "Coverage floors"). Only the nightly coverage run's
+    // shards set it (.github/workflows/coverage.yml) and upload the istanbul
+    // `coverage-final.json` written there; its `judge` job merges the shards
+    // and judges the floor in coverage-floors.json
+    // (scripts/coverage-floors.sh). Unset -- application.yml's shards on the
+    // merge path, `make test`, an agent's related-tests run -- nothing is
+    // instrumented. An env var rather than a
+    // `--coverage` flag: the shard's command line is the file list alone
+    // (a guard test on the UI shards holds it).
+    coverage: {
+      enabled: Boolean(process.env.SWARM_UI_COVERAGE_DIR),
+      provider: 'v8',
+      reporter: ['json'],
+      reportsDirectory: process.env.SWARM_UI_COVERAGE_DIR || 'coverage',
+      // The shipped source only, every file of it, so a file no test loads
+      // counts at 0 % rather than not at all.
+      include: ['src/**/*.{ts,tsx}'],
+      exclude: ['src/**/*.test.{ts,tsx}', 'src/__tests__/**', 'src/**/*.d.ts'],
+    },
     // 30s, not Vitest's default 5s, AND THE REASON IS THE `css: true` ABOVE.
     //
     // The tests that matter most here inject the shipped 66KB `styles.css`
@@ -118,7 +138,7 @@ export default defineConfig({
     // the slowest thing in this suite by an order of magnitude, and it scales
     // with the size of that sheet.
     //
-    // `brand.test.tsx`'s "tells the four apart WITHOUT USING COLOUR" runs in
+    // The brand test "tells the four apart WITHOUT USING COLOUR" runs in
     // ~550ms on an idle machine and TIMED OUT AT 5461ms on this one while
     // several other agent worktrees were running their own gates (load average
     // 200). A gate that goes red because the machine was busy teaches everyone

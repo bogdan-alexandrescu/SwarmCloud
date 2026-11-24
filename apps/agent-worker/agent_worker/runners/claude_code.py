@@ -234,8 +234,8 @@ process or the CLI's environment: the relay adds it on the way out. The
 config is in `work/`, which checkpoints carry, and that is deliberate: a
 loopback URL and a token nothing outside this pod can reach and nothing after
 this attempt accepts (§4.7 step 5). Measured against the pinned 2.1.283 with
-a loopback fake (tests/unit/worker/test_mcp_runner_config.py): the entry is
-accepted, the server's tools reach the model as `mcp__<name>__<tool>`, and
+a loopback fake: the entry is accepted, the server's tools reach the model
+as `mcp__<name>__<tool>`, and
 the repository's own `.mcp.json` IS loaded under `--print` (no
 `--strict-mcp-config` here), with this config's server winning a name both
 declare. While SWARM_MCP_SERVERS is off no task names a server, nothing is
@@ -452,6 +452,21 @@ EXPLORATION_GRAPH_CLAUSE = (
 EXPLORATION_CHILDREN_CLAUSE = (
     "send broad exploration to a child task with `model_class` \"sonnet\" or "
     "\"haiku\" rather than reading the tree yourself"
+)
+
+#: When a sub-agent (the CLI's Agent tool) is worth starting (the owner's
+#: "Shorter sessions" plan, wave 3): a read of 30 days of task records on
+#: 2026-11-23 put sub-agent spend at about 15% of recorded cost. A standing
+#: paragraph, so it rides the system prompt once per session. It steers and
+#: caps nothing: a cap is decided on the scorecard's measure
+#: (scripts/lib/scorecard.py `subagent_share_by_role`).
+SUBAGENT_NOTE = (
+    "Sub-agents: start one for a broad search across many files or for "
+    "independent work whose full output you do not need, only its conclusion. "
+    "Do it yourself instead for a lookup of a known target, a handful of tool "
+    "calls or a check you could run yourself: there a sub-agent costs more than "
+    "it saves. When you start one, brief it with the goal and what you have "
+    "already ruled out."
 )
 
 #: AGENTS-USE-TOOLS (owner's choice, 2026-11-02; part of archived issue 2688). The first
@@ -771,7 +786,7 @@ LIVE_BROWSER_NOTE = (
     # batch from searches typed into google.com in this browser. WebSearch is
     # the CLI's built-in tool and this runner restricts none: SPEC passes no
     # --allowedTools and the generated settings deny nothing, so the tool
-    # named here is one the agent has (test_captcha_avoid_note.py holds it).
+    # named here is one the agent has.
     "For a web search, use the WebSearch tool, never a search engine's page in "
     "the browser. When a site has an official API for what is asked, prefer it "
     "to scraping its pages. And on any one site, keep to about one navigation a "
@@ -900,7 +915,7 @@ JEV_NO_INSTALL_ENV = "JEV_BROWSER_NO_INSTALL"
 #: from what it sends (docs/jev-data-flow.md, "The lane hooks").
 JEV_GATES_LAUNCHER = "/opt/swarm/jev-gates/bin/swarm-jev-gate.mjs"
 #: `qualitygates.CONFIG_ENV`, restated so the runner never imports the key
-#: code; tests/unit/worker/test_quality_gates.py holds them equal.
+#: code; the two are held equal.
 JEV_GATES_CONFIG_ENV = "SWARM_JEV_GATES_CONFIG"
 JEV_GATES_NODE = "/usr/local/bin/node"
 JEV_ENFORCE_MODE_ENV = "JEV_ENFORCE_MODE"
@@ -933,8 +948,8 @@ def _jev_gate_hook(config: str, mode: str, timeout: int) -> dict[str, Any]:
 #: `agent_worker.pluginload`). The worker installs each plugin of the signed
 #: set under `private/plugins/<install_id>` and hands this runner the load
 #: file's PATH (`pluginload.LOAD_ENV`, restated so the runner never imports
-#: the worker's install code; tests/unit/worker/test_pluginload_runner.py
-#: holds them equal): per plugin its folder, its manifest name, the
+#: the worker's install code; the two are held equal): per plugin its
+#: folder, its manifest name, the
 #: `userConfig` options (a sensitive one only as a placeholder) and the skills
 #: the step turned off.
 PLUGIN_LOAD_ENV = "SWARM_PLUGIN_LOAD"
@@ -1755,6 +1770,9 @@ SPEC = CliAgentSpec(
     # turn boundary and continued under the next account with
     # `--resume <session_id>` (S13/S14, `cliagent.AccountStreamWatcher`).
     resume_flag="--resume",
+    # The standing paragraphs ride the system prompt (finding 1 of the
+    # owner's "Shorter sessions" plan, 2026-11-23; `body`).
+    system_prompt_flag=APPEND_SYSTEM_PROMPT_FLAG,
     # An answer that announces pending work is resumed once to finish it
     # (owner decision 2026-10-05; `cliagent.pending_work`).
     finish_on_pending=True,
@@ -2046,9 +2064,9 @@ def live_browser_refusal(env: dict[str, str], browsers: str, endpoint: str) -> s
 
 
 #: The verified task's resolved turn cap (contract request 133), exported by
-#: the worker from `Task.max_turns` (`lifecycle.MAX_TURNS_ENV`, held equal by
-#: tests/unit/worker/test_runners.py). Never `input.max_turns`: a caller
-#: writes the input, and swarm-api refuses that key at every door.
+#: the worker from `Task.max_turns` (`lifecycle.MAX_TURNS_ENV`, held equal to
+#: it). Never `input.max_turns`: a caller writes the input, and swarm-api
+#: refuses that key at every door.
 MAX_TURNS_ENV = "SWARM_MAX_TURNS"
 
 
@@ -2162,28 +2180,37 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     if unstaged and isinstance(prompt, str) and prompt.strip():
         prompt = f"{prompt.rstrip()}\n\n{unstaged}"
         ctx.payload = {**ctx.payload, "prompt": prompt}
+    # STANDING PARAGRAPHS RIDE THE SYSTEM PROMPT (the owner's "Shorter
+    # sessions" plan, finding 1, 2026-11-23). 30 days of task records: a
+    # median of 54,000 cached tokens re-read per turn, 27 turns a task. The
+    # paragraphs below never vary per task, so they go in the one
+    # `--append-system-prompt` (`system_note` below, `cliagent.run_cli_agent`
+    # adds its own), word for word and in this order: one cached system
+    # prefix for every session of the attempt -- a resumed one and a fresh one
+    # after a handoff included -- never restated by a fresh session's first
+    # message. The user prompt keeps what varies per task.
+    standing: list[str] = []
     # The standing test rule, where the checkout has its helper (RELATED-TESTS).
     narrow = related_tests_note(ctx.repo_dir)
-    if narrow and isinstance(prompt, str) and prompt.strip():
-        prompt = f"{prompt.rstrip()}\n\n{narrow}"
-        ctx.payload = {**ctx.payload, "prompt": prompt}
+    if narrow:
+        standing.append(narrow)
     # Where big scratch data goes (archived issue 2436): every repository step, after the
-    # test rule and before the browser note.
+    # test rule.
     scratch = scratch_note_for(os.environ) if ctx.repo_dir is not None else None
-    if scratch and isinstance(prompt, str) and prompt.strip():
-        prompt = f"{prompt.rstrip()}\n\n{scratch}"
-        ctx.payload = {**ctx.payload, "prompt": prompt}
+    if scratch:
+        standing.append(scratch)
     # Saved oversized outputs, by window: every repository step, after the
-    # scratch note (a task with no repository keeps the prompt it had).
-    if ctx.repo_dir is not None and isinstance(prompt, str) and prompt.strip():
-        prompt = f"{prompt.rstrip()}\n\n{SAVED_OUTPUT_NOTE}"
-        ctx.payload = {**ctx.payload, "prompt": prompt}
+    # scratch note.
+    if ctx.repo_dir is not None:
+        standing.append(SAVED_OUTPUT_NOTE)
+    # When a sub-agent is worth starting: every repository step, after the
+    # saved-output note (SUBAGENT_NOTE).
+    if ctx.repo_dir is not None:
+        standing.append(SUBAGENT_NOTE)
     # The graph, loaded up front, and what to ask it first (AGENTS-USE-TOOLS):
     # only when it is registered below.
-    if (graph_snapshot or graph_served) and shape == GRAPH_SHAPE_TOOLS \
-            and isinstance(prompt, str) and prompt.strip():
-        prompt = f"{prompt.rstrip()}\n\n{GRAPH_FIRST_NOTE}"
-        ctx.payload = {**ctx.payload, "prompt": prompt}
+    if (graph_snapshot or graph_served) and shape == GRAPH_SHAPE_TOOLS:
+        standing.append(GRAPH_FIRST_NOTE)
     # The agent's own `jev_decide` (AGENTS-USE-TOOLS): the worker writes this
     # config only for a workspace opted in to Jev judgments, under the signed
     # setting and the step's switch (`judge.attempt.setup`). Registered over
@@ -2191,9 +2218,8 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     judge_config = os.environ.get(JUDGE_CONFIG_ENV, "").strip()
     if judge_config and not Path(judge_config).is_file():
         judge_config = ""
-    if judge_config and isinstance(prompt, str) and prompt.strip():
-        prompt = f"{prompt.rstrip()}\n\n{JEV_DECIDE_NOTE}"
-        ctx.payload = {**ctx.payload, "prompt": prompt}
+    if judge_config:
+        standing.append(JEV_DECIDE_NOTE)
     # Where to look a symbol up (the owner, 2026-11-06): an implement, review or fix
     # step with the graph gets the one line naming the tool, and the
     # exploration line then leaves its graph clause out, so it is named once.
@@ -2343,8 +2369,12 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     # every session of the attempt (AGENTS-USE-TOOLS-WHEN; `system_note`).
     moments = system_note(graph=bool(graph_snapshot or graph_served), jev=bool(judge_config),
                           shape=shape)
-    if moments:
-        extra += [APPEND_SYSTEM_PROMPT_FLAG, moments]
+    # Then the standing paragraphs, in the SAME flag: a second one would
+    # replace the first. `run_cli_agent` appends the publishing paragraph and
+    # the ceiling's handoff note to this value (`SPEC.system_prompt_flag`).
+    system = "\n\n".join([*([moments] if moments else []), *standing])
+    if system:
+        extra += [APPEND_SYSTEM_PROMPT_FLAG, system]
     supervisor: lightpanda.Supervisor | None = None
     agent_stream = Path(ctx.artifacts_dir) / cli_stream_files(spec).stdout
     cli_started: float | None = None
