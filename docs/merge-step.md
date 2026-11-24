@@ -415,8 +415,13 @@ slot:
     already re-labelled, it parks for a person (HUMAN_REQUIRED, the
     `ci_wait_stuck` phase with `why` `own_conflict_fix_ready_lost` and the
     reason as its line), never FAILED; a person's "I'm ready" re-arms the
-    one re-label. Any other head -- the opener's, a CI-fix round's, a
-    person's -- is the gate's refusal above, exactly as before; a person's
+    one re-label. **An unread timeline is never relabelled over:** when
+    the read of the pull request's timeline fails (`removal_unread` in the
+    step's `repository_train`), the step cannot tell the gate's removal from
+    a person's, so it does not label again at the round's head either; it
+    reports FAILED `train_ejected`, exactly as before issue 381. Any other
+    head -- the opener's, a CI-fix round's, a person's, anyone's who moved it
+    -- is the gate's refusal above, an ejection as before; a person's
     removal and the train's ejection keep their own paths at the round's
     head too.
   * **The train, first time at this head:** labelled `ready` again, once, and
