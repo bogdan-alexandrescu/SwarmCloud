@@ -97,6 +97,8 @@ def test_the_write_list_gains_the_answers_route_and_nothing_else(client):  # noq
         ("POST", "/v1/voice/sessions/{session_id}/trace"),
         ("POST", "/v1/voice/sessions/{session_id}/reopen"),
         ("POST", "/v1/voice/sessions/{session_id}/work"),
+        # The planner's brief write (routes/voice_status.py).
+        ("POST", "/v1/voice/sessions/{session_id}/brief"),
     }
     assert vg.WRITE_ROUTES - BEFORE - LATER == {ANSWERS}
     assert BEFORE <= vg.WRITE_ROUTES

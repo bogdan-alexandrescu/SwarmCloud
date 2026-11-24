@@ -67,6 +67,18 @@ and the day's $300 by its estimate at Opus prices, shown as not measured --
 never as $0. A turn on a key is billed per token (`billing: "api_key"`), so the
 ledger prices its usage. `usage.tier` names the tier either way.
 
+THE PROJECT BRIEF (the plan item "voice, better answers"). Before the model
+runs, the turn reads the project's status (tools_read `project_status`, the
+grant's own project) and puts the brief written after the last turn into the
+turn message, fenced as data (prompts.turn_message), so a later delegation or
+session does not start cold; a read that fails leaves it out. `speak` carries
+the turn's new `brief`; after the turn ends, and only when it spoke, the last
+one is written ONCE (`POST .../sessions/{id}/brief`, BRIEF_ROUTE), scrubbed and
+cut to prompts.BRIEF_MAX bytes. It is the turn's own output, so it costs no
+model call and its tokens are in the turn's `usage`. A session at a spend cap
+writes none: a capped delegation runs no turn, and swarm-api refuses the write
+(409) when the caps say the session is capped.
+
 NOTHING SECRET IN A PROMPT, A LOG, A TRANSCRIPT OR A CARD. The token and the
 grant are scrubbed from the transcript, from every tool result, from the
 child's captured streams and from every card before it is written
@@ -105,6 +117,11 @@ MAX_CARDS = 4
 #: The whole turn, after which the voice is told the planner ran out of time.
 #: Below the broker's ten-minute voice hold, so a lease outlives no turn.
 TURN_SECONDS = 240.0
+#: Where the turn's brief is written (swarm-api routes/voice_status.py).
+BRIEF_ROUTE = "/v1/voice/sessions/{session_id}/brief"
+#: The longest the brief's write may hold the delegation's answer.
+BRIEF_WRITE_SECONDS = 5.0
+
 #: How a subscription turn's cost is recorded (module docstring, "WHAT IT COSTS").
 BILLING = "subscription"
 #: How a turn on an Anthropic developer key is recorded: billed per token, so
@@ -185,6 +202,12 @@ class TurnResult:
     #: claudeturn.SPENT_CREDIT or SPENT_RATE when the turn ended on a spent
     #: account before it spoke or wrote anything; the turn then moves (§5.3).
     spent: str | None = None
+    #: The project brief this turn's `speak` gave, scrubbed and cut (prompts.brief_text).
+    brief: str | None = None
+    #: Whether swarm-api stored it (one write per turn; none at a cap).
+    brief_written: bool = False
+    #: Whether the brief written after the last turn was in this turn's message.
+    brief_read: bool = False
 
 
 def drew(result: "TurnResult") -> str:
@@ -424,7 +447,7 @@ class Planner:
         async with lock:
             result = TurnResult(delegation_id, "")
             try:
-                return await asyncio.wait_for(
+                await asyncio.wait_for(
                     self._turn(api, result, person=person, transcript=transcript, model=model,
                                request=request),
                     self._turn_seconds)
@@ -432,6 +455,41 @@ class Planner:
                 log.warning("voice session %s: planner turn ran out of time", api.session_id)
                 result.spoken, result.error = _failed(result), TIMED_OUT
                 return result
+            await self._write_brief(api, result)
+            return result
+
+    async def _read_brief(self, api: tools_read.SwarmApi) -> str | None:
+        """The brief written after the project's last turn, or None (none yet,
+        or the read failed: the turn runs without it)."""
+        try:
+            body = await api.project_status()
+        except tools_read.ApiRefused as exc:
+            log.warning("voice session %s: the project brief could not be read: %s",
+                        api.session_id, exc)
+            return None
+        brief = body.get("brief")
+        text = brief.get("text") if isinstance(brief, dict) else None
+        return text if isinstance(text, str) and text.strip() else None
+
+    async def _write_brief(self, api: tools_read.SwarmApi, result: TurnResult) -> None:
+        """Store the turn's brief, once, when its `speak` gave one. A refusal
+        (a cap's included) or a failure is logged and changes no answer."""
+        if not result.brief or result.brief_written:
+            return
+        path = BRIEF_ROUTE.format(session_id=api.session_id)
+        try:
+            await asyncio.wait_for(api._call("POST", BRIEF_ROUTE, path,  # noqa: SLF001
+                                             json_body={"text": result.brief}),
+                                   BRIEF_WRITE_SECONDS)
+        except tools_read.ApiRefused as exc:
+            log.warning("voice session %s: the project brief was not written: %s",
+                        api.session_id, exc)
+            return
+        except asyncio.TimeoutError:
+            log.warning("voice session %s: the project brief's write ran out of time",
+                        api.session_id)
+            return
+        result.brief_written = True
 
     async def _capped(self, api: tools_read.SwarmApi) -> bool:
         """Whether the session has reached a spend cap (voice-it.md §3.8):
@@ -486,13 +544,15 @@ class Planner:
         kinds = {str(t["name"])[len(DRAW_PREFIX):] for t in draw_tools}
         tools = [*draw_tools, *tools_read.tool_schemas(), *tools_visual.tool_schemas(),
                  *tools_act.tool_schemas(), prompts.speak_tool()]
+        brief = await self._read_brief(api)
+        result.brief_read = brief is not None
         try:
             async with self._accounts.lease(person=person, voice_session_id=api.session_id) as held:
                 claude = self._claude.with_model(model) if model else self._claude
                 while True:
                     result.tier, result.spent, result.error = held.tier, None, None
                     await self._run(api, result, held.bearer.reveal(), tools, kinds, transcript,
-                                    claude=claude, request=request)
+                                    claude=claude, request=request, brief=brief)
                     if result.spent is None:
                         return result
                     # The account is spent and the turn did nothing yet: the
@@ -521,7 +581,7 @@ class Planner:
 
     async def _run(self, api: tools_read.SwarmApi, result: TurnResult, token: str, tools: list[dict],
                    kinds: set[str], transcript: list[tuple[str, str]], *, claude: ClaudeCode,
-                   request: str | None = None) -> TurnResult:
+                   request: str | None = None, brief: str | None = None) -> TurnResult:
         known = (token, *api.known_secrets())
         said: list[str] = []
         done = asyncio.Event()
@@ -538,7 +598,8 @@ class Planner:
 
         try:
             outcome = await claude.run(
-                prompt=prompts.turn_message(transcript, request=request, secrets_=known), system=prompts.SYSTEM, token=token,
+                prompt=prompts.turn_message(transcript, request=request, secrets_=known,
+                                            brief=brief), system=prompts.SYSTEM, token=token,
                 tools=tools, handler=handler, known=known, done=done)
         except OSError as exc:
             log.warning("voice session %s: the planner could not start Claude Code (%s)", api.session_id,
@@ -579,6 +640,10 @@ class Planner:
             if args.get("point_at") is not None:
                 await self._point(api, result, args["point_at"],
                                   prompts.spoken(said, secrets_=known))
+            noted = prompts.brief_text(args.get("brief"), secrets_=known)
+            if noted is not None:
+                # The last `speak` wins; it is written once, after the turn.
+                result.brief = noted
             return "said", False, said
         if tools_visual.is_visual_tool(name):
             try:
