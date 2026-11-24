@@ -692,6 +692,10 @@ def test_one_person_install_keeps_the_group_steps() -> None:
 # -- DAYONE-DIR-SCOPES: stage 8 asks for the Directory scopes through the deployment's Desktop client ------
 
 
+ORG_CUSTOMER = "C0org368"
+DESKTOP_CLIENT = "123456789012-desktop.apps.googleusercontent.com"
+
+
 DIRECTORY = ("https://www.googleapis.com/auth/admin.directory.customer.readonly",
              "https://www.googleapis.com/auth/admin.directory.rolemanagement")
 
@@ -746,7 +750,7 @@ def test_groups_sign_in_through_the_desktop_client_when_stage_0_had_no_directory
     gcp = SignedOutGcp()
     sign_in = DirectorySignIn()
     rig = Rig(tmp_path)
-    _seed(rig, directory_scopes=False)
+    _seed(rig, directory_scopes=False, desktop_client_id=DESKTOP_CLIENT)
     step = identity.GroupsStep(lambda: gcp, Answers(identity_groups=["yes"]), lambda c: FakeApi(), directory=sign_in)
     result = rig.engine([step]).run()
     assert result.exit_code == ExitCode.OK, result.message
@@ -772,7 +776,7 @@ def test_groups_reader_role_check_never_signs_in_and_apply_does(tmp_path: Path, 
     gcp = SignedOutGcp()
     sign_in = DirectorySignIn()
     ctx = ctx_for(outputs={"org_domain": DOMAIN, "installer": INSTALLER, "directory_scopes": False,
-                           "workspace_groups": {"admin": f"swarm-admins@{DOMAIN}"}})
+                           "desktop_client_id": DESKTOP_CLIENT, "workspace_groups": {"admin": f"swarm-admins@{DOMAIN}"}})
     api = FakeApi(answer=lambda g: GroupResult(g, UNMET, "permission_denied"))
     step = identity.GroupsReaderRoleStep(lambda: gcp, Answers(identity_groups_reader_role=[identity.APPROVE]),
                                          lambda c: api, directory=sign_in)
@@ -781,7 +785,7 @@ def test_groups_reader_role_check_never_signs_in_and_apply_does(tmp_path: Path, 
     assert sign_in.calls == 0 and not gcp.called("role_assignments") and api.probes
 
     rig = Rig(tmp_path)
-    _seed(rig, directory_scopes=False)
+    _seed(rig, directory_scopes=False, desktop_client_id=DESKTOP_CLIENT)
     result = rig.engine([step]).run()
     assert result.exit_code == ExitCode.OK, result.message
     assert sign_in.calls == 1
@@ -794,13 +798,82 @@ def test_a_refused_directory_sign_in_opens_the_admin_console_page(tmp_path: Path
     gcp.on_poll = lambda: gcp.groups.update(
         {f"swarm-admins@{DOMAIN}": "groups/a", f"swarm-team@{DOMAIN}": "groups/t"}) if pages else None
     rig = Rig(tmp_path)
-    _seed(rig, directory_scopes=False)
+    _seed(rig, directory_scopes=False, desktop_client_id=DESKTOP_CLIENT)
     step = identity.GroupsStep(lambda: gcp, Answers(identity_groups=["yes"]), lambda c: FakeApi(),
                                directory=DirectorySignIn(refuse=True))
     result = rig.engine([step]).run()
     assert result.exit_code == ExitCode.OK, result.message
     assert [url for url, _ in pages] == [identity.GROUPS_PAGE]
     assert "access_denied" in pages[0][1]
+
+
+# -- issue 368: a first install has no Desktop client at stage 8 ------------------------------
+
+def test_groups_are_created_with_the_organisations_customer_id_when_no_desktop_client_is_recorded(
+        tmp_path: Path, pages: list[tuple[str, str]]) -> None:
+    """Stage 0 went without the Directory scopes and edge.desktop-client
+    (stage 13) has recorded no client yet: `groups.create` takes Cloud
+    Platform alone, so the groups are created with stage 0's own sign-in under
+    the customer id the project's organisation names. No Desktop sign-in, no
+    Directory call, no page."""
+    gcp = SignedOutGcp()
+    gcp.orgs[gcp.chain[-1]]["directoryCustomerId"] = ORG_CUSTOMER
+    sign_in = DirectorySignIn()
+    rig = Rig(tmp_path)
+    _seed(rig, directory_scopes=False)
+    step = identity.GroupsStep(lambda: gcp, Answers(identity_groups=["yes"]), lambda c: FakeApi(), directory=sign_in)
+    result = rig.engine([step]).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    assert sign_in.calls == 0 and not gcp.called("use_directory") and not gcp.called("customer_id")
+    assert [(c[1], c[2]) for c in gcp.called("create_group")] == [
+        (f"customers/{ORG_CUSTOMER}", f"swarm-admins@{DOMAIN}"), (f"customers/{ORG_CUSTOMER}", f"swarm-team@{DOMAIN}")]
+    assert gcp.called("organization") == [(gcp.chain[-1],)]
+    assert pages == []
+
+
+def test_an_organisation_without_a_customer_id_opens_the_groups_page(
+        tmp_path: Path, pages: list[tuple[str, str]]) -> None:
+    """The organisation names no `directoryCustomerId`: nothing is created,
+    and the Admin console's groups page opens as for any refusal."""
+    gcp = SignedOutGcp()
+    gcp.orgs[gcp.chain[-1]].pop("directoryCustomerId")
+    gcp.on_poll = lambda: gcp.groups.update(
+        {f"swarm-admins@{DOMAIN}": "groups/a", f"swarm-team@{DOMAIN}": "groups/t"}) if pages else None
+    sign_in = DirectorySignIn()
+    rig = Rig(tmp_path)
+    _seed(rig, directory_scopes=False)
+    step = identity.GroupsStep(lambda: gcp, Answers(identity_groups=["yes"]), lambda c: FakeApi(), directory=sign_in)
+    result = rig.engine([step]).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    assert sign_in.calls == 0 and not gcp.called("create_group")
+    assert [url for url, _ in pages] == [identity.GROUPS_PAGE]
+    assert "customer id" in pages[0][1]
+
+
+def test_groups_reader_role_opens_the_roles_page_plainly_when_no_desktop_client_is_recorded(
+        tmp_path: Path, pages: list[tuple[str, str]]) -> None:
+    """`roleAssignments.insert` has no Cloud Platform path. With the Directory
+    scopes pending and no Desktop client recorded, the typed approval is asked
+    as ever, then no sign-in is tried: the admin roles page opens once with a
+    sentence that names the Sign-in client step and stage 13, and does not say
+    Google refused. The check then passes on swarm-api's own read."""
+    gcp = SignedOutGcp()
+    sign_in = DirectorySignIn()
+    api = FakeApi(answer=lambda g: GroupResult(g, MET if pages else UNMET, "" if pages else "permission_denied"))
+    rig = Rig(tmp_path)
+    _seed(rig, directory_scopes=False, workspace_groups={"admin": f"swarm-admins@{DOMAIN}"})
+    ask = Answers(identity_groups_reader_role=[identity.APPROVE])
+    result = rig.engine([identity.GroupsReaderRoleStep(lambda: gcp, ask, lambda c: api, directory=sign_in)]).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    assert identity.APPROVE in ask.asked[0][1]
+    assert sign_in.calls == 0 and not gcp.called("assign_role") and not gcp.called("use_directory")
+    assert [url for url, _ in pages] == [identity.ADMIN_ROLES_PAGE]
+    why = pages[0][1]
+    assert "Sign-in client" in why and "stage 13" in why
+    assert "refused" not in why.lower()
+    assert f"swarm-api@{PROJECT}.iam.gserviceaccount.com" in why and "continues by itself" in why
+    assert "secret" not in why.lower()
+    assert rig.store.load().outputs["groups_auth"] == ADMIN_ROLE
 
 
 class Recorder:

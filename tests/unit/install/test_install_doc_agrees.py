@@ -21,6 +21,11 @@ against, so the docs cannot drift back without a red test:
   K8  stage 13's message names the hand-over button and its bound
       (steps/handoff.py, HAND_OVER, CONSOLE);
   K9  a teammate is told how to get `sc` before `sc login`.
+
+Issue 368 adds one more: the Desktop client exists only once Admin › Setup's
+Sign-in client step has made it, which stage 13 waits for, so on a first
+install stage 8 never opens a consent page for it (steps/identity.py,
+`GroupsStep`, `GroupsReaderRoleStep`).
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ from swarm_install.steps import handoff
 ROOT = Path(__file__).resolve().parents[3]
 INSTALL = (ROOT / "docs" / "install.md").read_text(encoding="utf-8")
 PLAN = (ROOT / "docs" / "design" / "day-one-plan.md").read_text(encoding="utf-8")
+RUNBOOK = (ROOT / "docs" / "runbooks" / "day-one-proof-install.md").read_text(encoding="utf-8")
 
 
 def section(text: str, heading: str) -> str:
@@ -105,3 +111,30 @@ def test_k9_a_teammate_is_told_how_to_get_sc_before_sc_login() -> None:
     step3 = section(INSTALL, "## Step 3: Admin › Setup in the console")
     send = step3[step3.index("**Send to your team.**"):]
     assert "sc: command not found" in send and "install.sh" in send
+
+
+def test_stage_8_never_opens_a_desktop_client_consent_page_before_the_sign_in_client_step() -> None:
+    """Issue 368: install.md's stage 0 and stage 8, its table of pages and the
+    proof-install runbook's stage 8 all say the Desktop client is made in the
+    Sign-in client step that stage 13 waits for, so a first install does its
+    Directory work at stage 8 without it."""
+    stage0 = section(INSTALL, "### Stage 0: preflight")
+    blocked = stage0[stage0.index("If Google says the app is blocked"):]
+    blocked = blocked[:blocked.index("\n\n")]
+    assert "through the deployment's own client" not in blocked
+    assert "Sign-in client" in blocked and "stage 13" in blocked
+
+    stage8 = section(INSTALL, "### Stage 8: the console's address, and identity")
+    assert "consent page for the deployment's Desktop client" not in stage8
+    directory = stage8[stage8.index("**Directory scopes, if deferred.**"):]
+    directory = directory[:directory.index("\n\n3. ")]
+    for said in ("Sign-in client", "stage 13", "organisation's customer id", "https://admin.google.com/ac/roles"):
+        assert said in " ".join(directory.split()), said
+
+    outside = section(INSTALL, "## Steps outside the terminal and the console")
+    row = next(line for line in outside.splitlines() if line.startswith("| Google sign-in"))
+    assert "stage 8 if the Directory scopes were deferred" not in row
+
+    c6 = RUNBOOK[RUNBOOK.index("**C6. Stage 8"):RUNBOOK.index("**C7. Stage 10")]
+    assert "a consent page opens; sign in" not in c6
+    assert "Sign-in client" in c6 and "stage 13" in c6 and "https://admin.google.com/ac/roles" in c6

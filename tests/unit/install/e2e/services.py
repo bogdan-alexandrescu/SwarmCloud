@@ -46,6 +46,9 @@ def commands(world: World) -> None:
             world.signed_in = True
             return 0, "", ""
         if words[:3] == ["auth", "application-default", "login"]:
+            asked = [w for w in words if w.startswith("--scopes=")]
+            if world.cloud.refuses_directory_scopes and any("admin.directory" in w for w in asked):  # type: ignore[attr-defined]
+                return 1, "", "ERROR: (gcloud.auth.application-default.login) Access blocked: this app's request is invalid"
             world.signed_in = True
             for word in words:
                 if word.startswith("--scopes="):
