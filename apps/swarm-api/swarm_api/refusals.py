@@ -683,6 +683,22 @@ SWITCHES: dict[str, Switch] = {
     # of these also refuses removing, demoting or clearing a workspace's last
     # admin (issue 47, routes/last_admin.py): the owner asked for the refusal,
     # and a switch that let it through would be the breach itself.
+    # The plan thread (docs/design/plans-pipeline.md §3.4, lane P3
+    # PLANS-THREAD). Both gate a route new with that lane; off, a comment is
+    # kept anyway -- data beside the run that decides nothing -- and the log
+    # names the refusal it would have made.
+    "anchor_unknown": Switch(
+        code="anchor_unknown",
+        why="a plan:comment anchored to a step, requirement, overlap or diagram the revision "
+        "it was written on does not hold is refused 422. On once the decision page's margin "
+        "composer (lane U4) sends anchors only from the revision it shows",
+    ),
+    "plan_thread_closed": Switch(
+        code="plan_thread_closed",
+        why="a plan:comment on a run that is not PLANNED through DONE (a rejected plan, a "
+        "NOT_READY verdict, a run still planning, failed or cancelled) is refused 409. On "
+        "once the decision page (lane U4) hides the composer on such a run",
+    ),
 }
 
 

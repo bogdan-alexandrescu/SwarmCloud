@@ -914,6 +914,21 @@ export interface PlanApprove {
   plan_digest: string
 }
 
+/**
+ * `plan:comment`'s body (plans-pipeline.md §3.4): a new comment
+ * (`plan_digest`, `anchor`, `text`) or a fold (`entry_id`, `resolved`).
+ *
+ * `text` is bounded here only so the request is; the comment's own bound,
+ * MAX_THREAD_TEXT_CHARS, is `issueruns.thread_text`'s, with its message.
+ */
+export interface PlanComment {
+  plan_digest?: string | null
+  anchor?: PlanThreadAnchor | null
+  text?: string | null
+  entry_id?: string | null
+  resolved?: boolean | null
+}
+
 export interface PlanEdit {
   plan_digest?: string | null
   plan: { [key: string]: unknown }
@@ -943,6 +958,11 @@ export interface PlanReviewCapsRequest {
 export interface PlanSettingsPut {
   diagrams?: 'on' | 'off' | 'inherit' | null
   chat_model_class?: string | null
+}
+
+export interface PlanThreadAnchor {
+  part: string
+  ref?: string | null
 }
 
 /**

@@ -73,7 +73,10 @@ _ALLOWED: dict[TaskState, frozenset[TaskState]] = {
     ),
     # PARKED -> SUCCEEDED: a step the control plane finishes without a worker
     # (#748, contract request 52). It held no lease, so there is nothing to
-    # release; only swarm-api writes it, guarded on its own claim.
+    # release. Written by swarm-api, guarded on its own claim, and by the
+    # scheduler for a re-review whose verdict gate the platform's own record
+    # shows shut, in the same guarded write that would otherwise promote it
+    # (contract request 157).
     # READY -> FAILED and PARKED -> FAILED: the same ending in the two states
     # admission and the credential sweep actually hold a task in (contract
     # request 99, accepted by the owner 2026-10-18). Only the scheduler writes
