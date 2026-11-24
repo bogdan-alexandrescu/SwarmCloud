@@ -186,3 +186,155 @@ variable "tenant_ids" {
 variable "labels" {
   type = map(string)
 }
+
+# ---------------------------------------------------------------------------
+# The four operational monitors (alerts.tf, the end of the file). Every
+# default below is explained next to its value from what the code emits.
+# ---------------------------------------------------------------------------
+
+variable "front_door_hostname" {
+  description = <<-EOT
+    The front door's hostname (terraform/infra's frontend_hostname, the name
+    the managed certificate is issued for), bare: no scheme, no path. The
+    uptime check reads https://<this>/healthz. Empty -- the default, and what
+    terraform/infra passes while enable_frontend is off -- creates no uptime
+    check and no front-door policy, as there is no host to check.
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.front_door_hostname == "" || can(regex("^([a-z0-9]([a-z0-9-]*[a-z0-9])?[.])+[a-z]{2,}$", var.front_door_hostname))
+    error_message = "front_door_hostname is a bare lower-case hostname (no scheme, port or path), or empty for no front door."
+  }
+}
+
+variable "front_door_check_period" {
+  description = <<-EOT
+    How often each checker region requests /healthz. 60s, the shortest Cloud
+    Monitoring offers: with front_door_down_seconds (300) the page arrives
+    about six minutes after the front door stops answering. Allowed: 60s,
+    300s, 600s, 900s.
+  EOT
+  type        = string
+  default     = "60s"
+
+  validation {
+    condition     = contains(["60s", "300s", "600s", "900s"], var.front_door_check_period)
+    error_message = "front_door_check_period is one of the periods Cloud Monitoring accepts: 60s, 300s, 600s, 900s."
+  }
+}
+
+variable "front_door_check_timeout" {
+  description = <<-EOT
+    How long one request may take. 10s: IAP answers an unauthenticated
+    request itself, with a redirect, without calling swarm-api, so a healthy
+    answer costs one TLS handshake and one round trip; ten seconds of silence
+    is the load balancer or the certificate, not a slow API.
+  EOT
+  type        = string
+  default     = "10s"
+}
+
+variable "front_door_failing_regions" {
+  description = <<-EOT
+    The front-door policy fires when MORE than this many checker regions fail
+    at once. 1, so two regions must agree: one region's own network trouble
+    is not the front door going down.
+  EOT
+  type        = number
+  default     = 1
+}
+
+variable "front_door_down_seconds" {
+  description = <<-EOT
+    How long the regions must keep failing before the policy fires. 300:
+    five checks at the default 60s period. A managed certificate renewal or
+    a URL-map update does not drop the front door for that long; a lost DNS
+    record, an expired certificate or a deleted forwarding rule does.
+  EOT
+  type        = number
+  default     = 300
+}
+
+variable "reconciler_pass_slow_seconds" {
+  description = <<-EOT
+    The reconciler's p99 pass duration, in seconds, above which a pass is
+    slow. 60: the reconciler tick is */1 (scheduler module,
+    reconciler_schedule), so a pass longer than 60s runs into the next tick,
+    which then answers 409 already_running (reconciler/service.py, the pass
+    lock) and is skipped. Measured over the 300 passes of 2026-09-24/25 (the
+    same variable's description): p50 3.0s, p90 8.7s, max 111s -- so one
+    slow pass happens and must not page on its own:
+    reconciler_pass_slow_duration_seconds holds it for fifteen minutes.
+    Keep it a bound of the metric's buckets (alerts.tf,
+    reconciler_pass_duration), or the percentile interpolates across it.
+  EOT
+  type        = number
+  default     = 60
+}
+
+variable "reconciler_pass_slow_duration_seconds" {
+  description = <<-EOT
+    How long the p99 must stay above reconciler_pass_slow_seconds. 900:
+    fifteen ticks, three 300s windows in a row. The 111s outlier measured
+    2026-09-24/25 fills one window and is gone; a reconciler that is slow
+    on every pass -- a Firestore backlog, a backend listing that has grown --
+    is still slow fifteen minutes later.
+  EOT
+  type        = number
+  default     = 900
+}
+
+variable "nat_gateway_name" {
+  description = "The platform's own Cloud NAT gateway. The NAT-drop policy reads only this gateway, in var.region, never another in the shared project. Null means the name terraform/modules/network gives it, \"<name_prefix>-nat\"."
+  type        = string
+  default     = null
+}
+
+variable "nat_drop_threshold" {
+  description = <<-EOT
+    Packets Cloud NAT dropped (router.googleapis.com/nat/
+    dropped_sent_packets_count, summed per drop reason over
+    nat_drop_window_seconds) above which a window counts. 0: with endpoint-
+    independent mapping off (terraform/modules/network) every drop is
+    OUT_OF_RESOURCES, a worker's provider connection that never opened, and
+    swarm-nat logged 0 such drops over 3 days before 2026-10-09
+    (docs/incidents/2026-10-09-egress-open-delay.md). The duration, not the
+    count, is what tells a burst from exhaustion.
+  EOT
+  type        = number
+  default     = 0
+}
+
+variable "nat_drop_window_seconds" {
+  description = <<-EOT
+    The window drops are summed over. 300: the NAT metric is sampled every
+    60s, so a window holds five samples and one quiet minute between bursts
+    does not reset the condition.
+  EOT
+  type        = number
+  default     = 300
+}
+
+variable "nat_drop_duration_seconds" {
+  description = <<-EOT
+    How long every window must hold drops before the policy fires. 900: the
+    one burst on record -- 20 DROPPED allocations within 27 ms, 2026-10-09,
+    while dynamic port allocation doubled a VM's ports -- leaves one 300s
+    window non-zero and never pages; ports exhausted for fifteen minutes do.
+  EOT
+  type        = number
+  default     = 900
+}
+
+variable "browser_secret_grant_notify_seconds" {
+  description = <<-EOT
+    The browser-secret-grant policy notifies at most once per this many
+    seconds. 300, as the workspace tripwires (workspace_alerts.tf): a log-
+    match policy opens an incident per matching entry otherwise, and one
+    bad actor's script re-granting in a loop must not flood the pager.
+  EOT
+  type        = number
+  default     = 300
+}

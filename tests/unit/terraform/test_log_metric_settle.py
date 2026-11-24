@@ -112,6 +112,7 @@ def test_the_sweep_finds_the_policies_it_must_hold() -> None:
         ("monitoring", "reconciler_blind"),
         ("monitoring", "pr_stranded"),
         ("monitoring", "tenant_namespace_mismatch"),
+        ("monitoring", "reconciler_pass_slow"),
     } <= policies, sorted(policies)
     assert len(policies) >= 14, sorted(policies)
 
