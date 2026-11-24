@@ -394,6 +394,31 @@ slot:
   * **The gate:** FAILED `train_ejected` (`merge_refused`) at once, quoting
     the latest comment an App wrote. What the gate refused (a closing
     keyword, a dependency not landed) does not change by waiting.
+  * **The gate, at a head the step's own conflict fix pushed** (issue 381,
+    `merge._own_fix_ready_lost`): not an ejection. The step's own
+    `conflict-fix:<n>` round merged main in and pushed; the push moved the
+    head, so the gate removed `ready` ("this pull request's head changed
+    after the label was applied"). On 2026-11-24 the step had woken at that
+    new head, green, while `ready` was still on, parked on the train there,
+    and then read the gate's removal as an ejection: FAILED `train_ejected`,
+    the pull request left open, green and unlabelled. The head is the step's
+    own when `_accept` accepted it as a round's push (the round task's own
+    signed record) -- itself, or reached from it only through clean merges
+    of main -- and the step's `merge_fix.conflict_rounds` names that task.
+    The re-check a conflict fix's head needs has passed by the time this is
+    read: the verdict and owner holds read again, the head accepted, no
+    conflict, the base's required checks green at it. With the review's
+    MERGE, behind the fencing and cancel recheck, the step labels `ready`
+    again and parks `merge_train_waiting`, recording `OWN_FIX_RELABELLED`
+    in the park's `pending`: once per head. With no MERGE verdict to label
+    on (no review, or a skipped one), or `ready` lost again at a head it
+    already re-labelled, it parks for a person (HUMAN_REQUIRED, the
+    `ci_wait_stuck` phase with `why` `own_conflict_fix_ready_lost` and the
+    reason as its line), never FAILED; a person's "I'm ready" re-arms the
+    one re-label. Any other head -- the opener's, a CI-fix round's, a
+    person's -- is the gate's refusal above, exactly as before; a person's
+    removal and the train's ejection keep their own paths at the round's
+    head too.
   * **The train, first time at this head:** labelled `ready` again, once, and
     parked `TRAIN_WAITING` again, the re-board recorded in the park's
     `pending` (`TRAIN_REBOARDED`: the fenced park keeps only the code, head,

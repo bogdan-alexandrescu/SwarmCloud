@@ -25,9 +25,11 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Any
 
+import pytest
+
 from agent_worker import control as control_mod
 from agent_worker import merge, mergetrain
-from agent_worker.errors import ExitCode
+from agent_worker.errors import ExitCode, FencedError
 from swarm_common.models import utcnow
 from swarm_common.states import TaskState
 
@@ -267,8 +269,6 @@ def test_a_stale_generation_relabels_nothing(tmp_path):
     _through_own_conflict_fix(world)
     world.rechecks = 0
     world.stale_after = 1
-    try:
+    with pytest.raises(FencedError):
         merge.run_merge(world.context())
-    except Exception as exc:  # noqa: BLE001 - the fenced refusal itself
-        assert "superseded" in str(exc)
     assert len(_labelled(world)) == 1

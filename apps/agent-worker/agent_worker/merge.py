@@ -650,6 +650,21 @@ REPOSITORY_TRAIN_EJECTED = "**Ejected from the merge train"
 #: forged one can at worst skip the re-board, which refuses or asks for a
 #: round sooner.
 TRAIN_REBOARDED = "re-boarded once after the merge train's ejection"
+#: The line a park carries in its `pending` once the step put `ready` back at
+#: a head its OWN conflict fix round pushed (issue 381, `_own_fix_ready_lost`):
+#: the round's push moved the head, so auto-merge.yml's gate took `ready` off
+#: ("head changed after the label was applied"), which is the step's own doing,
+#: never the train's ejection. Recorded where TRAIN_REBOARDED is, for the same
+#: reason, so the re-label is once per head: `ready` lost again at a head
+#: carrying it is a person's. Tenant-writable: a forged one can at worst skip
+#: the re-label, which parks for a person sooner.
+OWN_FIX_RELABELLED = "labelled `ready` again after this step's own conflict fix moved the head"
+#: `ci_stuck`'s `why` of a train park handed to a person (issue 381): `ready`
+#: lost at a head this step's own conflict fix pushed, and the step may not
+#: label it again -- no MERGE verdict, or already re-labelled at that head.
+#: The park is the CI_WAIT_STUCK one, so the console leads with its line and
+#: a person's "I'm ready" re-reads the pull request.
+OWN_FIX_READY_LOST = "own_conflict_fix_ready_lost"
 #: A failing line of the ejection comment: `- [name](url)` as `eject_pr`
 #: writes it, or `* name: url`.
 _EJECTION_FAILED = re.compile(
@@ -2484,7 +2499,12 @@ class _Run:
         person's "I'm ready" returns it, and restarts the wait's clock
         (`control.ci_wait_span`).
         """
-        message = ci_stuck_line(evidence)
+        return self.park_for_person(evidence, ci_stuck_line(evidence))
+
+    def park_for_person(self, evidence: dict[str, Any], message: str) -> ActionOutcome:
+        """`hand_to_person`'s park with the caller's own `message` as its line:
+        a train wait the step cannot go on with (issue 381), whose evidence
+        names its own `why` (`OWN_FIX_READY_LOST`)."""
         self.summary["wait"] = {"code": CI_WAIT_STUCK, "message": message}
         return _outcome(
             TaskState.PARKED, None, self.summary, f"{CI_WAIT_STUCK}: {message}",
@@ -4381,7 +4401,11 @@ def _board(run: _Run, merger: ForgeMerger, own: Mapping[str, Any], *, pr: PullRe
         read that fails (recorded as `removal_unread`), the comments decide
         as below.
       * The gate's removal is a refusal at once, `train_ejected`, with the
-        gate's comment: what it refused does not change by waiting.
+        gate's comment: what it refused does not change by waiting. Except
+        at a head this step's own conflict fix round pushed (issue 381):
+        the round's push is what made the gate remove it, so the step labels
+        `ready` again there, once, or parks for a person
+        (`_own_fix_ready_lost`).
       * The train's ejection gets the path a red head gets (archived issue 3313). The head
         is green here -- its own checks were read green above -- so a train
         run of main plus this pull request alone that failed is often a
@@ -4405,6 +4429,7 @@ def _board(run: _Run, merger: ForgeMerger, own: Mapping[str, Any], *, pr: PullRe
     record: dict[str, Any] = {**switch, "head": head, "label": REPOSITORY_TRAIN_LABEL}
     summary["repository_train"] = record
     reboarded = _reboarded(ctx, own, head=head)
+    relabelled = _own_fix_relabelled(ctx, own, head=head)
     skips = None
     if REPOSITORY_TRAIN_LABEL in pr.labels:
         record["labelled"] = False
@@ -4441,6 +4466,14 @@ def _board(run: _Run, merger: ForgeMerger, own: Mapping[str, Any], *, pr: PullRe
         message = (f"pull request #{number} lost `{REPOSITORY_TRAIN_LABEL}` while it waited in "
                    f"{base}'s merge train at {head}: {said}")
         if not why or not why.startswith(REPOSITORY_TRAIN_EJECTED):
+            # Not the train's ejection. At a head this step's own conflict
+            # fix pushed, the gate's removal is the step's own doing (issue
+            # 381): labelled again, or a person's; anywhere else, as before.
+            round_task = _own_conflict_fix(run, own)
+            if round_task is not None:
+                return _own_fix_ready_lost(run, merger, pr=pr, head=head, base=base,
+                                           switch=switch, round_task=round_task, said=said,
+                                           relabelled=relabelled, reboarded=reboarded)
             return run.refuse("train_ejected", message)
         record["ejection"] = said
         if reboarded:
@@ -4465,7 +4498,105 @@ def _board(run: _Run, merger: ForgeMerger, own: Mapping[str, Any], *, pr: PullRe
                     f"train at {head}" + (f"; the train skips it: {skips}" if skips else "")
                     + _switch_unread(switch, base),
                     head=head, pull_request=number,
-                    pending=[TRAIN_REBOARDED] if reboarded else [])
+                    pending=([TRAIN_REBOARDED] if reboarded else [])
+                    + ([OWN_FIX_RELABELLED] if relabelled else []))
+
+
+def _own_conflict_fix(run: _Run, own: Mapping[str, Any]) -> str | None:
+    """The conflict fix round task of this step that pushed the head this
+    attempt acts at, or None (issue 381).
+
+    `head_pushed_by` is `_accept`'s answer: the round whose verified pushed
+    head (`_fix_round_heads`, `_recorded_fix_heads`: the round task's own
+    signed record, never the tenant-writable `merge_fix` entry) is the live
+    head itself, or reaches it only through clean merges of the default
+    branch. It is this step's own conflict fix when this step's
+    `merge_fix.conflict_rounds` names that task. A CI-fix, pick-fix or
+    PR-side fixer's head, the opener's, or any head anyone else moved is not.
+    """
+    pushed_by = _task_id(run.summary.get("head_pushed_by"))
+    if pushed_by is None:
+        return None
+    for entry in _fix_rounds(own, CONFLICT_ROUNDS_KEY):
+        if _task_id(entry.get("task_id")) == pushed_by:
+            return pushed_by
+    return None
+
+
+def _own_fix_relabelled(ctx: ActionContext, own: Mapping[str, Any], *, head: str) -> bool:
+    """Whether this step's last park was on the repository's train at `head`
+    after it put `ready` back there for its own conflict fix
+    (`OWN_FIX_RELABELLED`), and no person said "I'm ready" since the wait
+    began (`_wait_restarts`): their return re-arms the one re-label."""
+    if not _on_repository_train(ctx, own, head=head):
+        return False
+    metadata = _mapping(own.get("metadata"))
+    wait = _mapping(metadata.get(MERGE_WAIT_METADATA_KEY))
+    pending = wait.get("pending")
+    return (isinstance(pending, list) and OWN_FIX_RELABELLED in pending
+            and not _wait_restarts(metadata, wait, head))
+
+
+def _own_fix_ready_lost(run: _Run, merger: ForgeMerger, *, pr: PullRequestFacts, head: str,
+                        base: str, switch: Mapping[str, Any], round_task: str, said: str,
+                        relabelled: bool, reboarded: bool) -> ActionOutcome:
+    """`ready` lost at a head this step's own conflict fix round pushed (issue 381).
+
+    The round merged the default branch in and pushed; that push moved the
+    pull request's head, so auto-merge.yml's gate took `ready` off ("this
+    pull request's head changed after the label was applied"). The step
+    caused it, so it is never reported as an ejection from the train. The
+    re-check a conflict fix's head needs has already passed by the time
+    `_board` runs: the review's verdict and owner holds were read again, the
+    head was accepted as the round's (`_accept`), and it is conflict-free and
+    green on the base's required checks at this head. Then:
+
+      * the review said MERGE and the step has not re-labelled this head yet:
+        behind the fencing and cancel recheck, `ready` again, and back to
+        `TRAIN_WAITING` with `OWN_FIX_RELABELLED` recorded at the head;
+      * no MERGE verdict to label on (a step with no review, or a skipped
+        one), or `ready` lost again at a head it already re-labelled: a
+        person's, parked HUMAN_REQUIRED with the reason (`park_for_person`,
+        `OWN_FIX_READY_LOST`), never FAILED with the pull request left
+        unlabelled. One re-label per head, so it cannot loop.
+
+    Every park holds no lease, capacity or merge slot (invariant 1); a
+    superseded attempt labels nothing (invariant 5).
+    """
+    ctx, summary = run.ctx, run.summary
+    number = pr.number
+    record = summary["repository_train"]
+    record["own_conflict_fix"] = round_task
+    lost = (f"pull request #{number} lost `{REPOSITORY_TRAIN_LABEL}` at {head}, the head this "
+            f"step's own conflict fix round ({round_task}) pushed, because auto-merge.yml's "
+            f"gate saw that push: {said}")
+    verdict = summary.get("verdict")
+    why_not = None
+    if verdict != "MERGE":
+        why_not = (f"the step labels it only on the review's MERGE, and the verdict here is "
+                   f"{verdict or 'none (this step read no review)'}")
+    elif relabelled:
+        why_not = (f"the step already labelled it `{REPOSITORY_TRAIN_LABEL}` again once at this "
+                   "head and it was removed again")
+    if why_not is not None:
+        record["labelled"] = False
+        return run.park_for_person(
+            {"why": OWN_FIX_READY_LOST, "head": head, "pull_request": number,
+             "conflict_fix_task": round_task},
+            f"{lost}; {why_not}, so a person decides: label it `{REPOSITORY_TRAIN_LABEL}` for "
+            f"{base}'s merge train, or say what must change, then press Ready")
+    if ctx.recheck():
+        return cancelled(summary)
+    merger.add_label(number, REPOSITORY_TRAIN_LABEL)
+    record["labelled"] = True
+    return run.wait(mergetrain.TRAIN_WAITING,
+                    f"pull request #{number} is `{REPOSITORY_TRAIN_LABEL}` again for {base}'s "
+                    f"merge train at {head}, the head this step's own conflict fix round "
+                    f"({round_task}) pushed, green there with the review's MERGE; auto-merge.yml's "
+                    f"gate had removed the label for that push: {said}"
+                    + _switch_unread(switch, base),
+                    head=head, pull_request=number,
+                    pending=([TRAIN_REBOARDED] if reboarded else []) + [OWN_FIX_RELABELLED])
 
 
 #: What made `repository_train` treat an unreadable switch as on, as a park says it.
