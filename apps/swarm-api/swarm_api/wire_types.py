@@ -30,12 +30,11 @@ by `types.ts`'s `Task`; describing them is a later slice of #72.
 THE REST OF THE CONSOLE'S CORE SHAPES (below `Task`): the pools, runner
 profiles and their admission, capacity, the task page, attempts, leases and
 heartbeats, quota, tenants, stats, `me`, the dispatch switch, the workflow,
-providers and events -- every shape `test_ui_api_field_contract.py` once held
-to `types.ts` by regex. Same conventions, same documented-only attachment
-(each route's `responses=`), and `tests/unit/control_plane/test_wire_types.py`
-holds each to every route that serves it, both directions, and shows the
-codec-built rows are served unchanged. Each console interface in `types.ts`
-extends its generated shape and keeps only its own narrowing.
+providers and events -- every shape the console once copied into `types.ts`
+by hand. Same conventions, the same documented-only attachment (each route's
+`responses=`), and the same two-way hold against what every serving route
+sends, so a codec-built row is still served unchanged. Each console interface
+in `types.ts` extends its generated shape and keeps only its own narrowing.
 """
 
 from __future__ import annotations
