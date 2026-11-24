@@ -28,14 +28,18 @@ Three seams, each with its own section:
      pull request by hand against a strategy whose entire promise is that there
      is only one.
 
-No network, no credentials, no node: the TypeScript is read as text, which is the
-same technique `test_every_path_the_ui_calls_exists_on_this_api` uses and for the
-same reason -- a mock of the UI would agree with whatever the UI happens to do.
+No network, no credentials, no node. Where a seam compares the console with a
+Python value -- the vocabulary, the dispatch keys, the refusal details, the
+fixtures -- the console's half is apps/swarm-ui/src/__tests__/
+contract.profiles.test.tsx, against the generated profiles.json that
+`scripts/gen_api_types.py --check` holds to the `profiles` constants group,
+and the half here holds that group to the live objects (part of #72). The
+tests left reading console source compare it with nothing in Python.
 """
 
 from __future__ import annotations
 
-import json
+import importlib.util
 import re
 from pathlib import Path
 
@@ -59,110 +63,61 @@ WORKER_LIFECYCLE = ROOT / "apps/agent-worker/agent_worker/lifecycle.py"
 
 #: Skipped rather than failed when the UI is not checked out, matching the
 #: existing api.ts seam test: this suite has to pass in a tree that holds only
-#: the Python services.
-pytestmark = pytest.mark.skipif(not UI.is_dir(), reason="apps/swarm-ui/src is not present")
+#: the Python services. Only the tests that read console source carry it.
+needs_ui = pytest.mark.skipif(not UI.is_dir(), reason="apps/swarm-ui/src is not present")
 
 
 def _src(name: str) -> str:
     return (UI / name).read_text()
 
 
-def _string_array(source: str, const: str) -> list[str]:
-    """The string literals of `export const <const> = [...] as const`.
-
-    Parsed rather than imported because there is no JavaScript runtime in this
-    suite. The match is anchored on the declaration so a mention of the name in
-    a comment cannot satisfy it.
-    """
-    match = re.search(
-        rf"export const {re.escape(const)}\s*=\s*\[(.*?)\]\s*as const", source, re.S
-    )
-    assert match is not None, f"{const} is not declared in types.ts as a const array"
-    return re.findall(r"'([^']*)'", match.group(1))
+def _built() -> dict:
+    """What the `profiles` constants group builds, from the live objects."""
+    path = ROOT / "scripts/api_constants/profiles.py"
+    spec = importlib.util.spec_from_file_location("api_constants_profiles_under_test", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.build()
 
 
 # --------------------------------------------------------------------------
 # 1. The vocabulary seam
 # --------------------------------------------------------------------------
+# The console's side -- every strategy the dispatch control draws and every
+# carrier the console knows is one this API accepts, every strategy this API
+# can run is drawn, the defaults agree -- is
+# apps/swarm-ui/src/__tests__/contract.profiles.test.tsx, against the
+# generated profiles.json (part of #72). `scripts/gen_api_types.py --check`
+# fails while that file differs from what the `profiles` group builds; these
+# hold that the group builds swarm-api's own vocabulary.
 
-def test_every_strategy_the_ui_offers_is_one_this_api_accepts():
-    """The UI must not offer a word the API refuses.
-
-    `_accepted_value` rejects an unknown strategy at submission, so an option
-    the API does not know is a control that 422s every time it is used -- and
-    the caller is shown a refusal about a value they picked from a list the
-    product gave them.
-    """
-    offered = _string_array(_src("types.ts"), "DISPATCH_STRATEGIES")
-    assert offered, "types.ts offers no strategies at all"
-    unknown = sorted(set(offered) - set(DISPATCH_STRATEGIES))
-    assert not unknown, (
-        f"the UI offers strategies this API refuses: {unknown}; "
-        f"accepted values are {list(DISPATCH_STRATEGIES)}"
-    )
-
-
-def test_every_carrier_the_ui_offers_is_one_this_api_accepts():
-    """THE `patches` TRAP, pinned.
+def test_the_profiles_group_serves_the_strategies_and_carriers_this_api_accepts():
+    """THE `patches` TRAP, pinned on the served side.
 
     agent-worker's `_dispatch_carrier` accepts `("patches", "branches")` and
-    swarm-api accepts `("checkpoints", "branches")` -- a live disagreement
-    recorded in docs/contract-change-requests.md. The browser talks to
-    swarm-api, so the UI must speak swarm-api's vocabulary; a UI that copied the
-    worker's would refuse every submission a caller made.
+    swarm-api accepts `("checkpoints", "branches")`. The browser talks to
+    swarm-api, so the console is held to swarm-api's words, and these are them.
     """
-    offered = _string_array(_src("types.ts"), "DISPATCH_CARRIERS")
-    assert offered, "types.ts offers no carriers at all"
-    unknown = sorted(set(offered) - set(DISPATCH_CARRIERS))
-    assert not unknown, (
-        f"the UI offers carriers this API refuses: {unknown}; "
-        f"accepted values are {list(DISPATCH_CARRIERS)}. Note that 'patches' is "
-        "the WORKER's spelling of the default and swarm-api refuses it."
-    )
+    dispatch = _built()["dispatch"]
+    assert dispatch["strategies"] == list(DISPATCH_STRATEGIES)
+    assert dispatch["carriers"] == list(DISPATCH_CARRIERS)
+    assert "patches" not in dispatch["carriers"]
 
 
-def test_every_strategy_and_carrier_this_api_accepts_is_reachable_in_the_ui():
-    """The other direction, which is the one that fails quietly.
-
-    A strategy the API accepts and the UI does not offer is a feature that
-    exists, is documented, is tested, and that no caller can ever choose.
-
-    Measured against `dispatchable_strategies()`, not the accepted words:
-    `single-pr` (archived issue 295) cannot complete while the catalogue disables its merge
-    and post-verdict profiles, and a control that refuses every time is the
-    other failure this file guards against. The day both are enabled the two
-    are equal, and this demands the UI offer it.
-    """
-    strategies = _string_array(_src("types.ts"), "DISPATCH_STRATEGIES")
-    carriers = _string_array(_src("types.ts"), "DISPATCH_CARRIERS")
-    assert sorted(strategies) == sorted(dispatchable_strategies()), (
-        "the UI does not offer every strategy this API can run: "
-        f"missing {sorted(set(dispatchable_strategies()) - set(strategies))}"
-    )
-    assert sorted(carriers) == sorted(DISPATCH_CARRIERS), (
-        "the UI does not offer every carrier this API accepts: "
-        f"missing {sorted(set(DISPATCH_CARRIERS) - set(carriers))}"
-    )
+def test_the_profiles_group_serves_what_this_api_can_run_and_its_defaults():
+    """Measured against `dispatchable_strategies()`, not the accepted words:
+    `single-pr` (archived issue 295) cannot complete while the catalogue
+    disables its merge and post-verdict profiles. A caller who touches nothing
+    gets `collect`/`checkpoints`, which keeps a read-only tenant token working."""
+    dispatch = _built()["dispatch"]
+    assert dispatch["dispatchable_strategies"] == list(dispatchable_strategies())
+    assert set(dispatch["dispatchable_strategies"]) <= set(DISPATCH_STRATEGIES)
+    assert dispatch["default_strategy"] == DEFAULT_STRATEGY
+    assert dispatch["default_carrier"] == DEFAULT_CARRIER
 
 
-def test_the_ui_defaults_are_the_api_defaults():
-    """A caller who touches nothing must get the dispatch they got before.
-
-    `collect`/`checkpoints` is what makes a read-only tenant token keep working,
-    so a UI that pre-selected anything else would start pushing on behalf of
-    deployments that never asked for it.
-    """
-    source = _src("types.ts")
-    assert re.search(
-        rf"export const DEFAULT_STRATEGY: DispatchStrategy = '{re.escape(DEFAULT_STRATEGY)}'",
-        source,
-    ), f"the UI's default strategy is not {DEFAULT_STRATEGY!r}"
-    assert re.search(
-        rf"export const DEFAULT_CARRIER: DispatchCarrier = '{re.escape(DEFAULT_CARRIER)}'",
-        source,
-    ), f"the UI's default carrier is not {DEFAULT_CARRIER!r}"
-
-
+@needs_ui
 def test_both_submit_screens_send_the_choice():
     """The control has to be WIRED, not merely present.
 
@@ -221,6 +176,7 @@ def test_the_task_body_the_submit_form_builds_is_accepted(client, db):
     assert task["repository_url"] == REPO
 
 
+@needs_ui
 def test_the_task_form_omits_the_repository_rather_than_sending_an_empty_one():
     """`""` fails the scheme validator with a message about URL schemes.
 
@@ -357,30 +313,25 @@ def test_the_422_detail_keys_the_form_attributes_on_are_the_ones_sent(client):
     ).json()
     assert no_repo["detail"]["missing"] == "repository_url"
 
-    source = _src("Submit.tsx")
-    for key in ("accepted_strategies", "accepted_carriers", "repository_url"):
-        assert key in source, f"Submit.tsx does not attribute a refusal on {key!r}"
+    # The console attributes each of these by its detail key: the details the
+    # `profiles` group serves are these refusals, and contract.profiles.test.tsx
+    # hands each to postTask and reads back the field it is pinned on.
+    refusals = _built()["dispatch"]["refusals"]
+    assert refusals["strategy"] == {"accepted_strategies": unknown_strategy["detail"]["accepted_strategies"]}
+    assert refusals["carrier"] == {"accepted_carriers": unknown_carrier["detail"]["accepted_carriers"]}
+    assert refusals["repository_url"]["missing"] == no_repo["detail"]["missing"]
 
 
-def test_the_ui_task_type_declares_every_key_the_api_sends_in_dispatch(client, db):
-    """`TaskDispatch` mirrors `codec.dispatch_of` by hand; nothing checks that.
-
-    types.ts says as much in its own header -- "If a field changes there, nothing
-    here notices". For THIS block it does now, because a missing key is a fact
-    about the run that no screen can show.
-    """
+def test_the_served_dispatch_keys_are_the_ones_the_api_sends(client, db):
+    """`TaskDispatch` mirrors `codec.dispatch_of`; a missing key is a fact about
+    the run that no screen can show. The `profiles` group serves the keys, and
+    contract.profiles.test.tsx holds `TaskDispatch` and `dispatchOf` to them."""
     created = client.post(
         "/v1/tasks", headers=auth_header("alice"), json={"runner_profile": "mock"}
     )
-    sent = set(created.json()["task"]["dispatch"])
-
-    block = re.search(r"export interface TaskDispatch \{(.*?)\n\}", _src("types.ts"), re.S)
-    assert block is not None, "types.ts no longer declares TaskDispatch"
-    declared = set(re.findall(r"^\s{2}(\w+)[?]?:", block.group(1), re.M))
-    assert declared == sent, (
-        f"TaskDispatch and codec.dispatch_of disagree: "
-        f"only in the API {sorted(sent - declared)}, only in the UI {sorted(declared - sent)}"
-    )
+    sent = list(created.json()["task"]["dispatch"])
+    assert _built()["dispatch"]["task_dispatch_keys"] == sent
+    assert sent == ["strategy", "carrier", "role", "integrates"]
 
 
 # --------------------------------------------------------------------------
@@ -431,6 +382,7 @@ def test_the_quoted_worker_reasons_are_still_the_worker_s(reason: str):
     )
 
 
+@needs_ui
 def test_the_detail_screen_recognises_collect_rather_than_calling_it_a_failed_push():
     """THE REGRESSION.
 
@@ -461,6 +413,7 @@ def test_the_detail_screen_recognises_collect_rather_than_calling_it_a_failed_pu
     )
 
 
+@needs_ui
 def test_the_detail_screen_does_not_tell_a_contributor_to_open_a_pull_request():
     """The second wrong answer, and the more expensive one.
 
@@ -525,6 +478,7 @@ def test_the_publish_reason_strings_reach_the_screen_through_the_worker_shape(cl
 # alongside the positive case, without which "always null" would pass.
 
 
+@needs_ui
 def test_the_workflow_board_does_not_invent_a_strategy_when_the_join_failed():
     """A failed task read must not render as a workflow that publishes nothing.
 
@@ -544,46 +498,22 @@ def test_the_workflow_board_does_not_invent_a_strategy_when_the_join_failed():
     )
 
 
-def test_every_fixture_task_carries_a_dispatch_the_api_could_have_sent():
-    """Fixtures are the development API, so they must not be a shape it cannot produce.
-
-    A fixture with no `dispatch` would exercise only the "this API did not report
-    a dispatch" path -- the one production should never take -- and leave every
-    other rendering untested until it reached the real platform.
-    """
-    source = _src("api.ts")
-    blocks = re.findall(r"dispatch: \{\s*strategy: '([^']+)',\s*carrier: '([^']+)'", source)
-    assert blocks, "api.ts fixtures carry no dispatch block at all"
-    for strategy, carrier in blocks:
-        assert strategy in DISPATCH_STRATEGIES, f"fixture strategy {strategy!r} is not accepted"
-        assert carrier in DISPATCH_CARRIERS, f"fixture carrier {carrier!r} is not accepted"
-    # And the default is represented, because it is what most tasks are.
-    assert any(s == DEFAULT_STRATEGY for s, _ in blocks)
-    # ...as is the shape that opens exactly one pull request, which is the whole
-    # point of the control and the only one with a role to render.
-    assert any(s == "integrate" for s, _ in blocks), (
-        "no fixture exercises `integrate`, so the integrator badge, the "
-        "contributor publish panel and the one-PR rollup render nowhere in development"
-    )
+# MOVED TO THE CONSOLE: test_every_fixture_task_carries_a_dispatch_the_api_could_have_sent
+#
+# It read the fixture tasks' dispatch blocks out of api.ts and compared them
+# with DISPATCH_STRATEGIES. Now: contract.profiles.test.tsx, "the fixture build
+# serves dispatch blocks the API could have sent", which calls the fixture
+# `loadTasks` and holds every block to the generated strategies and carriers,
+# the default and `integrate` among them (part of #72).
 
 
-def test_the_fixture_dispatch_block_is_json_the_codec_would_produce():
-    """The keys, not just the values: a fixture missing `role` would type-error
-    in the bundle but pass every runtime path that reads it as undefined."""
-    source = _src("api.ts")
-    for raw in re.findall(r"dispatch: (\{[^}]*\})", source):
-        keys = set(re.findall(r"(\w+):", raw))
-        assert keys == {"strategy", "carrier", "role", "integrates"}, (
-            f"fixture dispatch block has keys {sorted(keys)}; codec.dispatch_of "
-            "always sends all four"
-        )
-        # Parseable as JSON once the TS quoting is normalised and the trailing
-        # commas prettier leaves behind are dropped -- the cheapest proof that
-        # this is a literal block and not an expression that happens to look
-        # like one.
-        as_json = re.sub(r"(\w+):", r'"\1":', raw).replace("'", '"')
-        json.loads(re.sub(r",(\s*[}\]])", r"\1", as_json))
-
+# MOVED TO THE CONSOLE: test_the_fixture_dispatch_block_is_json_the_codec_would_produce
+#
+# It read each fixture `dispatch: {...}` out of api.ts and held its keys to the
+# four `codec.dispatch_of` sends, written here as a literal. Now the same
+# console case calls the fixture `loadTasks` and holds every block's keys to
+# the generated `task_dispatch_keys`, which
+# `test_the_served_dispatch_keys_are_the_ones_the_api_sends` holds to the API.
 
 
 @pytest.fixture(autouse=True)
