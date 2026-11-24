@@ -10,9 +10,9 @@ here validates, filters or reorders what the route serves: the dict
 
 `scripts/gen-api-types.sh` turns the OpenAPI document into
 `apps/swarm-ui/src/generated/api-types.ts`, and the console's `Task` extends
-the generated one. Two tests keep the three in step:
-`tests/unit/control_plane/test_wire_types.py` holds this model to what the
-routes serve, and `tests/unit/scripts/test_api_types_drift.py` fails when the
+the generated one. Two tests keep the three in step: one holds this model
+to what the routes serve in both directions (every served key declared,
+every required field served), and a drift test fails when the
 committed TypeScript differs from what the script writes now.
 
 REQUIRED here means what every route that serves a task sends, the summary
@@ -20,7 +20,7 @@ listing (`view=summary`) included; everything else has a default and is
 optional in the generated type. (The console's `Task` still narrows `input` and
 `result_summary`, which the summary listing omits, to required, as it always
 has: its screens read them from the detail.) A field a route sends that this model does not declare fails
-`test_wire_types.py`, so a new field is added here, the types regenerated, and
+the first of those tests, so a new field is added here, the types regenerated, and
 the console reads it from the generated type.
 
 Nested shapes the console still types by hand (`blocked_by`, `waiting`,

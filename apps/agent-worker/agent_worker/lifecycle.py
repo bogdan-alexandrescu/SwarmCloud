@@ -469,7 +469,7 @@ FORGE_GRANT_UNREADABLE = "forge_grant_unreadable"
 #: whose reason starts "the forge answered <status>", and which say the forge
 #: could not answer now rather than that the token cannot push. Matched on
 #: that reason because the probe returns no status; the wording is pinned by
-#: tests/unit/worker/test_carrier_branches.py through the real probe.
+#: a test that runs the real probe, so a reworded reason fails there.
 _FORGE_TRANSIENT_ANSWER = re.compile(r"^the forge answered (?:429|5\d\d)\b")
 
 #: How many different accounts one attempt will try before it gives up and
@@ -591,7 +591,7 @@ QUESTION_ANSWER_NAME = "question-answer.txt"
 #: request (its 422 with no open one to reuse), as opposed to a forge that
 #: could not be reached. The publish reads it to tell a refusal, which fails a
 #: pull-request step (`_published_nothing`), from an outage, which does not.
-#: Held to the forge's wording by tests/unit/worker/test_published_nothing.py.
+#: Held to `forge.open_pull_request`'s wording by a test of the publish.
 PULL_REQUEST_REFUSED = "the forge refused the pull request"
 
 #: The `result_summary.git` key `_publish_git` sets when a pull request
@@ -681,9 +681,9 @@ WORKFLOW_REFUSAL_MAX_CHARS = 1500
 #: `mergewake._on_conflict` submits the round with, INTO the signed block,
 #: because the worker acts on no metadata the step-spec signature does not
 #: cover. Restated here because the worker cannot import swarm_api
-#: (`swarm_api.validation.CONFLICT_ROUND_FIELD`);
-#: tests/unit/worker/test_conflict_round_merge_parents.py holds the two
-#: together. A round checks, before it pushes, that it merged the default
+#: (`swarm_api.validation.CONFLICT_ROUND_FIELD`); a test of the conflict
+#: round's merge parents holds the two together, so a rename on either
+#: side fails there. A round checks, before it pushes, that it merged the default
 #: branch (`gitops.verify_merged_default_branch`).
 CONFLICT_ROUND_FIELD = "conflict_round"
 #: The file whose presence makes a clean run that changed nothing a RESULT
@@ -722,15 +722,15 @@ PR_TITLE_FILE = "pr-title.txt"
 PR_BODY_FILE = "pr-body.md"
 #: The runner's pre-publish section (SPEED-D1; `prepublish.PR_SECTION_NAME` and
 #: `prepublish.PR_SECTION_HEADING`, restated because the runner never imports
-#: the worker; tests/unit/worker/test_prepublish_gate.py holds them equal).
+#: the worker; a test of the pre-publish gate holds them equal).
 PREPUBLISH_SECTION_FILE = "prepublish-checks.md"
 #: The runner's deadline, an epoch instant (`prepublish.RUNNER_DEADLINE_ENV`,
-#: restated like the names above; test_prepublish_deadline.py holds them equal).
+#: restated like the names above; a test of the deadline holds them equal).
 RUNNER_DEADLINE_ENV = "SWARM_RUNNER_DEADLINE_EPOCH"
 #: The task document's record of the `timeout_seconds` its spec asked for, when
 #: the API lowered it to the profile's cap (requested of swarm-api in archived issue 2981),
 #: and the runner's name for it (`cliagent.TIMEOUT_ASKED_ENV`, held equal by
-#: test_prepublish_deadline.py).
+#: the same deadline test).
 TIMEOUT_ASKED_FIELD = "timeout_seconds_asked"
 TIMEOUT_ASKED_ENV = "SWARM_TIMEOUT_ASKED_SECONDS"
 
@@ -760,13 +760,13 @@ NO_CONTINUATION_BUDGET = "budget"
 NO_CONTINUATION_CANCEL = "cancel_requested"
 #: The verified task's resolved turn cap (contract request 133, `Task.max_turns`)
 #: and the runner's name for it (`claude_code.MAX_TURNS_ENV`, held equal by
-#: tests/unit/worker/test_runners.py).
+#: a test of the runners).
 MAX_TURNS_FIELD = "max_turns"
 MAX_TURNS_ENV = "SWARM_MAX_TURNS"
 PREPUBLISH_SECTION_HEADING = "## Pre-publish checks failed"
 PREPUBLISH_SECTION_MAX_CHARS = 20000
 #: The runner's advisory section (CTXQ-G; `prepublish.ADVISORY_SECTION_NAME`
-#: and `_HEADING`, held equal by tests/unit/worker/test_prepublish_graph_gate.py):
+#: and `_HEADING`, held equal by a test of the pre-publish graph gate):
 #: test reach, the agent's self-check, what the graph selected. Appended for
 #: the reader; no merge path reads it, and it never marks the checks failed.
 PREPUBLISH_ADVISORY_FILE = "prepublish-advisory.md"
@@ -1021,7 +1021,7 @@ class Worker(HeartbeatMixin, CheckpointMixin, SpendMixin):
         # for those two only; the loop and the lease's outage check read
         # `time.monotonic`. A test that runs the loop with one installed starts
         # it at a real `time.monotonic()` reading and only moves it forward
-        # (`tests/unit/worker/virtual_clock.py`), so a beat's stamp stays
+        # (the tests' virtual clock helper), so a beat's stamp stays
         # within the test's own few seconds of the loop's clock.
         self.heartbeat_clock: Callable[[], float] = time.monotonic
         self.heartbeat_wait: Callable[[threading.Event, float], bool] = threading.Event.wait
@@ -10796,13 +10796,13 @@ class Worker(HeartbeatMixin, CheckpointMixin, SpendMixin):
         #
         # NEVER A PREFIX. `PLAYWRIGHT_*` would also carry
         # PLAYWRIGHT_SERVICE_ACCESS_TOKEN, a real Playwright credential.
-        # tests/unit/worker/test_image_env_reaches_the_runner.py takes every ENV
-        # in the browser image -- both Dockerfiles, plus the upstream python
-        # base's, recorded there and pinned by digest -- and holds each one to
-        # either this list or a recorded reason the runner must not have it.
-        # The image's pip/npm settings are among the refused: no runner process
-        # runs pip or npm. Whether the AGENTS the runners start should get them
-        # is an open owner decision, recorded in that file.
+        # A test takes every ENV in the browser image -- both Dockerfiles,
+        # plus the upstream python base's, recorded with the test and pinned
+        # by digest -- and holds each one to either this list or a recorded
+        # reason the runner must not have it. The image's pip/npm settings
+        # are among the refused: no runner process runs pip or npm. Whether
+        # the AGENTS the runners start should get them is an open owner
+        # decision, recorded beside that test.
         for passthrough in (
             "PYTHONPATH",
             "VIRTUAL_ENV",
@@ -12993,7 +12993,7 @@ class Worker(HeartbeatMixin, CheckpointMixin, SpendMixin):
         task submitted with a larger class than its profile's would otherwise
         have its CPU drawn against a limit its container never had. Restated
         rather than imported (the worker image does not install the
-        scheduler); `tests/unit/worker/test_cpu_sampler.py` compares the two.
+        scheduler); a test of the CPU sampler compares the two.
 
         WHERE IT CAME FROM IS RECORDED AGAIN (contract request #26, accepted
         on #184, 2026-09-26): `cgroup` when the kernel's `cpu.max` said it,
@@ -14215,8 +14215,8 @@ class Worker(HeartbeatMixin, CheckpointMixin, SpendMixin):
         The ONE list both the live publisher and the final upload walk, so a
         stream's live object (`logs/live/<label>.tail.log`) and its final one
         (`logs/<label>.log`) cannot name it differently. The labels are the
-        API's stream names (`swarm_api.inspect.LOG_STREAMS`), compared by
-        `tests/unit/control_plane/test_agent_stream_parity.py`.
+        API's stream names (`swarm_api.inspect.LOG_STREAMS`), compared by a
+        parity test that imports both, so a renamed stream fails there.
         """
         streams = [("stdout", ws.stdout_path), ("stderr", ws.stderr_path)]
         files = agent_stream_files(self.cfg.runner_profile)
@@ -14584,7 +14584,7 @@ class Worker(HeartbeatMixin, CheckpointMixin, SpendMixin):
         on the carrier yet. The first one that did would have read "patches"
         for a dispatch that said "checkpoints".
 
-        `tests/unit/worker/test_dispatch_contract_parity.py` imports swarm-api's
+        A dispatch-contract parity test imports swarm-api's
         own constants and asserts this set matches them, so the next divergence
         fails there instead of in a deployed worker.
         """
@@ -18928,7 +18928,7 @@ def _neutralise_mentions(text: str) -> str:
 #: URL is `swarm_api.codec.agent_console_url` / `workflow_console_url` (which
 #: follow apps/swarm-ui/src/paths.ts). The worker does not depend on swarm_api,
 #: so it spells them again here, and
-#: tests/unit/worker/test_pr_body_console_links.py pins the two spellings equal.
+#: a test of the pull-request body's console links pins the two spellings equal.
 _CONSOLE_AGENT_TAB = "live"
 _CONSOLE_URI_COMPONENT_SAFE = "!*'()"
 
@@ -18962,8 +18962,8 @@ def pr_body_with_console_links(
     A Markdown list, so each bare URL autolinks on its own line.
     """
     # Imported here, not at the top: docs/ cite this module's lines by number
-    # (tests/unit/scripts/test_docs_spec_amendments.py), and a line added above
-    # them moves every citation.
+    # (a docs test checks the amended documents' citations), and a line added
+    # above them moves every citation.
     from urllib.parse import quote as _url_quote
 
     base = (origin or "").strip().rstrip("/")
@@ -18985,11 +18985,11 @@ def pr_body_with_console_links(
 #: never trusted for the push: the publish keeps reading `_publish_base`.
 CLONE_BASE_ENV = "SWARM_CLONE_BASE"
 #: The branch the runner rebases onto before publishing (SPEED-D1;
-#: `prepublish.PREPUBLISH_BASE_ENV`, held equal by test_prepublish_gate.py).
+#: `prepublish.PREPUBLISH_BASE_ENV`, held equal by a pre-publish gate test).
 PREPUBLISH_BASE_ENV = "SWARM_PREPUBLISH_BASE"
 #: The branch the clone left HEAD on (`_start_branch`), named to the runner
 #: so the pre-publish gate can hand a moved HEAD back to the agent
-#: (`prepublish.START_BRANCH_ENV`, held equal by test_prepublish_moved_head.py).
+#: (`prepublish.START_BRANCH_ENV`, held equal by a test of the moved HEAD).
 START_BRANCH_ENV = "SWARM_START_BRANCH"
 #: Where the worker writes the step's signed work contract's body for the
 #: runner's JC2 (`Worker._stage_work_contract`), under the attempt's work/.
@@ -19446,7 +19446,7 @@ def _config_backend(config: Any) -> str | None:
 
 #: The GKE attempt's `<namespace>/<job>`, rendered into the Job by
 #: `scheduler.dispatch.GkeJobDispatcher._manifest` (GKE_EXECUTION_NAME_ENV
-#: there; tests/unit/worker/test_gke_execution_name_recorded.py holds the two
+#: there; a test that records the GKE execution name holds the two
 #: spellings together, as this image cannot import the scheduler).
 EXECUTION_NAME_ENV = "SWARM_EXECUTION_NAME"
 
