@@ -34,9 +34,10 @@ COSIGN_VERSION = "2.4.1"
 GCRANE_VERSION = "0.20.2"
 #: Exact: 1.3.6 refuses the state and a newer one diverges plans (lesson 12).
 TERRAFORM_VERSION = "1.16.2"
-#: The newest 1.36 patch, the one the images carry (docs/versions.md): within
-#: one minor of the GKE control plane, as kubectl must be.
-KUBECTL_VERSION = "1.36.6"
+#: The release the images carry (docs/versions.md), 1.37.2: the first that
+#: links x/net v0.57.0 (CVE-2026-39821). Within one minor of a 1.36 or newer
+#: GKE control plane, as kubectl must be.
+KUBECTL_VERSION = "1.37.2"
 JQ_VERSION = "1.8.2"
 GCLOUD_VERSION = "591.0.0"
 #: The GKE auth plugin kubectl execs for a GKE context (CLUSTER-REACH), as
@@ -109,19 +110,19 @@ PINS: dict[tuple[str, str, str], Pinned] = {
     ("terraform", "darwin", "arm64"): Pinned(
         "terraform", TERRAFORM_VERSION, f"{_TERRAFORM}_darwin_arm64.zip",
         "7c0a0b31c8aa541351369bcf7b62a7289fbc21de7e577669aeba6d42f4e6cc41", "terraform"),
-    # dl.k8s.io's own kubectl.sha256 beside each binary (release/v1.36.6/bin/<os>/<arch>/), read 2026-10-30.
+    # dl.k8s.io's own kubectl.sha256 beside each binary (release/v1.37.2/bin/<os>/<arch>/), read 2026-11-24.
     ("kubectl", "linux", "amd64"): Pinned(
         "kubectl", KUBECTL_VERSION, f"{_KUBECTL}/linux/amd64/kubectl",
-        "29818b6729dc9262b692307470d0558d027725e738be5dd47c760261868a2634"),
+        "c04487523e7aa7d1493f7808174c899db93d7a9cf57531420cd76b9bd415f8f4"),
     ("kubectl", "linux", "arm64"): Pinned(
         "kubectl", KUBECTL_VERSION, f"{_KUBECTL}/linux/arm64/kubectl",
-        "35507ef408c3d38849e5d3203e18f8e861db822aa664101a9ced0869edd06046"),
+        "fcc16f63186659d9722014b7e02d5fdd2d4e669cb8c0ab66365d7d3b8ba03509"),
     ("kubectl", "darwin", "amd64"): Pinned(
         "kubectl", KUBECTL_VERSION, f"{_KUBECTL}/darwin/amd64/kubectl",
-        "2e22d382f2423c88d9d076246f860bb3d5c743dd279ca63e113474bb88382426"),
+        "88379aff5c8111de6be0a394adffba2819e44cde269f3ab23cef76de1a48eaa8"),
     ("kubectl", "darwin", "arm64"): Pinned(
         "kubectl", KUBECTL_VERSION, f"{_KUBECTL}/darwin/arm64/kubectl",
-        "1cf735c3d35ccfec28d0618784cb06a4614d2c42aade28b6be0eab76a2ffb623"),
+        "55701af0d51815ee335f240e48acf0959c3c23017ed3fa816e880c4a92bae581"),
     # jq's sha256sum.txt on its jq-1.8.2 GitHub release, read 2026-10-30.
     ("jq", "linux", "amd64"): Pinned(
         "jq", JQ_VERSION, f"{_JQ}/jq-linux-amd64",
