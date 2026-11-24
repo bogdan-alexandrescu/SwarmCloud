@@ -5928,6 +5928,62 @@ check's own start, so nothing ahead of it shortens it; only the step's
 deadline is shared. None of this is on the merge path: it runs in the lane's
 own container before it publishes.
 
+### The source-text check
+
+A test that reads a repository `.py` or `.ts` file as text pins what the code
+*says*, not what it does. Sometimes that is the point -- there is no other
+observable form of the thing -- and sometimes it is a behaviour test written
+the cheap way; until issue 73 nothing in the file said which. And every test
+that swept a tree for a forbidden pattern walked and read that tree again, so
+a guard run read the same files once per sweep.
+`scripts/check_source_text.py` (standard library only, as ruff takes no
+custom rules) does three things in one pass:
+
+* **It finds the source-text tests**: any `.py` under `tests/` or
+  `apps/*/tests/` that globs `*.py`/`*.ts`/`*.tsx`, calls `ast.parse` or
+  `inspect.getsource`, or reads (`read_text`, `read_bytes`, `open`) a path
+  built from a string ending in a source suffix or a module's `__file__`.
+  `python3 scripts/check_source_text.py --list [PATH ...]` prints each with
+  its techniques and `marked <class>` or `UNMARKED`. A test that reads only
+  its own file, docs, YAML, JSON or shell is not one (issue 71).
+* **It holds their marker**, the file's first line (the second after a
+  shebang): `# source-text: <class> - <reason>`, the reason saying why
+  *this* file reads text. The classes:
+
+  | Class | When | Example |
+  |---|---|---|
+  | `contract` | the text is the contract: a name, a table or a call shape with no behaviour to observe | `tests/unit/common/test_specsign_covers.py`: every metadata key the worker reads, found by an AST scan of `agent_worker`, is a signed key |
+  | `forbidden-pattern` | a pattern must not appear, or only where allowed; the sweep itself belongs in a rule (below) | the sweep that no test module imports a bare `conftest`, which was a test until it became the `no-bare-conftest-import` rule |
+  | `fixture` | the source read is a sample the test writes or parses, not the repository's code | `tests/unit/scripts/test_check_source_text.py`, which parses planted snippets |
+
+  A malformed marker, an unknown class, a marker below the first line or a
+  marker on a file that reads no source fails. A detected file with no marker
+  is a warning until every area is marked; `--require-markers` makes it fail.
+* **It runs the forbidden-pattern rules** of `scripts/source_text_rules/`.
+  Each file under the union of the rules' roots is read once and parsed at
+  most once, then handed to every rule whose roots cover it, so a new sweep
+  costs a rule's check, not another walk of the tree. A hit prints
+  `path:line: rule-id: message`.
+
+**Adding a rule.** Add a module to `scripts/source_text_rules/` (any name not
+starting with `_`; modules are found by name, there is no list to edit) that
+defines `RULES`, a tuple of `Rule(id, why, roots, check, bad, good, exempt,
+requires)`: `why` is one line naming the decision or issue it holds; `roots`
+are directories or globs; `check(path, text, tree)` returns `(line, message)`
+hits, `tree` being the AST of a `.py` file; `bad` and `good` are `(path,
+source)` samples that must hit and must pass, which the check's test runs for
+every rule; `exempt` names exact paths allowed to match, and an exemption
+whose file is gone or no longer matches fails as stale; `requires`, a
+substring or pattern a file must hold before it is parsed for the rule, keeps
+the run fast. Move the sweep out of its test file in the same change.
+
+**Where it runs.** `make lint` (`==> source-text tests`), and
+`tests/unit/scripts/test_check_source_text.py`, which runs it over the whole
+tree and is in `GUARD_TESTS`, so every pull request runs it: a rule hit can
+sit in any file, and no diff names the check. Measured 2026-11-24 in a
+14-CPU lane container: about 10 s for the whole tree, most of it parsing the
+roughly 430 test files whose text could read source.
+
 ### The install manifest completeness test
 
 A merge train went red on 2026-11-23 on
