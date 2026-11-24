@@ -303,7 +303,7 @@ review on a task that looked as if it had worked. So:
   or the gate's channel lost because the gate itself restarted), `restarts`,
   `last_exit` and a one-sentence `message`. It keeps one note per restart or
   loss for the task's events and, once the browser is gone, `browser_gone`,
-  from which the lifecycle ends the attempt retryably (the plan's next step).
+  from which the lifecycle ends the attempt retryably (below).
   The file is **not** `browser.json`: that name in the spool is the runner's
   browser-tool state (BSTATUS-API, §3.2.4), forwarded to the gate on every
   poll, and two writers on one file would lose one of them;
@@ -321,6 +321,28 @@ was OOM-killed rather than the worker container or Chromium crashing on its
 own. `oom_kills` in `browser_exit` is what will say whether the share should
 move; until a task reports it above zero, moving memory from the worker (which
 builds the console) to the display would be a guess.
+
+**When the browser is gone for good, the attempt ends, retryably (issue 272).**
+Each restart and the loss go on the task's events as marks
+(`live_browser_restarted`, `live_browser_crashed`: restarts, exit cause,
+signal, exit code, `oom_kills`), which is where an operator reads why the
+browser died. Once `browser_gone` is set while the agent runs, the worker
+(`Worker._live_browser_after_tick`) ends an open hand-off, stops the agent,
+checkpoints, and fails the attempt with cause `live_browser_crashed`,
+`result_summary.live_browser` and an error that says how Chromium exited and,
+with `oom_kills` above zero, that the display sidecar ran out of memory. **Why
+end it rather than let the agent finish:** a browser review without its
+browser is the incomplete result the issue's two tasks reported on tasks that
+looked successful, and nothing about this pod's sidecar gets better by
+waiting; only a new attempt brings a new sidecar, as for
+`live_gate_unavailable` before the agent starts (NOLIVE-GUARD). The task goes
+back to READY with its lease and capacity released, and while it has attempts
+left the next one starts on a new pod from the checkpoint; on its last it ends
+FAILED as `runner_error`, since no frozen end cause names the browser (a
+contract request). Not on a fenced attempt, nor when a hand-off's hold has
+just run out or its channel dropped with a person waited for: that still parks
+for the person. The owner was asked (the plan's `questions.json`) whether to
+stop at once, as built, or at the agent's own exit.
 
 ### 3.2.1 dev-browser (opt-in)
 

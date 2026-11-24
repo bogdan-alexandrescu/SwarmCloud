@@ -382,6 +382,18 @@ RELAY_PROBE_SECONDS = 3.0
 #: and capacity released, as an unreachable forge does. The next attempt is a
 #: new pod with a new sidecar. Bounded by `max_attempts`, like every retry.
 LIVE_GATE_UNAVAILABLE = "live_gate_unavailable"
+#: Issue 272: the same reasoning WHILE the agent runs. The gate's relaunch
+#: budget is spent (or its channel to this worker closed), so the attempt's
+#: live browser is gone for good (`HandoffPath.browser_gone`). Left alone the
+#: agent carried on, reported its review "not rendered" and the task ended as
+#: if nothing had failed. `Worker._live_browser_after_tick` stops the agent,
+#: checkpoints and fails the attempt retryably with this cause instead: only a
+#: new attempt brings a new sidecar, and the task then names the browser as
+#: what failed. Waits LIVE_GATE_RETRY_DELAY_SECONDS, bounded by `max_attempts`.
+LIVE_BROWSER_CRASHED = "live_browser_crashed"
+#: The mark on the task's events for each restart the gate made (issue 272):
+#: the operator reads why Chromium exited there, the attempt goes on.
+LIVE_BROWSER_RESTARTED = "live_browser_restarted"
 #: How long that task waits before it is eligible again: long enough for the
 #: burst of pod starts that broke this one to have passed, short enough that a
 #: retried attempt does not look stuck.
@@ -1102,6 +1114,12 @@ class HandoffPath:
         self.browser_gone: dict[str, Any] | None = None
 
     # -- what the lifecycle asks ---------------------------------------------
+
+    @property
+    def wiped(self) -> bool:
+        """Whether this attempt's browser was wiped (§5.5): it is ending, so a
+        closed browser then is not a crash (LIVE_BROWSER_CRASHED)."""
+        return self._wiped
 
     @property
     def offered(self) -> bool:
