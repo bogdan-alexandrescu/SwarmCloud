@@ -3378,6 +3378,7 @@ lost, from the per-tenant merge-wake tick (`fixloop.sweep_tenant`).
 | what ended | what the loop does |
 |---|---|
 | the first review says MERGE | ends SUCCEEDED with no round |
+| the first review was skipped because the build changed nothing, and no head was pushed | ends SUCCEEDED, `nothing_to_change`, with no round and no verdict; the merge step behind it then skips too, with no pull request to merge |
 | a re-review says MERGE | ends SUCCEEDED; its `final_review` is that re-review |
 | a re-review says NOT_YET, rounds left | starts the next fix with that verdict's findings, from the head a person pushed if one did |
 | a re-review says NOT_YET, no round left | parks for a person, `fix_loop_exhausted` |
@@ -3391,7 +3392,10 @@ lost, from the per-tenant merge-wake tick (`fixloop.sweep_tenant`).
 Why the loop stops at a person rather than running on: a review that
 disagrees with a fix `max_rounds` times is a disagreement a person settles,
 and every other row is a fault a further round would only repeat. A
-verdict that does not read is never read as MERGE.
+verdict that does not read is never read as MERGE. A first review the
+worker skipped while a head WAS pushed still parks `review_unreadable`
+(`verdict_absent`): there is code nobody reviewed, so the loop never ends as
+if there were nothing to change.
 
 **The loop holds nothing** (invariant 1). The scheduler parks it
 `FIX_ROUNDS_RUNNING` and never leases it; it has no pod, no lease and no pool
