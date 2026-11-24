@@ -228,6 +228,7 @@ from .schemas import (
 from swarm_common.profiles import MODEL_CLASSES, RUNNER_PROFILES, step_model_class
 
 from . import donewhen, planfiles, planhistory, reviewgate, sessiontag, stepclass, workcontract
+from . import refusals
 from .plansections import (
     MAX_CHANGES,
     MAX_GRAPH_EDGES,
@@ -5002,21 +5003,29 @@ class PlanThreadClosed(Conflict):
 
 
 def thread_anchor(part: Any, ref: Any, plan: Mapping[str, Any]) -> dict[str, Any]:
-    """`{"part", "ref"}` when `plan` holds that part, else AnchorUnknown.
+    """`{"part", "ref"}` for a comment on `plan`, refused with AnchorUnknown
+    when `plan` does not hold that part.
 
     `plan` anchors to no ref; a step by its `step_id`; a requirement by its
     number, 1 up, as the plan's steps name them; an overlap by its
-    `owner/repo#N`; a diagram by its `diagram_id`."""
+    `owner/repo#N`; a diagram by its `diagram_id`.
+
+    AnchorUnknown is a new refusal, so it goes through `refusals.refuse`
+    (REFUSAL_ANCHOR_UNKNOWN): switched off, the comment is kept with the
+    anchor as sent -- a remark pinned to nothing, which decides nothing --
+    and the log names the refusal it would have made."""
+    kept = {"part": str(part)[:32], "ref": ref if isinstance(ref, str) else None}
     if part not in THREAD_ANCHOR_PARTS:
-        raise AnchorUnknown(
+        refusals.refuse(AnchorUnknown(
             f"a comment is anchored to one of {list(THREAD_ANCHOR_PARTS)}",
             detail={"part": str(part)[:32]},
-        )
+        ))
+        return kept
     if part == "plan":
         if ref is not None:
-            raise AnchorUnknown("a comment on the whole plan names no ref",
-                                detail={"part": part})
-        return {"part": part, "ref": None}
+            refusals.refuse(AnchorUnknown("a comment on the whole plan names no ref",
+                                          detail={"part": part}))
+        return kept
     known: list[str] = []
     if part == "step":
         known = [str(step.get("step_id")) for step in plan.get("steps") or ()
@@ -5030,11 +5039,11 @@ def thread_anchor(part: Any, ref: Any, plan: Mapping[str, Any]) -> dict[str, Any
         known = [str(item.get("diagram_id")) for item in plan.get("diagrams") or ()
                  if isinstance(item, Mapping) and item.get("diagram_id")]
     if not isinstance(ref, str) or ref not in known:
-        raise AnchorUnknown(
+        refusals.refuse(AnchorUnknown(
             f"the plan revision this comment was written on has no {part} {str(ref)[:200]!r}",
             detail={"part": part, "ref": str(ref)[:200] if ref is not None else None},
-        )
-    return {"part": part, "ref": ref}
+        ))
+    return kept
 
 
 def thread_text(text: Any) -> str:
@@ -5510,10 +5519,12 @@ class IssueRuns:
         the text says -- a comment is data, never an instruction."""
         run = self.get(tenant_id, run_id)
         if run.state not in THREAD_OPEN_STATES:
-            raise PlanThreadClosed(
+            # A new refusal (REFUSAL_PLAN_THREAD_CLOSED): switched off, the
+            # comment is kept and the log names the refusal it would have made.
+            refusals.refuse(PlanThreadClosed(
                 f"run {run_id!r} is {run.state.value}; its plan takes no comment",
                 detail={"state": run.state.value},
-            )
+            ))
         plan, revision = self._plan_on(run, digest)
         anchor = thread_anchor(anchor_part, anchor_ref, plan)
         stored = thread_text(text)

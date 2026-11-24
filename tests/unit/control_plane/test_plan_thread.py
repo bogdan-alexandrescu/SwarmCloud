@@ -51,6 +51,15 @@ from .test_issue_runs import (  # noqa: F401 -- fixtures, used by name
 from .test_roles_store import grant
 
 MEMBER_SWITCH = refusals.env_name("role_member_required")
+#: The thread's two new refusals ship report-only (`refusals.SWITCHES`); the
+#: tests below hold them on, and the last two hold them off.
+THREAD_SWITCHES = (refusals.env_name("anchor_unknown"), refusals.env_name("plan_thread_closed"))
+
+
+@pytest.fixture(autouse=True)
+def thread_refusals_on(monkeypatch):
+    for name in THREAD_SWITCHES:
+        monkeypatch.setenv(name, "on")
 THREAD = "plan_thread"
 
 
@@ -453,3 +462,37 @@ def test_the_thread_is_bounded_and_says_when_it_was_cut(client, db, objects):
     assert read["thread_truncated"] is True
     # The newest are kept.
     assert read["plan_thread"][-1]["text"] == f"note {PLAN_THREAD_LIMIT + 4}"
+
+
+# --------------------------------------------------------------------------
+# 6. the new refusals ship off (refusals.SWITCHES)
+# --------------------------------------------------------------------------
+
+def test_the_threads_new_refusals_ship_off():
+    for code in ("anchor_unknown", "plan_thread_closed"):
+        assert refusals.SWITCHES[code].default is False, code
+
+
+def test_with_its_switch_off_an_unknown_anchor_is_kept_and_the_refusal_logged(
+        client, db, objects, monkeypatch, caplog):
+    monkeypatch.setenv(refusals.env_name("anchor_unknown"), "off")
+    run = _planned(client, db, objects)
+    response = _comment(client, run["id"], _body(run, ref="no-such-step"))
+    assert response.status_code == 201, response.text
+    assert response.json()["entry"]["anchor"] == {"part": "step", "ref": "no-such-step"}
+    assert "refusal report-only code=anchor_unknown" in caplog.text
+    after = _thread(client, run["id"])
+    assert after["plan_digest"] == run["plan_digest"] and after["plan_revision"] == 1
+
+
+def test_with_its_switch_off_a_rejected_runs_comment_is_kept_and_the_refusal_logged(
+        client, db, objects, monkeypatch, caplog):
+    monkeypatch.setenv(refusals.env_name("plan_thread_closed"), "off")
+    run = _planned(client, db, objects)
+    rejected = client.post(f"/v1/runs/{run['id']}/plan:reject", headers=auth_header("alice"),
+                           json={"plan_digest": run["plan_digest"], "reason": "not now"})
+    assert rejected.status_code == 200, rejected.text
+    response = _comment(client, run["id"], _body(run))
+    assert response.status_code == 201, response.text
+    assert "refusal report-only code=plan_thread_closed" in caplog.text
+    assert _thread(client, run["id"])["state"] == "REJECTED"
