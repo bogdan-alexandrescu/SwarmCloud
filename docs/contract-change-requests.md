@@ -162,6 +162,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 155 | `specsign.py`: a `"plans"` block in `SETTINGS_MAC_FIELDS`, `("diagrams", "chat_model_class")`, so a workspace's plan-review settings (`workspace_settings/{tenant_id}.plans`, docs/design/plans-pipeline.md sections 6.4 and 7.8) are signed by the frozen list (PLAN-SETTINGS) | REQUESTED 2026-11-13 by the pull request that adds this line; not applied. Until it is, `canonical_settings_block` refuses the block and swarm-api cannot sign it through the frozen list |
 | 157 | `states.py`: the scheduler may end a re-review whose verdict gate is shut PARKED -> SUCCEEDED, guarded on its own promotion write, without a lease (re-review gate) | REQUESTED 2026-11-23 by the pull request that adds this line; not applied. Until it is, a re-review whose gate is shut is leased and dispatched as today |
 | 158 | `profiles.py`: declare `context_ceiling` as an optional object input on the claude-code runner family, so a step may carry its own lower session limits (per-role session limits) | REQUESTED 2026-11-23 by the pull request that adds this line; not applied. Until it is, swarm-api refuses a step that carries `context_ceiling` and every session runs at the worker's ceilings |
+| 159 | `states.py` / `models.py`: `ParkReason.WORKFLOW_PAUSED`, `Workflow.paused`, `paused_at` and `paused_by`, and `EventType.PAUSE_REQUESTED` and `RESUME_REQUESTED`, so a workflow can be paused and resumed (docs/design/workflow-pause.md, part of issue 7) | NOT ACCEPTED: REQUESTED 2026-11-24 by the pull request that adds this line; not applied. Nothing is built on it; until the owner decides there is no workflow pause |
 
 ---
 
@@ -18393,3 +18394,116 @@ resolved role and never from caller metadata.
 
 The owner: accepting it lets a later lane declare the input and stamp it.
 Awaiting the owner's acceptance.
+
+## 159. `states.py` / `models.py`: `ParkReason.WORKFLOW_PAUSED`, the workflow's pause fields and two pause events (workflow pause)
+
+**Status:** NOT ACCEPTED. REQUESTED 2026-11-24 by the pull request that adds
+this section (docs/design/workflow-pause.md, part of issue 7); not applied.
+Nothing in `apps/common/swarm_common/` was edited for it, and nothing is built
+on it: until the owner decides, there is no workflow pause.
+
+### What is true today
+
+A workflow can be cancelled (`swarm_api/routes/workflows.py::cancel_workflow`)
+but not paused. The frozen package has one pause park reason,
+`states.py::ParkReason.MANUAL_PAUSE`, written by the scheduler for a missing or
+disabled tenant and for a runner profile the catalogue no longer has
+(`scheduler/loop.py::Scheduler._prepare_admission`), and promoted by
+`Scheduler._promote_manual_pauses` once the tenant, the profile and every
+required pool are clear. `models.py::Workflow` carries `cancel_requested` and
+no pause field. `states.py::EventType` has `CANCEL_REQUESTED` (request 17) and
+no pause event.
+
+### Why this is a contract request
+
+The design (docs/design/workflow-pause.md sections 2, 4 and 6) needs:
+
+* a park reason that only a workflow's resume clears. Reusing `MANUAL_PAUSE`
+  would have `_promote_manual_pauses` re-ready a paused workflow's steps every
+  drain, once tenant and pools are clear, for admission to park them again: two
+  guarded writes per step per drain for the whole pause. Avoiding that means
+  the sweep reads workflows, mixing two owners' pauses under one reason, and
+  `swarm_api/waiting_detail.py::_pause` would describe a workflow pause in a
+  tenant pause's words. This is the argument that gave `HUMAN_REQUIRED` its own
+  reason (request 68);
+* a typed place on the workflow for the pause, queryable by equality, so the
+  reconciler's pause-overdue rule reads paused workflows without a full scan;
+* event types for the request, as request 17 gave cancel one, so no reader of
+  a type mistakes "asked to pause" for "parked".
+
+### The requested change
+
+In `states.py`:
+
+```python
+class ParkReason(str, Enum):
+    ...
+    #: A step of a paused workflow (docs/design/workflow-pause.md). Written by
+    #: the scheduler at admission (READY -> PARKED) and by the step's worker at
+    #: its control poll (RUNNING -> PARKED, checkpointed, lease released).
+    #: Promoted ONLY by the scheduler's workflow-pause sweep once the
+    #: workflow's `paused` is false; never by `_promote_manual_pauses`. Holds
+    #: no capacity (invariant 1). Contract request 159.
+    WORKFLOW_PAUSED = "WORKFLOW_PAUSED"
+
+
+class EventType(str, Enum):
+    ...
+    #: A person asked the step's workflow to pause. The step's state is
+    #: unchanged by this event; the PARKED that follows is written by whoever
+    #: parks it (the scheduler, the worker). Contract request 159.
+    PAUSE_REQUESTED = "pause_requested"
+    #: A person resumed the step's workflow; the scheduler's READY follows for
+    #: a parked step. Contract request 159.
+    RESUME_REQUESTED = "resume_requested"
+```
+
+In `models.py`, at the end of `Workflow` (defaults keep every stored workflow
+readable):
+
+```python
+    #: The pause is in force. The equality key: `workflows where paused ==
+    #: true` is how the scheduler's sweep and the reconciler find paused
+    #: workflows without a scan. Contract request 159.
+    paused: bool = False
+    #: When the pause started; kept on a repeat pause, cleared on resume.
+    paused_at: datetime | None = None
+    #: Who paused it (the caller's email, as `submitted_by`).
+    paused_by: str | None = None
+```
+
+No change to `_ALLOWED`, `WORKER_TRANSITIONS`, `admission.py` or `Task`: the
+design uses only existing edges, and the step's `pause_requested_at` stays a
+raw field, as `cancel_requested_at` does.
+
+### What it would break if accepted
+
+Nothing stored: the new fields default to not paused. Every exhaustive match
+over `ParkReason` or `EventType` (the TypeScript `types.ts` restatement and
+`check-contract-parity.sh`, swarm-api's waiting-line tables) gains a member and
+must name it. `swarm_api/codec.py::workflow_to_firestore` and
+`workflow_from_dict` carry the three fields.
+
+### If it is declined
+
+Either no workflow pause, or pause built on `MANUAL_PAUSE` with the costs
+above, the pause recorded as untyped workflow fields beside
+`superseded_task_ids`, and its events as `PARKED`/`READY` details only.
+
+### Invariants
+
+A `WORKFLOW_PAUSED` park holds no lease and no pool units (invariant 1); the
+reason is written only before a lease (scheduler) or with the lease's release
+in one fenced transaction (worker, invariants 2 and 5); the worker parks and
+exits rather than waiting for resume (invariant 4).
+
+### How it would be tested
+
+Not built here. If accepted: the reason and both events exist with those
+values; `Workflow` round-trips the three fields; a stored workflow without them
+reads as not paused; the parity check names the new members.
+
+### Who decides
+
+The owner, together with question Q5 of docs/design/workflow-pause.md (a new
+reason, recommended, or reuse `MANUAL_PAUSE`). Awaiting the owner's decision.
