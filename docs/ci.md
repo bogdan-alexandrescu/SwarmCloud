@@ -5926,6 +5926,22 @@ add a test beside the group's code that compares the file with the objects
 it reads (the `states` group's is in `test_api_constants.py`). Never edit a
 file under `generated/` by hand.
 
+**The `server` group** (`scripts/api_constants/server.py`, tested by
+`tests/unit/scripts/test_api_constants_server.py`) holds the server values the
+console restates and its tests compare against: the workspace-secret host
+rule and its refusals, the accepted repository URL prefixes, the worker's
+merge cap, the installer's doctor keys and statuses and `swarm team add`
+flags, the plugin refusal tables, two request models' field names, whether
+the events route pages and whether the read scope checks the collision only,
+and the Cloud Scheduler jobs. It exists so that no console test opens a
+Python or Terraform file: such a test regexes source text, and a reworded
+assignment silently changes what it compares. Terraform is its one text
+source, because a `.tf` file has no live object: a small parser reads the
+job blocks from `terraform/modules/scheduler/jobs.tf`, and the group's test
+holds that parser to an inline sample and to the real file. Its values are
+limits, flag names, codes and refusal sentences, published to the console
+bundle; none names a deployment or carries a credential.
+
 **A failure goes to the fix turn with its fix.** A stale file is handed back
 with the one command that fixes it: run `uv run python scripts/gen_api_types.py`
 from the repository root and commit what it writes. A pointer is handed back
