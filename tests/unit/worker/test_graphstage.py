@@ -481,6 +481,7 @@ def test_claude_code_names_swarm_graph_only_when_staged(monkeypatch, tmp_path):
     assert args.count(flag) == 1, args
     system = args[args.index(flag) + 1]
     assert system.endswith("\n\n" + claude_code.SAVED_OUTPUT_NOTE + "\n\n"
+                           + claude_code.SUBAGENT_NOTE + "\n\n"
                            + claude_code.GRAPH_FIRST_NOTE), system
     assert system.count(claude_code.GRAPH_FIRST_NOTE) == 1, system
 
