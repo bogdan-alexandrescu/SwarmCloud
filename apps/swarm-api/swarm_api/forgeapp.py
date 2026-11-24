@@ -381,12 +381,12 @@ class SecretManagerAppSecrets:
             raise AppNotConfigured(f"{slot} has no enabled version") from None
         except gexc.PermissionDenied:
             raise AppNotConfigured(f"swarm-api may not read {slot}") from None
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             raise AppNotConfigured(
                 f"{slot} could not be read ({type(exc).__name__})") from None
         try:
             value = bytes(version.payload.data).decode("utf-8").strip()
-        except Exception:
+        except Exception:  # noqa: BLE001
             value = ""
         if not value:
             raise AppNotConfigured(f"{slot} is empty")
@@ -489,7 +489,7 @@ class SecretManagerUserSlots:
             raise SlotUnreadable(f"swarm-api may not read {secret}") from None
         try:
             value = bytes(version.payload.data).decode("utf-8").strip()
-        except Exception:
+        except Exception:  # noqa: BLE001
             value = ""
         if not value:
             raise SlotUnreadable(f"{secret} is empty")
@@ -551,7 +551,7 @@ def urllib_send(method: str, url: str, headers: dict[str, str], body: bytes | No
     except urllib.error.HTTPError as answer:
         try:
             data = answer.read(MAX_RESPONSE_BYTES + 1)
-        except Exception:
+        except Exception:  # noqa: BLE001
             data = b""
         items = answer.headers.items() if answer.headers is not None else ()
         return HttpAnswer(answer.code, {k.lower(): v for k, v in items}, data)
@@ -603,7 +603,7 @@ class _GitHub:
         data = json.dumps(body).encode("utf-8") if body is not None else None
         try:
             answer = self._send(method, url, headers, data, self._timeout)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             raise _Unanswered(f"{urlparse(url).path}: no answer ({type(exc).__name__})") from None
         if answer.status >= 500 or answer.status == 429:
             raise _Unanswered(f"{urlparse(url).path}: GitHub answered HTTP {answer.status}")
@@ -698,7 +698,7 @@ def app_jwt(app_id: str, private_key_pem: str, now: datetime) -> str:
 
     try:
         key = serialization.load_pem_private_key(private_key_pem.encode("utf-8"), password=None)
-    except Exception:
+    except Exception:  # noqa: BLE001
         raise _KeyUnusable() from None
     if not isinstance(key, rsa.RSAPrivateKey):
         raise _KeyUnusable()
@@ -711,7 +711,7 @@ def app_jwt(app_id: str, private_key_pem: str, now: datetime) -> str:
     signing_input = f"{header}.{claims}".encode("ascii")
     try:
         signature = key.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())
-    except Exception:
+    except Exception:  # noqa: BLE001
         raise _KeyUnusable() from None
     return f"{header}.{claims}.{_b64url(signature)}"
 
@@ -972,7 +972,7 @@ class ForgeApp:
                                   now=now)
             except ApiError:
                 raise
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 # Named by type, never by text: a client error's message may
                 # quote the request it failed on.
                 log.error("github token not stored tenant=%s user_hash=%s (%s)",
@@ -1090,7 +1090,7 @@ class ForgeApp:
         if self._after_sweep is not None and not report.out_of_time:
             try:
                 self._after_sweep(report, lambda: self._clock() - started > self._budget)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 # The refreshes above are done and stored; a re-check that
                 # broke is said, never allowed to fail them.
                 report.errors.append(f"install re-check: {type(exc).__name__}")
@@ -1162,7 +1162,7 @@ class ForgeApp:
             return
         try:
             refresh_token = self._slots.read_refresh(tenant_id, refresh_suffix(suffix))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # Not GitHub's refusal: the platform could not read its own slot.
             # Left active for the next tick, and named.
             reason = str(exc) if isinstance(exc, SlotUnreadable) else type(exc).__name__
@@ -1188,7 +1188,7 @@ class ForgeApp:
                 try:
                     self._slots.add_version(tenant_id, refresh_suffix(suffix), tokens.refresh)
                     version = self._slots.add_version(tenant_id, suffix, tokens.access)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     # The old refresh token is spent and the new one is not
                     # stored: nothing can renew this connection now. Said so
                     # on the connection, so the user is asked to reconnect.
@@ -1280,7 +1280,7 @@ class ForgeApp:
             try:
                 disabled[secret_name_for(caller.tenant_id, slot)] = self._slots.disable(
                     caller.tenant_id, slot)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 log.error("user slot versions not disabled tenant=%s secret=%s (%s)",
                           caller.tenant_id, secret_name_for(caller.tenant_id, slot),
                           type(exc).__name__)
@@ -1374,7 +1374,7 @@ class ForgeApp:
         if isinstance(expires, datetime) and expires > self._now():
             try:
                 current = self._slots.read_access(caller.tenant_id, suffix)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 log.warning("disconnect could not read the access token tenant=%s (%s); "
                             "refreshing to revoke", caller.tenant_id, type(exc).__name__)
                 current = ""
@@ -1392,7 +1392,7 @@ class ForgeApp:
                 # the authorisation, so revoke with the token it mints.
         try:
             refresh_token = self._slots.read_refresh(caller.tenant_id, refresh_suffix(suffix))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             reason = str(exc) if isinstance(exc, SlotUnreadable) else type(exc).__name__
             return False, f"not revoked at GitHub: the refresh token could not be read " \
                           f"({reason}); {manual}"
@@ -1503,7 +1503,7 @@ class ForgeApp:
                 version = self._slots.add_version(caller.tenant_id, suffix, value)
             except ApiError:
                 raise
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 log.error("owner token not stored tenant=%s user_hash=%s owner=%s (%s)",
                           caller.tenant_id, user_hash(caller.key), owner_key,
                           type(exc).__name__)
@@ -1522,7 +1522,7 @@ class ForgeApp:
                       type(exc).__name__)
             try:
                 self._slots.disable(caller.tenant_id, suffix)
-            except Exception as undo:
+            except Exception as undo:  # noqa: BLE001
                 log.error("owner slot versions not disabled tenant=%s secret=%s (%s)",
                           caller.tenant_id, secret_name_for(caller.tenant_id, suffix),
                           type(undo).__name__)
@@ -1647,7 +1647,7 @@ class ForgeApp:
         name = secret_name_for(caller.tenant_id, suffix)
         try:
             disabled = self._slots.disable(caller.tenant_id, suffix)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.error("owner slot versions not disabled tenant=%s secret=%s (%s)",
                       caller.tenant_id, name, type(exc).__name__)
             raise UpstreamUnavailable(

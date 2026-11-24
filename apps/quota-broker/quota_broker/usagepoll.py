@@ -113,7 +113,7 @@ class UsagePoller:
                 break
             try:
                 token = self._store.access(account.secret)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 # Never log the secret's NAME alongside a failure reason that
                 # might carry payload detail; the account id is enough to act on.
                 self._log.warning(

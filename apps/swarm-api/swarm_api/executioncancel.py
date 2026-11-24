@@ -99,7 +99,7 @@ class PubSubExecutionCanceller:
             )
             future.result(timeout=TIMEOUT_SECONDS)
             outcome = "requested"
-        except Exception as exc:  # never raises: the reconciler is the backstop
+        except Exception as exc:  # never raises: the reconciler is the backstop  # noqa: BLE001
             outcome = f"error:{type(exc).__name__}"
         log.log(
             logging.INFO if outcome == "requested" else logging.WARNING,

@@ -764,7 +764,7 @@ class Gate:
     def register(self) -> None:
         try:
             self._client.register()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             raise self._translate(exc) from None
         self.registered = True
 
@@ -776,13 +776,13 @@ class Gate:
         try:
             with self._lock:
                 return dict(self._client.call(op, dict(args)) or {})
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             raise self._translate(exc) from None
 
     def close(self) -> None:
         try:
             self._client.close()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
         self.registered = False
 
@@ -847,7 +847,7 @@ def _probe_cdp(endpoint: str, timeout: float) -> bool:
         opener = build_opener(ProxyHandler({}))
         with opener.open(request, timeout=timeout) as response:  # noqa: S310 -- the dispatcher's loopback
             body = json.loads(response.read(64 * 1024).decode("utf-8"))
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
     return isinstance(body, dict) and isinstance(body.get("webSocketDebuggerUrl"), str)
 
@@ -1291,7 +1291,7 @@ class HandoffPath:
                 try:
                     # Looked up per call, so the unit suite's conftest stands in.
                     answered = bool(_probe_cdp(endpoint, CDP_PROBE_SECONDS))
-                except Exception:
+                except Exception:  # noqa: BLE001
                     answered = False
                 if answered:
                     if tries > 1:
@@ -1314,7 +1314,7 @@ class HandoffPath:
             note({"phase": "live_browser", "live_path": self._cdp_missing, "reason": self._cdp_missing,
                   "message": f"live browser unavailable: {self._cdp_missing}; the agent was not "
                              "started, and the attempt is retried"})
-        except Exception:  # a note must never stop the attempt
+        except Exception:  # a note must never stop the attempt  # noqa: BLE001, S110
             pass
 
     def _view_unavailable(self, note: Callable[[dict[str, Any]], Any] | None, code: str) -> None:
@@ -1326,7 +1326,7 @@ class HandoffPath:
             note({"phase": "live_view", "live_path": "view_unavailable", "reason": code,
                   "message": f"live view unavailable: {code}{lookup}; the agent's browser runs, "
                              "and the view is retried"})
-        except Exception:  # a note must never stop the attempt
+        except Exception:  # a note must never stop the attempt  # noqa: BLE001, S110
             pass
 
     def _open_first_tunnel(self, gate: Gate, key: Any, api: Any) -> None:
@@ -1382,7 +1382,7 @@ class HandoffPath:
         def probe() -> None:
             try:
                 resolve(host, port)
-            except Exception as exc:  # anything but a gaierror is not a lookup failure
+            except Exception as exc:  # anything but a gaierror is not a lookup failure  # noqa: BLE001
                 found.append(resolver_class(exc))
             else:
                 found.append(None)
@@ -1417,7 +1417,7 @@ class HandoffPath:
         try:
             headers = sign_headers(key, LIVE_SESSION_PURPOSE, "POST", path, body, now=self._wall())
             _, payload = api.call("POST", path, body=body, headers=headers)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             raise NoTunnelTicket(str(getattr(exc, "code", None) or type(exc).__name__)) from None
         ticket = payload.get("ticket") if isinstance(payload, dict) else None
         session_id = payload.get("session_id") if isinstance(payload, dict) else None
@@ -1437,7 +1437,7 @@ class HandoffPath:
         try:
             note({"phase": "browser_egress", "live_path": "egress_failed_closed",
                   "reason": f"browser egress {cause}: pages do not load, and there is no direct fallback"})
-        except Exception:  # a note must never stop the attempt
+        except Exception:  # a note must never stop the attempt  # noqa: BLE001, S110
             pass
 
     def give_cf_access(self, items: list[dict[str, Any]]) -> str:
@@ -1472,7 +1472,7 @@ class HandoffPath:
             key = getattr(self._children, "_key", None)
             api = getattr(self._children, "_api", None)
             fails = self.qa.start(gate, key, api, identity, unavailable)
-        except Exception as exc:  # the QA identity never crashes the attempt
+        except Exception as exc:  # the QA identity never crashes the attempt  # noqa: BLE001
             self.log.warning("qa identity start failed", error=type(exc).__name__)
             return None
         self._qa_failed(self._note, self.qa.cause if self.qa.state == "failed" else None)
@@ -1485,7 +1485,7 @@ class HandoffPath:
         try:
             note({"phase": "qa_identity", "live_path": "qa_identity_signed_out",
                   "reason": f"qa identity {cause}: the browser is signed out of the console"})
-        except Exception:  # a note must never stop the attempt
+        except Exception:  # a note must never stop the attempt  # noqa: BLE001, S110
             pass
 
     def _qa_target_channel(self) -> tuple[Any, Any, Any, str | None]:
@@ -1630,7 +1630,7 @@ class HandoffPath:
         if note is not None:
             try:
                 note({"phase": "live_session", "live_path": code, "reason": why})
-            except Exception:  # a note must never stop the attempt
+            except Exception:  # a note must never stop the attempt  # noqa: BLE001, S110
                 pass
 
     def spool(self, work: Path) -> Path:
@@ -1677,7 +1677,7 @@ class HandoffPath:
             return
         try:
             self.browser.capture(self.spool(work))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning("could not keep the browser for the resumed attempt", error=type(exc).__name__)
 
     def _restore_browser(self, root: Path) -> Restored | None:
@@ -1686,7 +1686,7 @@ class HandoffPath:
             return None
         try:
             return self.browser.restore(root)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning("could not put the earlier attempt's browser back", error=type(exc).__name__)
             return None
 
@@ -1767,7 +1767,7 @@ class HandoffPath:
             if summary is not None:
                 self.log.info("resumed attempt told of earlier hand-offs",
                               handoffs=sum(1 for e in entries if e["attempt_id"] != self.cfg.attempt_id))
-        except Exception as exc:  # never costs the attempt
+        except Exception as exc:  # never costs the attempt  # noqa: BLE001
             self.log.warning("could not prepare the resume summary", error=type(exc).__name__)
 
     def _record(self, root: Path, request_id: str, fields: Mapping[str, Any]) -> None:
@@ -1790,7 +1790,7 @@ class HandoffPath:
                 {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in fields.items()}
             )
             _write_atomic(root / HISTORY_NAME, entries[-MAX_HISTORY:])
-        except Exception as exc:  # the ledger never costs the attempt
+        except Exception as exc:  # the ledger never costs the attempt  # noqa: BLE001
             self.log.warning("could not record the hand-off in the ledger", error=type(exc).__name__)
 
     # -- the poll --------------------------------------------------------------
@@ -1809,11 +1809,11 @@ class HandoffPath:
         self._answer_switches(root)
         try:
             self._keep_egress(root)
-        except Exception as exc:  # egress upkeep never crashes the attempt
+        except Exception as exc:  # egress upkeep never crashes the attempt  # noqa: BLE001
             self.log.warning("browser egress upkeep failed", error=type(exc).__name__)
         try:
             self._keep_qa_identity(root)
-        except Exception as exc:  # nor does the QA identity's
+        except Exception as exc:  # nor does the QA identity's  # noqa: BLE001
             self.log.warning("qa identity upkeep failed", error=type(exc).__name__)
         # VQ-4: a running sign-in followed, `swarm-handoff sign-in` answered. Never raises.
         self.qa_target.keep(*self._qa_target_channel()[:3], root)
@@ -1829,7 +1829,7 @@ class HandoffPath:
                 self._raise_for_gate(root, self._note_last_episode(root))
             else:
                 self._poll_startup(root)
-        except Exception as exc:  # the hand-off never crashes the attempt
+        except Exception as exc:  # the hand-off never crashes the attempt  # noqa: BLE001
             self.log.warning("hand-off poll failed", error=type(exc).__name__)
         return None
 
@@ -1972,7 +1972,7 @@ class HandoffPath:
             fields["origin"] = GATE_ORIGIN
         try:
             _, payload = self._route(f"/v1/tasks/{quote(self.cfg.task_id, safe='')}/handoff", fields)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             code = str(getattr(exc, "code", None) or type(exc).__name__)
             self._resume_quietly()
             return self._refusal(root, request_id, code, "swarm-api did not record the request")
@@ -2158,7 +2158,7 @@ class HandoffPath:
                 continue
             try:
                 settled = self._progress(step, at)
-            except Exception as exc:  # a progress mark never costs the attempt
+            except Exception as exc:  # a progress mark never costs the attempt  # noqa: BLE001
                 self.log.warning("could not record a start-up step", step=step, error=type(exc).__name__)
                 return
             if not settled:
@@ -2185,7 +2185,7 @@ class HandoffPath:
             if document != self._browser_written:
                 _write_atomic(root / BROWSER_STATE_NAME, document)
                 self._browser_written = document
-        except Exception as exc:  # the browser's note never costs the attempt
+        except Exception as exc:  # the browser's note never costs the attempt  # noqa: BLE001
             self.log.warning("could not note the live browser's state", error=type(exc).__name__)
 
     def drain_browser_notes(self) -> list[dict[str, Any]]:
@@ -2301,7 +2301,7 @@ class HandoffPath:
             for answer in (self._answer_devices, self._answer_themes):
                 try:
                     answer(root)
-                except Exception as exc:  # a switch never crashes the attempt
+                except Exception as exc:  # a switch never crashes the attempt  # noqa: BLE001
                     self.log.warning("hand-off switch failed", error=type(exc).__name__)
 
     def _answer_devices(self, root: Path) -> None:
@@ -2460,7 +2460,7 @@ class HandoffPath:
         try:
             _, payload = self._route(
                 f"/v1/tasks/{quote(self.cfg.task_id, safe='')}/handoff/resolve", fields)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning("the hand-off's expiry was not resolved at swarm-api",
                              error=str(getattr(exc, "code", None) or type(exc).__name__))
         else:
@@ -2497,7 +2497,7 @@ class HandoffPath:
                         f"/v1/tasks/{quote(self.cfg.task_id, safe='')}/handoff/resolve",
                         {"request_id": active["request_id"], "outcome": outcome},
                     )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 # swarm-api clears a stale wait itself when the task moves on;
                 # the park or the cancel below still happens.
                 self.log.warning("the hand-off was not resolved at swarm-api",

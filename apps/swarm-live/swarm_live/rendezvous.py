@@ -660,7 +660,7 @@ class _Outbox:
                     await self.endpoint.send_bytes(payload)
                 else:
                     await self.endpoint.send_text(payload)
-            except Exception:  # noqa: BLE001 - a dead socket ends at its reader
+            except Exception:  # noqa: BLE001, S110 - a dead socket ends at its reader
                 pass
             finally:
                 self._queue.task_done()
@@ -689,7 +689,7 @@ class _Outbox:
         await asyncio.gather(self._pump, return_exceptions=True)
         try:
             await self.endpoint.close(code, reason)
-        except Exception:  # noqa: BLE001 - already gone
+        except Exception:  # noqa: BLE001, S110 - already gone
             pass
 
 

@@ -1396,7 +1396,7 @@ def on_task_finished(ctx: Any, task_id: str, *, tenant_id: str | None = None) ->
             continue
         try:
             _drive_doc(ctx, tenant, doc, now, report)
-        except Exception:  # noqa: BLE001 -- a doorbell: the sweep drives it again
+        except Exception:  # a doorbell: the sweep drives it again
             log.exception("fix loop %s: drive failed on the end of %s", loop_id, task_id)
             report.fail_drive(loop_id, sys.exc_info()[1] or Exception())
     return report
@@ -1451,7 +1451,7 @@ def sweep_tenant(ctx: Any, tenant_id: str, *, limit: int = SWEEP_LIMIT) -> LoopR
             continue
         try:
             _drive_doc(ctx, tenant, doc, now, report)
-        except Exception:  # noqa: BLE001 -- the next tick sweeps it again
+        except Exception:  # the next tick sweeps it again
             log.exception("fix loop %s: sweep failed", snap.id)
             report.fail_drive(snap.id, sys.exc_info()[1] or Exception())
     return report
@@ -1580,7 +1580,7 @@ def add_rounds(ctx: Any, *, tenant_id: str, workflow_id: str, by: str, rounds: i
     if doc is not None and tenant is not None:
         try:
             _drive_doc(ctx, tenant, doc, now, report)
-        except Exception as exc:  # noqa: BLE001 -- the round is recorded; the sweep drives it again
+        except Exception as exc:  # the round is recorded; the sweep drives it again
             log.exception("fix loop %s: drive failed after add-round", loop["id"])
             report.fail_drive(loop["id"], exc)
     after = _doc(db, tenant_id, loop["id"]) or {}

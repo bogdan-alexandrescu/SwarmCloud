@@ -481,7 +481,7 @@ class BrowserLogins:
             raise NotFound(f"no browser login named {name!r}")
         try:
             destroyed = self._vault.destroy(login_secret_id(tenant_id, name))
-        except Exception:
+        except Exception:  # noqa: BLE001
             log.warning("browser login revoke could not reach Secret Manager", exc_info=False)
             raise BrowserLoginVaultUnavailable(
                 "the login's secret could not be destroyed, so it was not revoked; "
@@ -748,7 +748,7 @@ class CarryReaper:
             if state not in _TERMINAL:
                 return False
             return bool(self._reap(tenant_id, workflow_id, state) is not None)
-        except Exception:
+        except Exception:  # noqa: BLE001
             log.warning("browser carry for task %s was not reaped on its finish; the sweep "
                         "and the TTL remain", task_id, exc_info=False)
             return False
@@ -783,7 +783,7 @@ class CarryReaper:
                 report.workflows += 1
                 try:
                     destroyed = self._reap(tenant_id, workflow_id, workflow.get("state"))
-                except Exception:
+                except Exception:  # noqa: BLE001
                     log.warning("browser carry for workflow %s could not be destroyed",
                                 workflow_id, exc_info=False)
                     report.failed.append(workflow_id)

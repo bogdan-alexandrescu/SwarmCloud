@@ -122,7 +122,7 @@ def _record_failure(
 
     try:
         return runs.patch(run.tenant_id, run.id, _patch)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         log.warning("issue run %s: write-back failure not recorded (%s)", run.id, type(exc).__name__)
         return run
 
@@ -131,7 +131,7 @@ def sync_issue(ctx: Any, run: IssueRun) -> IssueRun:
     """The issue's plan and status comments, brought up to `run`. Never raises."""
     try:
         return _sync_issue(ctx, run)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         # `_sync_issue` records its own failures; this is the net under it.
         log.warning("issue run %s: write-back skipped (%s)", run.id, type(exc).__name__)
         return run
@@ -214,7 +214,7 @@ def _sync_issue(ctx: Any, run: IssueRun) -> IssueRun:
             changes["issue_closed"] = True
             log.info("issue run %s tenant=%s: closed %s, already on main",
                      run.id, run.tenant_id, run.issue.short)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         token = ""
         return _record_failure(runs, run, exc, attempt=attempt, now=now, changes=changes)
 
@@ -263,7 +263,7 @@ def _delete_losers(
         if getattr(stored, name) != comment_id:
             try:
                 writer.delete_comment(run.issue, comment_id, token)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 log.warning(
                     "issue run %s: duplicate comment %s not deleted (%s)",
                     run.id, comment_id, type(exc).__name__,
@@ -328,7 +328,7 @@ def sync_pull_request(
             "merged": pull.merged,
             "keyword_written": keyword_mark(closes),
         }
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         token = ""
         return _record_failure(
             runs, run, exc, attempt=f"pull:{int(number)}", now=ctx.now(),
@@ -343,7 +343,7 @@ def sync_pull_request(
         stored = runs.patch(run.tenant_id, run.id, lambda current: {
             "pull_request": {**record, **(extra(current) if extra else {})},
         })
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         log.warning("issue run %s: pull request not recorded (%s)", run.id, type(exc).__name__)
         return run
     return sync_issue(ctx, stored)

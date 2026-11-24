@@ -235,7 +235,7 @@ def read_organisation(
         return found
     try:
         profiled = organisation_from_payload(profile(access_token))
-    except Exception:
+    except Exception:  # noqa: BLE001
         # The exception's text could quote a response; only absence is kept.
         return found
     if profiled is None:

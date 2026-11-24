@@ -675,7 +675,7 @@ def _usage_chunk(ctx: AppContext, tenant_id: str, chunk: list[str]) -> dict[str,
                 continue
             by_task[doc["task_id"]].append(attempt_from_dict(doc))  # type: ignore[union-attr]
         return by_task
-    except Exception as exc:  # the tasks were read; only their attempts were not
+    except Exception as exc:  # the tasks were read; only their attempts were not  # noqa: BLE001
         log.warning("digest attempt read failed: %s", type(exc).__name__)
         return {t: None for t in chunk}
 
@@ -786,7 +786,7 @@ def list_digests(
         def head(task: Task) -> datetime | None:
             try:
                 return entered_at(task.state, ctx.store.newest_events(task, limit=DIGEST_EVENT_PAGE))
-            except Exception as exc:  # one task's events unread: its lower bound stays
+            except Exception as exc:  # one task's events unread: its lower bound stays  # noqa: BLE001
                 log.warning("digest event read failed: %s", type(exc).__name__)
                 return None
 
