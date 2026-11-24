@@ -135,7 +135,7 @@ export function whyOf(
       </>
     )
   }
-  if (a.state === 'PAUSED') return <><b>Paused</b>{a.reason ? `: ${a.reason}` : ''} &middot; its owner resumes it</>
+  if (a.state === 'PAUSED') return <><span><b>Paused</b>{a.reason ? `: ${a.reason}` : ''}.</span> <span>Its owner resumes it</span></>
   if (a.state === 'DRAINING') {
     return (
       <>
