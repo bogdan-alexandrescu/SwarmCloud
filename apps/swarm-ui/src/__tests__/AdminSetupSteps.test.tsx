@@ -148,6 +148,9 @@ describe('Admin › Setup step panels', () => {
     const open = screen.getByRole('region', { name: 'Send to your team' })
     expect(visible(open)).not.toContain('unlocked when verify passes')
     expect(open.querySelector('figure.c-code')).not.toBeNull()
+    // MUTATION: name /sc:submit, a plugin command that does not exist (K3 of the proof-install runbook) -> fails.
+    expect(visible(open)).not.toContain('/sc:submit')
+    expect(visible(open)).toContain('/sc run --issue owner/repo#N')
   })
 
   it('a failed verify keeps Send to your team locked and shows the failed check', async () => {
