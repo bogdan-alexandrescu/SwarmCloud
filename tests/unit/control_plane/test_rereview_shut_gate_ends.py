@@ -46,7 +46,7 @@ CODE = "claude-code"
 POLICY = {"policy": "browser_if_ui", "browser": BROWSER, "code": CODE}
 GATE = {"task_id": "task_review", "verdict_in": ["NOT_YET"]}
 VERDICT_FILE = "review.json"
-REVIEW_URI = (f"gs://swarm-artifacts/tenants/eng/tasks/task_review/attempts/att_r1/"
+REVIEW_URI = (f"gs://swarm-artifacts-example-project/tenants/eng/tasks/task_review/attempts/att_r1/"
               f"artifacts/{VERDICT_FILE}")
 
 
