@@ -8,6 +8,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
+import { helpIn, shownIn } from './proseruns'
 
 import type { Result } from '../fetch'
 import type { PlatformTime } from '../platformTimeApi'
@@ -85,7 +86,9 @@ describe('admin-shell-15: the page says what the Run’s total is made of', () =
     const total = PER_SCOPE * 2 + over
     await waitFor(() => expect(runButtons()[0]!.textContent).toBe(`Run the count · ~${total} reads`))
     // MUTATION: keep "A snapshot, read by the same Run." alone, and ~538 under Over time never meets ~562 on the button.
-    expect(note()!.textContent).toBe(`A snapshot, read by the same Run: 2 × ${PER_SCOPE} reads, which with Over time’s ~${over} make its ~${total}.`)
+    expect(shownIn(note())).toBe('A snapshot, read by the same Run')
+    // Issue 81: what the Run adds up to is behind the note's (i), word for word.
+    expect(helpIn(note())).toBe(`A snapshot, read by the same Run: 2 × ${PER_SCOPE} reads, which with Over time’s ~${over} make its ~${total}.`)
   })
 
   it('while nobody can say who is asking, the parts are an admin’s', async () => {
@@ -95,7 +98,9 @@ describe('admin-shell-15: the page says what the Run’s total is made of', () =
     const total = PER_SCOPE * 2 + over
     await waitFor(() => expect(runButtons()[0]!.textContent).toBe(`Run the count · ${PER_SCOPE}–~${total} reads`))
     // MUTATION: drop "an admin’s", and a member reads the ~${total} as their own.
-    expect(note()!.textContent).toBe(`A snapshot, read by the same Run: 2 × ${PER_SCOPE} reads, which with Over time’s ~${over} make an admin’s ~${total}.`)
+    expect(shownIn(note())).toBe('A snapshot, read by the same Run')
+    // Issue 81: what the Run adds up to is behind the note's (i), word for word.
+    expect(helpIn(note())).toBe(`A snapshot, read by the same Run: 2 × ${PER_SCOPE} reads, which with Over time’s ~${over} make an admin’s ~${total}.`)
   })
 
   it('while the roster is not known, Over time’s part is per workspace, as the button says', async () => {
@@ -103,7 +108,9 @@ describe('admin-shell-15: the page says what the Run’s total is made of', () =
     render(<PlatformCountsScreen />)
     const per = readEstimate(spanDays('week', Date.now(), viewerZone()), null).perWorkspace
     await waitFor(() => expect(runButtons()[0]!.textContent).toBe(`Run the count · ${PER_SCOPE * 2} reads + ~${per} a workspace`))
-    expect(note()!.textContent).toBe(`A snapshot, read by the same Run: 2 × ${PER_SCOPE} of its reads, the rest Over time’s ~${per} a workspace.`)
+    expect(shownIn(note())).toBe('A snapshot, read by the same Run')
+    // Issue 81: what the Run adds up to is behind the note's (i), word for word.
+    expect(helpIn(note())).toBe(`A snapshot, read by the same Run: 2 × ${PER_SCOPE} of its reads, the rest Over time’s ~${per} a workspace.`)
   })
 
   it('a non-admin’s Run is the snapshot alone, so the note adds nothing up', async () => {

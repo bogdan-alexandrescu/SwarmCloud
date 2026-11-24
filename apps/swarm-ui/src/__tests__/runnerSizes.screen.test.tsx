@@ -26,6 +26,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 import { serve, visible } from './repofixture'
+import { helpIn } from './proseruns'
 
 const WAIT = { timeout: 4000 }
 
@@ -317,7 +318,7 @@ describe('editing a class', () => {
     )
     const standard = card('standard')!
     expect(tipOf(standard, 'About Workspace')).toBe('A slice of memory: shown, not edited.')
-    expect(tipOf(standard, 'About Cloud Run profiles')).toBe('Cloud Run fixes resources on the Job and bills its limit, so these keep the code default.')
+    expect(tipOf(standard, 'About Cloud Run profiles')).toMatch(/^These Cloud Run profiles do not follow this size: .+\. Cloud Run fixes resources on the Job and bills its limit, so these keep the code default\.$/)
     expect(tipOf(page, 'About Reason')).toBe('Every version records who, when and why.')
     const split = document.querySelector<HTMLElement>('.rs-split')!
     expect(tipOf(split, 'About Live browser split')).toBe('The two requests and memories add up to the class’s, so the live pod’s units and bill are the class’s.')
@@ -330,7 +331,8 @@ describe('editing a class', () => {
     expect(visible(card('standard')!.querySelector('.rs-disk'))).toContain('4 GiB')
     // MUTATION: drop the fixed list (owner Q3).
     const fixed = card('standard')!.querySelector<HTMLElement>('.rs-fixed')
-    expect(visible(fixed)).toContain('do not follow this size')
+    // Issue 81: the sentence is behind the (i); the names stay on the surface.
+    expect(helpIn(fixed)).toContain('do not follow this size')
     expect(visible(fixed)).toContain('claude-code-review')
   })
 })

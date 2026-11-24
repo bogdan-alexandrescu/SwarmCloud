@@ -2529,7 +2529,7 @@ function PeopleLead({ rows, joins, joinsError }: { rows: readonly PersonRow[]; j
       tone="warn"
       kicker="Needs an admin"
       title={`${count(items.length + joins.length, 'request is', 'requests are')} waiting for an admin`}
-      body={`The oldest: ${oldest}.`}
+      body={`oldest · ${oldest}`}
       action={
         <Button kind="primary" onClick={open}>
           Review the oldest
