@@ -91,6 +91,11 @@ class FakeChild:
             await asyncio.sleep(0)
             self.dead = True
             raise claudeturn.ChildGone("exited", {"input_tokens": 5})
+        elif step == "draw-late-error":
+            # The same, but the child ends the turn with an error, not a death.
+            self.late = asyncio.create_task(self.handler("draw_details_input", _details_card()))
+            await asyncio.sleep(0)
+            return claudeturn.ChildOutcome(is_error=True, result_text="error_max_turns", usage={"input_tokens": 5})
         elif step == "used-die":
             self.dead = True
             raise claudeturn.ChildGone("exited", {"input_tokens": 5, "output_tokens": 1})
@@ -115,6 +120,7 @@ class Launcher:
         self.children = shared.children if shared else []
         self.cold = shared.cold if shared else []
         self.no_start = False
+        self.cold_hangs = False
 
     def with_model(self, model: str) -> "Launcher":
         return self if model == self.model else Launcher(model, self)
@@ -129,6 +135,8 @@ class Launcher:
     async def run(self, *, prompt, system, token, tools, handler, known, done):  # noqa: ANN001
         self.cold.append(prompt)
         self.order.append("cold")
+        if self.cold_hangs:
+            await asyncio.Event().wait()
         await handler(prompts.SPEAK_TOOL, {"summary": "Cold answer.", "brief": None, "point_at": None})
         return claudeturn.ChildOutcome(exit_code=0, stopped=True, usage={"input_tokens": 100, "output_tokens": 7})
 
@@ -148,6 +156,13 @@ class Warm(World):
         self._n = 0
         #: Called once, at the turn's next call to swarm-api.
         self.on_api = None
+        #: Seconds a card's write takes at swarm-api.
+        self.card_seconds = 0.0
+
+    async def handle(self, request: httpx.Request) -> httpx.Response:  # type: ignore[override]
+        if self.card_seconds and request.url.path.endswith("/cards"):
+            await asyncio.sleep(self.card_seconds)
+        return super().handle(request)
 
     def another(self) -> SessionGrant:
         self.grants.append(_grant())
@@ -466,6 +481,7 @@ def test_a_child_that_dies_after_drawing_is_not_run_again(world):
 
 def test_a_write_still_running_when_the_child_dies_is_the_turns_and_is_not_run_again(world):
     world.launcher.script = ["speak", "draw-late-die"]
+    world.card_seconds = 0.05
 
     async def scenario(planner):  # noqa: ANN001, ANN202
         await _ask(planner, world)
@@ -475,6 +491,47 @@ def test_a_write_still_running_when_the_child_dies_is_the_turns_and_is_not_run_a
 
     _run(world, scenario)
     assert world.launcher.cold == [] and len(world.cards) == 1
+
+
+def test_a_write_still_running_when_the_child_ends_in_error_is_the_turns_and_is_not_run_again(world):
+    world.launcher.script = ["speak", "draw-late-error"]
+    world.card_seconds = 0.05
+
+    async def scenario(planner):  # noqa: ANN001, ANN202
+        await _ask(planner, world)
+        second = await _ask(planner, world)
+        # MUTATION: decide before the write lands and the person gets the card twice.
+        assert second.error is not None and len(second.cards) == 1
+
+    _run(world, scenario)
+    assert world.launcher.cold == [] and len(world.cards) == 1
+
+
+def test_the_failed_attempts_tokens_are_charged_when_the_cold_lease_is_refused(world):
+    world.launcher.script = ["speak", "used-die"]
+
+    async def scenario(planner):  # noqa: ANN001, ANN202
+        await _ask(planner, world)
+        world.refuse = "pool_full"
+        return await _ask(planner, world)
+
+    second = _run(world, scenario)
+    assert second.spoken == pl.SAY_POOL_FULL
+    # MUTATION: add it only after the cold run returns and a refused lease charges nothing.
+    assert (second.usage["input_tokens"], second.usage["output_tokens"]) == (5, 1)
+
+
+def test_the_failed_attempts_tokens_are_charged_when_the_cold_run_times_out(world):
+    world.launcher.script = ["speak", "used-die"]
+
+    async def scenario(planner):  # noqa: ANN001, ANN202
+        await _ask(planner, world)
+        world.launcher.cold_hangs = True
+        return await _ask(planner, world)
+
+    second = _run(world, scenario, turn_seconds=0.3)
+    assert second.error == pl.TIMED_OUT
+    assert (second.usage["input_tokens"], second.usage["output_tokens"]) == (5, 1)
 
 
 def test_the_failed_attempts_tokens_are_charged_with_the_turns(world):

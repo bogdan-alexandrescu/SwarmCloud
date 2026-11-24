@@ -632,11 +632,14 @@ class Planner:
                 for noted in (result.reads, result.read_targets, result.refused, result.drawn,
                               result.frames_dropped):
                     noted.clear()
-            await self._cold(api, result, tools, kinds, transcript, person=person, claude=claude,
-                             request=request, brief=brief, left=left)
-            for name, value in spare.items():
-                # The failed attempt's tokens were used too: the ledger counts them.
-                result.usage[name] = result.usage.get(name, 0) + value
+            try:
+                await self._cold(api, result, tools, kinds, transcript, person=person, claude=claude,
+                                 request=request, brief=brief, left=left)
+            finally:
+                # The failed attempt's tokens were used too, whether the cold
+                # run returned, was refused its lease or was cancelled.
+                for name, value in spare.items():
+                    result.usage[name] = result.usage.get(name, 0) + value
             return result
         except PoolFull as exc:
             if left is not None:
