@@ -342,3 +342,11 @@ ol.sc-pobj { padding-left: 18px; }
   .sht-dash { cursor: auto; border-bottom: 0; }
   .sht-why { position: static; width: auto; height: auto; overflow: visible; clip-path: none; white-space: normal; }
 }
+
+/* ---- the sources that propose (ScheduleSources.tsx, plans-pipeline §2.4) --
+   The gate as stored: one cell per served field, wrapping at a phone's width
+   rather than scrolling. */
+.src-gate { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 0; min-width: 0; }
+.src-gate > div { display: flex; flex-direction: column; gap: 0; min-width: 0; }
+.src-gate dd { margin: 0; overflow-wrap: anywhere; }
+.src-7d-v { display: inline-flex; align-items: center; gap: 6px; }
