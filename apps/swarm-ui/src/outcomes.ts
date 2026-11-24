@@ -26,6 +26,8 @@ import type {
   CancelCauseKey as ApiCancelCauseKey,
   CancelSplit as ApiCancelSplit,
   CostCell as ApiCostCell,
+  EndedRow as ApiEndedRow,
+  EndedRows as ApiEndedRows,
   FailureClassKey as ApiFailureClassKey,
   GroupBy as ApiGroupBy,
   GroupRow as ApiGroupRow,
@@ -37,6 +39,7 @@ import type {
   Outcomes as ApiOutcomes,
   PlatformScope as ApiPlatformScope,
   Rate as ApiRate,
+  RowOutcome as ApiRowOutcome,
   Stat as ApiStat,
   TenantScope as ApiTenantScope,
   UnreadReason as ApiUnreadReason,
@@ -113,27 +116,15 @@ export type OutcomesHead = Omit<Outcomes, 'coverage' | 'previous'> & Partial<Pic
 // ---------------------------------------------------------------------------
 
 /**
- * WHAT A FIGURE'S ROWS MAY BE, `swarm_api.outcomes.ROW_OUTCOMES` (held there
- * by the outcomes-rows test). Failed is FAILED + DEAD_LETTERED, the one
+ * WHAT A FIGURE'S ROWS MAY BE, `swarm_api.outcomes.ROW_OUTCOMES` (the generated
+ * union; contract.shapes.test.ts holds the list to the generated constants). Failed is FAILED + DEAD_LETTERED, the one
  * definition the drawing and the Reliability table use.
  */
-export type RowOutcome = 'failed' | 'cancelled' | 'succeeded'
+export type RowOutcome = ApiRowOutcome
 export const ROW_OUTCOMES: readonly RowOutcome[] = ['failed', 'cancelled', 'succeeded']
 
 /** One ended task, as the ledger placed it: by `completed_at`, in the viewer's zone. */
-export interface EndedRow {
-  id: string
-  tenant_id: string
-  state: 'SUCCEEDED' | 'FAILED' | 'DEAD_LETTERED' | 'CANCELLED'
-  completed_at: string
-  runner_profile: string | null
-  /** Lower case; '' when the task recorded no submitter. */
-  submitted_by: string
-  workflow_id: string | null
-  step_id: string | null
-  failure_class: FailureClassKey | null
-  cancel_cause: CancelCauseKey | null
-}
+export type EndedRow = ApiEndedRow
 
 /**
  * THE ROWS BEHIND ONE FIGURE, from the fold the figure was counted from, so
@@ -141,17 +132,7 @@ export interface EndedRow {
  * most `rows_max`). `at`/`end` name the bucket, or are null for the span;
  * `key` is the group row under `group`, or null for every row.
  */
-export interface EndedRows {
-  outcome: RowOutcome
-  at: string | null
-  end: string | null
-  unread_reason: UnreadReason | null
-  group: GroupBy
-  key: string | null
-  total: number
-  rows_max: number
-  rows: EndedRow[]
-}
+export type EndedRows = ApiEndedRows
 
 // ---------------------------------------------------------------------------
 // The view: every filter, as the hash carries it

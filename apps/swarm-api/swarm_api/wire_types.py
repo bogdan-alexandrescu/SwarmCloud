@@ -1242,6 +1242,47 @@ class OutcomePrevious(BaseModel):
     rate: Rate | None
 
 
+RowOutcome = _enum("RowOutcome", _outcomes.ROW_OUTCOMES,
+                   "What a figure's rows may be (`swarm_api.outcomes.ROW_OUTCOMES`). Failed is "
+                   "FAILED + DEAD_LETTERED, the one definition the drawing uses.")
+
+
+class EndedRow(BaseModel):
+    """One ended task, as the ledger placed it: by `completed_at`."""
+
+    model_config = ConfigDict(title="EndedRow")
+
+    id: str
+    tenant_id: str
+    state: Literal["SUCCEEDED", "FAILED", "DEAD_LETTERED", "CANCELLED"]
+    completed_at: str
+    runner_profile: str | None
+    submitted_by: str = Field(description="Lower case; '' when the task recorded no submitter.")
+    workflow_id: str | None
+    step_id: str | None
+    failure_class: FailureClassKey | None  # type: ignore[valid-type]
+    cancel_cause: CancelCauseKey | None  # type: ignore[valid-type]
+
+
+class EndedRows(BaseModel):
+    """THE ROWS BEHIND ONE FIGURE (`rows=`), from the fold the figure was counted
+    from, so `total` is the figure and `rows` are the tasks in it (newest end
+    first, at most `rows_max`). `at`/`end` name the bucket, or are null for the
+    span; `key` is the group row under `group`, or null for every row."""
+
+    model_config = ConfigDict(title="EndedRows")
+
+    outcome: RowOutcome  # type: ignore[valid-type]
+    at: str | None
+    end: str | None
+    unread_reason: UnreadReason | None  # type: ignore[valid-type]
+    group: GroupBy  # type: ignore[valid-type]
+    key: str | None
+    total: int
+    rows_max: int
+    rows: list[EndedRow]
+
+
 class Outcomes(BaseModel):
     """`GET /v1/outcomes`: what the work in a span ended as, bucketed by when it ended.
 
@@ -1273,7 +1314,7 @@ class Outcomes(BaseModel):
     reads: int
     cached: bool
     generated_at: str
-    ended_rows: Any = Field(None, description="The tasks behind one figure, with `rows=`.")
+    ended_rows: EndedRows | None = Field(None, description="The tasks behind one figure, with `rows=`.")
     usage: Any = Field(None, description="The agents' usage, with `usage=`.")
 
 

@@ -620,6 +620,39 @@ export interface EndSession {
   cause?: 'ended_by_person' | 'tab_closed'
 }
 
+/** One ended task, as the ledger placed it: by `completed_at`. */
+export interface EndedRow {
+  id: string
+  tenant_id: string
+  state: 'SUCCEEDED' | 'FAILED' | 'DEAD_LETTERED' | 'CANCELLED'
+  completed_at: string
+  runner_profile: string | null
+  /** Lower case; '' when the task recorded no submitter. */
+  submitted_by: string
+  workflow_id: string | null
+  step_id: string | null
+  failure_class: FailureClassKey | null
+  cancel_cause: CancelCauseKey | null
+}
+
+/**
+ * THE ROWS BEHIND ONE FIGURE (`rows=`), from the fold the figure was counted
+ * from, so `total` is the figure and `rows` are the tasks in it (newest end
+ * first, at most `rows_max`). `at`/`end` name the bucket, or are null for the
+ * span; `key` is the group row under `group`, or null for every row.
+ */
+export interface EndedRows {
+  outcome: RowOutcome
+  at: string | null
+  end: string | null
+  unread_reason: UnreadReason | null
+  group: GroupBy
+  key: string | null
+  total: number
+  rows_max: number
+  rows: EndedRow[]
+}
+
 /**
  * What the callback page posts: GitHub's `state` and `code`, or the `error`
  * GitHub sent instead of a code.
@@ -1401,7 +1434,7 @@ export interface Outcomes {
   cached: boolean
   generated_at: string
   /** The tasks behind one figure, with `rows=`. */
-  ended_rows?: unknown
+  ended_rows?: EndedRows | null
   /** The agents' usage, with `usage=`. */
   usage?: unknown
 }
@@ -1830,6 +1863,12 @@ export interface RetryTries {
 export interface RouteBody {
   route_id: string
 }
+
+/**
+ * What a figure's rows may be (`swarm_api.outcomes.ROW_OUTCOMES`). Failed is
+ * FAILED + DEAD_LETTERED, the one definition the drawing uses.
+ */
+export type RowOutcome = 'failed' | 'cancelled' | 'succeeded'
 
 export interface RunBody {
   screens?: string[] | null
