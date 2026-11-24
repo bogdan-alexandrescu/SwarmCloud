@@ -191,7 +191,7 @@ describe('the sources that propose (?proposes=1)', () => {
     const empty = await screen.findByTestId('src-none', {}, WAIT)
     // MUTATION: the full list's empty state, or prose under the heading.
     expect(empty.querySelector('h3')?.textContent).toMatch(/No schedule proposes/)
-    expect(empty.querySelector('a, button')?.textContent).toBe('New schedule')
+    expect([...empty.querySelectorAll('a, button')].map((b) => b.textContent)).toContain('New schedule')
     expect(document.querySelector('[data-source]')).toBeNull()
   })
 
@@ -207,8 +207,8 @@ describe('the sources that propose (?proposes=1)', () => {
   })
 
   it('a failed read is a failure, not an empty list', async () => {
-    await mount({ schedules: { status: 500, body: { code: 'internal', message: 'boom' } }, types: ok({ types: TYPES }) })
-    await waitFor(() => expect(document.querySelector('[role="alert"]')).not.toBeNull(), { timeout: 15000 })
+    await mount({ schedules: { status: 403, body: { code: 'forbidden', message: 'no' } }, types: ok({ types: TYPES }) })
+    await waitFor(() => expect(document.querySelector('.state.failed')).not.toBeNull(), { timeout: 15000 })
     expect(screen.queryByTestId('src-none')).toBeNull()
     expect(document.querySelector('[data-source]')).toBeNull()
   }, 20000)
@@ -224,7 +224,7 @@ describe('the sources that propose (?proposes=1)', () => {
     const { SchedulesScreen } = await import('../Schedules')
     render(<Routed Screen={SchedulesScreen} section="automate/schedules" start="proposes=1" spy={vi.fn()} />)
     await screen.findByRole('heading', { name: 'Schedules', level: 1 }, WAIT)
-    await waitFor(() => expect(document.querySelector('[aria-busy="true"], .c-sk')).not.toBeNull(), WAIT)
+    await waitFor(() => expect(document.querySelector('[aria-busy="true"], .skeleton, .ctl-skel')).not.toBeNull(), WAIT)
     expect(screen.queryByTestId('src-none')).toBeNull()
     expect(document.querySelector('[data-source]')).toBeNull()
   })

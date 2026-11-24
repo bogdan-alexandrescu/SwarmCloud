@@ -57,6 +57,7 @@ import { useNow } from './useNow'
 import { InApp } from './InApp'
 import { ALL_TENANTS_SCHEDULES, NEW_SCHEDULE, SCHEDULES_ADDRESS, scheduleAddress } from './schedulePaths'
 import { rememberScheduleNames } from './scheduleNames'
+import { ScheduleSources, SourcesSwitch, proposesOf } from './ScheduleSources'
 import './styles/schedules.css'
 import './styles/automate-landing.css'
 import './styles/automate-cards.css'
@@ -1061,6 +1062,7 @@ function SchedulesBody({ d, go, scopeSwitch, open }: { d: Landing; go: (to: stri
       <AnswerRow rows={rows} summary={d.summary} inbox={inbox} />
       <WaitingPanel summary={d.summary} inbox={inbox} rows={rows} go={go} />
       <div className="acd-bar-row">
+        <SourcesSwitch on={false} go={go} />
         {counts !== null && <WordFilter rows={rows} counts={counts} value={filter} onChange={setFilter} />}
         {scopeSwitch}
         <span className="acd-grow" />
@@ -1155,10 +1157,10 @@ export function SchedulesScreen({ view, go }: { view: string | null; go: (to: st
       </div>
     )
   }
-  return <ScheduleLists scope={scopeOf(view)} go={go} />
+  return <ScheduleLists scope={scopeOf(view)} proposes={proposesOf(view)} go={go} />
 }
 
-function ScheduleLists({ scope, go }: { scope: Scope; go: (to: string) => void }) {
+function ScheduleLists({ scope, proposes, go }: { scope: Scope; proposes: boolean; go: (to: string) => void }) {
   // WHICH LIST, AND WHETHER THE SWITCH IS DRAWN. Only an admin sees "Mine |
   // All tenants". A non-admin following a `?scope=all` link gets their own
   // list and no switch -- the admin read is never made for them. While the
@@ -1171,6 +1173,8 @@ function ScheduleLists({ scope, go }: { scope: Scope; go: (to: string) => void }
   const scopeSwitch = admin === true ? <ScopeSwitch scope={scope} go={go} /> : null
   if (scope === 'all' && admin === null) return <PageHead title="Schedules" />
   if (scope === 'all' && admin !== false) return <AllTenantsSchedules go={go} scopeSwitch={scopeSwitch} />
+  // `?proposes=1`: the workspace's schedules that propose (ScheduleSources.tsx).
+  if (proposes) return <ScheduleSources go={go} />
   return <ScheduleListScreen go={go} scopeSwitch={scopeSwitch} />
 }
 
