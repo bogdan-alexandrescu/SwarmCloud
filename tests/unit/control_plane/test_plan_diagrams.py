@@ -387,6 +387,11 @@ def test_every_refused_token_is_refused_naming_its_line(line):
     ("state", "stateDiagram-v2\n  classDef hot fill:red", "line 2"),
     ("state", "stateDiagram-v2\n  state A { class B hot\n }", "line 2"),
     ("data", "erDiagram\n  style RUN fill:red", "line 2"),
+    # These two grammars need no separator between statements.
+    ("state", "stateDiagram-v2\n  A --> B style B fill:red", "line 2"),
+    ("state", "stateDiagram-v2\n  A --> B classDef\n  hot fill:red", "line 2"),
+    ("data", "erDiagram\n  A ||--o{ B : has class A hot", "line 2"),
+    ("data", "erDiagram\n  A ||--o{ B : \"has\" style A fill:red", "line 2"),
     ("flow", "%% a note\n%%{init: {}}%%\nflowchart LR\n A --> B", "line 2"),
     ("flow", "flowchart LR\r  A --> B\r  click A go", "line 3"),
     ("flow", "flowchart LR\n  A --> B click A go", "line 2"),
@@ -454,6 +459,8 @@ def test_the_node_and_edge_caps_overestimate_rather_than_under():
               "  state CHECKING {\n    [*] --> Green\n  }"),
     ("data", "erDiagram\n  RUN ||--o{ REVISION : has\n  RUN {\n    string run_id PK\n"
              "    string plan_digest\n  }"),
+    ("state", "stateDiagram-v2\n  A --> B: the class of B is kept\n  note right of B: one style only"),
+    ("data", 'erDiagram\n  A ||--o{ B : "has a class of"'),
     ("schematic", "flowchart LR\n  subgraph page\n    A <--> B\n  end"),
 ])
 def test_an_ordinary_diagram_passes(kind, source):
