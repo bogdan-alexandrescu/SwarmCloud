@@ -154,7 +154,8 @@ describe('config-30: QA flows per step drawn once', () => {
     expect(qa.querySelector('[data-qa-flows-per-step]')).toBeNull()
     expect(visible(qa)).not.toContain('(the default)')
     expect(visible(qa).match(/QA flows per step/g)?.length).toBe(1)
-    expect(visible(qa).match(/default is 15/g)?.length).toBe(1)
+    // Issue 81: one fact list, `A whole number, 1-30 · default 15`, not two sentences.
+    expect(visible(qa).match(/default 15/g)?.length).toBe(1)
   })
 
   it('a reader still sees the figure with its default', async () => {

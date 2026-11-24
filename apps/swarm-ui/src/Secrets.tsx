@@ -875,7 +875,8 @@ function FirstSecret({ tenant, keys }: { tenant: string; keys: readonly SecretsR
   return (
     <>
       <p className="pk-lead">
-        <b>{keys.length === 0 ? `No secret is stored for ${where} yet.` : `No secret for agents in ${where} yet.`}</b>
+        {/* ISSUE 81: with "Usually first:" the line stays under nine words, even for "this workspace". */}
+        <b>{keys.length === 0 ? `No secret stored for ${where}.` : `No agent secret in ${where}.`}</b>
         {keys.length > 0 && <> <AboutTip label="Keys set" tip={`${keysAre(keys.length).replace(/^./, (c) => c.toUpperCase())} set below, under Keys for agents and MCP.`} /></>} Usually first:
       </p>
       <ul className="sec-first">

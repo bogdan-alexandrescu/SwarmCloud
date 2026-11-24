@@ -25,6 +25,7 @@
 // the `td.is-num, td.n { text-align: left }` rule -- V011 fails; unwrap
 // `.cap-open` -- V012 fails; drop `pollMs` from RuntimesScreen -- V092 fails.
 
+import { helpIn } from './proseruns'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -343,13 +344,13 @@ describe('V033: the phone matrix describes what it draws, and no field is blank'
   it('drops the per-cell caption on a phone and keeps it on a desktop', () => {
     atPhone()
     render(<ProfileMatrix capacity={matrix()} />)
-    const note = document.querySelector('.cap-mx-note')!.textContent ?? ''
+    const note = helpIn(document.querySelector('.cap-mx-note'))
     expect(note, 'the caption names cells a phone does not draw').not.toMatch(/cell/i)
     expect(note).toMatch(/Open a profile/)
     cleanup()
     vi.unstubAllGlobals()
     render(<ProfileMatrix capacity={matrix()} />)
-    expect(document.querySelector('.cap-mx-note')!.textContent).toMatch(/outlined cell runs out first/)
+    expect(helpIn(document.querySelector('.cap-mx-note'))).toMatch(/outlined cell runs out first/)
   })
 
   it('says `none · disabled` for a disabled profile and an em dash for an unmeasured one', () => {

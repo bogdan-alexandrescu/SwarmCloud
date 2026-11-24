@@ -363,6 +363,12 @@ export const POLICY_TIP = ['Read means read, and SwarmCloud enforces it.', ...PO
  * headline; the short lines sit behind the (i) beside the card's title. Three
  * bulleted paragraphs at full width were the page's longest block; how each
  * rule is held stays one fold away ("How"), so no sentence leaves the page.
+ *
+ * ISSUE 81: A FOLDED BODY IS HELP COPY. Each rule's head stays on the surface;
+ * its body is behind the rule's fold, the rule's own mark, and is marked
+ * `data-help-description` as an (i)'s tip is. A closed `<details>` still holds
+ * its text in the document, so without the mark the prose sweep counted the
+ * three paragraphs (47, 30 and 42 words) as drawn on config/github.
  */
 export function AccessPolicy() {
   const phone = usePhoneTables()
@@ -376,7 +382,7 @@ export function AccessPolicy() {
                 <summary>
                   <b>{r.head}</b>
                 </summary>
-                <p>{r.body}</p>
+                <p data-help-description="">{r.body}</p>
               </details>
             </li>
           ))}
@@ -390,7 +396,7 @@ export function AccessPolicy() {
                 <b>{r.head}</b>
                 <details className="ac-rule-how">
                   <summary>How</summary>
-                  <p>{r.body}</p>
+                  <p data-help-description="">{r.body}</p>
                 </details>
               </span>
             </li>

@@ -90,3 +90,24 @@ export function longRuns(root: HTMLElement): string[] {
     .map((fact) => fact.trim())
     .filter(isLong)
 }
+
+/**
+ * The help copy inside `root` (issue 81): the whitespace-collapsed text of
+ * each `[data-help-description]` node in it -- an (i)'s tip, a rule's fold --
+ * joined by a space; '' when there is none. A test asserting a moved sentence
+ * reads it here, at its new place.
+ */
+export function helpIn(root: Element | null | undefined): string {
+  if (root === null || root === undefined) return ''
+  return [...root.querySelectorAll('[data-help-description]')]
+    .map((el) => (el.textContent ?? '').replace(/\s+/g, ' ').trim())
+    .join(' ')
+}
+
+/** The text of `root` a reader sees: `root` with its help copy taken out, whitespace collapsed. */
+export function shownIn(root: Element | null | undefined): string {
+  if (root === null || root === undefined) return ''
+  const clone = root.cloneNode(true) as Element
+  for (const el of [...clone.querySelectorAll('[data-help-description]')]) el.remove()
+  return (clone.textContent ?? '').replace(/\s+/g, ' ').trim()
+}

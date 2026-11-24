@@ -19,6 +19,7 @@
 import { Fragment, useState, type ReactNode } from 'react'
 
 import { accountName } from './accountName'
+import { InfoTip } from './InfoTip'
 import { AcctState } from './AccountState'
 import { UsageTrack, type TrackTone } from './components'
 import {
@@ -130,21 +131,25 @@ export function whyOf(
   if (a.state === 'PAUSED') return <><b>Paused</b>{a.reason ? `: ${a.reason}` : ''}. Its owner resumes it</>
   if (a.state === 'DRAINING') return <><b>Draining</b>{a.reason ? ` (${a.reason})` : ''}: it serves the agents it holds and takes no new one</>
   if (a.state !== 'AVAILABLE') return <><b>{a.state.toLowerCase().replace(/_/g, ' ')}</b>: a state this console does not recognise</>
-  if (unreadableFor(a, scope)) return <><b>Skipped here</b>: this workspace could not read its secret</>
+  // ISSUE 81: a could-not-check reason stays visible as one short line (under nine words).
+  if (unreadableFor(a, scope)) return <><b>Skipped here</b>: its secret could not be read</>
   const dup = blocksOf(a).find(isDuplicateBlock)
   if (dup !== undefined) {
     // THE REASON AND THE IDENTITY KIND THAT MATCHED (archived issue 3046): the broker
     // withholds only on the provider's organisation AND seat, and says so in
     // `matched_on`; an older broker's block, without it, reads as it did.
+    //
+    // ISSUE 81: the block is named on the surface; what matched and what the
+    // pool does about it, two sentences, sit behind its (i) word for word.
     const kind = matchedOnWords(dup)
+    const what = dup.duplicate_of
+      ? `registered on the same ${kind ?? 'organisation'} as ${names.get(dup.duplicate_of) ?? dup.duplicate_of}`
+      : (dup.reason ?? 'registered on an organisation another account holds')
+    const matched = kind !== null ? ` (matched on the provider’s ${kind})` : ''
     return (
       <>
-        <b>One subscription twice</b>:{' '}
-        {dup.duplicate_of
-          ? `registered on the same ${kind ?? 'organisation'} as ${names.get(dup.duplicate_of) ?? dup.duplicate_of}`
-          : (dup.reason ?? 'registered on an organisation another account holds')}
-        {kind !== null && ` (matched on the provider’s ${kind})`}
-        . The pool hands out only the other
+        <b>One subscription twice</b>{' '}
+        <InfoTip about="one subscription twice" tip={`${what}${matched}. The pool hands out only the other`} />
       </>
     )
   }

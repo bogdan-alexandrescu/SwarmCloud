@@ -14,6 +14,7 @@
 // in the duplicate banner, or put "available" back in the head -- a case below
 // turns red.
 
+import { helpIn, shownIn } from './proseruns'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -330,8 +331,10 @@ describe('one subscription twice', () => {
     })
     const names = new Map([['eng:home-personal', 'home-personal']])
     const { container } = render(<>{tableModule.whyOf(extra, 'eng', Date.now(), names)}</>)
-    expect(container.textContent).toBe(
-      'One subscription twice: registered on the same organisation and seat as home-personal ' +
+    // Issue 81: the block's name on the surface, the rest word for word behind its (i).
+    expect(shownIn(container)).toBe('One subscription twice')
+    expect(helpIn(container)).toBe(
+      'registered on the same organisation and seat as home-personal ' +
         '(matched on the provider’s organisation and seat). The pool hands out only the other',
     )
     // An older broker's block, with no `matched_on`, still reads as it did.
@@ -340,8 +343,9 @@ describe('one subscription twice', () => {
       blocked_by: [{ duplicate_of: 'eng:home-personal', reason: 'registered on the same organisation as eng:home-personal' }],
     })
     const { container: was } = render(<>{tableModule.whyOf(old, 'eng', Date.now(), names)}</>)
-    expect(was.textContent).toBe(
-      'One subscription twice: registered on the same organisation as home-personal. The pool hands out only the other',
+    expect(shownIn(was)).toBe('One subscription twice')
+    expect(helpIn(was)).toBe(
+      'registered on the same organisation as home-personal. The pool hands out only the other',
     )
   })
 

@@ -141,7 +141,7 @@ describe('capacity-006: `Sets it apart` names the classes and the credential for
     await shown()
     // MUTATION: drop the `model classes` distinction and scribe reads only
     // `nothing: same as the others` again; this array loses the line.
-    expect(apart('scribe')).toContain('model classes: the only runtime with the model classes quick, later')
+    expect(apart('scribe')).toContain('model classes: sole runtime with classes quick, later')
     // MUTATION: count a class shared with another runtime and viewport is
     // told apart by `deep`, which scribe offers too; this gains a line.
     expect(apart('viewport').some((l) => l.startsWith('model classes'))).toBe(false)
@@ -150,7 +150,7 @@ describe('capacity-006: `Sets it apart` names the classes and the credential for
   it('says it is the only runtime that accepts any one of its credentials', async () => {
     await shown()
     // MUTATION: drop the any-one-of distinction and this line is gone.
-    expect(apart('scribe')).toContain('credential: the only runtime that accepts any one of its credentials')
+    expect(apart('scribe')).toContain('credential: sole runtime accepting any one of its credentials')
     // MUTATION: say it of a single-secret runtime too and viewport gains it.
     expect(apart('viewport')).toEqual([])
     // The card's own nothing-mark is gone from scribe.

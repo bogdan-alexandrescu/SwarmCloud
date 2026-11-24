@@ -5,7 +5,8 @@ import { Banner, Button, Card, Dash, EmptyState, NamedMark, Tabs, TypedConfirm, 
 import { useSetupSteps } from './ConfigSetup'
 import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
 import { ReachableRepositories } from './ReachableRepositories'
-import { HEAD_UNREAD, WORKFLOW_FILES_WHY, freshness, indexCredentialWords, repoName, scheduleWords, shortSha, type RepoRecord } from './RepositoriesData'
+import { InfoTip } from './InfoTip'
+import { HEAD_UNREAD, WORKFLOW_FILES_LINE, WORKFLOW_FILES_WHY, freshness, indexCredentialWords, repoName, scheduleWords, shortSha, type RepoRecord } from './RepositoriesData'
 import { REGISTER, GT_PAGE, TestsMapped, UrConfirmIndex, UrFreshPill, UrGraphCacheSection, UrLink, UrNavButton, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
 import { RegisterRepository } from './RepositoriesRegister'
 import { RepositoryDetail } from './RepositoriesDetail'
@@ -153,12 +154,14 @@ export function chosenNotRegistered(grants: readonly AccessGrant[], registered: 
  * that file does not export): the card surface, a kicker, one sentence, the
  * next action.
  */
-function Lead({ kicker, title, actions, children }: { kicker: string; title: string; actions: ReactNode; children: ReactNode }) {
+function Lead({ kicker, title, actions, tip }: { kicker: string; title: string; actions: ReactNode; tip: string }) {
+  // ISSUE 81: the lead's sentence is behind the (i) beside its kicker, word
+  // for word; the kicker, the title and the action are the surface.
   return (
     <section className="ac-lead" aria-label="Next step">
       <Card title={title}>
         <p className="ur-small">
-          <b className="ur-mu">{kicker}</b> {children}
+          <b className="ur-mu">{kicker}</b> <InfoTip about={title} tip={tip} />
         </p>
         <div className="ur-gh-acts">{actions}</div>
       </Card>
@@ -230,9 +233,9 @@ function RepositoriesLead({
   const steps = useSetupSteps().length
   if (grants.length === 0) {
     return (
-      <Lead kicker={`Step 2 of ${steps} · next.`} title="No repository chosen yet" actions={<AddRepository go={go} more={false} />}>
-        Choose repositories from an owner on GitHub access, or type owner/repo there.
-      </Lead>
+      <Lead kicker={`Step 2 of ${steps} · next.`} title="No repository chosen yet" actions={<AddRepository go={go} more={false} />}
+        tip="Choose repositories from an owner on GitHub access, or type owner/repo there."
+      />
     )
   }
   if (missing === null) return null
@@ -243,17 +246,16 @@ function RepositoriesLead({
         kicker={one ? 'Repositories · one thing left.' : `Repositories · ${missing.length} left.`}
         title={one ? `${missing[0]!.repository} is chosen but not registered` : `${missing.length} chosen repositories are not registered`}
         actions={<RegisterButton go={go} gated={gated} to={one ? registerAddress(missing[0]!.repository) : REGISTER} />}
-      >
-        Register {one ? 'it' : 'each'} so it is indexed on a schedule and agents start from its map.
-      </Lead>
+        tip={`Register ${one ? 'it' : 'each'} so it is indexed on a schedule and agents start from its map.`}
+      />
     )
   }
   const n = grants.length
+  const chosen = n === 1 ? '1 repository chosen, and registered.' : `${n} repositories chosen, every one registered.`
   return (
-    <Lead kicker="Repositories · nothing left." title="Every chosen repository is registered" actions={<AddRepository go={go} more />}>
-      {n === 1 ? '1 repository chosen, and registered.' : `${n} repositories chosen, every one registered.`} Choose more on
-      GitHub opens GitHub access › Choose repositories.
-    </Lead>
+    <Lead kicker="Repositories · nothing left." title="Every chosen repository is registered" actions={<AddRepository go={go} more />}
+      tip={`${chosen} Choose more on GitHub opens GitHub access › Choose repositories.`}
+    />
   )
 }
 
@@ -516,7 +518,7 @@ function RepositoryList({
           switch itself is on the repository's page now, which says it again beside it. */}
       {registered !== null && registered.length > 0 && (
         <p className="ur-hint" data-note="workflow-files">
-          <b>Workflow files:</b> {WORKFLOW_FILES_WHY}
+          <b>Workflow files</b> {WORKFLOW_FILES_LINE} <InfoTip about="workflow files" tip={WORKFLOW_FILES_WHY} />
         </p>
       )}
       {removing !== null && (

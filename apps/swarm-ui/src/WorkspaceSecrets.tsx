@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react'
+import { InfoTip } from './InfoTip'
 import {
   type SecretStoreApi,
   type WorkspaceSecret,
@@ -500,10 +501,13 @@ export function GrantMatrix({ data, store, catalogue, onChange }: { data: Worksp
 
   return (
     <>
+      {/* ISSUE 81: one short line; the sentences it was are behind the (i), word for word. */}
       <p className="pk-lead">
-        Tick a box to let that runner profile, tool or platform component read the secret. A box that cannot be
-        ticked says why: the consumer reads another kind, or reads no secret yet. A <code>cf-access</code> grant
-        also names the hosts its secret may be sent to, exactly, and no other.
+        Tick a box to grant the secret.{' '}
+        <InfoTip
+          about="the grant matrix"
+          tip="Tick a box to let that runner profile, tool or platform component read the secret. A box that cannot be ticked says why: the consumer reads another kind, or reads no secret yet. A cf-access grant also names the hosts its secret may be sent to, exactly, and no other."
+        />
       </p>
       {!data.can_manage && <p className="ur-small">You can read the grants here; only someone who manages this workspace&rsquo;s secrets can change them.</p>}
       <div className="table-wrap" role="region" aria-label="Grant matrix" tabIndex={0}>
@@ -728,9 +732,13 @@ export function RotateSecret({
   return (
     <>
       <form className="pk-form" autoComplete="off" aria-label={`Rotate ${secret.name}`} onSubmit={(e) => void save(e)}>
+        {/* ISSUE 81: one short line; what happens to running attempts is behind the (i), word for word. */}
         <p className="pk-lead">
-          A new version of <code>{secret.name}</code>. Attempts that start after this read the new value; the
-          previous one stays enabled for 24 hours, for attempts already running.
+          A new version of <code>{secret.name}</code>.{' '}
+          <InfoTip
+            about="a new version"
+            tip="Attempts that start after this read the new value; the previous one stays enabled for 24 hours, for attempts already running."
+          />
         </p>
         {structured === undefined ? (
           <SecretField id={`${id}-value`} label="New value" masked input={value} onInput={recheck} />
