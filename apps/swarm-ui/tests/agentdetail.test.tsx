@@ -337,8 +337,8 @@ test('a real zero says so in words, not only in a border colour', () => {
   assert.ok(!markup.includes('no attempt yet · PARKED'), 'the heading prints the API’s uppercase state')
   // AT REST: no tooltip OPEN. The note's (i) (issue 81) keeps its tip in the
   // markup, hidden, as InfoTip does everywhere; an open one has no `hidden`.
-  const tips = markup.match(/<[^>]*role="tooltip"[^>]*>/g) ?? []
-  assert.ok(tips.every((t) => / hidden=""/.test(t)), 'this surface should be at rest')
+  const tips = markup.split('<').filter((tag) => tag.split('>')[0]!.includes('role="tooltip"'))
+  assert.ok(tips.every((tag) => tag.split('>')[0]!.includes(' hidden=""')), 'this surface should be at rest')
 })
 
 test('a failed attempt read says so in words, and carries its detail', () => {

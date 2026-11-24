@@ -807,11 +807,13 @@ function Refusal({ error, typed, tenant, onAgain, onTask }: {
   let words: ReactNode
   let more: string
   let action: ReactNode = null
+  const noIssue = n === null ? 'No such issue' : 'No issue #' + String(n)
+  const holder = tenant === null ? 'This workspace has' : 'Workspace ' + tenant + ' has'
   switch (error.code) {
     case 'not_found':
-      words = <b>{n === null ? 'No such issue' : `No issue #${n}`} visible to this workspace.</b>
+      words = <b>{noIssue} visible to this workspace.</b>
       more =
-        `${n === null ? 'No such issue' : `No issue #${n}`} that this workspace can see: not found or not visible. ` +
+        `${noIssue} that this workspace can see: not found or not visible. ` +
         'GitHub gives the same answer for an issue that does not exist and for a private repository the credential ' +
         'cannot read, so this cannot tell the two apart. Check the number, or ask an operator whether this ' +
         'workspace’s credential covers the repository.'
@@ -830,7 +832,7 @@ function Refusal({ error, typed, tenant, onAgain, onTask }: {
     case 'no_forge_credential':
       words = <b>{tenant === null ? 'This workspace has' : <>Workspace <code>{tenant}</code> has</>} no forge credential.</b>
       more =
-        `${tenant === null ? 'This workspace has' : `Workspace ${tenant} has`} no forge credential, so no issue can be read ` +
+        `${holder} no forge credential, so no issue can be read ` +
         'and no pull request opened. An operator stores it with scripts/create-secrets.sh --stdin. It is never pasted here.'
       break
     case 'read_failed':

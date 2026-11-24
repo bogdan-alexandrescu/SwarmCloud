@@ -17,7 +17,7 @@
  *
  * Every assertion names the mutation that turns it red.
  */
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { SubmitScreen } from '../Submit'
@@ -160,11 +160,8 @@ const C09 = 'It is accepted and waits, holding nothing, until every pool it need
 const ADMITS = 'Nothing runs until the scheduler admits it.'
 const ADMITS_TIP = 'Nothing runs until the scheduler admits it into every pool it needs.'
 /** An element's text with its (i)'s tip taken out: what the surface shows. */
-const shown = (el: Element | null) => {
-  const clone = el?.cloneNode(true) as Element | undefined
-  for (const tip of [...(clone?.querySelectorAll('[data-help-description]') ?? [])]) tip.remove()
-  return visible(clone ?? null)
-}
+const shown = (el: HTMLElement) =>
+  within(el).queryAllByRole('tooltip', { hidden: true }).reduce((t, tip) => t.replace(visible(tip), ''), visible(el)).trim()
 
 /** The notes drawn after the send button, in order. */
 function notesUnderButton(container: HTMLElement): HTMLElement[] {
@@ -185,7 +182,7 @@ describe('c09: with a measured room of 0 the note under the button says it is ac
     const note = notes.find((p) => shown(p) === C09)
     // MUTATION: keep the admits note at room 0 -> nothing under the button says the task will wait.
     expect(note, `the notes under the button: ${JSON.stringify(notes.map(visible))}`).toBeDefined()
-    expect(notes.map(shown)).not.toContain(ADMITS)
+    expect(notes.map((p) => shown(p))).not.toContain(ADMITS)
     for (const env of [WIDE, PHONE]) {
       const ink = painted(note!, 'color', env)
       expect(ink).not.toBeNull()
@@ -199,15 +196,15 @@ describe('c09: with a measured room of 0 the note under the button says it is ac
   it('room unknown and room to spare keep the admits note, and the sentence follows each pick', async () => {
     const container = await form()
     fireEvent.click(radio(container, 'claude-code'))
-    expect(notesUnderButton(container).map(shown)).toContain(C09)
+    expect(notesUnderButton(container).map((p) => shown(p))).toContain(C09)
     for (const name of ['claude-code-browser', 'mock']) {
       fireEvent.click(radio(container, name))
       const notes = notesUnderButton(container)
-      const said = notes.map(shown)
+      const said = notes.map((p) => shown(p))
       // MUTATION: test `agents === 0 || agents === null` for the note -> an unread room is told it has room for 0.
       expect(said, `${name}: the room-0 sentence`).not.toContain(C09)
       expect(said, `${name}: the admits note`).toContain(ADMITS)
-      expect(notes.map((p) => visible(p.querySelector('[data-help-description]'))), `${name}: the admits tip`).toContain(ADMITS_TIP)
+      expect(notes.flatMap((p) => within(p).queryAllByRole('tooltip', { hidden: true }).map(visible)), `${name}: the admits tip`).toContain(ADMITS_TIP)
     }
   })
 })

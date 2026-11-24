@@ -27,7 +27,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 const WAIT = { timeout: 4000 }
 const JSON_HEADERS = { 'content-type': 'application/json' }
@@ -187,9 +187,9 @@ describe('runs-submit-14: an issue with open runs says so before the button', ()
     await waitFor(() => expect(container.querySelector('.in-open-runs-unread')).not.toBeNull(), WAIT)
     // ISSUE 81: one short could-not-check line on the surface; the sentence
     // it was is the (i)'s tip, word for word.
-    const unread = container.querySelector('.in-open-runs-unread')!
+    const unread = screen.getByText(/^Open runs not checked/)
     expect(visible(unread)).toMatch(/^Open runs not checked · runs read broke/)
-    expect(visible(unread.querySelector('[data-help-description]'))).toBe('Whether this issue already has open runs was not checked.')
+    expect(visible(within(unread).getByRole('tooltip', { hidden: true }))).toBe('Whether this issue already has open runs was not checked.')
   })
 })
 

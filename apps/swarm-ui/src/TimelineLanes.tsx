@@ -2487,12 +2487,11 @@ function OutcomeStrip({
   const own = strip.status === 'ok' ? decidedWindow(strip.data, since, until) : null
   // The sentences the line under the strip said, word for word, as its (i)'s tip (issue 81).
   const unreadTail = reach !== null ? ', the newest attempts of the span, with a next page unread' : ''
-  const lanesSay =
-    strip.status === 'ok' && own !== null
-      ? `The lanes cover ${rangeWords(reach ?? since, until)}${unreadTail}. Parks and fences count only the lanes drawn.`
-      : strip.status === 'ok'
-        ? `Decided counts cover ${ledgerRange(strip.data)}${aligned !== null ? `, ${aligned} as on Outcomes` : ''}; the lanes cover ${rangeWords(reach ?? since, until)}${unreadTail}. Parks and fences count only the lanes drawn.`
-        : `Decided counts cover ${rangeWords(since, until)}; parks and fences count only the lanes drawn.`
+  const lanesRange = rangeWords(reach ?? since, until)
+  const alignedTail = aligned !== null ? ', ' + aligned + ' as on Outcomes' : ''
+  let lanesSay = `Decided counts cover ${rangeWords(since, until)}; parks and fences count only the lanes drawn.`
+  if (strip.status === 'ok' && own !== null) lanesSay = `The lanes cover ${lanesRange}${unreadTail}. Parks and fences count only the lanes drawn.`
+  else if (strip.status === 'ok') lanesSay = `Decided counts cover ${ledgerRange(strip.data)}${alignedTail}; the lanes cover ${lanesRange}${unreadTail}. Parks and fences count only the lanes drawn.`
   return (
     <div className="tl-strip">
       {strip.status === 'loading' ? (

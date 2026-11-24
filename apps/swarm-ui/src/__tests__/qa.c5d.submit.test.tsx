@@ -131,9 +131,8 @@ describe('G4-29: the task form speaks of one task, not of steps', () => {
     expect(within(label).getByText('Open a pull request')).toBeTruthy()
     // ISSUE 81: one sentence under nine words on the option; "none if it
     // changed nothing" is the (i)'s tip, word for word.
-    const count = label.querySelector('.dsp-count')!
-    const tip = count.querySelector('[data-help-description]')!
-    expect(visible(count).replace(visible(tip), '').trim()).toBe('One pull request, from this agent’s branch.')
+    const tip = within(label).getByRole('tooltip', { hidden: true })
+    expect(visible(label.querySelector('.dsp-count')).replace(visible(tip), '').trim()).toBe('One pull request, from this agent’s branch.')
     expect(visible(tip)).toContain('One pull request, from this agent’s branch — none if it changed nothing.')
   })
 

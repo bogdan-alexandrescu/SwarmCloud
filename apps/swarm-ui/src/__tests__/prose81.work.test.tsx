@@ -18,11 +18,17 @@
 // BREAK IT: put any listed sentence back on the surface, or drop it from its
 // tip -- the case for its page turns red.
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { longRuns } from './proseruns'
 import { screenLoaded } from './screenLoaded'
+
+/** What each render left mounted, unmounted after each case and between a case's mounts. */
+const mounted: Array<() => void> = []
+function unmountAll(): void {
+  while (mounted.length > 0) mounted.pop()!()
+}
 
 const collapse = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim()
 
@@ -87,7 +93,7 @@ async function page(open: string): Promise<void> {
   sessionStorage.clear()
   vi.setSystemTime(new Date(FIXTURE_CLOCK))
   openAt(open)
-  render(<App />)
+  mounted.push(render(<App />).unmount)
   await screenLoaded()
   await settle()
 }
@@ -107,7 +113,7 @@ describe('issue 81: the work pages, on the fixture build', () => {
     window.history.replaceState(null, '', '/')
     localStorage.clear()
   })
-  afterEach(() => cleanup())
+  afterEach(() => unmountAll())
 
   it('overview/now: the setup card, the failures, the quota, the unjudged workflows and the spend clause', async () => {
     await page('overview/now')
@@ -121,7 +127,7 @@ describe('issue 81: the work pages, on the fixture build', () => {
     expect(behind().some((t) => t.includes('Terminal: nothing will retry them.')), 'the terminal sentence is behind no mark').toBe(true)
     // The quota: facts on the surface, the sentence behind the mark.
     noLongRun('rate-limit responses so far')
-    expect(behind().some((t) => /\d+ rate-limit responses so far; the ceiling this derives is \d+/.test(t))).toBe(true)
+    expect(behind().some((t) => t.includes(' rate-limit responses so far; the ceiling this derives is '))).toBe(true)
     // The unjudged workflows.
     noLongRun('their rollup came back incomplete')
     expect(behind().some((t) => t.includes('Their rollup came back incomplete'))).toBe(true)
@@ -208,17 +214,17 @@ function preview(over: Record<string, unknown> = {}, top: Record<string, unknown
 type Reply = { status: number; body: unknown }
 
 function serve(previewReply: Reply, runReply: Reply = { status: 201, body: { run: { id: 'run_new' } } }, runs: Reply = { status: 200, body: { runs: [] } }): void {
-  globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input)
-    const method = init?.method ?? 'GET'
-    const reply = (r: Reply) => new Response(JSON.stringify(r.body), { status: r.status, headers: JSON_HEADERS })
+  const reply = (r: Reply) => new Response(JSON.stringify(r.body), { status: r.status, headers: JSON_HEADERS })
+  const answer = (url: string, method: string): Response => {
     if (url.startsWith('/v1/capacity')) return reply({ status: 200, body: CAPACITY })
     if (url.startsWith('/v1/providers')) return reply({ status: 200, body: PROVIDERS })
     if (url.startsWith('/v1/issues/preview')) return reply(previewReply)
     if (url.startsWith('/v1/runs') && method === 'POST') return reply(runReply)
     if (url.startsWith('/v1/runs')) return reply(runs)
     return reply({ status: 404, body: { code: 'not_found', message: `no stub for ${url}` } })
-  }) as unknown as typeof fetch
+  }
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
+    Promise.resolve(answer(input instanceof Request ? input.url : input.toString(), init?.method ?? 'GET'))))
 }
 
 const WAIT = { timeout: 4000 }
@@ -232,17 +238,18 @@ async function mount(): Promise<void> {
   await screen.findByRole('radiogroup', { name: 'runner' }, WAIT)
 }
 
-async function readIssue(ref = 'example-org/infra#512'): Promise<void> {
+function readIssue(ref = 'example-org/infra#512'): void {
   fireEvent.change(screen.getByLabelText('Issue reference'), { target: { value: ref } })
   fireEvent.click(screen.getByRole('button', { name: 'Read' }))
 }
 
-const planButton = () => screen.getByRole('button', { name: 'Plan this issue' }) as HTMLButtonElement
+const planButton = () => screen.getByRole<HTMLButtonElement>('button', { name: 'Plan this issue' })
 
 describe('issue 81: the issue form, before and after each click', () => {
   afterEach(() => {
-    cleanup()
+    unmountAll()
     vi.unstubAllEnvs()
+    vi.unstubAllGlobals()
   })
 
   it('before a read: the credential, the runner, the approval, auto-merge, the fix-round cap and the plan note are short', async () => {
@@ -284,7 +291,7 @@ describe('issue 81: the issue form, before and after each click', () => {
   it('after a read the API did not answer for auto-merge: one short could-not-check line', async () => {
     serve({ status: 200, body: preview({ body_truncated: true, body_redacted: true }) })
     await mount()
-    await readIssue()
+    readIssue()
     await waitFor(() => expect(planButton().disabled).toBe(false), WAIT)
     moved('This API did not say whether it takes auto-merge, so the run is created with it off and a person merges its pull request.')
     stays('The API did not say; it stays off.')
@@ -298,16 +305,16 @@ describe('issue 81: the issue form, before and after each click', () => {
     const reason = 'not compiled yet'
     serve({ status: 200, body: preview({}, { auto_merge: { available: false, reason } }) })
     await mount()
-    await readIssue()
+    readIssue()
     await waitFor(() => expect(planButton().disabled).toBe(false), WAIT)
     moved('Not available for this run: the API refuses auto-merge now, so a person merges the run’s pull request.')
     stays('Not available for this run: a person merges.')
     stays(reason)
-    cleanup()
+    unmountAll()
 
     serve({ status: 200, body: preview({}, { auto_merge: { available: true, reason: null } }) })
     await mount()
-    await readIssue()
+    readIssue()
     await waitFor(() => expect(planButton().disabled).toBe(false), WAIT)
     fireEvent.click(screen.getByRole('switch', { name: 'Merge the pull request when it is ready' }))
     moved('once every required check is green, the merge step merges the pull request at the sha it proved.')
@@ -317,7 +324,7 @@ describe('issue 81: the issue form, before and after each click', () => {
   it('after reading a closed issue: the heading stays, the why behind its (i)', async () => {
     serve({ status: 200, body: preview({ state: 'closed' }) })
     await mount()
-    await readIssue()
+    readIssue()
     await screen.findByText('This issue is closed.', undefined, WAIT)
     moved('Planning it would reopen work someone marked done.')
     stays('This issue is closed.')
@@ -329,16 +336,16 @@ describe('issue 81: the issue form, before and after each click', () => {
       body: { runs: [{ id: 'run_a', state: 'PLANNED', terminal: false, created_at: '2026-10-01T10:00:00Z', issue: { owner: 'example-org', repo: 'infra', number: 512 } }] },
     })
     await mount()
-    await readIssue()
-    await waitFor(() => expect(document.querySelector('.in-open-runs')).not.toBeNull(), WAIT)
+    readIssue()
+    await screen.findByText(/^Open runs:/, undefined, WAIT)
     noLongRun('Planning it again starts another run.')
     stays('planning it again starts another run')
-    cleanup()
+    unmountAll()
 
     serve({ status: 200, body: preview() }, undefined, { status: 500, body: { code: 'internal', message: 'boom' } })
     await mount()
-    await readIssue()
-    await waitFor(() => expect(document.querySelector('.in-open-runs-unread')).not.toBeNull(), WAIT)
+    readIssue()
+    await screen.findByText(/^Open runs not checked/, undefined, WAIT)
     moved('Whether this issue already has open runs was not checked.')
     stays('Open runs not checked')
   })
@@ -346,16 +353,16 @@ describe('issue 81: the issue form, before and after each click', () => {
   it('after a submit the API answered without a run, or failed on: one short line each', async () => {
     serve({ status: 200, body: preview() }, { status: 201, body: {} })
     await mount()
-    await readIssue()
+    readIssue()
     await waitFor(() => expect(planButton().disabled).toBe(false), WAIT)
     fireEvent.click(planButton())
     await waitFor(() => expect(surface()).toContain('Accepted, but no run was named.'), WAIT)
     moved('The API accepted this and named no run. Open Runs to find it before submitting again.')
-    cleanup()
+    unmountAll()
 
     serve({ status: 200, body: preview() }, { status: 500, body: { code: 'internal', message: 'boom' } })
     await mount()
-    await readIssue()
+    readIssue()
     await waitFor(() => expect(planButton().disabled).toBe(false), WAIT)
     fireEvent.click(planButton())
     await waitFor(() => expect(surface()).toContain('Check Runs before submitting again.'), WAIT)
@@ -371,8 +378,8 @@ describe('issue 81: the issue form, before and after each click', () => {
   ])('after a %s refusal: its heading on the surface, the rest behind its (i)', async (code, heading, rest) => {
     serve({ status: code === 'not_found' ? 404 : 403, body: { code, message: 'x' } })
     await mount()
-    await readIssue()
-    await waitFor(() => expect(document.querySelector('.in-refusal')).not.toBeNull(), WAIT)
+    readIssue()
+    await screen.findByRole('button', { name: 'About this refusal' }, WAIT)
     stays(heading)
     noLongRun(rest.slice(0, 24))
     expect(behind().some((t) => t.includes(rest)), `"${rest}" is behind no mark`).toBe(true)

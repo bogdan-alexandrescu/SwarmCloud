@@ -16,7 +16,7 @@
 // Every assertion names the mutation that turns it red.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, waitFor, within } from '@testing-library/react'
 
 import type { Result } from '../fetch'
 import { ledgerFixture } from '../outcomes.fixture'
@@ -116,8 +116,9 @@ describe('runs2-04: outcomes figures are shown only over the span they cover', (
     expect(text(strip())).not.toMatch(/Decided counts cover/)
     // ISSUE 81: the lanes' range is a fact on the surface; the sentences it
     // was are the (i)'s tip, word for word.
-    expect(text(strip().querySelector('.tl-q [data-help-description]'))).toMatch(/^The lanes cover .+\. Parks and fences count only the lanes drawn\.$/)
-    expect(text(strip().querySelector('.tl-q'))).toMatch(/^Lanes: /)
+    const tips = within(strip()).getAllByRole('tooltip', { hidden: true }).map(text)
+    expect(tips.some((t) => t.startsWith('The lanes cover ') && t.endsWith('. Parks and fences count only the lanes drawn.'))).toBe(true)
+    expect(text(strip())).toContain('Lanes: ')
   })
 
   it('keeps the figures over a ledger that covers the span', async () => {

@@ -392,7 +392,7 @@ function quotaCheck(providers: Result<ProvidersPage>, now: number): Check {
         ].join(' · '),
         why:
           'Throughput is reduced, not stopped. ' +
-          `${q.rate_limit_count} rate-limit responses so far; the ceiling this derives is ${q.effective_limit}${q.last_429_at ? `, last 429 ${timeAgo(q.last_429_at, now)}` : ''}.`,
+          `${q.rate_limit_count} rate-limit responses so far; the ceiling this derives is ${q.effective_limit}${q.last_429_at ? ', last 429 ' + timeAgo(q.last_429_at, now) : ''}.`,
         href: '#capacity/quota',
         linkLabel: 'quota, all workspaces · admin',
       })
@@ -956,11 +956,12 @@ function workflowCheck(workflows: Result<WorkflowPage>, now: number): Check {
     const why = budget
       ? 'The route ran out of step reads for this page, so their state was never established.'
       : `Their rollup came back incomplete (${reason}).`
+    const shortWhy = budget ? 'ran out of step reads' : 'rollup incomplete: ' + reason
     problems.push({
       severity: 'warn',
       n: unjudged.length,
       headline: `${unjudged.length} workflow${unjudged.length === 1 ? ' could' : 's could'} not be judged`,
-      detail: `${unjudged.map((w) => w.workflow_id).slice(0, 3).join(', ')}${unjudged.length > 3 ? ', …' : ''} · ${budget ? 'ran out of step reads' : `rollup incomplete: ${reason}`}`,
+      detail: `${unjudged.map((w) => w.workflow_id).slice(0, 3).join(', ')}${unjudged.length > 3 ? ', …' : ''} · ${shortWhy}`,
       why: `${why} Whether ${unjudged.length === 1 ? 'it is' : 'they are'} moving is unknown, not fine.`,
       href: '#work/workflows',
     })
