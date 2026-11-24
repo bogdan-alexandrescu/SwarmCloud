@@ -616,3 +616,32 @@ def test_a_new_revision_gives_the_reviewer_the_whole_ttl_again(client, db, objec
     _read(client, run["id"])
     moved = IssueRun.from_firestore(_stored(db, run["id"]))
     assert approvals._planned_at(moved) > long_ago + timedelta(hours=49)
+
+
+@pytest.mark.parametrize("submitted", [True, False])
+def test_a_replan_left_submitting_is_adopted_or_failed_by_a_later_read(client, db, objects,
+                                                                     submitted):
+    """A request that died between its claim and its link: past the bound, a
+    read links the task it did submit, or ends the claim `failed` so the run
+    is not left refusing every edit."""
+    run = _planned(client, db, objects)
+    entry = _comment(client, run)
+    replan_id = "rpl_" + secrets.token_hex(10)
+    stored = _stored(db, run["id"])
+    stored["plan_replan"] = {
+        "replan_id": replan_id, "task_id": None, "from_digest": run["plan_digest"],
+        "from_revision": 1, "entries": [entry["entry_id"]], "requested_by": "alice@example.com",
+        "at": datetime.now(timezone.utc) - timedelta(hours=1), "state": "submitting",
+    }
+    stored["plan_replans"] = 1
+    if submitted:
+        task_id = "task_" + secrets.token_hex(8)
+        db.docs[f"tasks/{task_id}"] = {"id": task_id, "tenant_id": "eng", "state": "QUEUED",
+                                       "metadata": {"replan": replan_id, "issue_run": run["id"]}}
+    _read(client, run["id"])
+    record = _stored(db, run["id"])["plan_replan"]
+    if submitted:
+        assert record["state"] == "running" and record["task_id"] == task_id
+    else:
+        assert record["state"] == "failed"
+        assert _revise(client, run["id"], {"plan_digest": run["plan_digest"]}).status_code == 202
