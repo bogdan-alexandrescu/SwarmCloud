@@ -2185,7 +2185,7 @@ class HandoffPath:
             if document != self._browser_written:
                 _write_atomic(root / BROWSER_STATE_NAME, document)
                 self._browser_written = document
-        except Exception as exc:  # the browser's note never costs the attempt
+        except Exception as exc:  # the browser's note never costs the attempt  # noqa: BLE001
             self.log.warning("could not note the live browser's state", error=type(exc).__name__)
 
     def drain_browser_notes(self) -> list[dict[str, Any]]:
