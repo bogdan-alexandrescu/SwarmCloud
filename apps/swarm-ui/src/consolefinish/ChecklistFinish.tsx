@@ -616,7 +616,7 @@ function SendBody({ state }: { state: SetupState }) {
       <Facts
         items={[
           { state: 'done', name: 'Console', text: `https://${host}` },
-          { state: 'done', name: 'Then', text: 'each teammate runs sc login, then /sc:submit in Claude Code' },
+          { state: 'done', name: 'Then', text: 'each teammate runs sc login, then /sc run --issue owner/repo#N' },
           { state: 'done', name: 'Day two', text: 'Admin › Setup › Health shows the hourly checks' },
         ]}
       />
