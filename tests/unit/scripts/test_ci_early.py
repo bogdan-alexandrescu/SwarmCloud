@@ -50,7 +50,6 @@ from .test_release_reuses_ci_images import _evaluate, _render
 
 REPO = Path(__file__).resolve().parents[3]
 WORKFLOWS = REPO / ".github" / "workflows"
-MAIN_TIP = "c" * 40
 
 
 def _workflow(name: str) -> dict:
@@ -154,9 +153,9 @@ def test_the_merge_step_holds_each_event_s_latest_run_at_the_head(runs, state):
     assert merge.required_check_state(runs) == state
 
 
-# --- the trivy gate's base on a lane push ------------------------------------
-def _gate(tmp_path: Path, *, event: str, ref: str, base: str, ls_remote: str = f"{MAIN_TIP}\trefs/heads/main\n",
-          ls_status: int = 0) -> tuple[subprocess.CompletedProcess[str], str]:
+# --- the trivy gate's base: the true merge base, never a recorded commit -----
+def _gate(tmp_path: Path, *, event: str, ref: str, pr_base_ref: str = "", queue_base: str = "",
+          ) -> tuple[subprocess.CompletedProcess[str], str]:
     # security.yml's own `trivy (repo)` job: CI-FOLD (archived issue 1799) leaves it unfolded
     # so that only it holds security-events: write (owner, 2026-10-21).
     steps = yaml.safe_load((WORKFLOWS / "security.yml").read_text())["jobs"]["filesystem"]["steps"]
@@ -164,56 +163,64 @@ def _gate(tmp_path: Path, *, event: str, ref: str, base: str, ls_remote: str = f
     env = gate.get("env") or {}
     assert env.get("EVENT") == "${{ github.event_name }}", env
     assert env.get("REF") == "${{ github.ref }}", env
+    # The branch the pull request targets now (a retarget changes it), never
+    # the base commit GitHub recorded on the event.
+    assert env.get("PR_BASE_REF") == "${{ github.event.pull_request.base.ref }}", env
+    assert env.get("QUEUE_BASE_SHA") == "${{ github.event.merge_group.base_sha }}", env
+    assert "pull_request.base.sha" not in str(env), env
     root = tmp_path / "tree"
     (root / "scripts").mkdir(parents=True)
     calls = tmp_path / "calls"
     fake = root / "scripts" / "trivy-new-findings.sh"
     fake.write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" > {str(calls)!r}\n")
     fake.chmod(0o755)
+    # No git at all: the step reads the base from the checkout through the
+    # script, never from the network (its checkout holds no credentials).
     bindir = tmp_path / "bin"
     bindir.mkdir()
     git = bindir / "git"
-    answer = tmp_path / "ls-remote"
-    answer.write_text(ls_remote)
-    git.write_text(
-        "#!/usr/bin/env bash\n"
-        "[ \"$*\" = 'ls-remote origin refs/heads/main' ] || exit 97\n"
-        f"cat {str(answer)!r}\n"
-        f"exit {ls_status}\n"
-    )
+    git.write_text("#!/usr/bin/env bash\nexit 97\n")
     git.chmod(0o755)
     body = tmp_path / "gate.sh"
     body.write_text(gate["run"])
     proc = subprocess.run(
         ["bash", "-e", str(body)], cwd=root, capture_output=True, text=True, timeout=60,
         env={**os.environ, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
-             "EVENT": event, "REF": ref, "BASE_SHA": base},
+             "EVENT": event, "REF": ref, "PR_BASE_REF": pr_base_ref, "QUEUE_BASE_SHA": queue_base},
     )
     return proc, calls.read_text().strip() if calls.exists() else ""
 
 
-def test_a_lane_push_compares_trivy_findings_with_mains_tip(tmp_path):
+def test_a_lane_push_compares_trivy_findings_with_its_merge_base_with_main(tmp_path):
     """With no base, every finding main already has fails the gate: a lane
     push would be red where its pull request is green, and the merge step
     holds both. MUTATION: pass the empty pull-request base on a lane push."""
-    proc, args = _gate(tmp_path, event="push", ref="refs/heads/swarm/task_0123456789abcdef0123", base="")
+    proc, args = _gate(tmp_path, event="push", ref="refs/heads/swarm/task_0123456789abcdef0123")
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert args == f"gate --base {MAIN_TIP}", args
+    assert args == "gate --merge-base refs/remotes/origin/main", args
 
 
-def test_a_pull_request_and_main_keep_their_bases(tmp_path):
-    """MUTATION: look main's tip up for every event."""
-    pr_base = "a" * 40
-    proc, args = _gate(tmp_path / "pr", event="pull_request", ref="refs/pull/7/merge", base=pr_base)
-    assert proc.returncode == 0 and args == f"gate --base {pr_base}", (proc.stderr, args)
-    proc, args = _gate(tmp_path / "main", event="push", ref="refs/heads/main", base="")
+def test_a_pull_request_is_compared_with_its_merge_base_with_the_branch_it_targets_now(tmp_path):
+    """A retargeted pull request: its recorded base commit is the old
+    branch's, so the gate takes the merge base with the branch it targets.
+    MUTATION: hand the script `--base <recorded base sha>`."""
+    proc, args = _gate(tmp_path / "pr", event="pull_request", ref="refs/pull/7/merge", pr_base_ref="release-2")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert args == "gate --merge-base refs/remotes/origin/release-2", args
+
+
+def test_a_queue_entry_and_main_keep_their_bases(tmp_path):
+    """MUTATION: give main's push a base, or drop the queue entry's."""
+    queue_base = "a" * 40
+    proc, args = _gate(tmp_path / "queue", event="merge_group", ref="refs/heads/gh-readonly-queue/main/x",
+                       queue_base=queue_base)
+    assert proc.returncode == 0 and args == f"gate --merge-base {queue_base}", (proc.stderr, args)
+    proc, args = _gate(tmp_path / "main", event="push", ref="refs/heads/main")
     assert proc.returncode == 0 and args == "gate --base", (proc.stderr, args)
 
 
-@pytest.mark.parametrize("ls_remote, ls_status", [("", 0), ("garbage\n", 0), ("", 2)])
-def test_a_lane_push_that_cannot_read_mains_tip_fails_rather_than_gating_on_nothing(tmp_path, ls_remote, ls_status):
+def test_a_pull_request_with_no_base_branch_fails_rather_than_gating_on_nothing(tmp_path):
     """MUTATION: fall through to `--base ""` (every finding new) or to no gate."""
-    proc, args = _gate(tmp_path, event="push", ref="refs/heads/swarm/task_0123456789abcdef0123", base="",
-                       ls_remote=ls_remote, ls_status=ls_status)
+    proc, args = _gate(tmp_path, event="pull_request", ref="refs/pull/7/merge", pr_base_ref="")
     assert proc.returncode != 0, proc.stdout
     assert args == "", args
