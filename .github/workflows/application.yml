@@ -1207,6 +1207,15 @@ jobs:
         if: ${{ !cancelled() && needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'workflows') }}
         run: scripts/check-action-pins.sh
 
+      - name: release workflow wiring (actionlint) · the published run blocks are current
+        # Tests execute workflow shell from scripts/generated/ci-run-blocks.json,
+        # never from .github/ (issue 71); this fails when a run block changed
+        # without `uv run python scripts/gen_ci_run_blocks.py`. A command, not
+        # a pytest test: a test regenerating from .github/ would read CI YAML.
+        id: workflows-run-blocks
+        if: ${{ !cancelled() && needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'workflows') }}
+        run: uv run --frozen python scripts/gen_ci_run_blocks.py --check
+
       # --- ruff check ----------------------------------------------------------
       # Why: the `ruff` name-keeper's comment.
       - name: ruff check · ruff check

@@ -30,6 +30,15 @@
 # then runs them in ONE `pytest -q -n auto -p no:warnings` call, followed by
 # scripts/lib/check-contract-parity.sh. An empty diff runs nothing.
 #
+# A change to a workflow or composite action (.github/**.yml), to
+# scripts/gen_ci_run_blocks.py or to the JSON it writes also runs
+# `scripts/gen_ci_run_blocks.py --check` (RUN-BLOCKS, issue 71): tests execute
+# workflow shell from scripts/generated/ci-run-blocks.json, never from
+# .github/, so a run block edited without regenerating is caught here, as a
+# command and not a pytest test (a test regenerating from .github/ would read
+# CI YAML). Part 1 only, like the parity check; with --only it runs when the
+# list names its line, `python scripts/gen_ci_run_blocks.py --check`.
+#
 # A change to a swarm-ui stylesheet (apps/swarm-ui/**.css) also runs the UI's
 # stylesheet guards in one vitest call (RELATED-CSS-GUARDS, part of archived issue 1914).
 # They read every sheet from disk, so neither a test's text nor an import
@@ -210,6 +219,9 @@ DOC_GUARD_TESTS=(
   tests/unit/scripts/test_docs_spec_amendments.py
 )
 PARITY_CHECK="scripts/lib/check-contract-parity.sh"
+# The run-block drift check (RUN-BLOCKS above) and the line --list prints for it.
+RUN_BLOCKS_CHECK="scripts/gen_ci_run_blocks.py"
+RUN_BLOCKS_LINE="python ${RUN_BLOCKS_CHECK} --check"
 # The stylesheet guards' list and the package they run in (see above).
 STYLESHEET_SELECTOR="scripts/lib/related_tests.py"
 UI_DIR="apps/swarm-ui"
@@ -351,6 +363,11 @@ if [[ "${docs_only}" -eq 1 ]]; then
   guards=("${DOC_GUARD_TESTS[@]}")
   run_parity=0
 fi
+# RUN-BLOCKS: a workflow, a composite action, the generator or its output.
+run_blocks=0
+if grep -qE '^(\.github/.*\.ya?ml|scripts/gen_ci_run_blocks\.py|scripts/generated/ci-run-blocks\.json)$' "${work}/changed"; then
+  run_blocks=1
+fi
 
 # One fixed-string pattern per full path, and one per distinctive basename.
 : >"${work}/patterns"
@@ -420,6 +437,7 @@ if [[ -n "${only_from}" ]]; then
   grep -xF -f "${work}/only" "${work}/selected" >"${work}/kept" || true
   mv "${work}/kept" "${work}/selected"
   grep -qxF "bash ${PARITY_CHECK}" "${work}/only" || run_parity=0
+  grep -qxF "${RUN_BLOCKS_LINE}" "${work}/only" || run_blocks=0
 fi
 
 # The selection's weight in CI-seconds, and with --shard the part to run.
@@ -487,6 +505,9 @@ if [[ ${#style_guards[@]} -gt 0 ]]; then
 fi
 if [[ "${shard_k}" -le 1 && "${run_parity}" -eq 1 ]]; then
   printf 'bash %s\n' "${PARITY_CHECK}"
+fi
+if [[ "${shard_k}" -le 1 && "${run_blocks}" -eq 1 ]]; then
+  printf '%s\n' "${RUN_BLOCKS_LINE}"
 fi
 
 if [[ "${list_only}" -eq 1 ]]; then
@@ -658,6 +679,20 @@ if [[ "${shard_k}" -le 1 && "${run_parity}" -eq 1 ]]; then
   (cd "${REPO_ROOT}" && "${caller_only[@]}" ${deadline[@]+"${deadline[@]}"} bash "${PARITY_CHECK}") >"${log}.parity" 2>&1 \
     || parity_status=$?
 fi
+run_blocks_status=0
+if [[ "${shard_k}" -le 1 && "${run_blocks}" -eq 1 ]]; then
+  step "run blocks: ${RUN_BLOCKS_CHECK} --check"
+  (cd "${REPO_ROOT}" && "${caller_only[@]}" ${deadline[@]+"${deadline[@]}"} "${py[@]}" "${RUN_BLOCKS_CHECK}" --check) \
+    >"${log}.run-blocks" 2>&1 || run_blocks_status=$?
+  if [[ "${run_blocks_status}" -ne 0 ]]; then
+    tail -n 25 "${log}.run-blocks" | redact
+    if [[ "${run_blocks_status}" -eq 124 ]]; then
+      err "the run-block check ran past ${PARITY_SECONDS} s"
+    fi
+    err "the published run blocks are stale or unreadable (exit ${run_blocks_status}); full output: ${log}.run-blocks"
+    failed=1
+  fi
+fi
 if [[ "${parity_status}" -ne 0 ]]; then
   tail -n 25 "${log}.parity" | redact
   # The `ran past` line, as for pytest and vitest: the gate reads it as a stop
@@ -670,7 +705,8 @@ if [[ "${parity_status}" -ne 0 ]]; then
 fi
 
 if [[ "${failed}" -ne 0 ]]; then
-  if [[ "${pytest_status}" -eq 124 || "${vitest_status}" -eq 124 || "${parity_status}" -eq 124 ]]; then
+  if [[ "${pytest_status}" -eq 124 || "${vitest_status}" -eq 124 || "${parity_status}" -eq 124 \
+      || "${run_blocks_status}" -eq 124 ]]; then
     finish timed_out
   else
     finish failed
@@ -678,7 +714,10 @@ if [[ "${failed}" -ne 0 ]]; then
   exit 1
 fi
 finish passed
-rm -f "${log}" "${log}.vitest" "${log}.parity"
+rm -f "${log}" "${log}.vitest" "${log}.parity" "${log}.run-blocks"
+if [[ "${shard_k}" -le 1 && "${run_blocks}" -eq 1 ]]; then
+  ok "the published run blocks are current"
+fi
 if [[ ${#style_guards[@]} -gt 0 ]]; then
   ok "${#style_guards[@]} stylesheet guard(s) pass"
 fi
