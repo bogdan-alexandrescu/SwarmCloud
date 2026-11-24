@@ -303,6 +303,11 @@ contention.
 4. Otherwise write `paused: true`, `paused_at: now`, `paused_by`, the optional
    `pause_reason`, and `updated_at`.
 
+Note: `pause_reason`, `resumed_at` and `resumed_by`, like `paused_by`, are raw
+   fields, as `superseded_task_ids` is: request 159 does not type them, and
+   `codec.workflow_to_firestore` and every full-document workflow write must
+   preserve them.
+
 **Stage 2: one transaction per non-terminal step,** like
 `Store.request_cancel_with_target`:
 
@@ -352,6 +357,23 @@ promptly.
 `paused_at` being lifted. The guard stops a resume from clearing a later pause's
 mirror. Each cleared step gets `EventType.RESUME_REQUESTED` with
 `{requested_by, workflow_id, paused_at}`.
+
+Stage 2 has the same contention contract as pause stage 2: a step that stays
+contended makes the route answer 503 `Retry-After` with `steps_contended`, and
+retrying is idempotent (a step whose mirror is already cleared is skipped). If
+the route dies after stage 1, or the caller never retries, the scheduler is the
+backstop (next paragraph), so a stale mirror is bounded and never loops.
+
+**The scheduler clears a stale mirror.** `Scheduler._promote_workflow_pauses`
+and `Scheduler._park_for_workflow_pause` both see steps whose raw
+`pause_requested_at` is set but is not equal to the workflow's current
+`paused_at` (the workflow is not paused, or was paused again later). They clear
+the mirror in the same guarded write that promotes the step, or, in
+`_park_for_workflow_pause`, when it finds the workflow not paused and so does
+not park. A stale mirror therefore costs a step at most one worker park, never
+a loop. The worker still parks on the mirror alone (5.1); the mirror stays a
+signal and the workflow document the authority (2.1). Section 8 records the
+invariants this preserves (4 and 5: no sleeping, and the fenced write).
 
 **Who promotes the parked steps.** The route does **not** promote
 `WORKFLOW_PAUSED` parks itself. The scheduler's sweep does (section 4), so
@@ -494,6 +516,15 @@ refunded reasons, with a bound. Whether, and how far, is decision Q1.
 
 ### 6.1 Selection
 
+**The set stays small: paused is cleared when a workflow ends.**
+`Store.cancel_workflow` writes `paused: false` and `paused_at: null` in the same
+update as `cancel_requested` (cancel is allowed on a paused workflow, 3.3), and
+every write that makes a workflow terminal (including the failure path) clears
+both too. Resume refuses a cancelled or terminal workflow (3.2), so without
+this nothing could ever clear them and `paused == true` would grow into a scan
+of history. A cancelled paused workflow therefore drops out of
+`paused_workflows`.
+
 **The snapshot gains the paused workflows.**
 `ControlStore.paused_workflows(limit, after)` runs `workflows where paused ==
 true`, paged by id. It is an equality query, never a full scan, and it is
@@ -505,7 +536,8 @@ and `incremental_snapshot` attach the result, as `snapshot.paused_workflows`:
 follows the same rules:
 
 1. For each active execution, take its task from the snapshot.
-2. The task's `workflow_id` must be in `paused_workflows`, with the same tenant.
+2. The task's `workflow_id` (a new `TaskView.workflow_id`, read raw from the
+   task doc in `TaskView.from_doc`) must be in `paused_workflows`, with the same tenant.
 3. The task must hold capacity and must **not** have `cancel_requested`. A cancel
    is `detect_cancel_overdue`'s, and must not produce two findings for one
    attempt.
@@ -551,10 +583,20 @@ pattern of `RepairPlan.startup_refund_limit`: only if this transaction did the
 fence, and only for a READY target. A refunded step is therefore never
 downgraded to FAILED by `retries_exhausted` in `_repair_decision`.
 
-If the pause was lifted between detection and repair, the repair re-reads the
-workflow inside the transaction and stands down. The execution was already
-killed, so the step goes READY and is admitted as normal. That is the reclaim
-outcome, and it is correct.
+After a confirmed kill, `fence_release_repair` **always commits**: fence,
+release the lease, end the attempt, READY. Skipping it would leave a killed
+execution holding an unreleased lease with its pool units still counted and no
+generation bump, which leaks capacity. If the pause was lifted between detection
+and repair, the repair may re-read the workflow inside the transaction, but that
+changes only the event detail (`"pause_lifted": true`) and the refund decision,
+never whether the release happens. The step goes READY and is admitted as
+normal.
+
+The plan is `RepairPlan(to_state=READY, next_eligible_at=None,
+only_from=CONCURRENCY_STATES, expected_lease_id=finding.lease_id)`. If the
+worker's own park committed between detection and repair, the lease no longer
+matches or the state is not live, and the repair refuses rather than write
+PARKED to READY over it.
 
 **Why READY, not PARKED.** `_ALLOWED` lets all four live states go to READY. The
 only edge from them into PARKED is RUNNING's, plus the scheduler's own
@@ -802,6 +844,11 @@ parallel lanes share a file. They run in dependency order.
   `AttemptState.park`'s refund rule for `WORKFLOW_PAUSED`, per Q1),
   `swarm_api/waiting_detail.py`.
 * **Red tests**, in `tests/unit/control_plane/`:
+  * A cancelled paused workflow drops out of `paused_workflows` (cancel and
+    terminal writes clear `paused`).
+  * Resume stage 2 contended: 503 `steps_contended`, and a retry finishes it.
+  * `pause_reason`, `resumed_at`, `resumed_by` survive `workflow_to_firestore`
+    and every full-document workflow write (round trip).
   * The viewer 403.
   * 404 for another tenant's workflow.
   * 409 `workflow_terminal` and `workflow_cancel_requested`.
@@ -841,6 +888,7 @@ parallel lanes share a file. They run in dependency order.
 * **Files:** `reconciler/reconciler/store.py` (`paused_workflows`, snapshot
   attachment, the refund in `fence_release_repair` per Q1),
   `reconciler/reconciler/detect.py` (`detect_pause_overdue`, `PAUSE_OVERDUE`),
+  `reconciler/reconciler/model.py` (`TaskView.workflow_id`),
   `reconciler/reconciler/repair.py`, `reconciler/reconciler/config.py` (the
   bound, per Q2, its default explained beside it).
 * **Red tests**, in `tests/unit/reconciler/`:
@@ -852,6 +900,9 @@ parallel lanes share a file. They run in dependency order.
   * The reference is `lease.created_at` for a lease after the pause.
   * The snapshot reads paused workflows by `paused == true` alone (the fake
     store asserts the query).
+  * Resume lands between the kill and the repair: the lease is still released
+    and the step is READY.
+  * The worker parked first: the repair refuses and writes nothing.
 
 ### P5. Console and CLI (needs P1)
 
