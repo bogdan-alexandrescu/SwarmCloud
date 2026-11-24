@@ -207,6 +207,11 @@ order, and every comment and step-summary line names the rule that acted:
    or running, a red reading of the head waits and does not bisect. This
    covers a shard that fails while the rest of its run is still going, and a
    re-run that is still in progress.
+   A failing check that is **not an Actions job** -- a check run another app
+   made, such as code scanning's `Trivy` (app `github-advanced-security`), or
+   a commit status -- is one no re-run changes. When no failing check is a
+   job, rule 1 says `not an Actions job: <name>`, re-runs nothing and spends
+   no retry; it no longer says "the retry could not run" for it (issue 377).
 2. **Hold while main is red.** If the train is red again, the train judges
    main's head on the failing check names, using the same
    latest-run-per-event rule. If main is red on any of them, the train closes
@@ -216,7 +221,27 @@ order, and every comment and step-summary line names the rule that acted:
    `MERGE_TRAIN_MAIN_RED_WAIT_MINUTES` (60) lets a train board anyway, so a
    pull request that fixes main is not kept out by the red it fixes. Such a
    train is held again if it is red on the same checks.
-3. **Bisect**, as before. A train of one is ejected after its retry.
+3. **Bisect**, as before. A train of one is ejected after its retry. First,
+   though, a **code-scanning red names its own culprit** (issue 377). On
+   2026-11-24 two trains were red on `Trivy` alone, a code-scanning check run
+   whose annotations named one file of one pull request, and the train spent
+   three cycles bisecting to what the annotations already said. So when a
+   failing check run is code scanning's, the train reads its annotations
+   (`check-runs/<id>/annotations`, 50 a page, at most
+   `MERGE_TRAIN_ANNOTATIONS_MAX_PAGES`, 20) and maps each annotated path to
+   the members that change it, through each member's changed files
+   (`pulls/<N>/files`, 100 a page, at most `MERGE_TRAIN_FILES_MAX_PAGES`,
+   30: GitHub lists no more than 3,000). The members it names are ejected at
+   once, each told the alert's rule, file and line; the rest board the next
+   train, which runs every check again. When the mapping names no member, or
+   every member, or a list could not be read whole, the train bisects exactly
+   as before and still names the check and its alerts. Nothing here lets a
+   red train land: a train with any failing check never does.
+
+Every failing check is named in each comment, and on one line of the job
+summary (`is red at <head> on: <name> (<title>), ...`), whichever app made it,
+with its title: `Trivy (2 new alerts including 2 high severity security
+vulnerabilities)`, not a bare link.
 
 **The re-run needs `actions: write`.** The tick's own token has it
 (`.github/workflows/merge-train.yml`, the owner's pick of 6 November 2026), and

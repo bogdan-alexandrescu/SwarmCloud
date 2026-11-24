@@ -80,7 +80,10 @@
 #      at the head has finished, and the train stays open; the state block records `retry=<epoch>:<head>`, and the
 #      age bound counts from then. A green after it lands every member as a
 #      first green does. A re-run GitHub refuses (no `actions: write`), or one
-#      that cannot be recorded, falls through to the next rules this tick.
+#      that cannot be recorded, falls through to the next rules this tick. A
+#      failing check that is not an Actions job (a code-scanning result, a
+#      commit status) is one no re-run changes: when no failing check is a
+#      job, rule 1 says "not an Actions job", by name, and spends no retry.
 #   2. HOLD WHILE MAIN IS RED. Red again: main's head is judged on the failing
 #      check names, by the same latest-run-per-event rule. Red on any of them
 #      there, the train closes "Held: main is red on <names>", ejects nobody,
@@ -93,6 +96,17 @@
 #      half (the larger, when odd) boards the next train at once, and the
 #      second is held back as suspects, which board the train after it. So a
 #      culprit is found in log2(N) trains and the innocent land on the way.
+#      A CODE-SCANNING RED first (issue 377): when a failing check run is
+#      GitHub code scanning's (app `github-advanced-security`), its
+#      annotations are read and each annotated path is mapped to the members
+#      whose changed files hold it (`pulls/<N>/files`, paginated and bounded,
+#      the only way a path names a pull request). Those members are ejected
+#      at once, each told the alert's rule, file and line, and the rest board
+#      the next train, which runs every check again. A mapping that names no
+#      member or every member, or a list not read whole, bisects as above,
+#      and the alerts read are still named. A red train never lands.
+#   Every failing check is named, whichever app made it, with its title, in
+#   each comment and on one line of the log.
 #
 # THE DEPLOY-STARVATION HOLD (issue 3336). A green train does not land while
 # nothing has deployed for MERGE_TRAIN_DEPLOY_RECENT_MINUTES (60) and main's
@@ -124,7 +138,10 @@
 #         [--names <JSON array of check names>]
 #       A head's checks, each by the latest run of each event (the Actions
 #       runs give each check suite's event): `verdict\t<green|red|pending>`, then
-#       `failed\t<name>\t<url>` per failed check, then with --names
+#       `failed\t<name>\t<url>\t<title>\t<app>\t<check run id>` per failed
+#       check, whichever app made it (title: the check run's output title, or
+#       a commit status's description; app: the check run's app slug, empty
+#       when GitHub gave none, `(commit status)` for a status), then with --names
 #       `named\t<name>\t<green|red|pending>` per name given.
 #   plan --verdict <green|red> --train "<N...>" --suspects "<N...>"
 #       What follows a judged train: `eject=`, `next=`, `suspects=`.
@@ -185,6 +202,14 @@ STATE_CLOSE="-->"
 # once for many changes. A red train of forty is found in about six more
 # trains (bisection halves it each time).
 MAX_PRS="${MERGE_TRAIN_MAX_PRS:-40}"
+# A code-scanning red (issue 377) is mapped to the pull requests whose files
+# its alerts annotate. The reads are bounded: GitHub lists at most 3,000
+# files of a pull request, 30 pages of 100, so 30 reads them all; 20 pages
+# of 50 annotations is 1,000 alerts on one check. A list longer than its
+# bound is not read whole, and the train then bisects as before.
+CODE_SCANNING_APP="github-advanced-security"
+FILES_MAX_PAGES="${MERGE_TRAIN_FILES_MAX_PAGES:-30}"
+ANNOTATIONS_MAX_PAGES="${MERGE_TRAIN_ANNOTATIONS_MAX_PAGES:-20}"
 # THE GATHER's defaults are stated ONCE, in GATHER_FILE, which swarm-api's
 # merge wake tick reads too (swarm_api.trainboard): past the deadline it
 # starts one run of this workflow, so a lone `ready` pull request never waits
@@ -533,16 +558,22 @@ cmd_judge() {
         | sort_by(.position) ) as $latest
     | ( [ $latest[]
         | {name, done: finished, result: (.conclusion // ""),
-           url: (.html_url // .details_url // "")} ]
+           url: (.html_url // .details_url // ""),
+           title: (.output.title // ""), app: (.app.slug // ""),
+           id: (if (.id | type) == "number" then (.id | tostring) else "" end)} ]
     + [ ($st[0].statuses // [])[]
         | {name: .context, done: (.state != "pending"), result: (.state // ""),
-           url: (.target_url // "")} ] ) as $all
+           url: (.target_url // ""), title: (.description // ""),
+           app: "(commit status)", id: ""} ] ) as $all
     | [ $all[] | select(.done and (.result | bad)) ] as $failed
     | ( if ($failed | length) > 0 then "red"
         elif all($required[]; . as $r | any($all[]; .name == $r and .done and (.result | good))) then "green"
         else "pending" end ) as $verdict
     | "verdict\t\($verdict)",
-      ( $failed[] | "failed\t\(.name | gsub("[\\t\\r\\n]"; " "))\t\(.url)" ),
+      # Every failed check, whichever app made it, with its title (issue 377:
+      # a code-scanning check run is named and says what it found).
+      ( $failed[] | [ "failed", .name, .url, .title, .app, .id ]
+        | map(tostring | gsub("[\\t\\r\\n]"; " ")) | join("\t") ),
       # A name: red when any latest run of it finished bad, green when it
       # ran and every latest run finished good, else pending (not run yet,
       # running, or cancelled). Rule 2 holds on red and boards on green.
@@ -889,8 +920,30 @@ finish_train() {
 }
 
 eject_pr() {
-  local number="$1" train_id="$2" failed="$3" body
+  # Ejects member $1 of train $2, failing on $3 (Markdown lines). With $4,
+  # a file of the code-scanning alerts that name files it changes, it was
+  # ejected for those alerts (scan_ejections), not by rule 3.
+  local number="$1" train_id="$2" failed="$3" alerts="${4:-}" body
   body="${WORK}/eject-${number}.md"
+  if [[ -n "${alerts}" ]]; then
+    {
+      echo "**Ejected from the merge train (code-scanning alert), and \`ready\` removed.** Train ${train_id} failed on a code-scanning result whose alerts name files this pull request changes; not every pull request on the train changes them, so those that do are ejected without bisecting:"
+      echo
+      cat "${alerts}"
+      echo
+      echo "Failing at the train's head:"
+      echo
+      printf '%s\n' "${failed}"
+      echo
+      echo "Fix what the alert names (or dismiss it in code scanning if it is a false positive), then add \`ready\` again."
+      echo "(scripts/merge-train.sh, run ${RUN_URL})"
+    } >"${body}"
+    comment_on "${number}" "${body}"
+    gh api -X DELETE "repos/${GH_REPO}/issues/${number}/labels/ready" >/dev/null 2>&1 \
+      || warn "could not remove ready from #${number}"
+    summary "code scanning: ejected #${number}"
+    return 0
+  fi
   {
     echo "**Ejected from the merge train (rule 3, bisect), and \`ready\` removed.** Train ${train_id} -- main plus this pull request alone -- failed, after its one retry where GitHub allowed it, while main was not red on the same checks:"
     echo
@@ -1530,6 +1583,146 @@ main_checks() {
   fi
 }
 
+failing_list() {
+  # The failing checks judged into file $1, one Markdown line each, whichever
+  # app made the check: `- [<name>](<url>): <title>` (issue 377: a
+  # code-scanning check run is named with what it found, "2 new alerts ...").
+  awk -F'\t' '$1 == "failed" {
+      line = ($3 != "") ? sprintf("- [%s](%s)", $2, $3) : sprintf("- %s", $2)
+      if ($4 != "") line = line ": " $4
+      print line }' "$1"
+}
+
+failing_names() {
+  # The same checks on one line, for the log: `<name> (<title>), ...`.
+  awk -F'\t' '$1 == "failed" {
+      printf "%s%s%s", sep, $2, ($4 != "" ? " (" $4 ")" : ""); sep = ", " }' "$1"
+}
+
+not_actions_jobs() {
+  # The failing checks judged into file $1 that are not Actions jobs, on one
+  # line: a check run another app made (code scanning's
+  # `github-advanced-security`) or a commit status. No re-run of a job
+  # changes them. A check run GitHub gave no app for is taken for a job, as
+  # before.
+  awk -F'\t' '$1 == "failed" && $5 != "" && $5 != "github-actions" {
+      printf "%s`%s` (%s)", sep, $2, ($5 == "(commit status)" ? "a commit status" : "a check run of " $5)
+      sep = ", " }' "$1"
+}
+
+some_actions_job_failed() {
+  # 0 when a failing check judged into file $1 is (or may be) an Actions job.
+  awk -F'\t' '$1 == "failed" && ($5 == "" || $5 == "github-actions") { found = 1 }
+              END { exit found ? 0 : 1 }' "$1"
+}
+
+read_pages() {
+  # Reads the JSON array GitHub pages at "$2" (a path whose query already
+  # carries per_page=$4) into one array in file $3, page by page, at most $5
+  # pages; $1 names the read. Returns 1 when a page could not be read or is
+  # not an array, 2 when the last page allowed was full (the list may go on).
+  local what="$1" path="$2" out="$3" per="$4" max="$5" page=1 got="$3.page" n
+  printf '[]\n' >"${out}"
+  while [[ "${page}" -le "${max}" ]]; do
+    gh_read "${what}, page ${page}" "${got}" gh api "${path}&page=${page}" || return 1
+    jq -e 'type == "array"' "${got}" >/dev/null 2>&1 || return 1
+    jq -s '.[0] + .[1]' "${out}" "${got}" >"${out}.next" || return 1
+    mv "${out}.next" "${out}"
+    n="$(jq 'length' "${got}")"
+    [[ "${n}" -ge "${per}" ]] || return 0
+    page=$((page + 1))
+  done
+  return 2
+}
+
+alert_lines() {
+  # The alerts in TSV file $1 (check, path, line, rule, message), one
+  # Markdown line each, at most 20 and then how many more; a message is cut
+  # at 300 characters.
+  awk -F'\t' '
+    { n++ }
+    n <= 20 {
+      msg = $5; if (length(msg) > 300) msg = substr(msg, 1, 300) "..."
+      at = ($3 != "") ? $2 ":" $3 : $2
+      printf "- `%s`: %s at `%s`%s\n", $1, ($4 != "" ? "rule `" $4 "`" : "an alert"), at, (msg != "" ? ": " msg : "")
+    }
+    END { if (n > 20) printf "- ... and %d more\n", n - 20 }' "$1"
+}
+
+scan_ejections() {
+  # Issue 377. For red train $2 (its members "<N>..." in $3), judged into $1:
+  # when a failing check is a code-scanning result (a check run of
+  # CODE_SCANNING_APP), reads its annotations and maps each annotated path to
+  # the members that change it -- through the files each member changes,
+  # never any other way. Both reads are paginated and bounded
+  # (ANNOTATIONS_MAX_PAGES of 50, FILES_MAX_PAGES of 100). Sets SCAN_EJECT
+  # (the members to eject, in train order), SCAN_ALERTS (a file: every alert
+  # read, one Markdown line each, empty when none) and, for each member to
+  # eject, ${WORK}/alerts-<N>.md (its own alerts). Returns 1, SCAN_WHY saying
+  # why, when the train bisects as before: no failing check is a
+  # code-scanning result, a list could not be read whole, no annotation names
+  # a file, or the mapping names no member or every member.
+  local verdict_file="$1" id="$2" on_train="$3"
+  local scans="${WORK}/scans.tsv" alerts="${WORK}/alerts.tsv" raw="${WORK}/annotations.json"
+  local files="${WORK}/files.json" check name m rc count=0 total=0
+  SCAN_EJECT=""
+  SCAN_WHY=""
+  SCAN_ALERTS="${WORK}/alerts.md"
+  : >"${SCAN_ALERTS}"
+  : >"${alerts}"
+  awk -F'\t' -v app="${CODE_SCANNING_APP}" \
+    '$1 == "failed" && $5 == app && $6 ~ /^[0-9]+$/ { print $6 "\t" $2 }' "${verdict_file}" >"${scans}"
+  if [[ ! -s "${scans}" ]]; then
+    SCAN_WHY="no failing check is a code-scanning result"
+    return 1
+  fi
+  while IFS=$'\t' read -r check name; do
+    rc=0
+    read_pages "the annotations of ${name} at train ${id}" \
+      "repos/${GH_REPO}/check-runs/${check}/annotations?per_page=50" "${raw}" 50 "${ANNOTATIONS_MAX_PAGES}" || rc=$?
+    if [[ "${rc}" -ne 0 ]]; then
+      SCAN_WHY="could not read every annotation of \`${name}\`"
+      return 1
+    fi
+    jq -r --arg name "${name}" '.[] | select((.path // "") != "")
+        | [$name, .path, (.start_line // "" | tostring), (.title // ""), (.message // "")]
+        | map(tostring | gsub("[\\t\\r\\n]"; " ")) | join("\t")' "${raw}" >>"${alerts}"
+  done <"${scans}"
+  alert_lines "${alerts}" >"${SCAN_ALERTS}"
+  if [[ ! -s "${alerts}" ]]; then
+    SCAN_WHY="no annotation of the failing code-scanning check names a file"
+    return 1
+  fi
+  for m in ${on_train}; do
+    total=$((total + 1))
+    rc=0
+    read_pages "the files #${m} changes" "repos/${GH_REPO}/pulls/${m}/files?per_page=100" \
+      "${files}" 100 "${FILES_MAX_PAGES}" || rc=$?
+    if [[ "${rc}" -ne 0 ]]; then
+      SCAN_WHY="could not read every file #${m} changes"
+      SCAN_EJECT=""
+      return 1
+    fi
+    jq -r '.[] | .filename // empty, .previous_filename // empty' "${files}" >"${WORK}/files-${m}.txt"
+    awk -F'\t' 'FILENAME == ARGV[1] { changed[$0] = 1; next } ($2 in changed)' \
+      "${WORK}/files-${m}.txt" "${alerts}" >"${WORK}/alerts-${m}.tsv"
+    if [[ -s "${WORK}/alerts-${m}.tsv" ]]; then
+      alert_lines "${WORK}/alerts-${m}.tsv" >"${WORK}/alerts-${m}.md"
+      SCAN_EJECT="${SCAN_EJECT:+${SCAN_EJECT} }${m}"
+      count=$((count + 1))
+    fi
+  done
+  if [[ "${count}" -eq 0 ]]; then
+    SCAN_WHY="the alerts name no file a pull request on the train changes"
+    return 1
+  fi
+  if [[ "${count}" -eq "${total}" ]]; then
+    SCAN_WHY="the alerts name files every pull request on the train changes"
+    SCAN_EJECT=""
+    return 1
+  fi
+}
+
 rerun_gh() {
   if [[ "${RERUN_BY}" == "app" ]]; then
     gh_app "$@"
@@ -1610,19 +1803,30 @@ red_rules() {
     RED_RULE="wait"
     return 0
   fi
+  # A failing check that is not an Actions job (a code-scanning result, a
+  # commit status) is one no re-run changes: rule 1 says so, by name, rather
+  # than that the retry could not run (issue 377), and spends no retry on it.
+  local others
+  others="$(not_actions_jobs "${verdict_file}")"
   if [[ -n "${retried}" && "${retried#*:}" == "${head}" ]]; then
     summary "train ${id}: rule 1 (retry once): red again at ${head:0:12} after its retry: on to rule 2"
+  elif ! some_actions_job_failed "${verdict_file}"; then
+    summary "train ${id}: rule 1 (retry once): not an Actions job: ${others}; no re-run can change it, so nothing is re-run: on to rule 2"
   elif retry_failed_runs "${number}" "${body}" "${head}"; then
     local note="${WORK}/retry-${number}.md"
     {
       echo "**Red. Rule 1 (retry once):** the failed jobs of run(s) ${RETRY_RUNS} are re-run, once, at this head; the train stays open and is judged again when they finish. Failing:"
       echo
-      awk -F'\t' '$1 == "failed" { printf "- [%s](%s)\n", $2, $3 }' "${verdict_file}"
+      failing_list "${verdict_file}"
+      if [[ -n "${others}" ]]; then
+        echo
+        echo "Not an Actions job, so no re-run changes it: ${others}."
+      fi
       echo
       echo "(scripts/merge-train.sh, run ${RUN_URL})"
     } >"${note}"
     comment_on "${number}" "${note}" || warn "could not say on #${number} that it retries"
-    summary "train ${id}: rule 1 (retry once): re-running the failed jobs of run(s) ${RETRY_RUNS}; the train stays open"
+    summary "train ${id}: rule 1 (retry once): re-running the failed jobs of run(s) ${RETRY_RUNS}; the train stays open${others:+ (not an Actions job, so not re-run: ${others})}"
     RED_RULE=retry
     return 0
   else
@@ -1740,7 +1944,7 @@ handle_train() {
     --required "${WORK}/required.txt" >"${verdict_file}"
   local verdict failed
   verdict="$(awk -F'\t' '$1 == "verdict" { print $2 }' "${verdict_file}")"
-  failed="$(awk -F'\t' '$1 == "failed" { printf "- [%s](%s)\n", $2, $3 }' "${verdict_file}")"
+  failed="$(failing_list "${verdict_file}")"
 
   # Rule 1's re-run restarts the age bound: the re-run is a CI run of its own.
   local retried="" age
@@ -1804,6 +2008,7 @@ handle_train() {
       [[ "${rc}" -ne 2 ]] || return 1
       ;;
     red)
+      summary "train ${id} ($(hash_list "${train_prs}")) is red at ${head:0:12} on: $(failing_names "${verdict_file}")"
       if [[ "${dry}" == "true" ]]; then
         finish_train "${number}" "${branch}" "Red. **Dry run:** nothing ejected and nothing bisected. Failing:"$'\n\n'"${failed}"
         return 0
@@ -1819,6 +2024,32 @@ handle_train() {
           return 0
           ;;
       esac
+      # A code-scanning red names its own culprits (issue 377): the members
+      # whose changed files its alerts annotate are ejected without
+      # bisecting, and the rest board the next train, which runs every check
+      # again, so nothing unverified lands. Otherwise rule 3, as before, and
+      # the alerts read are still named.
+      local scanned=0 n rest="" checks_only="${failed}"
+      scan_ejections "${verdict_file}" "${id}" "${train_prs}" || scanned=$?
+      if [[ -s "${SCAN_ALERTS}" ]]; then
+        failed="${failed}"$'\n\n'"Code-scanning alerts:"$'\n\n'"$(cat "${SCAN_ALERTS}")"
+      fi
+      if [[ "${scanned}" -eq 0 ]]; then
+        for n in ${train_prs}; do
+          [[ " ${SCAN_EJECT} " == *" ${n} "* ]] || rest="${rest:+${rest} }${n}"
+        done
+        summary "train ${id}: code scanning: the alerts name files only $(hash_list "${SCAN_EJECT}") change: ejected without bisecting; $(hash_list "${rest}") board the next train"
+        for n in ${SCAN_EJECT}; do
+          eject_pr "${n}" "${id}" "${checks_only}" "${WORK}/alerts-${n}.md"
+        done
+        finish_train "${number}" "${branch}" "Red on code scanning: its alerts name files only $(hash_list "${SCAN_EJECT}") change, so they are ejected without bisecting; $(hash_list "${rest}") board the next train. Failing:"$'\n\n'"${failed}"
+        list_open_prs "${WORK}/prs.json"
+        start_train false "${rest}" "${suspects}"
+        return 0
+      fi
+      if [[ "${SCAN_WHY}" != "no failing check is a code-scanning result" ]]; then
+        summary "train ${id}: code scanning: ${SCAN_WHY}: rule 3 (bisect)"
+      fi
       local plan eject next held
       plan="$(cmd_plan --verdict red --train "${train_prs}" --suspects "${suspects}")"
       eject="$(sed -n 's/^eject=//p' <<<"${plan}")"
@@ -1987,6 +2218,9 @@ cmd_tick() {
   : "${RUN_ID:?RUN_ID is required}"
   : "${RUN_URL:?RUN_URL is required}"
   is_number "${MAX_PRS}" || die "MERGE_TRAIN_MAX_PRS is not a positive number: ${MAX_PRS}"
+  is_number "${FILES_MAX_PAGES}" || die "MERGE_TRAIN_FILES_MAX_PAGES is not a positive number: ${FILES_MAX_PAGES}"
+  is_number "${ANNOTATIONS_MAX_PAGES}" \
+    || die "MERGE_TRAIN_ANNOTATIONS_MAX_PAGES is not a positive number: ${ANNOTATIONS_MAX_PAGES}"
   gather_knobs_valid
   is_number "${MAX_AGE_MINUTES}" || die "MERGE_TRAIN_MAX_AGE_MINUTES is not a positive number: ${MAX_AGE_MINUTES}"
   is_number "${MAIN_RED_WAIT_MINUTES}" || die "MERGE_TRAIN_MAIN_RED_WAIT_MINUTES is not a positive number: ${MAIN_RED_WAIT_MINUTES}"
