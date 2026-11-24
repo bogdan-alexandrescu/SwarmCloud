@@ -1062,7 +1062,8 @@ function SchedulesBody({ d, go, scopeSwitch, open }: { d: Landing; go: (to: stri
       <AnswerRow rows={rows} summary={d.summary} inbox={inbox} />
       <WaitingPanel summary={d.summary} inbox={inbox} rows={rows} go={go} />
       <div className="acd-bar-row">
-        <SourcesSwitch on={false} go={go} />
+        {/* Drawn only where the server reports proposals (`proposals_7d` rides on a proposing type's schedules). */}
+        {rows.some((r) => (r as { proposals_7d?: unknown }).proposals_7d !== undefined) && <SourcesSwitch on={false} go={go} />}
         {counts !== null && <WordFilter rows={rows} counts={counts} value={filter} onChange={setFilter} />}
         {scopeSwitch}
         <span className="acd-grow" />

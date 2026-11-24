@@ -142,6 +142,13 @@ const FIXTURE_PERSONA: FixturePersona = USE_FIXTURES ? readFixturePersona() : 'm
  */
 const EXAMPLE_PLANS_COOKIE = 'swarm_fixture_example_plans'
 const FIXTURE_EXAMPLE_PLANS = USE_FIXTURES && readFixtureCookie(EXAMPLE_PLANS_COOKIE) === 'on'
+/**
+ * THE PROPOSING SOURCES' SWITCH, as the example plans' is: the two proposing
+ * fixture schedules (`?proposes=1`) and the catalogue's `proposes` flags load
+ * only when the page carries `swarm_fixture_proposing=on`. Off by default, so
+ * the default fixtures list the schedules every ratchet and test pins.
+ */
+const FIXTURE_PROPOSING = USE_FIXTURES && readFixtureCookie('swarm_fixture_proposing') === 'on'
 /** Whether the fixture caller is a platform admin: the `platform-admin` persona only. */
 const fixtureIsAdmin = FIXTURE_PERSONA === 'platform-admin'
 /**
@@ -13781,7 +13788,7 @@ function fixtureScheduleRows(): Schedule[] {
   ].map((extra) => ({
     ...schedules[0], ...extra, state_word: undefined,
   })) as unknown as Schedule[]
-  schedules.push(...proposing)
+  if (FIXTURE_PROPOSING) schedules.push(...proposing)
   return schedules.map((row) => ({ ...row, state_word: fixtureStateWord(row) }))
 }
 
@@ -14237,7 +14244,7 @@ function fixtureScheduleTypes(): ScheduleTypeRow[] {
       min_interval_minutes: 15,
       budget_caps: { per_run_usd: 3, per_day_usd: 30, max_concurrent: 5 },
       scopes: ['repos', 'all'], creatable_scopes: ['repos', 'all'], gate_notes: null,
-      available: true, disabled_reason: null, proposes: true,
+      available: true, disabled_reason: null, ...(FIXTURE_PROPOSING ? { proposes: true } : {}),
     } as ScheduleTypeRow,
     {
       name: 'cost-report',
@@ -14253,7 +14260,7 @@ function fixtureScheduleTypes(): ScheduleTypeRow[] {
       min_interval_minutes: 24 * 60,
       budget_caps: null,
       scopes: ['repos', 'all', 'platform'], creatable_scopes: fixtureIsAdmin ? ['repos', 'all', 'platform'] : ['repos', 'all'], gate_notes: null,
-      available: true, disabled_reason: null, proposes: false,
+      available: true, disabled_reason: null, ...(FIXTURE_PROPOSING ? { proposes: false } : {}),
     } as ScheduleTypeRow,
   ]
 }
