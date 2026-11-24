@@ -231,7 +231,7 @@ const PAST_APPROVAL: ReadonlySet<IssueRunState> = new Set(['APPROVED', 'RUNNING'
  * and wrapped; the words are now ones that fit at the body size. 'not
  * required' (~87px) and 'none needed' (~80px) do not, so an automatic
  * approval is a dash, and 'awaiting a plan' (~109px) is 'no plan'.
- * qafix6.workpages.test.tsx measures every word against the column.
+ * A work-pages test measures every word against the column.
  *
  * AN AUTOMATIC APPROVAL IS A WORD, NOT A DASH (QA1-FIX-24, chrome-C13, part
  * of archived issue 2596): the dash read as unknown on every row, runs the schedule's

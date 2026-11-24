@@ -242,7 +242,7 @@ const SEGMENT_ID = /^[A-Za-z0-9_-]+$/
  * The relay's name for segment `seq` (`swarm_live.recorder.segment_name`):
  * the sequence zero-padded to 13 digits. An unpadded `rec-3.live.webm` is not
  * a name the relay writes, so comparing against it refused every real
- * segment (LB-SEAM, tests/fixtures/live/recordings.json).
+ * segment (LB-SEAM, a recorded fixture of the relay).
  */
 export function segmentName(seq: number): string {
   return `rec-${String(seq).padStart(13, '0')}.live.webm`

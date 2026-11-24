@@ -2,7 +2,7 @@
 // that is also the legend, and the pick that moves across all four.
 //
 // NO CHARTING LIBRARY. `TimeSeries.tsx` stays the only module that imports one
-// (chart.tokenspend.test.tsx holds that), and nothing here needs one: every
+// (a chart test holds that), and nothing here needs one: every
 // mark is a rect or a polyline between two values the server measured, with a
 // scale whose domain is those values and no `.nice()`. The hatch is the shared
 // `HatchDef`, so "not read" looks the same here as in every inspector chart.

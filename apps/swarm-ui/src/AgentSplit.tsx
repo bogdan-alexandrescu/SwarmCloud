@@ -54,7 +54,7 @@ import './styles/agents.css'
  *   agent-split/clock.tsx        the split's one instant (`SplitTick`)
  *
  * WHAT STAYS HERE, AND WHY: the reads (the task document and its
- * attempts), the `[` key and the panel's own Escape (qa.g1.help.test.tsx
+ * attempts), the `[` key and the panel's own Escape (a help test
  * holds the shortcut table to this file's handlers), and every pane's mount,
  * which source tests read from this file by name. The folder is also outside
  * the gates that scan `src/*.tsx` for who calls an API read, so a read moved

@@ -77,8 +77,8 @@ export default defineConfig({
     // than an orphan file nobody runs.
     //
     // AND `test/*.test.tsx`: the live-browser lanes' acceptance tests live
-    // where docs/design/live-browser.md §9 names them (`test/LiveThumb.test.tsx`
-    // and its siblings). `test/` otherwise holds the node runner's `.mjs`
+    // where docs/design/live-browser.md §9 names them (the live thumbnail's
+    // test and its siblings). `test/` otherwise holds the node runner's `.mjs`
     // files, which this glob does not match.
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'test/**/*.test.tsx'],
     setupFiles: ['src/__tests__/setup.ts'],
@@ -90,8 +90,8 @@ export default defineConfig({
     unstubGlobals: true,
     unstubEnvs: true,
     // CSS IS PROCESSED RATHER THAN STUBBED. Two files depend on it:
-    // `brand.test.tsx` asserts B17 -- "an identifier is never restyled" --
-    // and `shell.test.tsx` asserts the shell's regions (B3), the density pass
+    // the brand tests assert B17 -- "an identifier is never restyled" --
+    // and the shell tests assert the shell's regions (B3), the density pass
     // (B4.3) and the measured-zero axis (B20). Both do it by injecting the
     // SHIPPED `styles.css` into the test document and reading
     // `getComputedStyle()` off the element the component actually rendered.
@@ -118,7 +118,7 @@ export default defineConfig({
     // merge path, `make test`, an agent's related-tests run -- nothing is
     // instrumented. An env var rather than a
     // `--coverage` flag: the shard's command line is the file list alone
-    // (tests/unit/scripts/test_ui_shards.py).
+    // (a guard test on the UI shards holds it).
     coverage: {
       enabled: Boolean(process.env.SWARM_UI_COVERAGE_DIR),
       provider: 'v8',
@@ -138,7 +138,7 @@ export default defineConfig({
     // the slowest thing in this suite by an order of magnitude, and it scales
     // with the size of that sheet.
     //
-    // `brand.test.tsx`'s "tells the four apart WITHOUT USING COLOUR" runs in
+    // The brand test "tells the four apart WITHOUT USING COLOUR" runs in
     // ~550ms on an idle machine and TIMED OUT AT 5461ms on this one while
     // several other agent worktrees were running their own gates (load average
     // 200). A gate that goes red because the machine was busy teaches everyone

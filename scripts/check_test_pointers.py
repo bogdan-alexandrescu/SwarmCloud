@@ -12,8 +12,10 @@ it. Issue 69 removed 200-odd such pointers; this keeps new ones out. It runs
 as a whole-tree guard (tests/unit/scripts/test_check_test_pointers.py, in
 changed-guards.sh's GUARD_TESTS, which pull-request CI always runs).
 
-WHAT IS A POINTER, in a Python comment or docstring, or a `#` comment of any
-other text file under apps/:
+WHAT IS A POINTER, in a Python comment or docstring, a `//` or `/* */`
+comment of a JavaScript or TypeScript file (.ts, .tsx, .js, .jsx, .mjs, .cjs;
+read string- and regex-aware, so a URL in a string is no comment), or a `#`
+comment of any other text file under apps/:
 
   * a path to a file in the repository's tests/ tree
     (`tests/unit/x/test_y.py`, `tests/fixtures/live/*.json`: tests/, an entry
@@ -52,15 +54,13 @@ from pathlib import Path
 
 # Files other open pull requests hold while issue 69 lands: their pointers are
 # left for a follow-up, and this list shrinks as each is cleaned. Nothing is
-# ever added to it (issue 69). apps/swarm-ui/ is a prefix: the whole console.
+# ever added to it (issue 69). apps/common/swarm_common/ is a prefix: the frozen
+# contract, which no lane edits. Issue 191 cleaned the console and dropped it.
 ALLOWLIST_PREFIXES = (
     "apps/common/swarm_common/",
-    "apps/swarm-ui/",
 )
 ALLOWLIST = frozenset({
     "apps/agent-worker/agent_worker/lifecycle.py",
-    "apps/agent-worker/agent_worker/heartbeat.py",
-    "apps/swarm-api/swarm_api/routes/tasks.py",
     "apps/swarm-api/swarm_api/wire_types.py",
 })
 
@@ -170,6 +170,161 @@ def hash_comments(text: str) -> list[tuple[int, str]]:
     return found
 
 
+JS_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
+
+# After one of these words a `/` opens a regular expression, not a division.
+_REGEX_AFTER_WORDS = frozenset({
+    "return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw",
+    "case", "do", "else", "yield", "await",
+})
+
+
+def js_comments(text: str) -> list[tuple[int, str]]:
+    """(line, text) of every line of every `//` and `/* */` comment of
+    JavaScript or TypeScript source.
+
+    String-aware: a `//` or `/*` inside a '...', "..." or `...` string (with
+    `${...}` nested to any depth) or inside a regular-expression literal opens
+    no comment. A `/` opens a regular expression where an operand may start
+    (after an operator, an opening bracket, a `}` closing a block, or a word
+    such as `return`) and is a division after a name, a number, a string or a
+    closing `)` or `]`. JSX text is read as code: a `//` in it is reported as
+    a comment, and an apostrophe or a closing tag in it reads as a string or a
+    regular expression that ends, at the latest, with its line.
+    """
+    found: list[tuple[int, str]] = []
+    n = len(text)
+    i = 0
+    line = 1
+    # Each entry is the brace depth at which a `${` of a template opened.
+    templates: list[int] = []
+    depth = 0
+    regex_ok = True
+
+    def comment(start: int, end: int, first_line: int) -> None:
+        for k, part in enumerate(text[start:end].split("\n")):
+            found.append((first_line + k, part))
+
+    def skip_template(j: int) -> int:
+        """From inside a template, return the index after its closing
+        backtick, or the index after a `${` (pushing it)."""
+        nonlocal line
+        while j < n:
+            c = text[j]
+            if c == "\\":
+                if j + 1 < n and text[j + 1] == "\n":
+                    line += 1
+                j += 2
+                continue
+            if c == "\n":
+                line += 1
+            elif c == "`":
+                return j + 1
+            elif c == "$" and j + 1 < n and text[j + 1] == "{":
+                templates.append(depth)
+                return j + 2
+            j += 1
+        return j
+
+    while i < n:
+        c = text[i]
+        nxt = text[i + 1] if i + 1 < n else ""
+        if c == "\n":
+            line += 1
+            i += 1
+        elif c in " \t\r\f\v":
+            i += 1
+        elif c == "/" and nxt == "/":
+            end = text.find("\n", i)
+            end = n if end < 0 else end
+            comment(i, end, line)
+            i = end
+        elif c == "/" and nxt == "*":
+            end = text.find("*/", i + 2)
+            end = n if end < 0 else end + 2
+            comment(i, end, line)
+            line += text.count("\n", i, end)
+            i = end
+        elif c == "/" and regex_ok:
+            j = i + 1
+            in_class = False
+            while j < n and text[j] != "\n":
+                d = text[j]
+                if d == "\\":
+                    j += 2
+                    continue
+                if d == "[":
+                    in_class = True
+                elif d == "]":
+                    in_class = False
+                elif d == "/" and not in_class:
+                    j += 1
+                    break
+                j += 1
+            while j < n and (text[j].isalnum() or text[j] == "_"):
+                j += 1
+            line += text.count("\n", i, j)
+            i = j
+            regex_ok = False
+        elif c in "'\"":
+            j = i + 1
+            while j < n and text[j] != c and text[j] != "\n":
+                j += 2 if text[j] == "\\" else 1
+            # A backslash before a newline continues the string onto the next
+            # line; an unescaped newline ends it unclosed (an apostrophe in JSX
+            # text) and is left for the main loop to count.
+            line += text.count("\n", i, j)
+            i = j + 1 if j < n and text[j] == c else j
+            regex_ok = False
+        elif c == "`":
+            before = len(templates)
+            i = skip_template(i + 1)
+            if len(templates) > before:
+                depth += 1
+                regex_ok = True
+            else:
+                regex_ok = False
+        elif c == "{":
+            depth += 1
+            i += 1
+            regex_ok = True
+        elif c == "}":
+            depth -= 1
+            if templates and templates[-1] == depth:
+                templates.pop()
+                before = len(templates)
+                i = skip_template(i + 1)
+                if len(templates) > before:
+                    depth += 1
+                    regex_ok = True
+                else:
+                    regex_ok = False
+            else:
+                i += 1
+                regex_ok = True
+        elif c.isalnum() or c in "_$":
+            j = i
+            while j < n and (text[j].isalnum() or text[j] in "_$"):
+                j += 1
+            regex_ok = text[i:j] in _REGEX_AFTER_WORDS
+            i = j
+        elif c in ")]":
+            i += 1
+            regex_ok = False
+        else:
+            i += 1
+            regex_ok = True
+    return found
+
+
+def comments_of(rel: str, text: str) -> list[tuple[int, str]]:
+    if rel.endswith(".py"):
+        return python_comments(text)
+    if rel.endswith(JS_SUFFIXES):
+        return js_comments(text)
+    return hash_comments(text)
+
+
 def pointers_in(text: str, known: Known) -> bool:
     # The substring tests only skip a regex that cannot match: they keep the
     # whole-tree run inside a guard's budget.
@@ -194,8 +349,7 @@ def scan_file(root: Path, rel: str, known: Known) -> list[tuple[int, str]]:
     # Most files name no test anywhere: only those that do are parsed.
     if not pointers_in(text, known):
         return []
-    comments = python_comments(text) if rel.endswith(".py") else hash_comments(text)
-    return sorted({(n, c.strip()) for n, c in comments if pointers_in(c, known)})
+    return sorted({(n, c.strip()) for n, c in comments_of(rel, text) if pointers_in(c, known)})
 
 
 def scanned(path: str) -> bool:

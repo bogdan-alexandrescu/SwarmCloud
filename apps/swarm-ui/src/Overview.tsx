@@ -500,7 +500,7 @@ const STATS_POLL_MS = 60_000
  * AND IN THE SUMMARY VIEW (archived issue 168): `GET /v1/tasks?view=summary` serves each
  * row without `input`, `metadata` and `result_summary`, most of a row's
  * 10-20 KiB, and nothing on this screen reads them -- the trap in
- * `overview.summaryview.test.tsx` renders the screen from summary rows and
+ * a summary-view test renders the screen from summary rows and
  * fails on any read of the three. The spend rollup samples this page for
  * task ids and `attempt_count` alone; its figures come from each task's
  * attempts read.
@@ -898,7 +898,7 @@ function Reading({ rows = 3 }: { rows?: number }) {
 // Needs a look -- derived, never stored
 // ---------------------------------------------------------------------------
 //
-// The derivation lives in ./checks.ts, where `test/checks.test.mjs` drives it.
+// The derivation lives in ./checks.ts, where a checks test drives it.
 // What is here draws what it returns.
 
 /**

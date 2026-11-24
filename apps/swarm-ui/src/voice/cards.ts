@@ -5,9 +5,9 @@
  * schemas. This file is the console's side of the same list: every kind, the
  * fields every card carries, each kind's content, body fields, states and
  * actions, the content types with the renderer each names, and the common
- * actions. tests/unit/control_plane/test_voice_cards.py reads it and fails
+ * actions. A guard test reads it and fails
  * when the two sides name different kinds, fields, states, actions or
- * contents, the way test_issue_forms.py holds the forms to SECTIONS.
+ * contents, the way the issue-forms test holds the forms to SECTIONS.
  *
  * The console draws only the kinds listed here; a card of any other kind is
  * not drawn. A credential card names a secret and never carries its value: it

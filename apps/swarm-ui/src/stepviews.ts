@@ -1210,7 +1210,7 @@ export function tokenKindsCaption(k: TokenKindCounts): string {
  * The total of every kind that was reported, or null when none was: the
  * figure `tokenKindsCell` prints, by the same sum, for the Table's Tokens
  * sort (QA G3-33). `tokenKindsCell` keeps its sum written out, which
- * test_workflow_step_measurements.py reads; qa.g3.workflow.test.tsx holds the
+ * a workflow step-measurements guard reads; a workflow test holds the
  * sort to the printed order, so the two cannot drift unnoticed.
  */
 export function tokenKindsTotal(k: TokenKindCounts): number | null {
@@ -1740,7 +1740,7 @@ export const MERGE_PROFILE = 'merge'
  * cap -- not `MERGE_MAX_BRANCH_UPDATES` (5 since 2026-10-10, was 3), which
  * bounds only the updates made while the step held the merge slot. Restated
  * because the console carries no worker; held to merge.py's source by
- * __tests__/merge.card.test.tsx. The card prints "n of 12".
+ * a merge card test. The card prints "n of 12".
  */
 export const MERGE_MAX_HEAD_UPDATES = 12
 

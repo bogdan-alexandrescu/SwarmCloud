@@ -130,7 +130,7 @@ export function stoppedAtBudget(task: Pick<Task, 'state' | 'end_cause' | 'last_e
 /**
  * The same, from the two fields a summary row carries. The list reads this
  * one: naming `result_summary` on a summary row is a read of a field the
- * summary view does not serve (archived issue 168, drawer.reread.test.tsx).
+ * summary view does not serve (archived issue 168; a drawer re-read test holds it).
  */
 export function stoppedAtBudgetRow(task: Pick<Task, 'state' | 'end_cause' | 'last_error'>): boolean {
   if (!TERMINAL_STATES.has(task.state)) return false

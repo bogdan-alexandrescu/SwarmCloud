@@ -85,7 +85,7 @@ interface PanelPage {
   /**
    * An admin page among pages that are not (archived issue 136): drawn with the `admin`
    * mark. Never set in the Admin section, whose heading already says it.
-   * `spine.labels.test.tsx` holds these to App.tsx `SECTIONS`' admin flags.
+   * A labels test holds these to App.tsx `SECTIONS`' admin flags.
    */
   admin?: boolean
   kids?: { key: string; label: string; to: string; admin?: boolean }[]
@@ -397,7 +397,7 @@ export function hrefOf(to: string): string {
 /**
  * The Overview page's regions, as jump links (overview.html O1), in the order
  * the page draws them. Cost so far and Pools were on the page and not here
- * (G1-14, QA pass 2026-10-07); `qa.g1.jumps.test.tsx` reads Overview's
+ * (G1-14, QA pass 2026-10-07); a jump-links test reads Overview's
  * sections and holds this list to them.
  */
 export const OVERVIEW_JUMPS: readonly { id: string; label: string }[] = [
@@ -1629,7 +1629,7 @@ const SPINE: readonly { key: Exclude<SpineSection, null>; label: string; to: str
   // a workflow is one more click away and never hidden. Opening Workflows
   // instead would change where every Work link in the console lands. That
   // is an IA decision for the owner, asked in the PR rather than made here.
-  // spine.qafix.test.tsx holds the panel row.
+  // a Spine test holds the panel row.
   { key: 'work', label: 'Work', to: 'work/running' },
   { key: 'automate', label: 'Automate', to: 'automate/schedules' },
   { key: 'capacity', label: 'Capacity', to: 'capacity/pools' },

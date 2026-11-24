@@ -133,7 +133,7 @@ function fail(kind: ApiError['kind'], httpStatus: number | null, message: string
   return { kind: 'failed', error: { kind, httpStatus, code: null, message, method: 'POST' } }
 }
 
-/** POST /v1/tasks. Exported for `submit.errors.test.ts`, which hands it real responses. */
+/** POST /v1/tasks. Exported for the submit-errors test, which hands it real responses. */
 export async function postTask(body: Record<string, unknown>): Promise<Outcome> {
   // The fixture build answers the submit as the 201 does (QA2-FIX-07, runs2-01).
   if (USE_FIXTURES) {
@@ -329,7 +329,7 @@ interface Suggestion {
  * now, so every entry here is held to the declaration like the rest.
  * scripts/lib/check-contract-parity.sh (section 13) holds every entry to the
  * declaration, and
- * tests/unit/control_plane/test_submit_offers_only_what_runners_read.py holds
+ * a control-plane test holds
  * every entry to the declaration AND to a key its runner reads, and every
  * action `ACTION_SHAPE` builds to the declared shape of its `type`.
  *
@@ -1306,7 +1306,7 @@ function Form({ capacity }: { capacity: Capacity }) {
   // AND A REPOSITORY THE API WILL REFUSE IS NOT READY EITHER (live QA SUB-3):
   // the field said "it will refuse this one" under "Ready to send" and a live
   // button. `repositorySchemeRefused` is the field's own test, held to the
-  // API's tuple by `dispatch.test.ts`, so the field, the heading and the
+  // API's tuple by a dispatch test, so the field, the heading and the
   // button read one answer. Blank is the line above's case, not this one's.
   const badRepo = repositorySchemeRefused(repo)
   // AN INPUT OVER THE SERVED LIMIT IS NOT READY (live QA SUB-4): a 300,000-
@@ -1844,7 +1844,7 @@ function Form({ capacity }: { capacity: Capacity }) {
  *  list. The `--surface-2` block is the same line-to-step substitution §13.3
  *  applies everywhere else, and the name is what binds it to the choice.
  *
- *  Exported for `submit.room.test.tsx`, which renders it with hand-built
+ *  Exported for the submit-room test, which renders it with hand-built
  *  arguments rather than through the whole form. */
 export function ProfileFacts({ name, profile, pools }: { name: string; profile: RunnerProfile; pools: Pool[] }) {
   const byName = new Map<string, Pool>(pools.map((p) => [p.name, p]))

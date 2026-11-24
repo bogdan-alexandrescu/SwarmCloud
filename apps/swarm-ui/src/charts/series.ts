@@ -245,7 +245,7 @@ export function inTimeOrder(points: readonly ChartPoint[]): ChartPoint[] {
  * layer to the four visx packages `package.json` declares: the library's curve
  * package arrives only transitively, and importing a package nobody declared
  * is how a lockfile refresh breaks a build. (It is not named here with its
- * scope on purpose: `chart.tokenspend.test.tsx` fails on any module outside
+ * scope on purpose: a chart test fails on any module outside
  * `TimeSeries.tsx` whose text contains the library's import prefix, comments
  * included.)
  *

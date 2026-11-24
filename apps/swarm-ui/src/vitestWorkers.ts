@@ -45,7 +45,7 @@
  *    hook sees the config with the command line already merged in, so it is
  *    where vitest.config.ts applies `clampPoolOptions` below; the test that
  *    settles this resolves the real config with maxForks above the cap passed
- *    as a CLI option (src/__tests__/vitestWorkers.config.test.ts).
+ *    as a CLI option (a config test holds it).
  *
  * The cap is per vitest PROCESS. Four parallel `npx vitest` loops each run at
  * the cap, four times the memory; that is the agent's own doing (archived issue 2507), and

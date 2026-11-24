@@ -275,7 +275,7 @@ export function ActivityScreen({
     // The same cast as the cards' (`loadPart`): the payload is the envelope and
     // `LEDGER_SECTIONS`, which is all the headline and the drawing read; what
     // the facts, the delta and the foot take from `coverage` and `previous`
-    // comes from the second read below (timeline.cards.test.tsx draws them
+    // comes from the second read below (the timeline cards test draws them
     // from nothing more).
     const ledger = loadOutcomes(new URLSearchParams(key), LEDGER_SECTIONS) as Promise<Result<Outcomes>>
     ledger.then((r) => {
@@ -350,7 +350,7 @@ export function ActivityScreen({
       for (const old of [...parts.current.keys()]) if (!old.startsWith(now)) parts.current.delete(old)
       // THE ONE CAST: a sectioned payload is the envelope and `sections` only,
       // and each card is handed exactly the sections it reads (`CARD_SECTIONS`;
-      // timeline.cards.test.tsx draws every card from nothing more).
+      // the timeline cards test draws every card from nothing more).
       p = loadOutcomes(new URLSearchParams(query), sections) as Promise<Result<Outcomes>>
       parts.current.set(k, p)
       const mine = p
