@@ -885,7 +885,7 @@ export function runStateLine(run: IssueRun, merge: MergeCard | null = null): str
     case 'PLANNING':
       return 'A planner agent is reading the issue and the repository. It changes nothing.'
     case 'PLANNED':
-      return run.plan_approval === 'auto'
+      return run.plan_approval === 'auto' && run.plan_lint?.held !== true
         ? 'Holds no capacity. Approval is automatic: the next read approves this plan.'
         : 'Holds no capacity. Waiting for a person.'
     case 'APPROVED':
@@ -1163,7 +1163,7 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
         {canAct && (
           <div className="rn-wait">
             <p className="rn-wait-t">
-              {run.plan_approval === 'required' ? (
+              {run.plan_approval === 'required' || run.plan_lint?.held === true ? (
                 <><b>Waiting for a person.</b> Anyone in <WorkspaceNamed id={run.tenant_id} phrase /> may approve, edit or reject.</>
               ) : (
                 <><b>Approval is automatic:</b> the next read approves this plan. Anyone in <WorkspaceNamed id={run.tenant_id} phrase /> may act on it first.</>

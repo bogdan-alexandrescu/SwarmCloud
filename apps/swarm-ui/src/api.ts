@@ -2022,6 +2022,28 @@ function fixtureIssueRuns(): IssueRun[] {
     ...fixtureRunsMade,
     ...fixtureExampleRuns(),
     fixtureIssueRun('run_4c1e09d2'),
+    // An `auto` plan held for its expected cost (owner, 2026-11-24).
+    fixtureIssueRun('run_c057h01d', {
+      plan_approval: 'auto', created_at: created, updated_at: planned,
+      plan_lint: {
+        replans: 0, held: true, replan_findings: [], planner_task_ids: ['task_planner_fixture'], replan_error: null,
+        findings: [{
+          code: 'EXPECTED_COST_OVER_THRESHOLD', step: null, requirement: null,
+          message: "The plan's expected cost is $41.00-$68.00, above the $30.00 an automatic approval may start (SWARM_PLAN_COST_HOLD_USD); a person approves it.",
+        }],
+      },
+    }),
+    // A run the readiness pre-pass ended NOT_READY, before any planner ran.
+    fixtureIssueRun('run_9e4d0a5b', {
+      state: 'NOT_READY', terminal: true, plan: null, plan_digest: null, plan_revision: 0,
+      created_at: created, updated_at: planned,
+      not_ready: {
+        kind: 'too_vague', reason: 'The issue does not say which export is meant or what the date should be.',
+        needs: ['Name the export (notes or invoices)', 'State the expected date format'],
+      },
+      readiness: { task_id: 'task_readiness_fixture', outcome: 'not_ready', reason: 'Read by the pre-pass: too vague to plan.', cost_usd: 0.04 },
+      history: [{ at: created, from: null, to: 'PLANNING', by: 'operator@example.com' }, { at: planned, from: 'PLANNING', to: 'NOT_READY', by: 'swarm-api' }],
+    }),
     // The workflow it started is one the workflow fixture holds (QA1-FIX-22, runs-submit-04).
     fixtureIssueRun('run_19ab77e0', {
       state: 'RUNNING', workflow_id: 'wf_audit_01', approved_by: 'operator@example.com',

@@ -88,6 +88,14 @@ describe('an auto plan held for its expected cost', () => {
     expect(chip?.getAttribute('title')).toBe(COST_REASON)
   })
 
+  it('does not say the next read approves it: a held auto plan waits for a person', async () => {
+    const page = await mount(run({ plan_approval: 'auto', plan_lint: lint({ replans: 0, replan_findings: [], planner_task_ids: [],
+      findings: [{ code: 'EXPECTED_COST_OVER_THRESHOLD', step: null, requirement: null, message: COST_REASON }] }) }))
+    const text = visible(page)
+    expect(text).not.toContain('the next read approves')
+    expect(text).toContain('Waiting for a person.')
+  })
+
   it('keeps the lint word for a lint hold', async () => {
     const page = await mount(run({ plan_lint: lint() }))
     expect(visible(page.querySelector('.rn-lint [title]'))).toBe('lint · 2 findings')
