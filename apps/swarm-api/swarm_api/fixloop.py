@@ -1575,7 +1575,7 @@ def add_rounds(ctx: Any, *, tenant_id: str, workflow_id: str, by: str, rounds: i
     if doc is not None and tenant is not None:
         try:
             _drive_doc(ctx, tenant, doc, now, report)
-        except Exception as exc:  # noqa: BLE001 -- the round is recorded; the sweep drives it again
+        except Exception as exc:  # the round is recorded; the sweep drives it again
             log.exception("fix loop %s: drive failed after add-round", loop["id"])
             report.fail_drive(loop["id"], exc)
     after = _doc(db, tenant_id, loop["id"]) or {}

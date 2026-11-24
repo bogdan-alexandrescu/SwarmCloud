@@ -562,7 +562,7 @@ def _proposals(ctx: AppContext, tenant_id: str, rows: list[Mapping[str, Any]]) -
         return {}
     try:
         counts = approvals.proposals_by_schedule(ctx, tenant_id)
-    except Exception as exc:  # one read's failure does not blank the list
+    except Exception as exc:  # one read's failure does not blank the list  # noqa: BLE001
         log.warning("schedules: proposals of %s not counted: %s", tenant_id, type(exc).__name__)
         return None
     complete = all(row.get("complete") is not False for row in counts.values())
