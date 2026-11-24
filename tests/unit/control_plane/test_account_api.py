@@ -1170,45 +1170,12 @@ def test_a_302_does_not_carry_the_service_identity_token_onward():
 
 
 # -- the seam itself -------------------------------------------------------
-
-
-def test_every_path_the_ui_calls_exists_on_this_api():
-    """THE TEST FOR THE FAILURE THAT HAPPENED THREE TIMES IN ONE DAY.
-
-    Twice a component gained a route, another component gained the call, and
-    nothing was built in between: swarm-api had no broker URL, the worker had
-    no broker URL, and then the browser asked swarm-api for /v1/accounts/authorize
-    -- a path swarm-api did not have. Each time both ends were written and the
-    seam was not, and each time it was found by a probe against the deployed
-    service rather than by a test.
-
-    This reads the paths the UI actually calls out of api.ts and asserts this
-    router serves every one. It is deliberately a string comparison against the
-    real client: a mock would agree with whatever the server happens to do.
-    """
-    import re
-    from pathlib import Path
-
-    from swarm_api.routes.accounts import router
-
-    ui = Path(__file__).resolve().parents[3] / "apps/swarm-ui/src"
-    api_ts = ui / "api.ts"
-    if not api_ts.exists():  # pragma: no cover - the UI is not always checked out
-        pytest.skip("apps/swarm-ui/src/api.ts is not present")
-    # Accounts.tsx too: the holder reads (archived issue 379) are called from there, and a
-    # seam this test cannot see is the seam it exists for.
-    sources = api_ts.read_text() + (ui / "Accounts.tsx").read_text()
-
-    called = set()
-    for raw in re.findall(r"['\"`](/v1/accounts[^'\"`]*)['\"`]", sources):
-        # Template holes become the path parameter this router declares, so the
-        # comparison is about the SHAPE of the route rather than one instance.
-        called.add(re.sub(r"\$\{[^}]*\}", "{account_id}", raw))
-
-    served = {r.path for r in router.routes}
-    missing = sorted(called - served)
-
-    assert not missing, (
-        "the UI calls paths this API does not serve: "
-        f"{missing}. Both ends exist and the seam does not."
-    )
+#
+# "Every path the UI calls exists on this API" (the failure that happened
+# three times in one day: /v1/accounts/authorize called before swarm-api had
+# it) is held by apps/swarm-ui/src/__tests__/contract.routes.test.ts, which
+# drives every accounts request function of api.ts and Accounts.tsx over a
+# stubbed fetch and matches each request against
+# apps/swarm-ui/src/generated/constants/routes.json -- every route of this
+# app's OpenAPI document, kept current by `scripts/gen_api_types.py --check`
+# (part of #72).

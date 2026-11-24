@@ -5923,7 +5923,10 @@ newline and a first key `_generated` naming the regenerate command. **To add
 a group**: write the module, run `uv run python scripts/gen_api_types.py` from
 the repository root, commit the module and the JSON it writes together, and
 add a test beside the group's code that compares the file with the objects
-it reads (the `states` group's is in `test_api_constants.py`). Never edit a
+it reads (the `states` group's is in `test_api_constants.py`; the `routes`
+group's -- every API method and path, the codec's console links, the outcome
+sections, which `apps/swarm-ui/src/__tests__/contract.routes.test.ts` holds
+the console's requests and router to -- in `test_api_constants_routes.py`). Never edit a
 file under `generated/` by hand.
 
 **A failure goes to the fix turn with its fix.** A stale file is handed back
