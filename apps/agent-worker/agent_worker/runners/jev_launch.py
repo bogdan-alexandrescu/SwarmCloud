@@ -121,7 +121,7 @@ def secret_env_names(environ: dict[str, str]) -> str:
 
             found = RUNNER_PROFILES.get(profile)
             names.update(getattr(found, "secrets", ()) or ())
-        except Exception:  # noqa: BLE001 -- the gates' names and the key are still scrubbed
+        except Exception:  # noqa: BLE001, S110
             pass
     config = environ.get(GATES_CONFIG_ENV, "")
     if config:

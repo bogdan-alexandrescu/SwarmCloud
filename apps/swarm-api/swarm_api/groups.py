@@ -206,7 +206,7 @@ class CloudIdentityGroups:
             body = ""
             try:
                 body = response.text[:500]
-            except Exception:  # pragma: no cover - defensive
+            except Exception:  # pragma: no cover - defensive  # noqa: BLE001
                 body = "<unreadable>"
             raise GroupLookupError(f"cloud identity returned {status}: {body}")
         return response.json()
@@ -321,7 +321,7 @@ class CloudIdentityGroups:
         for index, group in enumerate(candidate_groups):
             try:
                 member = self.is_member(member_email, group, fresh=fresh)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 # GroupLookupError, or anything the transport throws.
                 if not fresh and self._known_outside(member_email, group):
                     log.warning(
@@ -364,7 +364,7 @@ def check_group_readable(resolver: MembershipResolver, member_email: str,
         return bool(resolver.groups_for(member_email, (group_email,), fresh=True))
     except GroupLookupError:
         raise
-    except Exception as exc:  # noqa: BLE001 - transport level, one answer
+    except Exception as exc:  # transport level, one answer
         raise GroupLookupError(f"directory check errored: {type(exc).__name__}") from exc
 
 

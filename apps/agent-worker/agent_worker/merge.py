@@ -5614,7 +5614,7 @@ def _fix_round_heads(ctx: ActionContext, own: Mapping[str, Any], opener: Mapping
             if workflow is None:
                 continue
             ctx.verify_upstream(task_id, doc, of_workflow=workflow)
-        except Exception:  # noqa: BLE001 - unreadable or unsigned: not a round's head
+        except Exception:  # noqa: BLE001, S112
             continue
         if doc.get("tenant_id") != ctx.tenant_id:
             continue

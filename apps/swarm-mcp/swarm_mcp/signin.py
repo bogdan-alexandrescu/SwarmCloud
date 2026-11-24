@@ -354,7 +354,7 @@ def login(
             notify(f"Opening a browser to sign in to {deployment.context}. If none opens, visit:\n  {url}")
         try:
             open_browser(url)
-        except Exception:  # noqa: BLE001 - a missing browser is not a failed login
+        except Exception:  # noqa: BLE001, S110
             pass
         if not callback.done.wait(timeout):
             raise SwarmError(

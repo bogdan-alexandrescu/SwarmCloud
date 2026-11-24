@@ -455,7 +455,7 @@ class LocalForwarder:
         self._told.add(cause)
         try:
             self._on_unavailable(cause)
-        except Exception:  # noqa: BLE001 -- a notice never stops the forwarder
+        except Exception:  # noqa: BLE001, S110
             pass
 
     async def probe(self) -> bool:
@@ -518,14 +518,14 @@ class LocalForwarder:
             self._live.add(task)
         try:
             await self._handle(reader, writer)
-        except Exception:  # noqa: BLE001 -- one connection's failure is never the gate's
+        except Exception:  # noqa: BLE001, S110
             pass
         finally:
             if task is not None:
                 self._live.discard(task)
             try:
                 writer.close()
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110
                 pass
 
     def _refuse(self, writer: asyncio.StreamWriter, status: int, cause: str) -> None:
@@ -651,7 +651,7 @@ class LocalForwarder:
             finally:
                 try:
                     dst.close()
-                except Exception:  # noqa: BLE001
+                except Exception:  # noqa: BLE001, S110
                     pass
 
         await asyncio.gather(pump(reader, up_writer, True), pump(up_reader, writer, False))

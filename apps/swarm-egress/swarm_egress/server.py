@@ -121,7 +121,7 @@ class Tunnel:
         for writer in (self.client, self.upstream):
             try:
                 writer.close()
-            except Exception:  # noqa: BLE001 - closing is best effort
+            except Exception:  # noqa: BLE001, S110
                 pass
 
 
@@ -196,7 +196,7 @@ class EgressServer:
         finally:
             try:
                 writer.close()
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110
                 pass
 
     async def _refuse(self, writer: asyncio.StreamWriter, refusal: Refusal) -> None:
@@ -209,7 +209,7 @@ class EgressServer:
         try:
             writer.write(("\r\n".join(lines) + "\r\n\r\n").encode("ascii"))
             await writer.drain()
-        except Exception:  # noqa: BLE001 - the browser may already be gone
+        except Exception:  # noqa: BLE001, S110
             pass
 
     async def _read_head(self, reader: asyncio.StreamReader) -> tuple[str, str, dict[str, str]]:

@@ -1261,7 +1261,7 @@ def on_task_finished(ctx: Any, task_id: str, *, tenant_id: str | None = None) ->
             continue
         try:
             _drive_doc(ctx, tenant, doc, now, report)
-        except Exception:  # noqa: BLE001 -- a doorbell: the sweep drives it again
+        except Exception:  # a doorbell: the sweep drives it again
             log.exception("fix loop %s: drive failed on the end of %s", loop_id, task_id)
             report.fail(loop_id, "drive_failed")
     return report
@@ -1316,7 +1316,7 @@ def sweep_tenant(ctx: Any, tenant_id: str, *, limit: int = SWEEP_LIMIT) -> LoopR
             continue
         try:
             _drive_doc(ctx, tenant, doc, now, report)
-        except Exception:  # noqa: BLE001 -- the next tick sweeps it again
+        except Exception:  # the next tick sweeps it again
             log.exception("fix loop %s: sweep failed", snap.id)
             report.fail(snap.id, "drive_failed")
     return report

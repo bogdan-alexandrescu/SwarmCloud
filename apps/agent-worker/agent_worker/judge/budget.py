@@ -549,7 +549,7 @@ def settle(ledger: Ledger, monthly: MonthlyLedger, *, workspace: str, month: str
         return 0
     try:
         monthly.add(workspace, month, tokens)
-    except Exception as exc:  # accounting never fails the attempt
+    except Exception as exc:  # accounting never fails the attempt  # noqa: BLE001
         with ledger._locked() as state:
             state["settled_tokens"] = int(state["settled_tokens"]) - tokens
         if log is not None:

@@ -433,7 +433,7 @@ class Browser:
         if self._stderr_task is not None:
             try:
                 await asyncio.wait_for(asyncio.shield(self._stderr_task), 1.0)
-            except Exception:  # noqa: BLE001 -- a timeout or a failed read: what was read is kept
+            except Exception:  # noqa: BLE001, S110
                 pass
         return self.proc.returncode, list(self.stderr)
 
@@ -1068,7 +1068,7 @@ class PageFollower:
     async def _quietly(self, work: Awaitable[None]) -> None:
         try:
             await work
-        except Exception as exc:  # a page that closed before the attach answered, a session that went
+        except Exception as exc:  # a page that closed before the attach answered, a session that went  # noqa: BLE001
             self.recover("attach_failed", exc)
 
     async def follow(self, target: str | None) -> None:
@@ -1089,7 +1089,7 @@ class PageFollower:
             if old_session is not None:
                 try:
                     await self._cdp.call("Target.detachFromTarget", {"sessionId": old_session})
-                except Exception:  # noqa: BLE001 -- already gone with its page
+                except Exception:  # noqa: BLE001, S110
                     pass
             self.current = target
             self._origin(None)
@@ -1117,7 +1117,7 @@ class PageFollower:
                     self._children.clear()
                 try:
                     await self._cdp.call("Target.detachFromTarget", {"sessionId": session})
-                except Exception:  # noqa: BLE001 -- already gone
+                except Exception:  # noqa: BLE001, S110
                     pass
                 raise
             if self._session != session:

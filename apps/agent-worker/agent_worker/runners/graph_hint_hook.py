@@ -148,7 +148,7 @@ def _read_state(path):
     try:
         with open(path, encoding="utf-8") as handle:
             names = json.load(handle).get("hinted")
-    except Exception:
+    except Exception:  # noqa: BLE001
         return []
     return [n for n in names if isinstance(n, str)] if isinstance(names, list) else []
 
@@ -190,7 +190,7 @@ def main():
             return 0
         _write_state(state, [*hinted, name])
         _emit({"additionalContext": HINT.format(name=name)})
-    except Exception:
+    except Exception:  # noqa: BLE001
         return 0
     return 0
 

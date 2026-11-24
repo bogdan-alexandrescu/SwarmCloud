@@ -289,7 +289,7 @@ def test_the_session_shows_the_new_device_once_the_gate_reports_it(client, ldb, 
         try:
             while True:
                 ws.receive_json()
-        except Exception:  # noqa: BLE001 -- the relay double went away (1012)
+        except Exception:  # noqa: BLE001, S110
             pass
     read = client.get(f"/v1/tasks/{TASK}/live/session", headers=bearer("alice")).json()
     assert read["session"]["device"] == {"preset": "iphone-15", "orientation": "portrait", "touch": True}

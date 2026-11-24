@@ -243,7 +243,7 @@ def _merge_run(ctx: Any, tenant_id: str, doc: Mapping[str, Any]) -> IssueRun | N
 def _read(partial: list[dict[str, Any]], name: str, fn: Callable[[], Any], empty: Any) -> Any:
     try:
         return fn()
-    except Exception:  # noqa: BLE001 -- one failed read is named in `partial`, never the whole board
+    except Exception:  # one failed read is named in `partial`, never the whole board
         log.exception("pipeline read %s failed", name)
         partial.append({"read": name, "status": FAILED_READ_STATUS})
         return empty
@@ -275,7 +275,7 @@ def pipeline(ctx: Any, tenant_id: str, *, source: str | None = None, state: str 
         if key not in seen:
             try:
                 seen[key] = approvals.read_schedule(ctx.db, tenant_id, key)
-            except Exception:  # noqa: BLE001 -- named in `partial`; the card still draws
+            except Exception:  # named in `partial`; the card still draws
                 log.exception("pipeline schedule read failed")
                 schedules_failed = True
                 seen[key] = None
