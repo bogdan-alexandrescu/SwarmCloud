@@ -1335,7 +1335,7 @@ connects with is not a person at the screen.
 **Phase P, the park: `PARKED` with `ParkReason.HUMAN_REQUIRED`, no capacity.**
 Invariant 4 forbids sleeping through a long wait, and a person's lunch is a
 long wait. The worker parks exactly as the quota path does
-(`Worker._park_for_quota`, `apps/agent-worker/agent_worker/lifecycle.py::Worker._park_for_quota`;
+(`Worker._park_for_quota`, `apps/agent-worker/agent_worker/parking.py::ParkMixin._park_for_quota`;
 `ControlPlane.park`, `apps/agent-worker/agent_worker/control.py::ControlPlane.park`): checkpoint,
 upload, park, release, exit. `RUNNING -> PARKED` is already legal
 (`apps/common/swarm_common/states.py::_ALLOWED`). The park cannot reuse an

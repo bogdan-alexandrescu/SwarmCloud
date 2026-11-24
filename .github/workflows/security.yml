@@ -83,6 +83,21 @@ jobs:
       security-events: write
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # Nothing here pushes: the token stays out of .git/config, away from
+          # the repository scripts this job runs.
+          persist-credentials: false
+          # The gate's base is the TRUE merge base with the branch the pull
+          # request targets now, read from this history: full history (every
+          # branch) wherever the gate has a base -- a pull request, a queue
+          # entry, a lane push -- and one commit where it has none (main's
+          # push, the schedule, a dispatch). The gate then fetches nothing,
+          # which it could not do without the credential. Measured 2026-11-24:
+          # a full clone of this repository took 4.6 s against 4.1 s at depth 1,
+          # and the gate's own depth-1 fetch of the base commit (0.6 s) is gone.
+          # `cond && 1 || 0`: 1 is truthy, so the false branch is reached only
+          # when cond is false.
+          fetch-depth: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 1 || 0 }}
 
       - name: install trivy
         # Explicit and pinned, not aquasecurity/trivy-action: that action's
@@ -158,33 +173,52 @@ jobs:
         # is still in the Security tab above. scripts/trivy-new-findings.sh
         # says why.
         #
-        # A LANE PUSH (`swarm/**`) compares with main's tip, the base its pull
-        # request will have: with no base, every finding main already carries
-        # would fail it, and the merge step holds a red push run at the head
-        # as red. A tip that cannot be read fails here, never "no base".
+        # THE BASE IS THE TRUE MERGE BASE (--merge-base), read from the
+        # checkout's full history: a pull request against the branch it
+        # targets NOW (pull_request.base.ref), never the base commit recorded
+        # on the event, which after a retarget is the old branch's and hid
+        # every finding that branch carried; a queue entry against its base
+        # commit (the entry descends from it, so that is its merge base). A
+        # pull request's checkout is the merge commit, whose merge base with
+        # its target is the target tip it was merged onto.
+        #
+        # A LANE PUSH (`swarm/**`) compares with its merge base with main, the
+        # base its pull request will have: with no base, every finding main
+        # already carries would fail it, and the merge step holds a red push
+        # run at the head as red. No merge base in the history fails the
+        # script (exit 2), never "no base".
         #
         # TRIVY_SKIP_DB_UPDATE: the gate's head scan judges against the DB the
         # download step fetched (with its retry and fallback), never a fresh,
         # unretried download of its own (archived issue 2351).
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          QUEUE_BASE_SHA: ${{ github.event.merge_group.base_sha }}
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
           TRIVY_SKIP_DB_UPDATE: "true"
         run: |
           set -euo pipefail
-          base="${BASE_SHA}"
-          if [ -z "${base}" ] && [ "${EVENT}" = "push" ] && [ "${REF}" != "refs/heads/main" ]; then
-            tip="$(git ls-remote origin refs/heads/main)" \
-              || { echo "::error::could not read main's tip to compare this lane push with"; exit 1; }
-            base="$(printf '%s\n' "${tip}" | awk '$2 == "refs/heads/main" { print $1 }')"
-            if ! printf '%s' "${base}" | grep -Eq '^[0-9a-f]{40}$'; then
-              echo "::error::main's tip read as '${base}', not a commit; nothing to compare this lane push with"
-              exit 1
-            fi
-            echo "lane push: comparing with main's tip ${base}"
+          against=""
+          case "${EVENT}" in
+            pull_request)
+              if [ -z "${PR_BASE_REF}" ]; then
+                echo "::error::this pull request names no base branch; nothing to compare it with"
+                exit 1
+              fi
+              against="refs/remotes/origin/${PR_BASE_REF}" ;;
+            merge_group) against="${QUEUE_BASE_SHA}" ;;
+            push)
+              if [ "${REF}" != "refs/heads/main" ]; then
+                against="refs/remotes/origin/main"
+                echo "lane push: comparing with its merge base with main"
+              fi ;;
+          esac
+          if [ -n "${against}" ]; then
+            scripts/trivy-new-findings.sh gate --merge-base "${against}"
+          else
+            scripts/trivy-new-findings.sh gate --base ""
           fi
-          scripts/trivy-new-findings.sh gate --base "${base}"
 
   secrets:
     # NAME-KEEPER (CI-FOLD, archived issue 1799): the `secret scan · ...` steps of
@@ -221,6 +255,9 @@ jobs:
       security-events: write
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # Nothing here pushes: the token stays out of .git/config.
+          persist-credentials: false
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
@@ -370,7 +407,11 @@ jobs:
       # `path:line C<n> <rule-id>`, never the value.
       #
       #   * a pull request or a merge-queue entry: only the lines it adds
-      #     (--diff reads the merge base; the checkout above is full history);
+      #     (--diff reads the merge base; the checkout above is full history).
+      #     A pull request's --diff is the branch it targets NOW
+      #     (refs/remotes/origin/<base.ref>), never the base commit recorded
+      #     on the event, which a retarget leaves on the old branch; the
+      #     guard's own checkout stays the base commit's;
       #   * main, the schedule and a dispatch: every tracked file.
       #
       # The list unset or altered on a same-repository run is exit 2: red, never
@@ -384,7 +425,7 @@ jobs:
         env:
           DEPLOYMENT_PATTERNS: ${{ secrets.DEPLOYMENT_PATTERNS }}
           EVENT: ${{ github.event_name }}
-          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
           QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
           FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
         working-directory: pr
@@ -394,7 +435,7 @@ jobs:
           # (guard/); the change is data in pr/, never run.
           guard="${GITHUB_WORKSPACE}/guard/scripts/guards/deployment-values.sh"
           case "${EVENT}" in
-            pull_request) scope=(--diff "${PR_BASE}") ;;
+            pull_request) scope=(--diff "refs/remotes/origin/${PR_BASE_REF:?this pull request names no base branch}") ;;
             merge_group)  scope=(--diff "${QUEUE_BASE}") ;;
             *)            scope=(--tree) ;;
           esac
@@ -448,6 +489,9 @@ jobs:
           # Full history, for `secret scan`: a key removed in the latest commit
           # is still a leaked key if it is reachable anywhere in the branch.
           fetch-depth: 0
+          # Nothing here pushes, and these steps run repository scripts a
+          # pull request can edit: the token stays out of .git/config.
+          persist-credentials: false
 
       - name: setup · install trivy
         id: setup-trivy
@@ -507,11 +551,18 @@ jobs:
         # carries every lane's commits, so nothing reaches main unscanned, and
         # the history scan above already covers the whole tree. --redact keeps
         # any finding's value out of the log; the rule id and file:line remain.
+        #
+        # The range is `origin/<the branch the pull request targets now>..head`:
+        # every commit of the head its target does not have, i.e. since the
+        # true merge base. Never the base commit recorded on the event, which a
+        # retarget leaves on the old branch, so the commits the pull request
+        # now brings from that branch went unscanned. The checkout above is
+        # full history, every branch included; nothing is fetched here.
         if: ${{ !cancelled() && github.event_name == 'pull_request' }}
         env:
           GITLEAKS_VERSION: "8.21.2"
           GITLEAKS_SHA256: "5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba"
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
@@ -524,7 +575,7 @@ jobs:
           tar -xzf "${RUNNER_TEMP}/${archive}" -C "${RUNNER_TEMP}/gitleaks" gitleaks
           "${RUNNER_TEMP}/gitleaks/gitleaks" git \
             --config .gitleaks.toml \
-            --log-opts "${BASE_SHA}..${HEAD_SHA}" \
+            --log-opts "refs/remotes/origin/${BASE_REF}..${HEAD_SHA}" \
             --redact --no-banner --exit-code 1 .
 
       # --- platform policy assertions ----------------------------------------
@@ -679,6 +730,9 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # Nothing here pushes: the token stays out of .git/config.
+          persist-credentials: false
 
       - id: auth
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0

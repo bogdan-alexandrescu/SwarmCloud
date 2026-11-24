@@ -302,7 +302,7 @@ worker: restore checkpoint, stage children's results, start the agent again
 3. **No live child, no park.** If every child is already terminal the await is
    logged and ignored, and the attempt ends as the agent's exit says.
    Otherwise the worker parks exactly as the quota path does
-   (`_park_for_quota`, `apps/agent-worker/agent_worker/lifecycle.py::Worker._park_for_quota`;
+   (`_park_for_quota`, `apps/agent-worker/agent_worker/parking.py::ParkMixin._park_for_quota`;
    `ControlPlane.park`, `apps/agent-worker/agent_worker/control.py::ControlPlane.park`):
    checkpoint, upload outputs, park, release, exit. `RUNNING -> PARKED` is a
    legal transition already
