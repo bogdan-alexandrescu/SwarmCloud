@@ -228,7 +228,7 @@ verify_git_tools_integrate_pr() {
 # FIX_LOOP_FILE alone, every added line reading `fix`, no line removed.
 verify_fix_loop_pr() {
   local number="$1" files patch added bad
-  files="$(jq -r '[.[].filename] | sort | join(" ")' "${WORK}/files.json")"
+  files="$(jq -r '[.[].filename] | sort | join(" ")' "${WORK}/files.json" | redact)"
   if [[ "${files}" == "${FIX_LOOP_FILE}" ]]; then
     ok "PR #${number}: the fix-loop pull request changes only ${FIX_LOOP_FILE}"
   else
@@ -303,7 +303,7 @@ while IFS=$'\t' read -r number head; do
   fi
   if ! jq -e --arg d "${CC_DIR}" 'any(.[]; .filename | startswith($d))' "${WORK}/files.json" >/dev/null; then
     unclassified=$(( unclassified + 1 ))
-    files="$(jq -r '[.[].filename] | join(" ")' "${WORK}/files.json")"
+    files="$(jq -r '[.[].filename] | join(" ")' "${WORK}/files.json" | redact)"
     fail_pr "${number}" "unclassified: no acceptance check owns this pull request (no check's marker in its body, no file under ${CC_DIR}), so no check's rules were applied; it changes: ${files:-nothing}"
     continue
   fi
