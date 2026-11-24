@@ -904,7 +904,7 @@ How a step gets its model, and what refuses it:
   land in `result_summary.runner.usage.models`, the model or models it says it
   actually used. When those name none of the pinned model, the worker logs
   `model_mismatch` with both values
-  (`apps/agent-worker/agent_worker/lifecycle.py::Worker._note_model_mismatch`),
+  (`apps/agent-worker/agent_worker/spend.py::SpendMixin._note_model_mismatch`),
   and the console's attempt view shows both. The outcome ledger groups cost
   by `model` and by `model_class` from these fields.
 * Changing a class's model is an edit to `local.runner_models` and a release;

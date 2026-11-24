@@ -47,6 +47,7 @@ import pytest
 from agent_worker import lifecycle
 from agent_worker import plugins as plugins_mod
 from agent_worker import questions as questions_mod
+from agent_worker import spend as spend_mod
 from agent_worker import workspace as workspace_mod
 from agent_worker.checkpoint import CheckpointManager
 from agent_worker.errors import ExitCode
@@ -662,6 +663,9 @@ def test_a_record_the_worker_finds_disagreeing_with_the_stream_fails_the_attempt
     stream the worker reads is gone), the step does not park."""
     monkeypatch.setenv(qb.ENABLE_ENV, "1")
     monkeypatch.setattr(lifecycle, "agent_stream_files", lambda profile: None)
+    # The stopped run's spend estimate reads the stream through `spend`'s own
+    # binding: gone there too, as it was when that method lived in lifecycle.
+    monkeypatch.setattr(spend_mod, "agent_stream_files", lambda profile: None)
     _seed(db, {})
 
     # MUTATION: treat `bridge_failed` as not asked -> the step SUCCEEDS with nobody's answer.
