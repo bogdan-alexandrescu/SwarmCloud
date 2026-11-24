@@ -165,8 +165,8 @@ describe('Repositories: the card says workflow files on or off, and has no switc
     expect(notes).toHaveLength(1)
     expect(notes[0]!.closest('.ur-card')).toBeNull()
     // Issue 81: the two sentences are behind the note's (i), word for word; one short line stays.
-    expect(helpIn(notes[0]!)).toBe(WHY)
-    expect(shownIn(notes[0]!)).toBe('Workflow files run with secrets before any merge.')
+    expect(helpIn(notes[0])).toBe(WHY)
+    expect(shownIn(notes[0])).toBe('Workflow files run with secrets before any merge.')
     // The role and the GitHub permissions have been read before the absences are.
     await waitFor(() => expect(calls.some((c) => c.url.split('?')[0] === '/v1/tenants/me')).toBe(true), WAIT)
     await waitFor(() => expect(calls.some((c) => c.url.split('?')[0] === '/v1/forge/permissions')).toBe(true), WAIT)
