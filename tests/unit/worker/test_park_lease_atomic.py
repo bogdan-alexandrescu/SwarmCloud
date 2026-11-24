@@ -158,6 +158,8 @@ class AbortingFirestore(TransactionalFirestore):
 def _no_backoff(monkeypatch):
     """The runner's backoff between two aborted runs, not slept in a unit test."""
     monkeypatch.setattr(control_mod, "_abort_sleep", lambda _s: None, raising=False)
+    # And the pause between two rounds of a contended park (issue 313).
+    monkeypatch.setattr(control_mod, "_park_contention_sleep", lambda _s: None, raising=False)
 
 
 def _control(db: AbortingFirestore, *, generation: int = 1) -> ControlPlane:
@@ -711,17 +713,22 @@ def test_a_commit_aborted_on_every_run_stops_at_the_bound_and_says_so():
         _park(control)
 
     runs = control_mod.TRANSACTION_ABORTED_RUNS
-    # MUTATION: retry the commit-exhausted error without a bound.
-    assert db.rpcs.names().count("begin") == runs * _library_attempts()
+    rounds = control_mod.PARK_CONTENTION_ROUNDS
+    # MUTATION: retry the commit-exhausted error without a bound. A park runs
+    # the runner's runs once per round (issue 313).
+    assert db.rpcs.names().count("begin") == rounds * runs * _library_attempts()
     message = str(raised.value)
+    assert f"{rounds} rounds" in message, message
     # MUTATION: raise the library's bare "Failed to commit transaction in 5
     # attempts." when the runs are spent: the task's error names no contention.
     assert f"on each of {runs} runs" in message, message
     assert "contention" in message, message
     assert "nothing was committed" in message, message
     assert " s" in message and "over " in message, message
-    # The library's last error is kept in the chain.
-    assert isinstance(raised.value.__cause__, ValueError)
+    # The library's last error is kept in the chain: the last round's
+    # runner error, and the library's ValueError behind it.
+    assert isinstance(raised.value.__cause__, core.Aborted)
+    assert isinstance(raised.value.__cause__.__cause__, ValueError)
     # Nothing landed.
     assert db.doc("tasks/task_1")["state"] == TaskState.RUNNING.value
     assert db.doc("leases/lease_1")["released_at"] is None
@@ -864,3 +871,231 @@ def test_a_quota_park_whose_commit_is_aborted_on_every_library_try_ends_parked(
     assert db.doc("leases/lease_1")["released_at"] is not None
     assert db.doc("pools/global")["active"] == 2
     assert db.event_types("task_1").count(EventType.PARKED.value) == 1
+
+
+# -- a park whose runner spends its runs on contention, in rounds (issue 313) ----
+#
+# The runner gives a park `TRANSACTION_ABORTED_RUNS` runs, about 3.75 s of
+# contention, and then raises the `Aborted` `_contention_exhausted` builds.
+# Contention on the pools every admission and release writes can outlast
+# that. A terminal write survives it through the lifecycle's rounds
+# (`TERMINAL_CONTENTION_ROUNDS`); a park gets the same rounds in
+# `ControlPlane`, the one place every direct park goes through.
+
+#: name -> the park call, for every park of the direct control plane.
+PARKS = {name: PATHS[name] for name in PATHS if PATHS[name][0] not in (_finish, _retry)}
+
+
+def _runner_contention(runs: int = 5) -> Exception:
+    """The `Aborted` the runner raises once its runs are spent."""
+    return control_mod._contention_exhausted(runs, 3.75, None, _aborted())
+
+
+class _ScriptedRunner:
+    """The production runner, with what each of its calls does first scripted.
+
+    A step that is an exception is raised in place of the call (the runner
+    spent its runs); a callable runs before the call is handed on (another
+    writer moved the task meanwhile); None hands the call on as it is."""
+
+    def __init__(self, db: AbortingFirestore, steps: list[Any]) -> None:
+        self._inner = FirestoreTransactionRunner(db)
+        self._steps = list(steps)
+        self.calls = 0
+
+    def run(self, fn: Callable[[Any], Any], *, call_options: Any = None) -> Any:
+        self.calls += 1
+        step = self._steps.pop(0) if self._steps else None
+        if isinstance(step, BaseException):
+            raise step
+        if callable(step):
+            step()
+        if call_options:
+            return self._inner.run(fn, call_options=call_options)
+        return self._inner.run(fn)
+
+
+def _scripted(
+    db: AbortingFirestore, steps: list[Any], *, generation: int = 1
+) -> tuple[ControlPlane, _ScriptedRunner, io.StringIO]:
+    stream = io.StringIO()
+    runner = _ScriptedRunner(db, steps)
+    control = ControlPlane(
+        db,
+        task_id="task_1",
+        attempt_id="att_1",
+        lease_id="lease_1",
+        tenant_id=TENANT,
+        generation=generation,
+        logger=build_logger(
+            task_id="task_1", attempt_id="att_1", tenant_id=TENANT,
+            generation=generation, runner_profile="mock", stream=stream,
+        ),
+        txn_runner=runner,
+    )
+    return control, runner, stream
+
+
+def _pauses(monkeypatch) -> list[float]:
+    """The pauses between rounds, recorded and never slept; the jitter held at 1."""
+    slept: list[float] = []
+    monkeypatch.setattr(control_mod, "_park_contention_sleep", slept.append, raising=False)
+    monkeypatch.setattr(control_mod, "_park_contention_jitter", lambda: 1.0, raising=False)
+    return slept
+
+
+def _round_warnings(stream: io.StringIO) -> list[dict[str, Any]]:
+    import json
+
+    lines = [json.loads(line) for line in stream.getvalue().splitlines() if line.strip()]
+    return [line for line in lines if "contention" in str(line.get("message", line.get("msg", "")))
+            and line.get("round") is not None]
+
+
+def test_the_park_rounds_are_four_with_a_two_second_pause():
+    # MUTATION: no rounds at all, or another number than the terminal write's.
+    assert control_mod.PARK_CONTENTION_ROUNDS == 4
+    assert control_mod.PARK_CONTENTION_PAUSE_SECONDS == 2.0
+
+
+@pytest.mark.parametrize("name", sorted(PARKS))
+def test_a_park_contended_on_two_rounds_parks_exactly_once_on_the_third(name, monkeypatch):
+    call, state, release_prefix, event = PARKS[name]
+    db = _seeded_for(name)
+    slept = _pauses(monkeypatch)
+    control, runner, stream = _scripted(db, [_runner_contention(), _runner_contention()])
+
+    call(control)
+
+    # MUTATION: raise the runner's contention Aborted on its first round, as
+    # main does: the park fails the task and nothing below is reached.
+    assert runner.calls == 3
+    task = db.doc("tasks/task_1")
+    assert task["state"] == state.value
+    assert task["current_lease_id"] is None
+    lease = db.doc("leases/lease_1")
+    assert lease["released_at"] is not None
+    assert lease["release_reason"].startswith(release_prefix)
+    # Released once: the pools came down by one, not by one per round.
+    assert set(_pools(db).values()) == {2}, _pools(db)
+    assert db.commits() == 1, db.rpcs.names()
+    types = db.event_types("task_1")
+    assert types.count(event.value) == 1, types
+    assert types.count(EventType.LEASE_RELEASED.value) == 1, types
+    assert control.committed_end is state
+    # MUTATION: pause without the round number: [2.0, 2.0].
+    assert slept == [2.0, 4.0]
+    warnings = _round_warnings(stream)
+    # MUTATION: log nothing, or log once per park rather than once per extra round.
+    assert [w["round"] for w in warnings] == [1, 2], stream.getvalue()
+    for warning in warnings:
+        assert warning["severity"] == "WARNING", warning
+        # MUTATION: leave out which park met the contention.
+        assert warning["reason"] in {r.value for r in ParkReason}, warning
+        # MUTATION: log the park's detail: its values are the caller's.
+        assert "detail" not in warning, warning
+
+
+def test_a_quota_park_contended_on_two_rounds_refunds_its_attempt_once(monkeypatch):
+    db = _seeded()
+    before = db.doc("tasks/task_1").get("attempt_count")
+    _pauses(monkeypatch)
+    control, _runner, _stream = _scripted(db, [_runner_contention(), _runner_contention()])
+
+    assert _park(control) is True
+
+    task = db.doc("tasks/task_1")
+    # MUTATION: re-apply an earlier round's payload: the refund lands twice.
+    assert task["attempt_count"] == before - 1
+    assert task["metadata"][control_mod.QUOTA_PARK_RESUMES_METADATA_KEY] == 1
+
+
+def test_a_park_whose_rounds_are_spent_raises_an_error_naming_them(monkeypatch):
+    from google.api_core import exceptions as core
+
+    db = _seeded()
+    pools = _pools(db)
+    slept = _pauses(monkeypatch)
+    clock = [0.0]
+    monkeypatch.setattr(control_mod, "_abort_clock", lambda: clock[0], raising=False)
+
+    def pause(seconds: float) -> None:
+        slept.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr(control_mod, "_park_contention_sleep", pause, raising=False)
+    aborts = [_runner_contention() for _ in range(10)]
+    control, runner, stream = _scripted(db, list(aborts))
+
+    with pytest.raises(core.Aborted) as raised:
+        _park(control)
+
+    rounds = control_mod.PARK_CONTENTION_ROUNDS
+    # MUTATION: retry without a bound.
+    assert runner.calls == rounds
+    assert slept == [2.0, 4.0, 6.0]
+    message = str(raised.value)
+    # MUTATION: raise the last round's runner error as it is: no rounds named.
+    assert f"{rounds} rounds" in message, message
+    assert "12.0 s" in message, message
+    assert ParkReason.PROVIDER_QUOTA_EXHAUSTED.value in message, message
+    # MUTATION: drop the cause.
+    assert raised.value.__cause__ is aborts[rounds - 1]
+    assert [w["round"] for w in _round_warnings(stream)] == [1, 2, 3]
+    # Nothing landed.
+    assert db.doc("tasks/task_1")["state"] == TaskState.RUNNING.value
+    assert db.doc("leases/lease_1")["released_at"] is None
+    assert _pools(db) == pools
+    assert db.event_types("task_1") == []
+
+
+def test_a_fence_met_on_the_second_round_goes_up_at_once(monkeypatch):
+    db = _seeded()
+    before_pools = _pools(db)
+    slept = _pauses(monkeypatch)
+
+    def take_over() -> None:
+        db.documents["tasks/task_1"]["current_generation"] = 2
+        db.documents["leases/lease_1"]["generation"] = 2
+
+    control, runner, _stream = _scripted(db, [_runner_contention(), take_over])
+
+    with pytest.raises(FencedWriteRefused):
+        _park(control)
+
+    # MUTATION: treat a fence as contention: a third round is run.
+    assert runner.calls == 2
+    assert slept == [2.0]
+    assert db.doc("tasks/task_1")["state"] == TaskState.RUNNING.value
+    assert db.doc("leases/lease_1")["released_at"] is None
+    assert _pools(db) == before_pools
+    assert db.event_types("task_1") == []
+
+
+def _foreign_errors() -> list[Exception]:
+    from google.api_core import exceptions as core
+
+    return [
+        RuntimeError("boom"),
+        # An Aborted the runner did not build (it was not its runs being spent).
+        core.Aborted(CONTENTION),
+        core.ServiceUnavailable("the store did not answer"),
+        ValueError("Failed to commit transaction in 5 attempts."),
+    ]
+
+
+@pytest.mark.parametrize("index", range(4))
+def test_an_error_that_is_not_the_runners_contention_is_not_run_again(index, monkeypatch):
+    error = _foreign_errors()[index]
+    db = _seeded()
+    slept = _pauses(monkeypatch)
+    control, runner, stream = _scripted(db, [error])
+
+    with pytest.raises(type(error)) as raised:
+        _park(control)
+
+    # MUTATION: recognise any Aborted, or anything in the chain, as contention.
+    assert raised.value is error
+    assert runner.calls == 1
+    assert slept == []
+    assert _round_warnings(stream) == []
