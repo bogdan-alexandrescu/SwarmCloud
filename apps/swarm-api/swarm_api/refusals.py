@@ -699,6 +699,34 @@ SWITCHES: dict[str, Switch] = {
         "NOT_READY verdict, a run still planning, failed or cancelled) is refused 409. On "
         "once the decision page (lane U4) hides the composer on such a run",
     ),
+    # The person-asked re-plan (docs/design/plans-pipeline.md §3.5, §5, lane
+    # P4 PLANS-REVISE). Each gates `plan:revise` (and `replan_running` also
+    # `plan:edit`), a route new with that lane. Off, the request goes ahead
+    # and the log names the refusal it would have made; what keeps the plan
+    # safe then is the digest: an answer to a plan that moved is never
+    # applied, and a second re-plan cancels the one it replaces.
+    "edit_level_required": Switch(
+        code="edit_level_required",
+        why="a plan:revise by a member who may comment on the plan but not edit it (the "
+        "owner's Q6) is refused 403. On once the decision page (lane U4) offers Request "
+        "changes only at may_decide.edit",
+    ),
+    "nothing_to_revise": Switch(
+        code="nothing_to_revise",
+        why="a plan:revise with no open comment to send is refused 422. On once the decision "
+        "page (lane U4) offers Request changes only while a comment is open",
+    ),
+    "replan_cap": Switch(
+        code="replan_cap",
+        why="a plan:revise past plan_review_caps.replans (5 by default, Admin › Settings) is "
+        "refused 429. On once the settings lane's cap is set in every environment and the "
+        "decision page shows the count",
+    ),
+    "replan_running": Switch(
+        code="replan_running",
+        why="a plan:edit or another plan:revise while a re-plan runs is refused 409. On once "
+        "the decision page (lane U4) offers Cancel the re-plan beside the editor",
+    ),
 }
 
 

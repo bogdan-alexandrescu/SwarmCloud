@@ -951,6 +951,19 @@ export interface PlanReviewCapsRequest {
 }
 
 /**
+ * `plan:revise`'s body: a request for changes (`plan_digest`, and `entries` to
+ * send only some open comments), or `cancel` naming the re-plan to stop. There
+ * is no field for a profile, an image, a command, a resource or a model: the
+ * agent's shape is the run's planner's (invariant 10), and any other key is
+ * refused 422.
+ */
+export interface PlanRevise {
+  plan_digest?: string | null
+  entries?: string[] | null
+  cancel?: string | null
+}
+
+/**
  * `PUT /v1/workspaces/{tenant_id}/plan-settings`. A field left out is
  * unchanged; `inherit` clears the workspace's choice so the platform's
  * applies. The caps are the platform's: a `caps` key is refused by name.
