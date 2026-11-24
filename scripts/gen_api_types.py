@@ -331,7 +331,13 @@ def _constants_package() -> ModuleType:
 
 def constant_groups() -> list[tuple[str, Any]]:
     """(name, module) for every constants group, sorted by name. Imports each
-    group's module, which imports only the standard library; runs no `build()`."""
+    group's module, which imports only the standard library; runs no `build()`.
+
+    A tree without the package (a scratch copy of this script alone, as the
+    pre-publish gate's tests make) has no groups; a constants file left there
+    is then an orphan, so `--check` still fails on it rather than passing."""
+    if not (CONSTANTS_PACKAGE / "__init__.py").is_file():
+        return []
     return _constants_package().groups()
 
 

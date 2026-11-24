@@ -193,6 +193,16 @@ def test_importing_a_group_module_imports_no_application_package():
     assert seen["apps"] == []
 
 
+def test_a_tree_without_the_package_has_no_groups_and_still_names_its_inputs(
+        tmp_path, monkeypatch, capsys):
+    """The pre-publish gate's tests copy this script alone into a scratch
+    repository; `--inputs` must still print the trigger list there."""
+    monkeypatch.setattr(gen, "CONSTANTS_PACKAGE", tmp_path / "api_constants")
+    assert gen.constant_groups() == []
+    assert gen.main(["--inputs"]) == 0
+    assert capsys.readouterr().out.splitlines() == [*gen.INPUTS, *gen.CONSTANTS_INPUTS]
+
+
 def test_groups_are_discovered_in_sorted_order():
     names = [name for name, _ in gen.constant_groups()]
     assert names == sorted(names)
