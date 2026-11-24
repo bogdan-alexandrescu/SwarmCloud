@@ -198,6 +198,17 @@ def test_the_cheap_walkers_that_read_a_doc_are_in_the_guard_set():
         assert guard not in DOC_GUARDS, guard
 
 
+def test_the_out_of_tree_read_scanner_is_in_the_guard_set():
+    # A test that newly reads docs prose, CI YAML, a root *.md or the Makefile
+    # sits in a file no diff of the read file names: only GUARD_TESTS, which
+    # every pull request and the pre-publish gate run, reaches it (issue 71).
+    guard = "tests/unit/scripts/test_check_test_reads.py"
+    # MUTATION: drop it from GUARD_TESTS and this is red.
+    assert guard in GUARDS, guard
+    # A docs-only diff cannot add a read under tests/.
+    assert guard not in DOC_GUARDS, guard
+
+
 def test_the_inventory_walkers_the_train_ejected_for_are_in_the_guard_set():
     # Whole-tree inventories no diff selects (owner's improvement plan,
     # 2026-11-23): a new runbook or plugin agent breaks them without either
