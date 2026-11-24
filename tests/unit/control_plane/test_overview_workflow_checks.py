@@ -20,21 +20,13 @@ under `node --test`. That suite needs node and `npm ci`, and `make test` is
 offline by contract, so it is NOT in the gate; running it is one command
 (`cd apps/swarm-ui && npm test`) and the report for this change names that gap.
 
-What belongs HERE is what only Python can assert: that the UI's restatements of
-the frozen contract still match the frozen contract. Three of them exist and
-every one has a failure it prevents:
-
-  1. THE PARK VOCABULARY. `types.ts` groups the eight `ParkReason` members by
-     what ends the park, and the grouping decides how loudly each is reported.
-     A member added to `swarm_common.states` and not to the grouping falls
-     through to "no reason this build understands", which is survivable; a
-     member DROPPED from a group silently downgrades a park that needs a person
-     to one that clears itself. Neither is visible from the TypeScript.
-  2. THE STALL THRESHOLD. It must sit above the platform's own
-     `dispatch_timeout_seconds` and above the measured cold start, or it fires
-     on healthy work. Both numbers live in Python.
-  3. THE CAPACITY VOCABULARY. A PARKED task holds no capacity (CONTRACT
-     invariant 1), so the copy must not send a reader to raise a ceiling.
+What was here and is now `contract.constants.test.ts`'s, against the constants
+generated from the Python objects (part of #72): the park vocabulary and its
+three groups, the stall threshold against `dispatch_timeout_seconds` and the
+measured cold start, and the in-flight gate against the frozen
+CONCURRENCY_STATES. What is left reads the console's source alone: where the
+threshold's number came from, and copy that never sends a reader of a PARKED
+task, which holds no capacity (CONTRACT invariant 1), to raise a ceiling.
 
 The TypeScript is read as TEXT, the same technique `test_dispatch_ui_surface`
 uses and for the same reason: no node, no network, no credentials, and a mock
@@ -48,9 +40,6 @@ from pathlib import Path
 
 import pytest
 
-from swarm_common.config import Settings
-from swarm_common.states import CONCURRENCY_STATES, ParkReason
-
 ROOT = Path(__file__).resolve().parents[3]
 UI = ROOT / "apps/swarm-ui/src"
 
@@ -58,11 +47,6 @@ UI = ROOT / "apps/swarm-ui/src"
 #: existing api.ts seam test: this suite has to pass in a tree that holds only
 #: the Python services.
 pytestmark = pytest.mark.skipif(not UI.is_dir(), reason="apps/swarm-ui/src is not present")
-
-#: The reconciler lane's measured DISPATCHED -> STARTING distribution, over 231
-#: tasks. A stall threshold below the p90 fires on an ordinary cold start.
-MEASURED_COLD_START_P90_SECONDS = 159.0
-
 
 def _src(name: str) -> str:
     return (UI / name).read_text()
@@ -85,121 +69,9 @@ def _code(name: str) -> str:
     return "\n".join(line for line in src.splitlines() if not line.lstrip().startswith("//"))
 
 
-def _string_array(source: str, const: str) -> list[str]:
-    """The string literals of `export const <const> = [...] as const`."""
-    match = re.search(
-        rf"export const {re.escape(const)}\s*=\s*\[(.*?)\]\s*as const", source, re.S
-    )
-    assert match is not None, f"{const} is not declared in types.ts as a const array"
-    return re.findall(r"'([^']*)'", match.group(1))
-
-
-def _string_set(source: str, const: str) -> set[str]:
-    """The members of `export const <const>: ReadonlySet<...> = new Set([...])`."""
-    match = re.search(
-        rf"export const {re.escape(const)}\s*:[^=]*=\s*new Set<[^>]*>\(\[(.*?)\]\)",
-        source,
-        re.S,
-    )
-    assert match is not None, f"{const} is not declared in types.ts as a Set literal"
-    return set(re.findall(r"'([^']*)'", match.group(1)))
-
-
 # --------------------------------------------------------------------------
-# 1. The park vocabulary, against the frozen contract
+# 1. The stall threshold, and where its number came from
 # --------------------------------------------------------------------------
-
-def test_the_ui_lists_exactly_the_park_reasons_this_platform_writes():
-    listed = _string_array(_src("types.ts"), "PARK_REASONS")
-    assert sorted(listed) == sorted(r.value for r in ParkReason), (
-        "PARK_REASONS in types.ts and swarm_common.states.ParkReason disagree. "
-        "The UI classifies a park by this list; a reason missing from it is "
-        "reported as one the build does not understand."
-    )
-
-
-def test_the_three_park_groups_partition_every_reason():
-    """Every reason in exactly one group.
-
-    In NO group: the park is reported as unrecognised, which is loud but wrong
-    for a reason the platform has always written. In TWO groups: the same
-    parked step is counted in two problems, so the panel's figures do not add
-    up to the number of parked tasks.
-    """
-    src = _src("types.ts")
-    groups = {
-        name: _string_set(src, name)
-        for name in ("PARK_NEEDS_A_PERSON", "PARK_CLEARS_ITSELF", "PARK_WAITS_ON_A_STEP")
-    }
-
-    seen: dict[str, str] = {}
-    for name, members in groups.items():
-        for reason in members:
-            assert reason not in seen, f"{reason} is in both {seen[reason]} and {name}"
-            seen[reason] = name
-
-    assert sorted(seen) == sorted(r.value for r in ParkReason), (
-        "the three park groups do not cover exactly the eight ParkReason "
-        f"members; they cover {sorted(seen)}"
-    )
-
-
-def test_the_reason_that_raises_nothing_is_the_dependency_one_and_only_that():
-    """DEPENDENCY_INCOMPLETE is the ordinary state of a queued workflow step.
-
-    A three-step chain has two steps parked like it for its whole life with
-    nothing wrong, so `parkedCheck` deliberately raises no problem for it.
-    Moving a second reason into this group would make that reason invisible on
-    the landing screen -- CREDENTIAL_MISSING in particular never clears without
-    a person and must never be silent.
-    """
-    assert _string_set(_src("types.ts"), "PARK_WAITS_ON_A_STEP") == {
-        ParkReason.DEPENDENCY_INCOMPLETE.value
-    }
-
-
-def test_every_reason_the_ui_groups_has_copy_to_render():
-    src = _src("types.ts")
-    copy_block = re.search(r"export const REASON_COPY[^{]*\{(.*?)\n\}", src, re.S)
-    assert copy_block is not None, "REASON_COPY is not declared in types.ts"
-    documented = set(re.findall(r"^\s*([A-Z_]+):", copy_block.group(1), re.M))
-    missing = sorted({r.value for r in ParkReason} - documented)
-    assert not missing, (
-        f"these park reasons have no copy, so the panel would print the bare "
-        f"enum value at a reader: {missing}"
-    )
-
-
-# --------------------------------------------------------------------------
-# 2. The stall threshold, against the numbers that bound it
-# --------------------------------------------------------------------------
-
-def _stall_seconds() -> int:
-    match = re.search(r"const WORKFLOW_STALL_SECONDS = (\d+)", _code("checks.ts"))
-    assert match is not None, "checks.ts does not declare WORKFLOW_STALL_SECONDS"
-    return int(match.group(1))
-
-
-def test_the_stall_threshold_clears_the_platforms_own_dispatch_deadline():
-    """Above `dispatch_timeout_seconds`, or it restates the lease check.
-
-    `leaseCheck` already reports a lease admitted but never dispatched, and the
-    deadline it reports against is this setting. A workflow threshold at or
-    below it would report the same fact a second time, five rows apart, on the
-    same panel.
-    """
-    assert _stall_seconds() > Settings(project_id="x").dispatch_timeout_seconds
-
-
-def test_the_stall_threshold_clears_the_measured_cold_start():
-    """Above the measured p90 of DISPATCHED -> STARTING, or it fires on health.
-
-    p50 122.6s and p90 159.0s across 231 tasks. A threshold inside that range
-    marks an ordinary cold start as a stall, and a check whose first lesson is
-    "ignore me" is worse than no check.
-    """
-    assert _stall_seconds() > MEASURED_COLD_START_P90_SECONDS
-
 
 def test_the_stall_threshold_says_where_its_number_came_from():
     """CLAUDE.md: if you changed a default, say WHY next to the value."""
@@ -226,26 +98,8 @@ def test_the_stall_threshold_is_crossed_with_an_inclusive_comparison():
 
 
 # --------------------------------------------------------------------------
-# 3. Invariant 1: a parked step is a progress problem, not a capacity one
+# 2. Invariant 1: a parked step is a progress problem, not a capacity one
 # --------------------------------------------------------------------------
-
-def test_the_in_flight_gate_is_the_frozen_concurrency_set():
-    """Summed over CONCURRENCY_STATES, never over a second list.
-
-    CONTRACT invariant 1 names LEASED, DISPATCHED, STARTING and RUNNING as the
-    only states that create demand. A workflow holding one of them is working,
-    however long it has been at it, and that is what makes the stall threshold
-    usable. A second spelling of the set here would teach a different model of
-    what costs money than admission uses.
-    """
-    src = _code("checks.ts")
-    assert re.search(r"for \(const state of CONCURRENCY_STATES\)", src), (
-        "stepsInFlight does not iterate the frozen CONCURRENCY_STATES set"
-    )
-    # And the set it iterates is the frozen one, spelled the same on both sides.
-    ui_set = _string_set(_src("types.ts"), "CONCURRENCY_STATES")
-    assert ui_set == {s.value for s in CONCURRENCY_STATES}
-
 
 def test_the_parked_copy_never_sends_a_reader_to_raise_a_ceiling():
     """A parked task holds no capacity, so the copy must not imply it does.
@@ -278,7 +132,7 @@ def test_the_stall_copy_says_it_is_a_progress_problem():
 
 
 # --------------------------------------------------------------------------
-# 4. The panel says "workflow" at all
+# 3. The panel says "workflow" at all
 # --------------------------------------------------------------------------
 
 def test_derive_checks_registers_a_workflow_check_and_a_parked_check():

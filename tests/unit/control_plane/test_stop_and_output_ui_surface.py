@@ -11,11 +11,11 @@ preference:
   1. THE STOP CONTROL IS ACTUALLY WIRED. `POST /v1/tasks/{id}/cancel` worked
      for weeks with no caller. A component that exists and is rendered by
      nothing is the same hole with a nicer filename.
-  2. THE STATES IT OFFERS ON MATCH THE STATES THE API ACCEPTS. `request_cancel`
-     409s the four terminal states; a button drawn on one is a button that
-     errors. This is a restatement of a server rule in TypeScript, which this
-     repository's own docs call out as the shape that drifts -- so it is
-     compared against the Python here rather than trusted.
+  2. A STOP ALREADY REQUESTED IS NOT OFFERED AGAIN. That the control is offered
+     on exactly the states the API accepts is `contract.constants.test.ts`'s,
+     against the constants generated from the frozen states (part of #72); that
+     the API refuses those states and no other is
+     test_cancel_request_is_not_a_cancel.py's.
   3. THE VIEWER NEVER BUILDS A LOCATION. The content route's whole security
      argument is that a caller names an artifact and the server resolves it. A
      client that assembled a key or a `gs://` uri into a request would be
@@ -33,8 +33,6 @@ import re
 from pathlib import Path
 
 import pytest
-
-from swarm_common.states import TERMINAL_STATES
 
 ROOT = Path(__file__).resolve().parents[3]
 UI = ROOT / "apps/swarm-ui/src"
@@ -129,45 +127,8 @@ def test_only_the_stop_control_calls_the_cancel_route() -> None:
 
 
 # --------------------------------------------------------------------------
-# 2. The states it offers on are the states the API accepts
+# 2. It is offered once
 # --------------------------------------------------------------------------
-
-def test_the_control_is_offered_on_exactly_the_states_cancel_accepts() -> None:
-    """`canBeStopped` versus `Store.request_cancel`'s refusal set.
-
-    The API raises `Conflict` for SUCCEEDED, FAILED, CANCELLED and
-    DEAD_LETTERED and accepts everything else. `canBeStopped` says the same
-    thing by excluding `TERMINAL_STATES`, so the check is that the set the
-    client excludes IS the frozen terminal set -- not a hand-written list
-    beside it that happens to agree today.
-    """
-    types_ts = src("types.ts")
-    match = re.search(
-        r"export function canBeStopped\([^)]*\)[^{]*\{(.*?)\n\}",
-        types_ts,
-        re.DOTALL,
-    )
-    assert match is not None, "canBeStopped is not in types.ts; this check is vacuous"
-    body = match.group(1)
-    assert "TERMINAL_STATES.has" in body, (
-        "canBeStopped does not go through TERMINAL_STATES. A second list of "
-        "terminal states in this file is the restatement that drifts."
-    )
-
-    declared = re.search(
-        r"export const TERMINAL_STATES:[^=]*=\s*new Set<TaskState>\(\[(.*?)\]\)",
-        types_ts,
-        re.DOTALL,
-    )
-    assert declared is not None, "TERMINAL_STATES is not declared in types.ts"
-    client_states = set(re.findall(r"'([A-Z_]+)'", declared.group(1)))
-    server_states = {s.value for s in TERMINAL_STATES}
-    assert client_states == server_states, (
-        f"the client's terminal states {sorted(client_states)} differ from the "
-        f"frozen contract's {sorted(server_states)}; the stop control would be "
-        "drawn on a state the API refuses, or withheld on one it accepts."
-    )
-
 
 def test_the_control_does_not_reappear_once_a_stop_is_requested() -> None:
     """A second press would imply the first had not taken.
