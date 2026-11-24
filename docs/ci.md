@@ -146,19 +146,19 @@ example-shared-project could read it there. The VM is single-use and is deleted
 afterwards, but that window is real. The owner accepted it on 2026-10-14. No
 other secret may go on a guarded job.
 
-`tests/unit/scripts/test_fork_prs_off_self_hosted.py` holds all of this:
+The rules a reviewer holds every workflow change to:
 
 * every job is either on the guarded expression or listed as hosted, with a
-  reason the test checks against the job;
+  reason;
 * no guarded job has `id-token: write`;
 * no guarded job holds a secret beyond its `GUARDED_SECRETS` entry;
-* the expression is evaluated for push, same-repository and fork pull
-  requests, with the hatch on and off;
-* the short form is accepted only for the `SHORT_FORM_WORKFLOWS` files, whose
-  triggers it reads from the workflow itself.
+* the expression holds for push, same-repository and fork pull requests, with
+  the hatch on and off;
+* the short form is used only by workflows whose triggers make it safe.
 
-A new job that silently uses a hosted image fails CI, and so does one that
-puts a credential on the pool.
+No unit test reads the workflows to check this any more: a test reads only its
+own tree ([below](#a-test-reads-only-its-own-tree)), so these rules are held in
+review.
 
 What the VM image differs in: `/usr/local/bin` is not writable by the
 runner user, so a job installs a tool into `$RUNNER_TEMP` (security.yml does
@@ -549,8 +549,9 @@ measure is a row saying so and a failed step, nothing more. It exists because
 the indexer-image split's start-time question needed every release's size, and until this step
 no release recorded its own, so the 2026-10-05 bisect had to read each one
 back out of the registry.
-`tests/unit/scripts/test_release_size_record.py` holds the step's place and
-flags; `test_image_sizes.py` holds the table.
+`test_image_sizes.py` holds the table; the step's place in `release.yml` is
+held in review, since no test reads CI YAML
+([below](#a-test-reads-only-its-own-tree)).
 
 **What the release does when it cannot reuse.** Each ends in a red job whose
 last line (and a run annotation) names the reason and links the job:
@@ -757,9 +758,9 @@ pull request, and `build images` is skipped there (a pull request's own build
 pushes nothing and records no manifest), so PR CI never exercises
 the real hand-off. It checks the scripts against a fake `gh` and `gcloud`
 (`tests/unit/scripts/test_ci_built_images.py`,
-`test_push_images_promotes_recorded_digests.py`), reads both workflows to hold
-the wiring in place (`test_release_reuses_ci_images.py`), and lints both with
-actionlint. It cannot show that the job receives `actions: read`, that
+`test_push_images_promotes_recorded_digests.py`) and lints both workflows with
+actionlint; no test reads the workflows' wiring
+([below](#a-test-reads-only-its-own-tree)). It cannot show that the job receives `actions: read`, that
 GitHub's API returns what the fake returns, that `gh run download` fetches the
 artifact across runs, or that a release actually gets faster. The first push
 to `main` after this lands is the first real proof — read its release run.
@@ -1257,38 +1258,18 @@ environment's settings. Measured 2026-09-24:
 without an approval by choosing to bypass the rule. That is GitHub's default,
 and it was left as measured.
 
-**What a pull request proves about this, and what it cannot.**
-`tests/unit/scripts/test_release_prod_gate.py` reads `release.yml` and
-schedules it: for a prod dispatch, with and without `skip_build`, it walks
-the job graph, evaluates every job-level `if:` against how the jobs it needs
-ended, makes the job that names `prod` be rejected, cancelled or never
-reached, and asserts that no job that promotes, applies or deploys can start
-in any of those runs — and that, approved, every one of them still can. Two
-more tests cancel the run. They try every way the jobs, or the earlier steps,
-could have ended, and assert that no such job starts and no such step runs.
-It also asserts that exactly one job names `prod`, and that no dev release
-names it. The re-run tests carry an approved first attempt into a second
-one. They try every set of jobs one partial re-run can restart without
-`approval`, from every distinct approved first attempt. In each, no job that
-promotes, applies or deploys may start, and a job that exists to fail must
-start. "Re-run all jobs" must still reach every such job, and a dev re-run
-must still promote, apply and deploy. The model's re-run rules come from
-GitHub's documentation and have not been observed on this workflow. `test_push_images_scan_only.py` holds `--scan-only` to moving
-nothing, which is what exempts the pre-approval scan.
+**What a pull request proves about this, and what it cannot.** Issue 71
+deleted the test that read `release.yml` and scheduled its job graph for a prod
+dispatch (no test reads CI YAML, [below](#a-test-reads-only-its-own-tree)).
+`test_push_images_scan_only.py` still holds `--scan-only` to moving nothing,
+which is what exempts the pre-approval scan. That no job that promotes,
+applies or deploys can start before `approval (prod)`, including on a partial
+re-run, is held in review of `release.yml`.
 
-The test finds prod-facing steps by reading each `run:` as text, and it errs
-toward counting a step as one. A step whose *prose* says "terraform apply"
-counts as an apply. That happened: the pre-approval summary did it, and the
-test failed the pre-approval job for applying. So reword the prose; do not
-loosen the match.
-
-It cannot show that the `prod` environment still has its reviewer, that
-GitHub's scheduler agrees with the model (the model reads a job's `success()`
-over its direct needs only, the more permissive reading, so "cannot start" in
-the model means cannot start on GitHub), that GitHub starts `always()` work
-after a cancel (that is its documented behaviour, not observed here), or that
-a real prod release waits. The first prod dispatch after this lands is that
-proof.
+No test shows that the `prod` environment still has its reviewer, that GitHub
+starts `always()` work after a cancel (its documented behaviour, not observed
+here), or that a real prod release waits. The first prod dispatch after a
+change to `release.yml` is that proof.
 
 ## A dev release that changes IAM waits for the owner
 
@@ -1443,9 +1424,9 @@ plan that forgets a custom role must be classified IAM, and a plan that only
 moves image digests must not. It also runs every owner-named family with every
 changing action, and inputs that must be refused rather than answered. The
 self-test (`plan-guard.sh --self-test`) carries the same cases.
-`tests/unit/scripts/test_release_dev_iam_gate.py` schedules `release.yml` with
-the model from `test_release_prod_gate.py`, trying every value the
-classification can write. It checks four things:
+Issue 71 deleted the test that scheduled `release.yml` to check this gate (no
+test reads CI YAML, [below](#a-test-reads-only-its-own-tree)); what it checked,
+and what a reviewer of `release.yml` now holds by hand:
 
 * nothing applies or deploys after an IAM plan unless `dev-iam` is approved;
 * a routine plan flows through `dev` untouched;
@@ -1542,9 +1523,8 @@ held the lock, and every later push queued behind it. `release-dev` is
   prod release, a dev dispatch that may build its own images (`or-build`), or
   a `skip_build` redeploy. So `verify` still runs on every dispatch, prod
   included. Each job that needs `verify` states one rule: `verify` succeeded,
-  or a push skipped it. `test_release_prod_gate.py` holds that a dispatch
-  whose `verify` did not succeed starts nothing that promotes, applies or
-  deploys. (The plugin tag no longer waits for any of this: since
+  or a push skipped it, so a dispatch whose `verify` did not succeed starts
+  nothing that promotes, applies or deploys. (The plugin tag no longer waits for any of this: since
   2026-11-04 `application.yml` makes it once `format / unit tests` passed,
   [below](#the-plugins-bridge-tag-is-made-once-the-unit-tests-pass).)
 * **C. The groups run in parallel**, as matrix jobs with `fail-fast:
@@ -1757,8 +1737,7 @@ pull requests on the sandbox. So there was no acceptance-before-prod gate to
 keep, and none was added. A prod release still waits at `approval (prod)`.
 Its `deploy` still warms, smokes and proves GKE inside the release, on steps
 conditioned on `github.event.inputs.environment == 'prod'`. `dev-iam` still
-holds a dev plan that changes IAM. `test_release_prod_gate.py` and
-`test_release_dev_iam_gate.py` hold both gates.
+holds a dev plan that changes IAM.
 
 ### Its identity is not the deployer
 
@@ -1893,10 +1872,7 @@ granting `id-token` could call it and mint the deployer -- exactly what
 `test_no_deployer_pinned_workflow_is_callable` forbids. A composite
 action runs inside the caller's job, so the token still names `release.yml` or
 `hotfix.yml`. Every gate -- `approval`, `dev-iam`, each job's `if:` -- stays in
-the workflow files, and the release tests flatten each composite action into
-the job that runs it (`_workflow` in
-`tests/unit/scripts/test_release_reuses_ci_images.py`), so
-`test_release_prod_gate.py` still reads every prod-facing step.
+the workflow files, beside the composite actions their jobs run.
 
 ### What it skips, and why that is safe
 
@@ -3928,14 +3904,13 @@ grew out of the swarm-ui-gate change):
 | nothing in the list (e.g. only `terraform/infra/`) | skipped | skipped | skipped | skipped — only `ci-gate`, which waits for `terraform.yml` |
 | a push to `main`, a queue entry, a dispatch | all | runs | run | runs |
 
-**A docs-only change still runs the Python tests that read `docs/`.**
-`test_docs_describe_what_was_built`, `test_docs_spec_amendments` and ~30 others
-hold the documentation to the code; skipping them would let a docs-only pull
-request break `main`. "Reads" is found by the pick step, not listed: a module
+**A docs-only change still runs the Python tests that name `docs/` paths.**
+No test reads docs prose ([below](#a-test-reads-only-its-own-tree)); what is
+left are tests of scripts that read docs, run on their own fixtures or as a
+subprocess (`scripts/lib/check-doc-links.sh`). "Reads" is found by the pick step, not listed: a module
 whose source builds a path through the directory (`REPO / "docs"`,
 `"apps/swarm-ui/src"`), every module that imports such a module (a helper, or
-a test module used as one, as `test_issue_forms.py` imports
-`test_nav_headings_agree.py`), and everything under a `conftest.py` that reads
+a test module used as one), and everything under a `conftest.py` that reads
 it. A mention in prose or a dict key named `"docs"` is not a read: matching
 those pulled in 496 of 551 files. A test that builds the path some other way
 would be missed on the pull request and caught by `main`'s push run, which runs
@@ -4935,6 +4910,37 @@ to refuse. Main still builds -- only the images its commit changed
 still promotes exactly what main built, including the per-release OS-package
 refresh of PR 1279.
 
+## A test reads only its own tree
+
+**Issue 71.** A unit test reads only the tree it tests. Nothing under `tests/`
+opens docs prose (`docs/`, but for a `.json` data file), anything under
+`.github/`, a root-level `*.md` (`CLAUDE.md`, `CONTRACT.md`, `README.md`, ...)
+or the `Makefile`'s text. **Why:** a test that pins a sentence of
+`docs/ci.md` or a line of a workflow turns red on an edit to a tree it does not
+test, so a docs pull request broke the unit tests of code nobody touched and a
+code pull request inherited a red it did not cause. About 200 test files did;
+issue 71 deleted those pins outright. A pin over prose or YAML is **deleted,
+never moved** into another check, script or lint over the same prose or YAML:
+there is no check over docs prose or CI YAML.
+
+**A value that really crosses trees is published by its owner as generated
+JSON.** The one such value here is the shell of the workflow steps that are
+programs (the auto-merge gate, the merge train's tick, ready-on-green's
+judge), whose tests run it against a fake `gh` or `git`. The CI tree
+publishes it as `scripts/generated/ci-run-blocks.json`, written by
+`uv run python scripts/gen_ci_run_blocks.py`; tests read it through
+`tests/unit/scripts/ci_run_blocks.py` and never open `.github/`.
+`uv run python scripts/gen_ci_run_blocks.py --check` exits 1 when a run block
+was edited without regenerating; `scripts/changed-guards.sh` runs it as a
+command, not as a test, when a workflow, a composite action, the generator or
+the JSON changes.
+
+**The guard.** `scripts/check_test_reads.py` finds every such read under
+`tests/` and holds the whole tree with no baseline; its whole-tree test sits in
+`GUARD_TESTS`, so a new read is red on every pull request. With no test reading
+docs, the selector no longer follows a doc that cites a changed path to the
+tests that name it.
+
 ## A pull request runs the unit tests its change reaches
 
 **Owner decision 2026-10-14 (the delivery speed plan, B2).** On a pull request
@@ -4956,15 +4962,6 @@ says the change reaches, which are
   (a change to `scripts/lib/common.sh` reaches the tests of every script that
   sources it), and a generic basename (`Dockerfile`, `__init__.py`) only
   beside one of its directories' names;
-* every test naming a doc that cites a changed path (`doc_closure`): a
-  `docs/**/*.md` that names a changed non-doc path by its **full**
-  repo-relative path counts as changed, one level deep. The PushTestCell-move incident moved
-  `PushTestCell` out of `Access.tsx` while `docs/onboarding.md` still cited it
-  there; the tests that resolve that citation name only `onboarding.md`, so no
-  rule picked them and main's push went red. Full path only, because a
-  basename (`App.tsx`, `main.py`) is shared by many files; never from a changed
-  doc, because 55 docs cite `CLAUDE.md` and following them would make a
-  docs-only change select hundreds of files;
 * when the change also touches `docs/` or `apps/swarm-ui/`, the pick step's
   own area readers, as a docs-only change picks them.
 
@@ -5370,8 +5367,7 @@ fails, the script prints a warning and exits 0. The cost is one slower first
 agent. The step also sets `continue-on-error`. In the prod release it runs
 only when the verify step succeeded, because warming the previous digest would
 warm nothing, and only under `!cancelled()`, because it executes jobs in the
-environment. That puts it under the prod gate's checks
-(`test_release_prod_gate.py` counts it as a deploy). In `accept.yml` it runs
+environment. That makes it a deploy for the prod gate. In `accept.yml` it runs
 only after a release completed successfully, and so after that release's
 verify.
 `tests/unit/scripts/test_warm_jobs.py` and
@@ -5702,10 +5698,9 @@ but only its doc guards for a docs-only diff, below), every
 changed `tests/unit/**/test_*.py`, and every `tests/unit/**/test_*.py` whose
 text names a changed path by repo-relative path or basename. A generic basename
 (`__init__.py`, `package.json`, …) selects by full path only, or it would pick
-half the suite. A `docs/**/*.md` that cites a changed non-doc path by its full
-path adds its own path and basename to what a test may name (the
-selector's `doc_closure` above): a test that resolves a doc's citations names
-the doc, not the file it cites. It runs them in **one** `pytest -q -n auto -p no:warnings` call
+half the suite. A doc citing a changed path is not followed to the tests
+that name it: no test reads docs
+([below](#a-test-reads-only-its-own-tree)). It runs them in **one** `pytest -q -n auto -p no:warnings` call
 (collecting `tests/unit/scripts` whole costs ~135 s, so files, not
 directories), then `scripts/lib/check-contract-parity.sh`, with 540 s and 180 s
 deadlines (under the pre-publish gate the parity check is a part of its own,

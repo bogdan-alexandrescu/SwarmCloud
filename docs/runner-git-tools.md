@@ -33,8 +33,7 @@ as its own design). §0 and §6 describe the platform as it was before the
 build, and stay as the record of why it was built.
 
 Code is cited as `path::Symbol`, never by line number. The 2026-10-02 merge
-wave moved `lifecycle.py` by hundreds of lines and broke every line citation
-(`tests/unit/scripts/test_docs_cite_worker_symbols.py`). All of the code was
+wave moved `lifecycle.py` by hundreds of lines and broke every line citation. All of the code was
 read on 2026-10-13 at `cd49267`.
 
 ---

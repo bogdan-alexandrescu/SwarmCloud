@@ -45,9 +45,7 @@ Owner decision on data, 2026-10-14:
 ## 1. Inventory: what exists today
 
 Read from `main` at `33d2c87` (2026-10-14). Code is cited by symbol rather
-than by line, so a citation survives the code moving
-(`tests/unit/scripts/test_docs_cite_worker_symbols.py` holds other docs to
-that rule).
+than by line, so a citation survives the code moving.
 
 ### 1.1 The index and the graph (built)
 

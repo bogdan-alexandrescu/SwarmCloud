@@ -143,6 +143,12 @@ Environment specifics that will bite you:
 * Never build a Firestore client at import time; expose `create_app()` and let
   uvicorn use `--factory`. A module-level client makes every test that imports the
   module need credentials.
+* A test reads only its own tree: never docs prose, `.github/`, a root `*.md`
+  or the `Makefile`, so a docs edit cannot turn a code pull request red; a value
+  that crosses trees is generated JSON from its owner
+  (`scripts/generated/ci-run-blocks.json`, `--check` to catch drift), and no
+  check runs over docs prose or CI YAML
+  ([docs/ci.md](ci.md#a-test-reads-only-its-own-tree)).
 
 ---
 
@@ -452,15 +458,15 @@ issues name rather than their titles. Two lanes handed `App.tsx` for two
 different reasons overwrite each other exactly as if they had been handed the
 same one.
 
-**The forms' "Where" list follows the nav, and a test holds it there.**
-`tests/unit/scripts/test_issue_forms.py` reads `SECTIONS` in
-`apps/swarm-ui/src/App.tsx` and fails when a tab is added, renamed or removed
-without the forms following — a form still offering "Runner profiles" after the
-tab became "Profile headroom" sends the reporter looking for a screen that is
-not there. The same test holds every label a form applies to
-[`.github/labels.yml`](../.github/labels.yml). It cannot read GitHub, so a label
-deleted there is not caught; create a missing one from its entry in that file
-with `gh label create`.
+**The forms' "Where" list follows the nav.** A change that adds, renames or
+removes a tab in `SECTIONS` (`apps/swarm-ui/src/App.tsx`) updates the forms in
+the same pull request — a form still offering "Runner profiles" after the tab
+became "Profile headroom" sends the reporter looking for a screen that is not
+there. Every label a form applies must exist in
+[`.github/labels.yml`](../.github/labels.yml); create a missing one from its
+entry there with `gh label create`. No test reads the forms (a test reads only
+its own tree, [docs/ci.md](ci.md#a-test-reads-only-its-own-tree)), so both are
+held in review.
 
 ---
 

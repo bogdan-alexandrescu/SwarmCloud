@@ -991,7 +991,7 @@ acceptance is run by the owner, against dev, from
 OB2 and OB3 get the one review (credentials, tenant isolation, IAM); OB2 is
 also the dev-iam review. OB5 needs the frozen request of §3.3 accepted, or
 builds the "without it" path; OB8 adds a tab, so it updates the issue forms in
-the same lane (`tests/unit/scripts/test_issue_forms.py` holds them to the nav).
+the same lane (their "Where" list follows the nav).
 
 ---
 

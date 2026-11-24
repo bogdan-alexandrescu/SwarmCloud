@@ -242,5 +242,4 @@ Findings and later work are issues filed through the forms in
   value yourself and say when.
 * Two issues that edit the same file are one lane, not two.
 * The forms' "Where" list follows the nav and their labels follow
-  [`.github/labels.yml`](.github/labels.yml);
-  `tests/unit/scripts/test_issue_forms.py` holds both.
+  [`.github/labels.yml`](.github/labels.yml); review holds both.
