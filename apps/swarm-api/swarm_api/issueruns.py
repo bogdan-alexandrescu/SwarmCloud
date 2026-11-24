@@ -771,6 +771,10 @@ _DIAGRAM_ANYWHERE: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
 _DIAGRAM_STATEMENT = re.compile(
     r"(call|style|classDef|class|linkStyle|links?|properties|details)(?![\w-])", re.IGNORECASE)
 _DIAGRAM_STATEMENTS = re.compile(r"[;{}]")
+#: The state and data grammars need no separator between two statements, so
+#: there a styling word is refused wherever it stands outside a label.
+_DIAGRAM_LOOSE = re.compile(r"(?<![\w-])(style|classDef|class|linkStyle)(?:\s+[\w\"*,-]|\s*$)",
+                            re.IGNORECASE)
 _DIAGRAM_LINES = re.compile(r"\r\n|\r|\n")
 #: `#name;`, Mermaid's entity form. Decoded before the tokens are looked for.
 _DIAGRAM_ENTITY = re.compile(r"&?#(x?[0-9a-z]+);", re.IGNORECASE)
@@ -799,7 +803,7 @@ def _decoded(line: str) -> str:
     return line
 
 
-def _diagram_refused_token(line: str) -> str | None:
+def _diagram_refused_token(kind: str, line: str) -> str | None:
     """The §6.6 token `line` carries, as written or once decoded, or None."""
     for text in dict.fromkeys((line, _decoded(line))):
         for name, pattern in _DIAGRAM_ANYWHERE:
@@ -809,6 +813,13 @@ def _diagram_refused_token(line: str) -> str | None:
             found = _DIAGRAM_STATEMENT.match(statement.strip())
             if found:
                 return found.group(1)
+            if kind in ("state", "data"):
+                outside = _DIAGRAM_QUOTED.sub('""', statement)
+                if kind == "state":  # a transition's or note's text
+                    outside = outside.split(":", 1)[0]
+                found = _DIAGRAM_LOOSE.search(outside)
+                if found:
+                    return found.group(1)
     return None
 
 
@@ -882,7 +893,7 @@ def check_diagram_source(kind: Any, source: Any) -> str | None:
             if any(unicodedata.category(ch) in ("Cc", "Cf", "Cs", "Zl", "Zp")
                    and ch != "\t" for ch in text):
                 return f"line {number} holds a control or invisible character"
-        token = _diagram_refused_token(line)
+        token = _diagram_refused_token(kind, line)
         if token is not None:
             return (f"line {number} holds {token!r}, which a plan's diagram may not: no "
                     "directives, clicks, links, HTML, scripts or styling")
