@@ -184,7 +184,7 @@ def test_the_twice_refused_read_is_recorded_as_a_failed_publish_not_published_no
     git = {**out, "commit_count": 0, "dirty_count": 0}
     summary: dict[str, Any] = {
         "git": git,
-        "artifacts": [{"name": "verdict.json", "uri": "gs://swarm-artifacts-example/verdict.json"}],
+        "artifacts": [{"name": "verdict.json", "uri": "gs://swarm-artifacts-example-project/verdict.json"}],
     }
 
     assert worker._published_nothing(summary) is None
@@ -213,7 +213,7 @@ def test_a_failed_publish_with_no_commits_is_not_published_nothing(
             "commit_count": 0, "dirty_count": 0, "base": "a" * 40,
             "publish_reason": reason,
         },
-        "artifacts": [{"name": "verification.md", "uri": "gs://swarm-artifacts-example/v.md"}],
+        "artifacts": [{"name": "verification.md", "uri": "gs://swarm-artifacts-example-project/v.md"}],
     }
 
     assert worker._opens_pull_request()
