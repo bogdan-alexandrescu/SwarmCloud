@@ -337,7 +337,7 @@ interface Suggestion {
  * serve each profile's declared inputs beside `required_keys`, so this
  * constant can be deleted rather than compared.
  */
-const SUGGESTED: Record<string, Suggestion[]> = {
+export const SUGGESTED: Record<string, Suggestion[]> = {
   // runners/cliagent.py (prompt, also required). The prompt is all the
   // catalogue lets a caller send these two.
   'claude-code': [
@@ -445,7 +445,7 @@ const ACTION_TYPES = ['goto', 'click', 'fill', 'press', 'wait_for', 'wait', 'scr
  *  `press` keeps its key in the draft's `text` box, and the runner reads it
  *  as `key`. Sent as `text`, nothing read it, and since contract request 32
  *  the declared `press` shape refuses it. */
-const ACTION_SHAPE: Record<string, Array<{ prop: keyof BrowserAction; label: string; send?: string }>> = {
+export const ACTION_SHAPE: Record<string, Array<{ prop: keyof BrowserAction; label: string; send?: string }>> = {
   goto: [{ prop: 'url', label: 'url' }],
   click: [{ prop: 'selector', label: 'selector' }],
   fill: [{ prop: 'selector', label: 'selector' }, { prop: 'text', label: 'text' }],

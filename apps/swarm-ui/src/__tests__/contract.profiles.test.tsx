@@ -131,7 +131,8 @@ describe('the Submit form offers each profile what its contract declares', () =>
   it.each(RUNNER_STARTING)('offers %s only keys it declares', (name) => {
     const offered = suggested(name)
     expect(offered.length, `the form offers ${name} nothing`).toBeGreaterThan(0)
-    const declared = new Set([...PROFILES[name]!.required_keys, ...PROFILES[name]!.declared_inputs])
+    // The prompt is every profile's (validation.PLATFORM_INPUT_KEYS), declared or not.
+    const declared = new Set([...generated.platform_input_keys, ...PROFILES[name]!.required_keys, ...PROFILES[name]!.declared_inputs])
     // An undeclared key is a submission the API refuses with 422 invalid_input.
     expect(offered.filter((k) => !declared.has(k)), name).toEqual([])
   })

@@ -86,6 +86,10 @@
       "integrates"
     ]
   },
+  "platform_input_keys": [
+    "prompt",
+    "territory"
+  ],
   "profiles": {
     "await-input": {
       "control_plane": true,

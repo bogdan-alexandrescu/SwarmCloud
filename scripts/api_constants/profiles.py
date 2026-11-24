@@ -7,6 +7,8 @@ Read from the live catalogue and from swarm-api's validation, never restated:
     order), the keys it requires (`required_keys`), the closed `choices` of
     each input that has them, its `worker_action` (null when it starts a
     runner) and whether it is a `control_plane` profile, which runs nothing;
+  * `platform_input_keys`: the keys of `input` every profile takes beside its
+    declaration (`validation.PLATFORM_INPUT_KEYS`: the prompt, the territory);
   * `declaration_fields`: the field names every served input declaration
     carries (the keys of each `input_contract.inputs.<key>` object), which the
     console's pickers read -- names, not the values;
@@ -64,6 +66,7 @@ def build() -> dict[str, Any]:
         DEFAULT_STRATEGY,
         DISPATCH_CARRIERS,
         DISPATCH_STRATEGIES,
+        PLATFORM_INPUT_KEYS,
         dispatchable_strategies,
     )
 
@@ -93,6 +96,7 @@ def build() -> dict[str, Any]:
 
     return {
         "profiles": profiles,
+        "platform_input_keys": sorted(PLATFORM_INPUT_KEYS),
         "declaration_fields": sorted(fields),
         "browser_actions": browser_actions,
         "dispatch": {
