@@ -402,6 +402,10 @@ class Planner:
         self._http = http
         #: Each session's warm account and child; None runs every turn cold.
         self._warm = warm
+        #: The turns each session has under way, and the sessions told to let go
+        #: meanwhile: a turn that had not leased yet keeps nothing after it.
+        self._under_way: dict[str, int] = {}
+        self._let_go: dict[str, str] = {}
         #: THE UPDATES (updates.py): told the tool each call makes (a check-in's
         #: phrase) and each card drawn (its kind and title); never its arguments.
         self._updates = updates
@@ -424,7 +428,20 @@ class Planner:
     def cool(self, session_id: str, why: str) -> None:
         """Let the session's warm account and child go (paused, at a spend cap):
         now, or after the turn it is running; its next turn starts afresh."""
-        if self._warm is not None:
+        if self._warm is None:
+            return
+        if session_id in self._under_way:
+            self._let_go[session_id] = why
+        self._warm.cool(session_id, why)
+
+    def _turn_over(self, session_id: str) -> None:
+        left = self._under_way[session_id] - 1
+        if left:
+            self._under_way[session_id] = left
+        else:
+            del self._under_way[session_id]
+        why = self._let_go.get(session_id) if left else self._let_go.pop(session_id, None)
+        if why is not None and self._warm is not None:
             self._warm.cool(session_id, why)
 
     async def aclose(self) -> None:
@@ -468,23 +485,33 @@ class Planner:
         except tools_read.NoGrant as exc:
             log.warning("planner refused: %s", exc)
             return TurnResult(delegation_id, SAY_NO_GRANT, error=str(exc))
-        if not admitted and await self._capped(api):
-            self.cool(api.session_id, "a spend cap")
-            return TurnResult(delegation_id, CAP_SENTENCES[CAPPED_REASON])
-        lock = self._locks.setdefault(api.session_id, asyncio.Lock())
-        async with lock:
-            result = TurnResult(delegation_id, "")
-            try:
-                await asyncio.wait_for(
-                    self._turn(api, result, person=person, transcript=transcript, model=model,
-                               request=request),
-                    self._turn_seconds)
-            except asyncio.TimeoutError:
-                log.warning("voice session %s: planner turn ran out of time", api.session_id)
-                result.spoken, result.error = _failed(result), TIMED_OUT
-                return result
-            await self._write_brief(api, result)
+        self._under_way[api.session_id] = self._under_way.get(api.session_id, 0) + 1
+        try:
+            if not admitted and await self._capped(api):
+                self.cool(api.session_id, "a spend cap")
+                return TurnResult(delegation_id, CAP_SENTENCES[CAPPED_REASON])
+            lock = self._locks.setdefault(api.session_id, asyncio.Lock())
+            async with lock:
+                return await self._delegated(api, TurnResult(delegation_id, ""), person=person,
+                                             transcript=transcript, model=model, request=request)
+        finally:
+            self._turn_over(api.session_id)
+
+    async def _delegated(self, api: tools_read.SwarmApi, result: TurnResult, *, person: str,
+                         transcript: list[tuple[str, str]], model: str | None,
+                         request: str | None) -> TurnResult:
+        """The turn within its time, then its brief."""
+        try:
+            await asyncio.wait_for(
+                self._turn(api, result, person=person, transcript=transcript, model=model,
+                           request=request),
+                self._turn_seconds)
+        except asyncio.TimeoutError:
+            log.warning("voice session %s: planner turn ran out of time", api.session_id)
+            result.spoken, result.error = _failed(result), TIMED_OUT
             return result
+        await self._write_brief(api, result)
+        return result
 
     async def _read_brief(self, api: tools_read.SwarmApi) -> str | None:
         """The brief written after the project's last turn, or None (none yet,
