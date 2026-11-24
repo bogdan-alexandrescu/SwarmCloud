@@ -837,6 +837,33 @@ child per sentence.
   `/v1/accounts/assign`, whose `AccountAssign` forbids extra fields (read 2026-11-05); the planner
   has the same gap. A hold with no task id is served only by an account that serves every class.
 
+### 14.2 Status answers and the project brief
+
+* **The front answers status questions about its project itself.** "What is running" or "did that
+  finish" used to be delegated: the front could not read the project's own cards and roster, so a
+  status line cost a planner lease and a turn of up to 240 s. The front now holds `project_status`
+  (swarm_voice/tools_read.py), `GET /v1/voice/projects/{project_id}/status`
+  (swarm-api routes/voice_status.py): the project's cards, the cards waiting on the person and its
+  roster, what the person's own project page shows. **No new reach:** it applies the roster route's
+  person, workspace and project checks, a grant reads only its own session's project (any other is
+  403), and the tool takes no input, so the model cannot name another project. The front delegates
+  only work.
+* **The planner leaves a brief and reads it back.** Every `speak` carries `brief`, the project's
+  state and open threads as the turn leaves them; after the turn ends it is written once
+  (`POST /v1/voice/sessions/{session_id}/brief`, at most 2,048 bytes, refused when credential-shaped)
+  to the project document's `planner_brief`, kept apart from the `brief` object whose `open` list
+  notes-to-work writes. The next delegation, in this session or a later one, reads it through the
+  status view and gets it in its turn message, so it does not start cold.
+* **The brief is data.** A model wrote it from tool results and a person's words, so wherever it is
+  read back it is fenced as quoted data (`prompts.fence("project_brief", ...)`), like a transcript.
+* **Costs stay in the caps.** The brief is the turn's own output: no model call of its own, its
+  tokens in the turn's `usage`. A capped session writes none: a capped delegation runs no turn, and
+  the write asks the caps first and is refused (409) at a cap.
+* **How to read the effect.** Two measures should move: delegations per session (`work.delegation`
+  `started` events per session; status questions no longer add one) and first-audio latency on
+  status questions (§12.6's end-of-speech-to-first-audio record; a status answer is now one front
+  turn with one read, not a delegation).
+
 ## 15. The installer's part (Day One)
 
 A fresh deployment gets own speech through the installer, in **its own lane, L11, "The installer
