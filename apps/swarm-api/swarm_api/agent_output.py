@@ -48,7 +48,7 @@ from .checkpoint_content import (
     DownloadAborted,
     artifact_kind,
 )
-from .errors import Forbidden, Gone, UpstreamUnavailable, ValidationFailed
+from .errors import Forbidden, Gone, NotFound, UpstreamUnavailable, ValidationFailed
 from .inspect import (
     ARTIFACT_SNIFF_BYTES,
     InspectionService,
@@ -58,6 +58,7 @@ from .inspect import (
     _iso,
     _last_boundary,
     _safe_cut,
+    _unfollowable,
     attempt_prefix,
     manifest_attempt,
     parse_tail_header,
@@ -201,11 +202,24 @@ class AgentOutputService:
             name = entry.get("name")
             usable = isinstance(name, str) and bool(name)
             kind, content_type = artifact_kind(name) if usable else ("binary", None)
+            # A re-review's pointer entry (contract request 157) lies under its
+            # REVIEW's prefix: its attempt is the review's when the content
+            # route would follow it, and null -- as for any entry those routes
+            # refuse -- when it would not.
+            owner = task.id
+            if usable and "republished_from" in entry:
+                try:
+                    review = self._ins.republished_review(
+                        task, name, submitted_by=submitted_by
+                    )
+                except NotFound:
+                    review = None
+                owner = review.id if review is not None else None
             rows.append(
                 {
                     **entry,
-                    "attempt_id": _attempt_of_artifact_uri(
-                        entry.get("uri"), tenant_id=task.tenant_id, task_id=task.id
+                    "attempt_id": None if owner is None else _attempt_of_artifact_uri(
+                        entry.get("uri"), tenant_id=task.tenant_id, task_id=owner
                     ),
                     "kind": kind,
                     "content_type": content_type,
@@ -320,8 +334,20 @@ class AgentOutputService:
         task, _prefix = self._ins._scoped(tenant_id, task_id, submitted_by=submitted_by)
         if redaction == REDACTION_NONE:
             return self._raw_patch(task, name=name, caller=caller)
+        # A scheduler-ended re-review's pointer entry (contract request 157)
+        # is served as its review's own artifact, under the content route's
+        # checks (`InspectionService.republished_review`); a pointer it will
+        # not follow is that route's 404, and so is a missing object.
+        review = self._ins.republished_review(task, name, submitted_by=submitted_by)
+        if review is not None:
+            task = review
         entry, attempt_id, key, reader = self._ins._resolve_artifact(task, name)
-        first = self._first_window(task, name, entry, attempt_id, key, reader)
+        try:
+            first = self._first_window(task, name, entry, attempt_id, key, reader)
+        except Gone:
+            if review is None:
+                raise
+            raise _unfollowable(name) from None
         head = first.data[:ARTIFACT_SNIFF_BYTES]
         suffix = PurePosixPath(name).suffix.lower()
         image_type = sniff_image(head) if suffix in IMAGE_EXTENSIONS else None

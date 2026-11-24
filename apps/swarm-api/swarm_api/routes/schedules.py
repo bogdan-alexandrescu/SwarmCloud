@@ -544,6 +544,38 @@ def _inbox(ctx: AppContext, tenant_id: str) -> list[dict[str, Any]] | None:
         return None
 
 
+def _proposes(doc: Mapping[str, Any]) -> bool:
+    """Whether the schedule's type is one whose firings propose (§2.4); an unknown type does not."""
+    entry = scheduletypes.get(str(doc.get("type")))
+    return entry is not None and entry.proposes
+
+
+def _proposals(ctx: AppContext, tenant_id: str, rows: list[Mapping[str, Any]]) -> dict[str, dict[str, Any]] | None:
+    """`proposals_7d` (plans-pipeline §3.10) for each listed schedule whose
+    type proposes, from `approvals.proposals_by_schedule`'s two bounded reads.
+    A proposing schedule with nothing in the window gets zeros, and says
+    `complete: false` when the reads were full, as the counted ones do. Not
+    read at all when no listed schedule proposes. None when it cannot be
+    read: the field is then absent, and the console draws a dash, never 0."""
+    ids = [str(row["schedule_id"]) for row in rows if _proposes(row)]
+    if not ids:
+        return {}
+    try:
+        counts = approvals.proposals_by_schedule(ctx, tenant_id)
+    except Exception as exc:  # one read's failure does not blank the list
+        log.warning("schedules: proposals of %s not counted: %s", tenant_id, type(exc).__name__)
+        return None
+    complete = all(row.get("complete") is not False for row in counts.values())
+    out: dict[str, dict[str, Any]] = {}
+    for sid in ids:
+        row = counts.get(sid)
+        if row is None:
+            row = {"proposed": 0, "approved": 0, "auto_approved": 0, "rejected": 0, "expired": 0,
+                   "running": 0, "merged": 0, "window_days": approvals.PROPOSALS_DAYS, "complete": complete}
+        out[sid] = row
+    return out
+
+
 def _waiting(items: Iterable[Mapping[str, Any]]) -> dict[str, int]:
     """Waiting approvals per schedule: every inbox item whose subject names
     one -- a firing waiting to run, a scheduled run's plan or hold, and its
@@ -666,6 +698,10 @@ def list_schedules(
     pending = _waiting(inbox) if inbox is not None else _pending(ctx, tenant_id)
     rows = sorted(_tenant_schedules(ctx, tenant_id), key=lambda d: str(d.get("name", "")).casefold())
     listed = [schedule_to_api(row, now, pending=pending.get(row["schedule_id"], 0)) for row in rows]
+    proposals = _proposals(ctx, tenant_id, rows)
+    for out in listed:
+        if proposals is not None and out["schedule_id"] in proposals:
+            out["proposals_7d"] = proposals[out["schedule_id"]]
     return {
         "schedules": listed,
         "summary": _json(schedules.summarize((row["state_word"] for row in listed), inbox)),

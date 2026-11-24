@@ -680,13 +680,18 @@ def _repository(url: Any) -> IssueRef:
 
 
 def _read_text(ctx: Any, tenant_id: str, task_id: str, name: str, *, limit: int,
-               required: bool, what: str) -> str | None:
+               required: bool, what: str, allow_redacted: bool = False) -> str | None:
     """One artifact's whole text through the API's own tenant-checked, redacted read.
 
     None for an artifact the task's manifest does not list (when not
     `required`). Declined when it is listed and is not whole, not text, over
     `limit`, or held anything the redaction masked: this module publishes
     nothing it had to mask, it hands the step to the worker instead.
+
+    `allow_redacted` (the fix loop's verdict read only, issue 338): a masked
+    file is returned as its MASKED text instead of declined, for a caller
+    that publishes nothing and decides itself which masked keys it can read
+    around (`fixloop.read_verdict`). Every publishing caller leaves it False.
     """
     try:
         row = ctx.inspection.read_artifact(
@@ -703,7 +708,7 @@ def _read_text(ctx: Any, tenant_id: str, task_id: str, name: str, *, limit: int,
         raise Decline(f"{what}_too_large", f"{name} of task {task_id} is over {limit} bytes")
     if row.get("truncated") or row.get("invalid_utf8_bytes"):
         raise Decline(f"{what}_unreadable", f"{name} of task {task_id} could not be read whole")
-    if row.get("redacted"):
+    if row.get("redacted") and not allow_redacted:
         raise Decline("credential", f"{name} of task {task_id} holds text the redaction masks")
     content = row.get("content")
     return content if isinstance(content, str) else ""

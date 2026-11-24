@@ -50,6 +50,7 @@ Three reasons, in the order they cost the most:
 | `iam-refusal-probe.yml` | **manual dispatch on `main` only**, by the owner, once ([below](#the-deployers-refusal-is-proven-once-by-a-probe-the-owner-dispatches)) — never on a push, a pull request or a schedule | `deployer is refused an unlisted role` |
 | `publish-release.yml` | **manual dispatch on `main` only**, with a release name and a main commit whose `release` run succeeded ([the owner] 2026-10-30, "Move publishing into CI now"; [runbooks/release.md](runbooks/release.md)) — never on a push, a pull request or a schedule. `publish` waits in the GitHub environment `release` (a required reviewer) and authenticates as the deployer, which is why the file is on `wif.tf`'s `deployer_workflows`; in `swarmcloud-prod` that identity holds only the three roles `scripts/release-home.sh --ci-publisher` grants. It publishes; it never promotes | `check the version and the commit` · `publish <version> to the release home` |
 | `coverage.yml` | **once a day at 10:23 UTC** (`schedule`) and manual dispatch, **on `main` only** — never on a push, a pull request or a train, never a required check, and nothing on the merge path waits for it ([below](#coverage-floors)) | `plan the shards` · `unit tests with coverage (k/N)` · `swarm-ui component tests with coverage (k/N)` · `coverage floors` (combines and judges against `coverage-floors.json`) · `report the coverage` (the per-package summary; a red night opens or updates one `bug` issue, the next green night closes it) |
+| `refresh-weights.yml` | **Mondays 05:17 UTC** (`schedule`) and manual dispatch, **on `main` only** — never on a push, a pull request, a queue entry or a train, never a required check: it adds nothing to the merge path or a release ([below](#refreshing-the-shard-weights)) | `refresh the test weights` (runs `scripts/refresh-unit-weights.sh` and `scripts/refresh-ui-weights.sh` through `scripts/refresh-weights-pr.sh`; a change is one commit force-pushed to `maint/test-weights` and one pull request into `main`, opened or updated with the merge App's token; it never pushes `main`) |
 
 Three details in that table are easy to misread and each has bitten someone:
 
@@ -4014,10 +4015,19 @@ with no `unit-durations.json`, or a malformed one, exits 1 and writes nothing:
 an unread download is never "nothing to refresh". Only the weights' ratios
 matter, so CI's seconds replacing a container's is fine.
 
-Like `scripts/refresh-ui-weights.sh`, the script changes no workflow. A
-scheduled workflow that runs it and opens the pull request with the merge
-App's token lives under `.github/workflows/`, which only swarm-api can push,
-so it is proposed separately rather than here.
+Like `scripts/refresh-ui-weights.sh`, the script changes no workflow. The
+scheduled workflow that runs both is `.github/workflows/refresh-weights.yml`
+(Mondays, and by dispatch; never on the merge path). Its one job runs
+`scripts/refresh-weights-pr.sh refresh`, and when a weights file changed,
+`scripts/refresh-weights-pr.sh open` commits those two files alone, as one
+commit on `main`'s tip, force-pushes it to `maint/test-weights` and opens a
+pull request into `main` with the merge App's token, or leaves the open one
+updated by the push. The App token because a pull request opened with the
+workflow's `GITHUB_TOKEN` starts no workflow, so its checks would never run;
+one fixed branch so a refresh never piles up pull requests; not `swarm/`
+because a lane's pull request runs no checks. It is not labelled `ready`: a
+person reviews the figures, as the scripts ask. One refresh that cannot read
+its run turns the run red and the other's figures are still opened.
 
 ### Where pull-request CI time goes (2026-10-09)
 
