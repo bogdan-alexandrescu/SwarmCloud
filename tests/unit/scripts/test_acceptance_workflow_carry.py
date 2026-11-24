@@ -185,10 +185,11 @@ def _clean_env() -> dict[str, str]:
     return env
 
 
-def _carry_check(tmp_path: Path, *, attempts: list[dict] | None) -> subprocess.CompletedProcess:
-    (tmp_path / f"{PARENT}.json").write_text(json.dumps(PARENT_DOC))
+def _carry_check(tmp_path: Path, *, attempts: list[dict] | None,
+                 parent: dict | None = None, events: list[dict] | None = None) -> subprocess.CompletedProcess:
+    (tmp_path / f"{PARENT}.json").write_text(json.dumps(PARENT_DOC if parent is None else parent))
     (tmp_path / f"{CHILD}.json").write_text(json.dumps(CHILD_DOC))
-    (tmp_path / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in EVENTS))
+    (tmp_path / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in (EVENTS if events is None else events)))
     (tmp_path / "work").mkdir()
     if attempts is None:
         fake_attempts = "task_attempts() { return 1; }"
@@ -203,6 +204,7 @@ t_pass() {{ printf 'PASS %s\\n' "$*"; }}
 t_fail() {{ printf 'FAIL %s\\n' "$*"; }}
 t_skip() {{ printf 'SKIP %s\\n' "$*"; }}
 t_case() {{ :; }}; t_info() {{ :; }}; info() {{ :; }}; step() {{ :; }}
+redact() {{ cat; }}
 source {shlex.quote(str(LIB))}
 source {shlex.quote(str(WORKFLOW))}
 ACC_WORK={shlex.quote(str(tmp_path / "work"))}
@@ -264,3 +266,20 @@ def test_an_unreadable_attempts_query_fails_rather_than_counting_nothing(tmp_pat
         result.stdout + result.stderr
     )
     assert not any(line.startswith("PASS") for line in lines), result.stdout
+
+
+def test_a_parent_that_failed_names_its_last_error(tmp_path):
+    """Issue 202: the 2026-11-23 22:30 run read FAILED CANCELLED with one
+    attempt document and no park event, and its log could not say why the
+    first attempt failed. The check now prints the parent's `last_error`."""
+    error = "quota_exhausted needs the attempt_count the worker writes into the runner's input"
+    parent = {"state": "FAILED", "attempt_count": 1, "last_error": error, "result_summary": {}}
+    result = _carry_check(tmp_path, attempts=[_attempt(FINAL)], parent=parent, events=[])
+    lines = _verdicts(result)
+    assert any(line.startswith("FAIL") and "the parent ended FAILED: " + error in line
+               for line in lines), result.stdout + result.stderr
+
+
+def test_a_parent_that_succeeded_prints_no_last_error_line(tmp_path):
+    result = _carry_check(tmp_path, attempts=[_attempt(PARKED), _attempt(FINAL)])
+    assert not any("the parent ended" in line for line in _verdicts(result)), result.stdout
