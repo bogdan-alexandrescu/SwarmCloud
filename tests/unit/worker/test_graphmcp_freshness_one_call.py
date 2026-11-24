@@ -1,3 +1,4 @@
+# source-text: fixture - reads src/app.py of the sample repository the test committed, to put it back unchanged
 """One git call per answer (docs/design/graph-service.md §4.3, lane GS-CORE).
 
 `Freshness.observe` used to make three git calls an answer (`update-index

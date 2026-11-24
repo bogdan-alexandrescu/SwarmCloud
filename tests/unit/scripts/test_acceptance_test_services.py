@@ -1,3 +1,4 @@
+# source-text: contract - the acceptance group's CC_TS_ASSERT_LINE and the gate's connection-refused text must agree with the fixture repository's test_store.py and pgwire.py
 """The test-services acceptance fixture is one the platform accepts (TS-ACCEPT, part of archived issue 1627).
 
 docs/design/test-services.md §7, row TS-ACCEPT: a fixture repository under

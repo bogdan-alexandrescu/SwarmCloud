@@ -1,3 +1,4 @@
+# source-text: contract - each submission method, the child build and the step re-run must sign before their store call, and the internal submitters must call submit_tasks/submit_workflow
 """Every path that creates a task document signs it first (archived issue 355).
 
 Once the legacy cutover is the signing release, a task created unsigned after
@@ -12,9 +13,11 @@ the repository index (`repoindex.py`) and worker-submitted children
 ASSERTED STRUCTURALLY, over every package in apps/, not over a list of
 submitters restated here: the only code that turns a `Task` into a stored
 document (`task_to_firestore`) or calls the store's `create_tasks` /
-`create_workflow` is the set below, and each of those signs before it writes.
-A new submitter that writes around `SubmissionService` turns this red, which a
-list of the submitters known today could not do. The behaviour -- the stored
+`create_workflow` is a named set (WRITERS_OF_A_NEW_TASK, held by the
+source-text rule `task-documents-created-only-by-the-signing-paths` in
+scripts/source_text_rules/control_plane_nz.py), and the tests below hold that each of those signs before it
+writes. A new submitter that writes around `SubmissionService` turns the rule
+red, which a list of the submitters known today could not do. The behaviour -- the stored
 document verifies under the signature -- is asserted by
 `test_spec_signing_submission.py` for `submit_tasks` and `submit_workflow`,
 the two methods every internal submitter calls.
@@ -28,28 +31,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[3]
 APPS = REPO / "apps"
 
-#: (path under apps/, enclosing qualname) -> what makes it signed.
-WRITERS_OF_A_NEW_TASK = {
-    ("swarm-api/swarm_api/store.py", "Store.create_tasks"),
-    ("swarm-api/swarm_api/store.py", "Store.create_workflow"),
-    ("swarm-api/swarm_api/service.py", "SubmissionService.submit_tasks"),
-    ("swarm-api/swarm_api/service.py", "SubmissionService.submit_workflow"),
-    ("swarm-api/swarm_api/children.py", "ChildService.submit._apply"),
-    # A step re-run's new tasks (archived pull request 3123): signed by `steprerun.rerun`
-    # before the store call, pinned below; written in the transaction that
-    # moves the workflow's step pointers to them.
-    ("swarm-api/swarm_api/store.py", "Store.rerun_workflow_steps._apply"),
-}
-
 #: The call names that create a task document.
 CREATING_CALLS = {"task_to_firestore", "create_tasks", "create_workflow"}
-
-
-def _python_files() -> list[Path]:
-    return sorted(
-        p for p in APPS.rglob("*.py")
-        if "node_modules" not in p.parts and ".venv" not in p.parts
-    )
 
 
 def _call_name(node: ast.Call) -> str | None:
@@ -101,32 +84,6 @@ def _sign_lines(function: ast.AST) -> list[int]:
         node.lineno for node in ast.walk(function)
         if isinstance(node, ast.Call) and _call_name(node) in ("_sign", "sign_task_specs")
     ]
-
-
-def test_the_scan_reads_every_app():
-    files = _python_files()
-    assert len(files) > 100, f"scanned only {len(files)} files under {APPS}"
-    assert any(p.parts[-3:] == ("swarm-api", "swarm_api", "store.py") for p in files)
-
-
-def test_only_the_signing_paths_create_a_task_document():
-    seen: set[tuple[str, str]] = set()
-    stray: list[str] = []
-    for path in _python_files():
-        rel = path.relative_to(APPS).as_posix()
-        for qualname, name, line in _scan(path).found:
-            if qualname == "" or (rel, qualname) == ("swarm-api/swarm_api/codec.py", "task_to_firestore"):
-                continue  # an import or the definition's own module scope
-            if (rel, qualname) in WRITERS_OF_A_NEW_TASK:
-                seen.add((rel, qualname))
-            else:
-                stray.append(f"apps/{rel}:{line} {qualname} calls {name}")
-    assert not stray, (
-        "a path creates a task document outside the signing paths; route it through "
-        "SubmissionService.submit_tasks/submit_workflow, or the worker refuses it as "
-        "unsigned:\n" + "\n".join(stray)
-    )
-    assert seen == WRITERS_OF_A_NEW_TASK, f"a known writer moved: {WRITERS_OF_A_NEW_TASK - seen}"
 
 
 def test_each_submission_method_signs_before_it_stores():

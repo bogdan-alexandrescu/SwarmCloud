@@ -1,3 +1,4 @@
+# source-text: contract - schedule_routes._PR_CLOSED_WORDS must be the closed-PR words issueci.py stores
 """What Automate's landing and one-schedule sheet read (proposal A, picked
 2026-10-26; AUTO-API-SCHEDULES, part of archived issue 2417).
 

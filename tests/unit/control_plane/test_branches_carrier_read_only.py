@@ -13,14 +13,13 @@ and a read-only token fails the attempt `forge_read_only`
 
 MUTATIONS: construct a `SecretManagerServiceClient` on the submit path -- the
 "never reads a secret" tests fail on the recorded construction. Import
-`agent_worker` anywhere in swarm_api -- the dependency test fails. Drop the
+`agent_worker` anywhere in swarm_api -- scripts/check_source_text.py fails. Drop the
 repository requirement for branches -- the 422 test fails with 201.
 """
 
 from __future__ import annotations
 
 import pathlib
-import re
 from typing import Any
 
 import pytest
@@ -95,19 +94,11 @@ def test_branches_with_no_repository_is_refused_with_a_422(client, secret_client
 
 
 def test_swarm_api_does_not_depend_on_the_worker():
-    """The API holds no path to a tenant's git secret: no agent_worker import, no dependency."""
+    """The API holds no path to a tenant's git secret: no dependency. That no
+    module imports agent_worker is the lint rule `swarm-api-imports-no-worker`
+    (scripts/source_text_rules/control_plane_am.py)."""
     pyproject = (API_ROOT / "pyproject.toml").read_text()
     assert "swarm-agent-worker" not in pyproject
-    # Import statements only: several modules name agent_worker in prose,
-    # describing the worker's side of a shared format.
-    importing = re.compile(r"^\s*(?:from|import)\s+agent_worker\b", re.MULTILINE)
-    offenders = [
-        str(path.relative_to(API_ROOT))
-        for path in (API_ROOT / "swarm_api").rglob("*.py")
-        if importing.search(path.read_text())
-    ]
-    assert offenders == [], f"swarm_api imports the worker: {offenders}"
-
 
 
 @pytest.fixture(autouse=True)

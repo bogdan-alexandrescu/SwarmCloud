@@ -1,3 +1,4 @@
+# source-text: forbidden-pattern - the deny-list sweep of the sweep job's .tf and manifest fragment runs scripts/lib/common.sh for the list; also pins SWEEP_ROUTE in routes/voice_speech.py
 """Voice it's speech sweep runs every two minutes.
 
 docs/design/voice-it-own-speech.md §4.5 (stop 1, the sweep) and §6 row I4,

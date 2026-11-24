@@ -26,7 +26,6 @@ from __future__ import annotations
 import email.message
 import io
 import json
-import re
 import threading
 import time
 from pathlib import Path
@@ -219,19 +218,9 @@ def test_the_tenant_rereads_share_the_bridges_gate_and_read_cache(answers, monke
     assert readers[1].task("t1")["state"] == "FAILED"
 
 
-def test_the_bridge_builds_its_client_in_one_place():
-    """Every `SwarmClient(` under swarm_mcp that the bridge's server can reach
-    is `serve._client`'s; the others are `sc`/`swarm` command entry points."""
-    package = _ROOT / "apps" / "swarm-mcp" / "swarm_mcp"
-    built = sorted(
-        f"{path.name}"
-        for path in package.glob("*.py")
-        for line in path.read_text().splitlines()
-        if re.search(r"\bSwarmClient\(", line) and not line.lstrip().startswith(("#", "\"", "`"))
-    )
-    # MUTATION: construct a second SwarmClient in server.py, workflows.py,
-    # compact.py or follow.py and this list grows.
-    assert built == ["cli.py", "cli.py", "sc.py", "sc.py", "sc.py", "server.py"]
+# Every `SwarmClient(` under swarm_mcp that the bridge's server can reach is
+# `serve._client`'s; the others are `sc`/`swarm` command entry points: the rule
+# mcp-builds-its-client-in-one-place in scripts/source_text_rules/services.py.
 
 
 # -- 3. the three settings are documented where a user reads them ---------------

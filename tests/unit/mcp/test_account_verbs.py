@@ -429,10 +429,16 @@ def test_an_empty_paste_sends_no_exchange(monkeypatch):
     assert [p for _, p, _ in api.sent] == ["/v1/accounts/authorize"]
 
 
-def test_the_code_is_read_without_echo():
-    import inspect
+def test_the_code_is_read_without_echo(monkeypatch):
+    import getpass
+    import secrets
 
-    assert "getpass" in inspect.getsource(sc._read_code)
+    code = secrets.token_hex(8)
+    asked: list[str] = []
+    monkeypatch.setattr(getpass, "getpass", lambda prompt: asked.append(prompt) or code)
+    # MUTATION: read it with input() -- the prompt never reaches getpass.
+    assert sc._read_code("Code: ") == code
+    assert asked == ["Code: "]
 
 
 def _no_secret_shown(text: str) -> None:

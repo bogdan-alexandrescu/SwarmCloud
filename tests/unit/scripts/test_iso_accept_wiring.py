@@ -1,3 +1,4 @@
+# source-text: contract - the cross-tenant probe must name ISO_PROBE_REQUIRED and the acceptance (tenant-isolation) job; it is also copied to a scratch dir and run there as a fixture
 """The cross-tenant Firestore probe can be run, and read, by acceptance (ISO-ACCEPT-WIRE).
 
 Part of archived issue 1457 (tenant isolation design B). ISO-ACCEPT (PR 1478) built
@@ -183,8 +184,9 @@ def test_pytest_naming_the_file_from_elsewhere_still_skips_and_writes_no_result(
 
 def test_the_probe_no_longer_says_acceptance_does_not_run_it():
     text = PROBE.read_text()
-    # MUTATION: restore "the acceptance workflow does not ask today".
-    assert "does not ask today" not in text
+    # That the probe no longer says "the acceptance workflow does not ask
+    # today" is the lint rule `iso-probe-says-acceptance-runs-it`
+    # (scripts/source_text_rules/scripts_tree.py).
     assert "ISO_PROBE_REQUIRED" in text
     assert "acceptance (tenant-isolation)" in text
 

@@ -1,3 +1,4 @@
+# source-text: contract - each runner's declared input keys must be read by its source, and the catalogue's exit codes, defaults and limits must match runners/base.py, config.py and limits.py
 """A caller may send a runner's DECLARED inputs, and nothing else (archived issue 142).
 
 WHAT WAS MISSING. The mock runner reads `sleep_seconds`, `steps`, `fail`,

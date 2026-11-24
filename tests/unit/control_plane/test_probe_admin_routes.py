@@ -1,3 +1,4 @@
+# source-text: forbidden-pattern - each literal probe_admin=True call is matched to the routes its endpoint serves in the built app, so the sweep needs create_app and cannot be a pure parse
 """A scoped probe admin is admin ONLY on the routes the roles and join
 acceptance probes measure (owner decision 2026-11-20, "roles + join only";
 docs/design/workspace-roles.md section 8).
@@ -14,8 +15,10 @@ Two halves:
   list, and every other `probe_admin=` only forwards its own parameter; every
   route that declares `people_scope` (which answers a probe admin from its
   entry) is on the list; and `probe_admin_tenants` is read only where the
-  list's routes need it. A NEW admin route cannot admit a probe admin without
-  failing one of these.
+  list's routes need it (the source-text rule
+  `probe-admin-tenants-read-only-by-the-listed-routes` in
+  scripts/source_text_rules/control_plane_nz.py). A NEW admin route cannot
+  admit a probe admin without failing one of these.
 * THE BEHAVIOUR: as `probe`, listed for eng, every workspace-admin write a
   workspace admin makes -- a secret, an MCP server, the tenant provider key,
   a git-token slot, the merge, code-intelligence and judgment settings, a
@@ -85,13 +88,6 @@ OWNER_ALLOWED = frozenset({
     ("GET", "/v1/admin/people"),
     ("POST", "/v1/admin/join-requests/{ref}/approve"),
     ("POST", "/v1/admin/join-requests/{ref}/deny"),
-})
-#: The functions that may read `probe_admin_tenants` (module, function).
-TENANTS_READERS = frozenset({
-    ("swarm_api.roles", "probe_admin_scope"),
-    ("swarm_api.routes.people", "administered_workspaces"),
-    ("swarm_api.routes.people", "people_scope"),
-    ("swarm_api.routes.people", "join_scope"),
 })
 
 
@@ -246,13 +242,6 @@ def test_every_route_that_declares_people_scope_is_listed(client):
                 if _declares_people_scope(r)}
     assert declared, "people_scope is declared by no route: the enumeration reads nothing"
     assert declared <= roles.PROBE_ADMIN_ROUTES, declared - roles.PROBE_ADMIN_ROUTES
-
-
-def test_probe_admin_tenants_is_read_only_where_the_list_needs_it():
-    readers = {(module, fn.name) for module, fn, call in _calls()
-               if _name(call) == "probe_admin_tenants"}
-    assert readers, "probe_admin_tenants is called nowhere: the enumeration reads nothing"
-    assert readers <= TENANTS_READERS, readers - TENANTS_READERS
 
 
 # -- the behaviour -----------------------------------------------------------------

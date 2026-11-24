@@ -1,3 +1,4 @@
+# source-text: contract - types.ts, api.ts and the blocker screens must render the server's blocker list and reason groups rather than compute their own in TypeScript
 """The browser renders the server's blocker list; it does not compute one.
 
 THE DEFECT THIS PINS. `evaluate_capacity` returns a LIST -- one entry per pool

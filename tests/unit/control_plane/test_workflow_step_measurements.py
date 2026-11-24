@@ -1,3 +1,4 @@
+# source-text: contract - measure.ts, Workflows.tsx and Overview.tsx must render a step's duration, cost and tokens or a stated absence, never a made-up zero
 """A step node reported none of the four things the brief asks a run to report.
 
 THE DEFECT. `StepNode` in `apps/swarm-ui/src/Workflows.tsx` rendered a step id,
@@ -505,17 +506,11 @@ def test_both_utilisation_bars_go_through_one_component():
     first version was standing in for: `.ctl-util-track` is drawn by exactly one
     file, and every screen that shows a utilisation goes through it.
     """
-    # Screens and the canonical set: the track is `UsageTrack` in
-    # components/UsageBar.tsx since the archived issue 503 swap.
-    drawers = sorted(
-        p.relative_to(UI).as_posix() for p in [*UI.glob("*.tsx"), *UI.glob("components/*.tsx")]
-        if re.search(r"""className=[{"'`][^>]*\bctl-util-track\b""", p.read_text())
-    )
-    assert drawers == ["components/UsageBar.tsx"], (
-        f"a utilisation track is drawn outside the shared primitive, in {drawers}; "
-        "each copy is a place the hatch, the baseline tick or the over-ceiling "
-        "segment can be kept on one screen and lost on the next"
-    )
+    # That `.ctl-util-track` is drawn only by components/UsageBar.tsx (the
+    # track is `UsageTrack` there since the archived issue 503 swap) is the
+    # rule `utilisation-track-drawn-once` of
+    # scripts/source_text_rules/control_plane_nz.py, over the screens and
+    # components/*.tsx as this test globbed them.
     # Overview's pool rows go through the shared track too (O1, 2026-10-02:
     # Headroom is profile tiles, pool rows and one account line).
     ov = src("Overview.tsx")

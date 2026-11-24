@@ -170,9 +170,8 @@ def test_a_blank_swarm_tenant_is_no_choice_for_sc(wire, monkeypatch):
 def test_sc_chooses_the_tenant_with_the_bridges_own_helper():
     """No restatement: the rule lives once, in `client.chosen_tenant`."""
     assert sc.chosen_tenant is chosen_tenant
-    source = Path(sc.__file__).read_text()
-    assert 'environ.get("SWARM_TENANT")' not in source
-    assert "os.environ[\"SWARM_TENANT\"]" not in source
+    # And sc.py reads no SWARM_TENANT itself: the rule sc-reads-no-swarm-tenant-itself
+    # in scripts/source_text_rules/services.py.
 
 
 def test_whoami_prints_the_tenant_and_that_swarm_tenant_chose_it(wire, monkeypatch):

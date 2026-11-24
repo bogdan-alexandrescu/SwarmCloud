@@ -26,8 +26,10 @@ WHAT IS PINNED.
   * a number that holds no learned literal, a boolean, and a number shorter
     than a literal can be are served as stored;
   * both paths go through `JsonMasker.number`: with it stubbed to find
-    nothing, both serve the digits, and `json_masking` names no
-    `_mask_literals` of its own.
+    nothing, both serve the digits. That `json_masking` names no
+    `_mask_literals` of its own is the lint rule
+    `json-masking-keeps-no-number-rule`
+    (scripts/source_text_rules/control_plane_am.py).
 
 MUTATIONS that turn this red: return numbers untouched in `JsonMasker._walk`
 (every route test and the parity test); compare `str(node)` without the
@@ -43,8 +45,6 @@ The digits are built at runtime so no added line looks like a credential.
 
 from __future__ import annotations
 
-import ast
-import inspect
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -198,9 +198,3 @@ def test_both_paths_use_the_one_number_rule(monkeypatch):
     ):
         assert '"n":' + DIGITS in served.text, served.text
         assert served.count == 1, served
-
-    # And json_masking keeps no copy of the rule to fall back on.
-    tree = ast.parse(inspect.getsource(json_masking))
-    named = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
-    imported = {a.name for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) for a in node.names}
-    assert "_mask_literals" not in named | imported

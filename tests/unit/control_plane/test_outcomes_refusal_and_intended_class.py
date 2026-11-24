@@ -1,3 +1,4 @@
+# source-text: contract - the outcome classifier's credential-scan and pr-title refusal literals must be the ones lifecycle.py and publish_guard.py write
 """archived issue 631: a publish the worker refused, and a failure a caller asked for, are
 each counted as what they are, so `runner_error` means a real error.
 

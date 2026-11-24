@@ -1,3 +1,4 @@
+# source-text: contract - render.py must import its name class from swarm_common.identity (a local compile is a rule), and dispatch.py's worker env keys must match each worker template's container env
 """The Kubernetes manifests, held to the same invariants as the Python.
 
 A YAML file that nobody executes in CI is a file that drifts. Everything in
@@ -1496,7 +1497,8 @@ def test_the_renderer_slugifies_with_the_frozen_character_class():
 
     source = (KUBERNETES / "render.py").read_text()
     assert "from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE" in source
-    assert "_NAME_SAFE = re.compile" not in source
+    # That render.py compiles no class of its own is the rule
+    # `render-takes-name-class-from-identity` in scripts/source_text_rules/worker.py.
 
 
 def test_the_renderer_enforces_the_brokers_account_label_rule():

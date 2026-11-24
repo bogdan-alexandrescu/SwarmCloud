@@ -1,3 +1,4 @@
+# source-text: contract - the browser image's selftest.py TOOLS must cover the base Dockerfile's toolbox smoke, and its __main__ must run no_codex()
 """BROWSER-NO-CODEX (owner decision 2026-10-13 ~07:15 PDT, answering
 BROWSER-ENFORCE's question in PR 1248).
 

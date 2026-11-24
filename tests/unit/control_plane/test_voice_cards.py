@@ -1,3 +1,4 @@
+# source-text: contract - the card kinds and fields of voice/cards.ts must be the ones swarm_api.voice.cards validates
 """The Voice it card catalogue (docs/design/voice-it.md §4, §10 phase 2).
 
 One schema in swarm-api (swarm_api/voice/cards.py) validates every card

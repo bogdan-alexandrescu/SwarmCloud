@@ -1,3 +1,4 @@
+# source-text: fixture - it edits copies of profiles.py and lightpanda.py in a temporary tree to prove check-contract-parity.sh refuses each drift
 """Section 18 of `scripts/lib/check-contract-parity.sh`: claude-code-lightpanda.
 
 docs/design/lightpanda-runtime.md §6.5 lists five things the profile depends

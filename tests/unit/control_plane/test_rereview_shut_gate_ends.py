@@ -1,3 +1,4 @@
+# source-text: contract - the frozen states.py transition comment for PARKED -> SUCCEEDED must carry the exact text of contract request 157, which has no behaviour to observe
 """A re-review whose verdict gate is recorded shut is ended by the scheduler (contract request 157).
 
 Accepted by the owner 2026-11-24. In implement -> review -> fix -> re-review ->
