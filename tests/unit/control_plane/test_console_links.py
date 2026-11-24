@@ -7,14 +7,17 @@ The plugin, the sc CLI, the MCP answers and the web UI print the
   * the origin is ONE setting, `ApiSettings.console_url` (SWARM_CONSOLE_URL);
   * unset means NO link -- the field is null, never a run.app guess;
   * the link is the same whatever the task's state, QUEUED to terminal;
-  * the PATH is the console's own route, read out of
-    apps/swarm-ui/src/paths.ts here, so a route renamed in the UI fails this
-    file instead of silently breaking every link the API serves.
+  * the PATH is the console's own route: each builder's path is written to
+    apps/swarm-ui/src/generated/constants/routes.json (`console_links`,
+    `scripts/gen_api_types.py --check` holds it current), and
+    apps/swarm-ui/src/__tests__/contract.routes.test.ts resolves each one
+    with paths.ts's own router, so a route renamed in the UI fails there
+    instead of silently breaking every link the API serves (part of #72).
 """
 
 from __future__ import annotations
 
-import re
+import importlib.util
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,6 +27,7 @@ from fastapi.testclient import TestClient
 from swarm_api.codec import (
     CONSOLE_AGENT_TAB,
     agent_console_url,
+    run_console_url,
     task_from_dict,
     task_to_api,
     workflow_console_url,
@@ -39,8 +43,7 @@ from .conftest import auth_header, seed_task
 ORIGIN = "https://swarm.example.test"
 NOW = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
 REPO = Path(__file__).resolve().parents[3]
-PATHS_TS = REPO / "apps" / "swarm-ui" / "src" / "paths.ts"
-AGENTLIST_TS = REPO / "apps" / "swarm-ui" / "src" / "agentlist.ts"
+ROUTES_GROUP = REPO / "scripts" / "api_constants" / "routes.py"
 
 
 def _task(state: str, task_id: str = "task_abc123") -> object:
@@ -58,32 +61,56 @@ def _task(state: str, task_id: str = "task_abc123") -> object:
 
 
 # --------------------------------------------------------------------------
-# The path shapes are paths.ts's
+# The path shapes: the builders', as the console is given them
 # --------------------------------------------------------------------------
 
-def test_agent_link_path_is_the_ui_agent_route():
-    """`addressToPath('work/task/<id>')` is `/agents/${agentTab}/<id>`, default `live`."""
-    source = PATHS_TS.read_text(encoding="utf-8")
-    assert "return `/agents/${agentTab}/${seg.slice(2).join('/')}`" in source, (
-        "paths.ts no longer spells one agent as /agents/<tab>/<id>: "
-        "swarm_api.codec.agent_console_url must follow it"
-    )
-    default = re.search(r"addressToPath\(address: string, agentTab: AgentTab = '(\w+)'\)", source)
-    assert default is not None, "paths.ts addressToPath lost its default agent tab"
-    assert default.group(1) == CONSOLE_AGENT_TAB
-    tabs = re.search(r"AGENT_TABS = \[([^\]]*)\]", AGENTLIST_TS.read_text(encoding="utf-8"))
-    assert tabs is not None and f"'{CONSOLE_AGENT_TAB}'" in tabs.group(1)
-    assert agent_console_url(ORIGIN, "task_1") == f"{ORIGIN}/agents/{default.group(1)}/task_1"
+def _console_links() -> dict:
+    """What the `routes` constants group writes to the console's
+    generated/constants/routes.json (`console_links`, `console_link_examples`);
+    `scripts/gen_api_types.py --check` fails while the committed file differs."""
+    spec = importlib.util.spec_from_file_location("_routes_group_under_test", ROUTES_GROUP)
+    group = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(group)
+    return {"links": group.console_links(), "examples": group.console_link_examples()}
 
 
-def test_workflow_link_path_is_the_ui_workflow_route():
-    """`/workflows/${encodeURIComponent(wf)}` in paths.ts, and its reverse."""
-    source = PATHS_TS.read_text(encoding="utf-8")
-    assert "`/workflows/${encodeURIComponent(wf)}${pane}`" in source, (
-        "paths.ts no longer spells one workflow as /workflows/<id>: "
-        "swarm_api.codec.workflow_console_url must follow it"
-    )
-    assert "if (seg[0] === 'workflows' && seg.length >= 2)" in source
+BUILDERS = {
+    "agent": (agent_console_url, "task_id"),
+    "run": (run_console_url, "run_id"),
+    "workflow": (workflow_console_url, "workflow_id"),
+}
+
+
+def test_every_link_builder_is_written_for_the_console():
+    assert sorted(_console_links()["links"]) == sorted(BUILDERS)
+
+
+@pytest.mark.parametrize("kind", sorted(BUILDERS))
+def test_each_builder_returns_the_path_the_console_is_given(kind):
+    """The path the console is given is what the builder returns, for any id,
+    under any origin: one sample id stands for all of them."""
+    builder, placeholder = BUILDERS[kind]
+    template = _console_links()["links"][kind]
+    assert template.count("{" + placeholder + "}") == 1, template
+    for ident in ("task_abc123", "wf_1", "run_9"):
+        assert builder(ORIGIN, ident) == ORIGIN + template.replace("{" + placeholder + "}", ident)
+
+
+@pytest.mark.parametrize("kind", ["run", "workflow"])
+def test_an_id_that_needs_encoding_is_spelled_as_committed(kind):
+    builder, _placeholder = BUILDERS[kind]
+    example = _console_links()["examples"][kind]
+    assert builder(ORIGIN, example["id"]) == ORIGIN + example["path"]
+
+
+def test_agent_link_path_is_one_agent_under_the_default_tab():
+    """`/agents/<tab>/<id>`, the tab `live`: the list a pasted link opens in."""
+    assert CONSOLE_AGENT_TAB == "live"
+    assert agent_console_url(ORIGIN, "task_1") == f"{ORIGIN}/agents/live/task_1"
+
+
+def test_workflow_link_path_is_one_workflow():
+    """`/workflows/<id>`, the id spelled as encodeURIComponent spells it."""
     assert workflow_console_url(ORIGIN, "wf_1") == f"{ORIGIN}/workflows/wf_1"
     # encodeURIComponent's spelling, not Python's default quote().
     assert workflow_console_url(ORIGIN, "a b/c(d)!") == f"{ORIGIN}/workflows/a%20b%2Fc(d)!"
