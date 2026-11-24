@@ -426,11 +426,8 @@ read as a working feature. It was also the only reason the workflow granted
 `pull-requests: write`, so every run carried a write token nothing used. The step
 and the permission are both gone.
 
-[`tests/unit/scripts/test_workflow_step_reachability.py`](../tests/unit/scripts/test_workflow_step_reachability.py)
-now computes, for every workflow, the events each job and each step can run on,
-and fails on a step its own job can never reach. It models only
-`github.event_name` comparisons and treats anything else as "any event", so it
-can miss a dead step but cannot invent one. If a plan ever needs to reach a pull
+No test looks for a step its own job can never reach: unit tests do not read
+workflow files. If a plan ever needs to reach a pull
 request, the answer is not a step in this job. This job cannot run on a pull
 request, and the reason is the security boundary described above.
 
@@ -2034,8 +2031,8 @@ never names a version. It refuses anything that is not `X.Y.Z`.
   chain was skipped. A tree main reuses skips the unit shards and the lock /
   contract checks, so until 2026-11-11 the job was skipped on every main
   build and tags were pushed by hand.
-  [`test_workflow_needs_result_status.py`](../tests/unit/scripts/test_workflow_needs_result_status.py)
-  holds every job that reads a `needs.<job>.result` to a status function.
+  A job that reads a `needs.<job>.result` needs a status function in its
+  `if:`; no test holds that.
 * **Why not the release any more** (owner decision, [the owner], 2026-11-04: "Tag
   once tests pass"). Until then `release.yml` made the tag, and
   on a push it waited for `images and scan`, which waits for CI's whole image
@@ -3569,9 +3566,8 @@ auto-merge.yml `enable`, `disable` and `ready-on-green`, merge-train.yml
 another branch is refused, which is the point. `deployment: false` reads the
 environment's secrets without writing a deployment record (GitHub,
 [using environments without deployments](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/control-deployments)).
-[`test_repo_secrets_environment.py`](../tests/unit/scripts/test_repo_secrets_environment.py)
-scans every workflow file and fails on a job that reads either secret without
-the environment. Google Cloud needed no such move: its workload identity
+No test checks that a job reading either secret declares the environment.
+Google Cloud needed no such move: its workload identity
 binding already pins the ref to main. The switch-over runs in this order:
 the owner enters both values in `repo-secrets` first; then the change that
 adds the `environment:` lines merges; then the repository-level copies are
