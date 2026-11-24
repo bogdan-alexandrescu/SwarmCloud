@@ -13,6 +13,7 @@ import {
 } from './api'
 import { Banner, Button, ButtonLink, Card, Chip, Dialog, TypedConfirm } from './components'
 import type { ApiError } from './fetch'
+import { InfoTip } from './InfoTip'
 import { UrRegion, useUrRead } from './RepositoriesParts'
 import { timeAgo } from './types'
 import './styles/keys.css'
@@ -75,7 +76,7 @@ const NAME_RULE = /^[A-Za-z_][A-Za-z0-9_]{0,199}$/
 
 export function nameProblem(name: string): string | null {
   if (name === '') return null
-  if (!NAME_RULE.test(name)) return 'Letters, digits and _ only, not starting with a digit.'
+  if (!NAME_RULE.test(name)) return 'Letters, digits and _; no leading digit.'
   if (/^GITHUB_/i.test(name)) return 'GitHub reserves names starting with GITHUB_.'
   return null
 }
@@ -103,11 +104,50 @@ function RuleChip({ rule }: { rule: ActionsEnvironmentRule | null }) {
   return <Chip tone={tone}>{ruleWords(rule)}</Chip>
 }
 
-/** Who can read a secret written there, in a sentence. */
+/** What a name may be, behind the field's (i). */
+export const NAME_HELP = 'Letters, digits and _; not starting with a digit or GITHUB_. Never the value.'
+
+/** What the pane writes and reads, behind the lead's (i). */
+const leadHelp = (repository: string) =>
+  `Written into ${repository} on GitHub. SwarmCloud reads names and update times, never values, and keeps only the name, who set it and when.`
+
+/** SwarmCloud creates no environment: one short line, its sentence behind the (i). */
+function NoCreateNote() {
+  return (
+    <p className="sa-note">
+      Create environments on GitHub, then Check rule.{' '}
+      <InfoTip
+        about="creating an environment"
+        tip="SwarmCloud does not create environments yet: create one on GitHub, then Check rule reads its branch rule."
+      />
+    </p>
+  )
+}
+
+/** What a write did: one short line, its sentence behind the (i). */
+interface Said {
+  line: string
+  tip?: string
+}
+
+/** Who can read a secret written there, in one line. */
 export function readersOf(environment: string | null, rule: ActionsEnvironmentRule | null, repository: string): ReactNode {
   if (environment === null) return <>Read by every workflow in {repository}.</>
-  if (rule !== null && rule.main_only) return <>Read by workflows that run in <b>{environment}</b>, on {rule.branch} only. SwarmCloud grants nothing further.</>
-  return <>Read by workflows that run in <b>{environment}</b>, which {ruleWords(rule) === 'any branch' ? 'any branch' : `its rule (${ruleWords(rule)})`} can deploy to.</>
+  const mainOnly = rule !== null && rule.main_only
+  const anyBranch = ruleWords(rule) === 'any branch'
+  return (
+    <>
+      Read by workflows in <b>{environment}</b>, {mainOnly ? `on ${rule.branch} only` : anyBranch ? 'from any branch' : 'by its rule'}.{' '}
+      <InfoTip
+        about="who reads it"
+        tip={
+          mainOnly
+            ? `Read by workflows that run in ${environment}, on ${rule.branch} only. SwarmCloud grants nothing further.`
+            : `Read by workflows that run in ${environment}, which ${anyBranch ? 'any branch' : `its rule (${ruleWords(rule)})`} can deploy to.`
+        }
+      />
+    </>
+  )
 }
 
 /** The API's reason as a sentence: capitalised, with its full stop. */
@@ -144,9 +184,13 @@ function AppRefusalBanner({ refusal, repository }: { refusal: AppRefusal; reposi
   const out = { target: '_blank', rel: 'noreferrer' }
   if (refusal.kind === 'not_installed') {
     return (
-      <Banner tone="warn" title={`The SwarmCloud GitHub App is not installed for ${repository}`}
+      <Banner tone="warn" title="The GitHub App is not installed"
         actions={refusal.url === null ? undefined : <ButtonLink kind="secondary" size="sm" href={refusal.url} {...out}>Install the App on GitHub ↗</ButtonLink>}>
-        Its owner installs it and enables the repository; until then SwarmCloud can neither list nor write its Actions secrets.
+        SwarmCloud cannot list or write its secrets.{' '}
+        <InfoTip
+          about="the missing installation"
+          tip={`The SwarmCloud GitHub App is not installed for ${repository}. Its owner installs it and enables the repository; until then SwarmCloud can neither list nor write its Actions secrets.`}
+        />
       </Banner>
     )
   }
@@ -154,15 +198,19 @@ function AppRefusalBanner({ refusal, repository }: { refusal: AppRefusal; reposi
     return (
       <Banner tone="warn" title={`The App’s installation does not cover ${repository}`}
         actions={refusal.url === null ? undefined : <ButtonLink kind="secondary" size="sm" href={refusal.url} {...out}>Open the installation on GitHub ↗</ButtonLink>}>
-        The installation’s owner adds the repository to it. Nothing was written.
+        Nothing was written.{' '}
+        <InfoTip about="the installation" tip="The installation’s owner adds the repository to it. Nothing was written." />
       </Banner>
     )
   }
   return (
-    <Banner tone="warn" title={`The SwarmCloud GitHub App lacks Secrets permission on ${repository}`}
+    <Banner tone="warn" title="The GitHub App lacks Secrets permission"
       actions={refusal.url === null ? undefined : <ButtonLink kind="secondary" size="sm" href={refusal.url} {...out}>Review the App’s permissions on GitHub ↗</ButtonLink>}>
-      Until the installation’s owner accepts Secrets and Environments: Read and write on GitHub, SwarmCloud can neither
-      list nor write this repository’s Actions secrets. Nothing was written.
+      SwarmCloud cannot list or write its secrets.{' '}
+      <InfoTip
+        about="the missing permission"
+        tip={`The SwarmCloud GitHub App lacks Secrets permission on ${repository}. Until the installation’s owner accepts Secrets and Environments: Read and write on GitHub, SwarmCloud can neither list nor write this repository’s Actions secrets. Nothing was written.`}
+      />
     </Banner>
   )
 }
@@ -211,7 +259,7 @@ export function SecretsActions({
     link === null ? null : { step: 4, environment: link.environment, name: link.name, fromLink: true },
   )
   const [deleting, setDeleting] = useState<(Place & { name: string }) | null>(null)
-  const [said, setSaid] = useState<string | null>(null)
+  const [said, setSaid] = useState<Said | null>(null)
   const [checking, setChecking] = useState(false)
   const [checked, setChecked] = useState<ActionsEnvironmentRule | null>(null)
   const data = list.state.status === 'ok' || list.state.status === 'stale' ? list.state.data : null
@@ -231,28 +279,46 @@ export function SecretsActions({
   return (
     <div className="sa-pane">
       <p className="sa-lead">
-        Written into {repository} on GitHub. SwarmCloud reads names and update times, never values, and keeps only
-        the name, who set it and when.
+        Names and update times, never values. <InfoTip about="GitHub Actions secrets" tip={leadHelp(repository)} />
       </p>
       {refusal !== null ? (
         <AppRefusalBanner refusal={refusal} repository={repository} />
       ) : (
         <>
           {writable === true && data !== null ? (
-            <Banner tone="info" title={`You may write here: workspace admin, and GitHub calls you admin of ${repository}${data.checked_at === null ? '' : ` (checked ${timeAgo(data.checked_at)})`}.`}>
-              SwarmCloud asks GitHub again at each write, with your own GitHub connection.
+            <Banner tone="info" title={`You may write here${data.checked_at === null ? '' : ` · checked ${timeAgo(data.checked_at)}`}`}>
+              GitHub is asked again at each write.{' '}
+              <InfoTip
+                about="who may write here"
+                tip={`You may write here: workspace admin, and GitHub calls you admin of ${repository}${data.checked_at === null ? '' : ` (checked ${timeAgo(data.checked_at)})`}. SwarmCloud asks GitHub again at each write, with your own GitHub connection.`}
+              />
             </Banner>
           ) : (
             <Banner tone="info" title={manages ? 'Who may write here' : 'Read only for you'}>
               {manages
-                ? <>Setting or deleting takes both: you manage this workspace, and GitHub calls you admin of {repository}. SwarmCloud asks GitHub at each write, with your own GitHub connection.</>
+                ? <>
+                    Takes workspace admin and GitHub admin.{' '}
+                    <InfoTip
+                      about="who may write here"
+                      tip={`Setting or deleting takes both: you manage this workspace, and GitHub calls you admin of ${repository}. SwarmCloud asks GitHub at each write, with your own GitHub connection.`}
+                    />
+                  </>
                 : <>
-                    {data?.cannot_write_because != null && <>{sentence(data.cannot_write_because)} </>}
-                    Only a workspace manager whom GitHub calls admin of {repository} sets or deletes these. You can read the names here.
+                    {data?.cannot_write_because != null && <><span>{sentence(data.cannot_write_because)}</span>{' '}</>}
+                    <span>You can read the names here.</span>{' '}
+                    <InfoTip
+                      about="who may write here"
+                      tip={`Only a workspace manager whom GitHub calls admin of ${repository} sets or deletes these.`}
+                    />
                   </>}
             </Banner>
           )}
-          {said !== null && <p className="pk-saved" role="status">{said}</p>}
+          {said !== null && (
+            <p className="pk-saved" role="status">
+              {said.line}
+              {said.tip !== undefined && <>{' '}<InfoTip about="what was written" tip={said.tip} /></>}
+            </p>
+          )}
           <UrRegion state={list.state} route={LIST_ROUTE} what="This repository's GitHub Actions secrets" plural onRetry={list.reload}>
             {(d) => (
               <div className="sa-grid">
@@ -292,12 +358,12 @@ export function SecretsActions({
                       ))
                     )}
                     {d.environments_truncated && (
-                      <p className="sa-note">GitHub was read for the first 30 environments only; more may exist.</p>
+                      <p className="sa-note">
+                        Only the first 30 environments were read.{' '}
+                        <InfoTip about="environments not read" tip="GitHub was read for the first 30 environments only; more may exist." />
+                      </p>
                     )}
-                    <p className="sa-note">
-                      SwarmCloud does not create environments yet: create one on GitHub, then Check rule reads its
-                      branch rule.
-                    </p>
+                    <NoCreateNote />
                   </Card>
                 </div>
               </div>
@@ -432,17 +498,29 @@ function EnvironmentBlock({
       )}
       {(env.secrets.length === 0 || open) && (
         <p className="sa-note">
-          {env.secrets.length === 0 && <>No secret in {env.environment} yet. </>}
+          {env.secrets.length === 0 && <><span>No secret in {env.environment} yet.</span>{' '}</>}
           {open && (
             <>
-              {/* The typed-name step is about writing, so only a writer is told it. */}
-              {manages ? <>Writing here asks you to type <b>{env.environment}</b>:{' '}</> : null}
-              {env.rule.rule === 'any_branch'
-                ? `${manages ? 'a' : 'A'} workflow on any branch can read it.`
-                : `${manages ? '' : 'Its rule: '}${ruleWords(env.rule)} can deploy to it, not ${env.rule.branch} alone.`}
+              <span>
+                {env.rule.rule === 'any_branch'
+                  ? 'A workflow on any branch can read it.'
+                  : env.rule.rule === 'protected_branches'
+                    ? `Not ${env.rule.branch} alone: protected branches can deploy.`
+                    : `Not ${env.rule.branch} alone: selected branches can deploy.`}
+              </span>{' '}
+              <InfoTip
+                about={`who reads ${env.environment}`}
+                // The typed-name step is about writing, so only a writer is told it.
+                tip={
+                  (manages ? `Writing here asks you to type ${env.environment}: ` : '') +
+                  (env.rule.rule === 'any_branch'
+                    ? `${manages ? 'a' : 'A'} workflow on any branch can read it.`
+                    : `${manages ? '' : 'Its rule: '}${ruleWords(env.rule)} can deploy to it, not ${env.rule.branch} alone.`)
+                }
+              />
             </>
           )}
-          {!open && env.secrets.length === 0 && <>Only workflows on {env.rule.branch} in {repository} read it.</>}
+          {!open && env.secrets.length === 0 && <span>Only workflows on {env.rule.branch} in {repository} read it.</span>}
         </p>
       )}
     </div>
@@ -502,9 +580,13 @@ function CheckRule({
       {answer !== null && answer.exists && (
         <p className="sa-note" role="status">
           <b>{answer.environment}</b> <RuleChip rule={answer} />{' '}
-          {answer.main_only
-            ? `Only ${answer.branch} deploys to it: a secret written there reaches workflows on ${answer.branch} alone.`
-            : `Not main only: writing there asks you to type ${answer.environment}.`}
+          <span>{answer.main_only ? `Only ${answer.branch} deploys to it.` : 'Not main only.'}</span>{' '}
+          <InfoTip
+            about={`${answer.environment}'s rule`}
+            tip={answer.main_only
+              ? `Only ${answer.branch} deploys to it: a secret written there reaches workflows on ${answer.branch} alone.`
+              : `Not main only: writing there asks you to type ${answer.environment}.`}
+          />
         </p>
       )}
       {answer !== null && !answer.exists && (
@@ -514,7 +596,15 @@ function CheckRule({
               Create {answer.environment} on GitHub ↗
             </ButtonLink>
           )}>
-          {answer.steps ?? `Create it on GitHub with its deployment branches set to ${answer.branch} only, then check its rule here again.`}
+          {answer.steps ?? (
+            <>
+              Create it on GitHub, then check again.{' '}
+              <InfoTip
+                about="creating it"
+                tip={`Create it on GitHub with its deployment branches set to ${answer.branch} only, then check its rule here again.`}
+              />
+            </>
+          )}
         </Banner>
       )}
       {refusal !== null && <AppRefusalBanner refusal={refusal} repository={repository} />}
@@ -550,7 +640,7 @@ function SetSheet({
   /** A tool's link token, handed over once; null after, or without one. */
   takeToken: () => string | null
   onClose: () => void
-  onDone: (words: string) => void
+  onDone: (words: Said) => void
 }) {
   const id = useId()
   const known = data?.environments ?? []
@@ -616,8 +706,11 @@ function SetSheet({
       {sheet.step === 2 && (
         <div className="sa-step">
           <p className="sa-note">
-            GitHub Actions in <b>{repository}</b>. Writing needs GitHub admin of the repository: SwarmCloud asks GitHub
-            when the form opens and again at the write.
+            Writing needs GitHub admin of the repository.{' '}
+            <InfoTip
+              about="writing to GitHub Actions"
+              tip={`GitHub Actions in ${repository}. Writing needs GitHub admin of the repository: SwarmCloud asks GitHub when the form opens and again at the write.`}
+            />
           </p>
           <fieldset className="sa-opts">
             <legend>Environment</legend>
@@ -648,7 +741,7 @@ function SetSheet({
           {checkFailed !== null && (appRefusalOf(checkFailed) !== null
             ? <AppRefusalBanner refusal={appRefusalOf(checkFailed)!} repository={repository} />
             : <Banner tone="bad" title={`The rule was not read: ${checkFailed.message}`} role="alert" />)}
-          <p className="sa-note">SwarmCloud does not create environments yet: create one on GitHub, then Check rule reads its branch rule.</p>
+          <NoCreateNote />
         </div>
       )}
 
@@ -660,8 +753,9 @@ function SetSheet({
             autoCapitalize="off" autoCorrect="off" autoComplete="off" placeholder="MERGE_APP_PRIVATE_KEY" aria-describedby={`${id}-name-why`}
             onChange={(e) => onChange({ ...sheet, name: e.target.value })} />
           <span id={`${id}-name-why`} className={problem === null ? 'jb-note' : 'jb-note sa-bad'}>
-            {problem ?? 'Letters, digits and _; not starting with a digit or GITHUB_. Never the value.'}
+            {problem ?? 'Letters, digits and _; never the value.'}
           </span>
+          <InfoTip about="the name" tip={NAME_HELP} />
         </div>
       )}
 
@@ -727,7 +821,7 @@ function OneTimeForm({
   where: string
   fromLink: boolean
   takeToken: () => string | null
-  onDone: (words: string) => void
+  onDone: (words: Said) => void
 }) {
   const id = useId()
   // The link's token, never state: nothing renders it. `opened` says only whether one is held.
@@ -739,6 +833,8 @@ function OneTimeForm({
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState<ApiError | null>(null)
   const [failedWords, setFailedWords] = useState<string | null>(null)
+  // The sentence behind a spent link's (i); null for the API's own words.
+  const [failedTip, setFailedTip] = useState<string | null>(null)
   const value = useRef<HTMLInputElement>(null)
   // §11 Q4: anything but the API's own "main only" asks the name typed, an
   // unread rule included; the API gates it again.
@@ -754,6 +850,7 @@ function OneTimeForm({
     setMinting(false)
     if (r.status === 'error') {
       setFailed(r.error)
+      setFailedTip(null)
       setFailedWords(`The form was not opened: ${r.error.message}`)
       return
     }
@@ -787,13 +884,16 @@ function OneTimeForm({
       // refusal: either way it is spent, and a new one is minted to retry.
       setOpened(false)
       setFailed(r.error)
-      setFailedWords(r.error.code === 'SECRET_LINK_INVALID'
-        ? `${name} was not set: the one-time link is used, expired or not yours. Open a new one-time form.`
-        : `${name} was not set: ${r.error.message}`)
+      const spent = r.error.code === 'SECRET_LINK_INVALID'
+      setFailedWords(spent ? `${name} was not set: its link is spent.` : `${name} was not set: ${r.error.message}`)
+      setFailedTip(spent ? `${name} was not set: the one-time link is used, expired or not yours. Open a new one-time form.` : null)
       return
     }
     const created = r.status === 'ok' && r.data.created
-    onDone(`${name} was set in ${where}${created ? '' : ', replacing its value'}. The link is used up; the value is not shown again, here or anywhere.`)
+    onDone({
+      line: `${name} was set${created ? '' : ', replacing its value'} · the value is not shown again`,
+      tip: `${name} was set in ${where}${created ? '' : ', replacing its value'}. The link is used up; the value is not shown again, here or anywhere.`,
+    })
   }
 
   const refusal = appRefusalOf(failed)
@@ -801,8 +901,11 @@ function OneTimeForm({
     <div className="sa-step">
       {fromLink && opened && (
         <Banner tone="info" title="Opened from a one-time link">
-          Paste the value into the form below: the /sc command and this page’s address never see it. The link works
-          once, for ten minutes.
+          The link works once, for ten minutes.{' '}
+          <InfoTip
+            about="this link"
+            tip="Paste the value into the form below: the /sc command and this page’s address never see it. The link works once, for ten minutes."
+          />
         </Banner>
       )}
       <dl className="sa-kv">
@@ -816,8 +919,11 @@ function OneTimeForm({
       {!opened ? (
         <>
           <p className="sa-note">
-            Opens a form for <b>{name}</b> in {where}. It works once, for ten minutes. The value is sealed in SwarmCloud,
-            written to GitHub and never shown again.
+            Opens a one-time form, for ten minutes.{' '}
+            <InfoTip
+              about="the one-time form"
+              tip={`Opens a form for ${name} in ${where}. It works once, for ten minutes. The value is sealed in SwarmCloud, written to GitHub and never shown again.`}
+            />
           </p>
           <div className="sa-terminal">
             <span>From a terminal instead:</span>
@@ -843,7 +949,8 @@ function OneTimeForm({
             aria-describedby={`${id}-value-why`}
             onChange={() => setFilled((value.current?.value ?? '') !== '')}
           />
-          <span id={`${id}-value-why`} className="jb-note">At most 48 KB. The form is cleared whatever the answer.</span>
+          <span id={`${id}-value-why`} className="jb-note">At most 48 KB.</span>
+          <InfoTip about="the value" tip="At most 48 KB. The form is cleared whatever the answer." />
           {needsTyped && (
             <>
               <label htmlFor={`${id}-confirm`}>Type {environment} to write into it</label>
@@ -851,9 +958,15 @@ function OneTimeForm({
                 autoCapitalize="off" autoCorrect="off" aria-describedby={`${id}-confirm-why`} onChange={(e) => setTyped(e.target.value)} />
               <span id={`${id}-confirm-why`} className="jb-note">
                 {rule === null
+                  ? 'Rule not read: treated as open.'
+                  : ruleWords(rule) === 'any branch' ? 'A workflow on any branch can read it.' : `Not ${rule.branch} alone: its rule lets others deploy.`}
+              </span>
+              <InfoTip
+                about={`who reads ${environment}`}
+                tip={rule === null
                   ? `${environment}'s branch rule was not read, so it is treated as open to any branch.`
                   : `${environment} lets ${ruleWords(rule) === 'any branch' ? 'any branch' : ruleWords(rule)} deploy: a workflow there can read this secret.`}
-              </span>
+              />
             </>
           )}
           <div className="pk-form-row">
@@ -862,7 +975,11 @@ function OneTimeForm({
         </form>
       )}
       {refusal !== null && <AppRefusalBanner refusal={refusal} repository={repository} />}
-      {failedWords !== null && refusal === null && <Banner tone="bad" title={failedWords} role="alert" />}
+      {failedWords !== null && refusal === null && (
+        <Banner tone="bad" title={failedWords} role="alert">
+          {failedTip === null ? undefined : <InfoTip about="the spent link" tip={failedTip} />}
+        </Banner>
+      )}
     </div>
   )
 }
@@ -883,7 +1000,7 @@ function DeleteActionsSecret({
   repository: string
   target: Place & { name: string }
   onKeep: () => void
-  onDone: (words: string) => void
+  onDone: (words: Said) => void
 }) {
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState<ApiError | null>(null)
@@ -899,7 +1016,7 @@ function DeleteActionsSecret({
       setFailed(r.error)
       return
     }
-    onDone(`${target.name} was deleted from ${where}.`)
+    onDone({ line: `${target.name} was deleted from ${where}.` })
   }
 
   const refusal = appRefusalOf(failed)
@@ -915,8 +1032,11 @@ function DeleteActionsSecret({
       onClose={onKeep}
     >
       <p>
-        GitHub destroys <code>{target.name}</code> in {where}. Workflows that read it fail until it is set again, and
-        SwarmCloud cannot restore it: it never kept the value.
+        GitHub destroys it; SwarmCloud cannot restore it.{' '}
+        <InfoTip
+          about={`deleting ${target.name}`}
+          tip={`GitHub destroys ${target.name} in ${where}. Workflows that read it fail until it is set again, and SwarmCloud cannot restore it: it never kept the value.`}
+        />
       </p>
     </TypedConfirm>
   )
