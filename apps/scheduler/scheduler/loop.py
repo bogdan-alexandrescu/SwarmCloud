@@ -897,6 +897,9 @@ class DrainReport:
     #: SCHEDULED_RETRY parks on a task that had used its last attempt, ended
     #: DEAD_LETTERED instead of retried (`_promote_scheduled_retries`).
     dead_lettered: int = 0
+    #: Re-reviews whose verdict gate was recorded shut, ended PARKED ->
+    #: SUCCEEDED here with no lease and no pod (contract request 157).
+    ended_shut_gates: int = 0
     #: CHILDREN_INCOMPLETE parks returned to READY: every child terminal with
     #: its outputs staged, or the await deadline passed (child tasks, §3.3).
     promoted_child_awaits: int = 0
@@ -1572,10 +1575,12 @@ class Scheduler:
     def _release_ended(self, report: DrainReport) -> None:
         """Resolve the dependants of what this run ended itself. Never fails the run.
 
-        A task the scheduler ends is FAILED, DEAD_LETTERED or CANCELLED, never
-        SUCCEEDED, so the rule CANCELS its dependants and promotes none: this
-        writes no READY and takes no lease, and creates no demand (invariant
-        1). The scheduler does not publish a `task_finished` wake to itself
+        A task the scheduler ends is FAILED, DEAD_LETTERED or CANCELLED, so the
+        rule CANCELS its dependants -- except a re-review whose verdict gate was
+        recorded shut, ended SUCCEEDED (contract request 157), whose dependants
+        (the merge step) the rule promotes READY exactly as a worker's finish
+        wake would. Either way this takes no lease itself: only `_admit_one`
+        does, so nothing here creates demand (invariant 1). The scheduler does not publish a `task_finished` wake to itself
         instead: it is the wake's receiver, and that message would queue
         behind the drain lock this run holds.
 
@@ -2351,7 +2356,14 @@ class Scheduler:
         (docs/design/human-steps.md §4.4 step 1). It passes through READY for
         that one write and holds nothing during it. It is not returned as
         released, so the finish event's admission pass is never handed it.
+
+        A re-review whose verdict gate is recorded shut is ENDED instead of
+        promoted (contract request 157, `_end_shut_gate_rereview`): False, as
+        it is not READY, and its own dependants are resolved in this run.
         """
+        ended = self._end_shut_gate_rereview(task, report)
+        if ended is not None:
+            return False
         patch_from, event_detail = self._runtime_resolution(task)
         if not self._promote(task, kind="dependency", detail={"reason": reason}, report=report,
                              patch_from=patch_from, event_detail=event_detail):
@@ -2378,6 +2390,50 @@ class Scheduler:
             self._note_ended(task.id)
         else:
             self._count_stale(outcome, report)
+
+    def _end_shut_gate_rereview(self, task: Task, report: DrainReport) -> bool | None:
+        """End a re-review whose agent will not run, PARKED -> SUCCEEDED (contract request 157).
+
+        Accepted by the owner 2026-11-24. Its worker would read the gate, run
+        no agent, re-publish the review's verdict and end SUCCEEDED; for that
+        copy it was admitted in every pool, leased, dispatched and started.
+        The scheduler reads the same gate from the platform's own record
+        (`runtime.shut_gate_ending`, built on `runtime.republishes`) and ends
+        the step in the guarded write that would otherwise promote it
+        (`SchedulerStore.end_shut_gate_rereview`), which re-reads the task,
+        the integrator's record and the review's manifest in one transaction.
+
+        None: not this path -- the step is promoted exactly as today. That is
+        every step but an unresolved `browser_if_ui` re-review whose gate the
+        read finds certainly shut and whose review has the verdict file to
+        point at, and every step while the frozen contract does not allow
+        PARKED -> SUCCEEDED. True: ended; its dependants are resolved in this
+        run (`_note_ended`, `_release_chain`), as a worker's finish wake would
+        resolve them. False: the guarded write refused -- the task moved, its
+        generation moved, or the gate re-read is no longer certainly shut --
+        and the step is left alone for the next drain to decide afresh.
+        """
+        if not can_transition(TaskState.PARKED, TaskState.SUCCEEDED):
+            return None
+        if runtime_mod.policy_of(task.metadata) is None:
+            return None
+        seen = {"metadata": task.metadata, "depends_on": list(task.depends_on),
+                "tenant_id": task.tenant_id}
+        if runtime_mod.shut_gate_ending(
+            seen, lambda task_id: self._store.task_document(task_id, tenant_id=task.tenant_id)
+        ) is None:
+            return None
+        outcome = self._store.end_shut_gate_rereview(task, runtime_mod.shut_gate_ending)
+        if not outcome.applied:
+            self._count_stale(outcome, report)
+            return False
+        report.ended_shut_gates += 1
+        self._note_ended(task.id)
+        log.info(
+            "re-review ended without a worker: its verdict gate is recorded shut",
+            extra={"task_id": task.id, "tenant_id": task.tenant_id},
+        )
+        return True
 
     def _runtime_resolution(self, task: Task) -> tuple[
         Callable[[dict[str, Any]], dict[str, Any]] | None, Callable[[], dict[str, Any]] | None

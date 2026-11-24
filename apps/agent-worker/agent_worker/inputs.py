@@ -574,7 +574,8 @@ def inline_artifact(
     ONLY the one shape swarm-api writes, and only on the step it ends:
     `verdict.json`, `written_by: "control_plane"`, no `uri`, at most
     `MAX_INLINE_BYTES`, on a task whose `result_summary.review_skipped` says
-    its review gate skipped it. Every
+    its review gate skipped it, or on a re-review the scheduler ended that
+    passes such a review's verdict on (`republished_source`). Every
     other entry is located in the bucket as before. The task document is
     tenant-writable, so this admits nothing a tenant could not already write
     on its own task: a skipped review says SKIPPED (archived issue 4101), and a review that
@@ -585,10 +586,64 @@ def inline_artifact(
             or entry.get("uri") or not isinstance(text, str)):
         return None
     summary = task_document.get("result_summary")
-    if not isinstance(summary, Mapping) or not isinstance(summary.get("review_skipped"), str):
+    if (not isinstance(summary, Mapping) or not isinstance(summary.get("review_skipped"), str)) \
+            and republished_source(task_document, entry, filename=filename) is None:
         return None
     data = text.encode("utf-8")
     return data if len(data) <= MAX_INLINE_BYTES else None
+
+
+#: A re-review the scheduler ended because its verdict gate was recorded shut
+#: (contract request 157, accepted by the owner 2026-11-24,
+#: `scheduler.store.SchedulerStore.end_shut_gate_rereview`): no attempt ran, so
+#: its manifest entry names the gate's review's own verdict object and says so
+#: under this key. Restated by the scheduler (`REPUBLISHED_FROM_KEY`) and held
+#: equal by a test.
+REPUBLISHED_FROM_KEY = "republished_from"
+#: `result_summary.published_by` on a step the control plane ended.
+PUBLISHED_BY_CONTROL_PLANE = "control_plane"
+
+
+def republished_source(
+    task_document: Mapping[str, Any], entry: Mapping[str, Any], *, filename: str
+) -> str | None:
+    """The review whose verdict this re-review's entry points at, or None.
+
+    The bytes a shut-gate re-review's worker would have re-published are its
+    gate's review's verdict file, unchanged
+    (`lifecycle.Worker._republish_staged_verdict`). When the scheduler ends the
+    re-review without a worker it cannot copy them -- it does not read the
+    bucket -- so the entry points at the review's own object, and the reader
+    checks that object's key under THE REVIEW's prefix in THIS tenant
+    (`artifact_key`). Only this shape: written by the control plane, on a task
+    the control plane ended with `verdict_gate.agent_ran` false, whose recorded
+    gate and signed dispatch gate both name that review, for the file the
+    record names, and the review one of the task's own parents (same
+    workflow). The task document is tenant-writable, so this admits nothing
+    a tenant could not already stage: its own review's verdict, from its own
+    prefix, which the merge step then reads again with `read_verdict`.
+    """
+    source = entry.get(REPUBLISHED_FROM_KEY)
+    if (not isinstance(source, str) or not source or entry.get("name") != filename
+            or entry.get("written_by") != INLINE_WRITER):
+        return None
+    summary = task_document.get("result_summary")
+    if (not isinstance(summary, Mapping)
+            or summary.get("published_by") != PUBLISHED_BY_CONTROL_PLANE):
+        return None
+    record = summary.get("verdict_gate")
+    if (not isinstance(record, Mapping) or record.get("agent_ran") is not False
+            or record.get("task_id") != source or record.get("file") != filename):
+        return None
+    metadata = task_document.get("metadata")
+    dispatch = metadata.get("dispatch") if isinstance(metadata, Mapping) else None
+    gate = dispatch.get("verdict_gate") if isinstance(dispatch, Mapping) else None
+    if not isinstance(gate, Mapping) or gate.get("task_id") != source:
+        return None
+    parents = task_document.get("depends_on")
+    if not isinstance(parents, list) or source not in parents:
+        return None
+    return source
 
 
 def artifact_reference(
@@ -636,6 +691,10 @@ def artifact_reference(
                 f"upstream task {upstream_task_id} recorded {filename!r} without a "
                 "location, so it cannot be fetched"
             )
+        # A shut-gate re-review the scheduler ended (contract request 157)
+        # points at its gate's review's own object: checked under THAT task's
+        # prefix in this tenant, never under an arbitrary one.
+        owner = republished_source(task_document, entry, filename=filename) or upstream_task_id
         # An entry with no `bytes` is NOT an entry of size zero, and the
         # difference is the whole of the cap in `stage_inputs`: a zero lets any
         # number of artifacts of any size through a check that is a sum. The
@@ -664,7 +723,7 @@ def artifact_reference(
             key=artifact_key(
                 uri,
                 tenant_id=tenant_id,
-                upstream_task_id=upstream_task_id,
+                upstream_task_id=owner,
                 filename=filename,
             ),
             uri=uri,
@@ -672,7 +731,7 @@ def artifact_reference(
             attachments=_attachment_references(
                 entry,
                 tenant_id=tenant_id,
-                upstream_task_id=upstream_task_id,
+                upstream_task_id=owner,
                 filename=filename,
             ),
         )

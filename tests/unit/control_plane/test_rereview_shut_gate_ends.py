@@ -388,3 +388,12 @@ def test_a_pointer_into_another_tenant_is_refused():
     with pytest.raises(InputUnavailable):
         inputs_mod.artifact_reference(doc, tenant_id="eng", upstream_task_id="task_rereview",
                                       filename=VERDICT_FILE)
+
+
+def test_the_restated_names_are_the_workers():
+    from scheduler import runtime as runtime_mod
+
+    assert runtime_mod.ARTIFACT_WRITER == inputs_mod.INLINE_WRITER
+    assert runtime_mod.REPUBLISHED_FROM_KEY == inputs_mod.REPUBLISHED_FROM_KEY
+    assert runtime_mod.INLINE_ARTIFACT_KEY == inputs_mod.INLINE_ARTIFACT_KEY
+    assert runtime_mod.PUBLISHED_BY_CONTROL_PLANE == inputs_mod.PUBLISHED_BY_CONTROL_PLANE
