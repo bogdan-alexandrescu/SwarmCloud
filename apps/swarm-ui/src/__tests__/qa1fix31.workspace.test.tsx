@@ -35,7 +35,7 @@ describe('admin-shell-23: an Admin page refused by role', () => {
     // MUTATION: drop AdminRoleRefusal (or its title) and this is not found.
     expect(screen.getByText('Pool limits is for platform admins')).toBeTruthy()
     // MUTATION: say the role without its article ("You are member") and this fails.
-    expect(visible(container)).toContain('You are a member of Alex.')
+    expect(visible(container)).toContain('You are a member of Alex')
     const link = screen.getByRole('link', { name: 'Open Overview' })
     // MUTATION: point the link anywhere but Overview and this fails.
     expect(link.getAttribute('href')).toBe('/overview')

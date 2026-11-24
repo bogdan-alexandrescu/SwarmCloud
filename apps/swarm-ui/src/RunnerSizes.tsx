@@ -434,7 +434,13 @@ function SizesLead({ state, admits }: { state: Result<RunnerSizesDoc>; admits: A
         tone="warn"
         kicker="Needs a look"
         title={`${poolSubject(small.pool, doc.classes)} admits no ${small.cls} agent`}
-        body={`A ${small.cls} agent takes ${small.units} units and the pool’s ceiling is ${small.ceiling}.`}
+        body={
+          // SHORT FACTS ON THE SURFACE, THE SENTENCE BEHIND ITS (i) (issue 81).
+          <>
+            {`${small.cls}: ${small.units} units · ceiling ${small.ceiling}`}{' '}
+            <InfoTip about="the pool’s ceiling" tip={`A ${small.cls} agent takes ${small.units} units and the pool’s ceiling is ${small.ceiling}.`} />
+          </>
+        }
         action={
           <Button kind="primary" onClick={() => openClass(small.cls)}>
             {`Open ${small.cls}`}
@@ -638,8 +644,10 @@ function RunnerSizesBody({
         </div>
       )}
       <p className="rs-version-line">
-        {doc.in_effect_version === 0 ? 'In effect: the code defaults (version 0).' : `In effect: version ${doc.in_effect_version}.`}
-        {doc.updated_by ? ` Last saved by ${doc.updated_by}${doc.updated_at ? ` at ${String(doc.updated_at).replace('T', ' ').slice(0, 16)} UTC` : ''}.` : ''}
+        {/* A FACT LIST, NOT TWO SENTENCES (issue 81): judged fact by fact. */}
+        {doc.in_effect_version === 0 ? 'In effect: the code defaults (version 0)' : `In effect: version ${doc.in_effect_version}`}
+        {doc.updated_by ? ` · saved by ${doc.updated_by}` : ''}
+        {doc.updated_by && doc.updated_at ? ` · ${String(doc.updated_at).replace('T', ' ').slice(0, 16)} UTC` : ''}
       </p>
       <div className="rs-classes">
         {Object.entries(doc.classes).map(([name, size]) => (
@@ -794,8 +802,12 @@ function ClassCard({
       </p>
       {followers.fixed.length > 0 && (
         <p className="rs-fixed">
-          These Cloud Run profiles do not follow this size: {followers.fixed.join(', ')}.{' '}
-          <InfoTip about="Cloud Run profiles" tip="Cloud Run fixes resources on the Job and bills its limit, so these keep the code default." />
+          {/* The profiles are named on the surface; the sentence is behind the (i) (issue 81). */}
+          Fixed size (Cloud Run): {followers.fixed.join(', ')}{' '}
+          <InfoTip
+            about="Cloud Run profiles"
+            tip={`These Cloud Run profiles do not follow this size: ${followers.fixed.join(', ')}. Cloud Run fixes resources on the Job and bills its limit, so these keep the code default.`}
+          />
         </p>
       )}
       <RecentUse name={name} use={use} size={size} ratio={ratio} />
@@ -871,8 +883,9 @@ function RecentUse({ name, use, size, ratio }: { name: string; use: RunnerRecent
   return (
     <div className="rs-use">
       <p className="rs-recent">
-        Last 7 days, {use.attempts} attempt{use.attempts === 1 ? '' : 's'}: memory max peak {gib(use.memory_peak_gib_max)}, p95 {gib(use.memory_peak_gib_p95)}
-        {use.oom_near_miss > 0 ? `, ${use.oom_near_miss} near-miss${use.oom_near_miss === 1 ? '' : 'es'}` : ''}.
+        {/* A FACT LIST (issue 81): one long sentence of figures read as a paragraph. */}
+        Last 7 days · {use.attempts} attempt{use.attempts === 1 ? '' : 's'} · memory max peak {gib(use.memory_peak_gib_max)} · p95 {gib(use.memory_peak_gib_p95)}
+        {use.oom_near_miss > 0 ? ` · ${use.oom_near_miss} near-miss${use.oom_near_miss === 1 ? '' : 'es'}` : ''}
         {use.attempts < HINT_MIN_ATTEMPTS && (
           <>
             {' '}
@@ -894,7 +907,9 @@ function RecentUse({ name, use, size, ratio }: { name: string; use: RunnerRecent
       </dl>
       {use.attempts >= HINT_MIN_ATTEMPTS && (
         <ul className="rs-hints">
-          {hints.length === 0 ? <li className="rs-hint">No pattern in these readings asks for a change.</li> : hints.map((h, i) => <li key={i} className="rs-hint">{h}</li>)}
+          {hints.length === 0 ? <li className="rs-hint">
+              No change suggested <InfoTip about="the readings" tip="No pattern in these readings asks for a change." />
+            </li> : hints.map((h, i) => <li key={i} className="rs-hint">{h}</li>)}
         </ul>
       )}
     </div>

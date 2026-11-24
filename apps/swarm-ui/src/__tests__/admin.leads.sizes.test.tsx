@@ -24,6 +24,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 import { serve } from './repofixture'
+import { helpIn, shownIn } from './proseruns'
 
 const WAIT = { timeout: 4000 }
 
@@ -118,9 +119,12 @@ describe('Runner sizes leads with the size that needs an admin (S10c)', () => {
     // (QA1-FIX-23, admin-shell-04: the lead read `Pool resource:large`).
     // MUTATION: print `small.pool` in the title or the body again.
     expect(text(lead)).toContain('The large class’s pool admits no large agent')
-    expect(text(lead)).toContain('A large agent takes 6 units and the pool’s ceiling is 4.')
+    // Issue 81: the sentence is behind the lead's (i), the surface a fact list.
+    expect(helpIn(lead)).toContain('A large agent takes 6 units and the pool’s ceiling is 4.')
+    expect(shownIn(lead)).toContain('large: 6 units · ceiling 4')
     expect(text(lead)).not.toContain('resource:')
-    expect(within(lead).getAllByRole('button')).toHaveLength(1)
+    // The one action; the body's (i) (issue 81) explains and does not act.
+    expect(within(lead).getAllByRole('button').filter((b) => !(b.getAttribute('aria-label') ?? '').startsWith('About '))).toHaveLength(1)
   })
 
   it('names a pool that is not a class’s own in words too', async () => {
@@ -130,7 +134,9 @@ describe('Runner sizes leads with the size that needs an admin (S10c)', () => {
     const { lead } = await mount(() => ({ status: 200, body: doc() }), () => ({ status: 200, body: preview(GLOBAL_TOO_SMALL) }))
     // MUTATION: call every pool "the <x> class’s pool", `global` included.
     expect(text(lead)).toContain('The platform-wide pool admits no large agent')
-    expect(text(lead)).toContain('A large agent takes 6 units and the pool’s ceiling is 4.')
+    // Issue 81: the sentence is behind the lead's (i), the surface a fact list.
+    expect(helpIn(lead)).toContain('A large agent takes 6 units and the pool’s ceiling is 4.')
+    expect(shownIn(lead)).toContain('large: 6 units · ceiling 4')
   })
 
   it('takes the reader to that class’s fields from its one button', async () => {

@@ -439,7 +439,9 @@ const TALK_CARDS_ON_GLASS: Exemption = {
   matches: (f) =>
     f.kind === 'divider-under-floor' &&
     ((f.where === 'section.c-card' && f.detail.endsWith('on rgb(186 187 188)')) ||
-      (f.where === 'a.c-btn.is-sm' && f.detail.endsWith('on rgb(181 181 181)'))),
+      // The waiting card's (i) (issue 81: its how-to sentence sits behind
+      // it): the same control boundary on the same measured ground.
+      ((f.where === 'a.c-btn.is-sm' || f.where === 'button.c-btn.is-ghost.is-icon.is-sm') && f.detail.endsWith('on rgb(181 181 181)'))),
 }
 
 /**

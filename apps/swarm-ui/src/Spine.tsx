@@ -2742,7 +2742,7 @@ export function SkyShell({
                                 </>
                               }
                             >
-                              {adminOf.length > 0 ? `You are not a platform admin. You administer ${listed(adminOf)}.` : 'You are not a platform admin.'}
+                              {adminOf.length > 0 ? `You are not a platform admin · you administer ${listed(adminOf)}` : 'You are not a platform admin'}
                             </Banner>
                           </div>
                         )}

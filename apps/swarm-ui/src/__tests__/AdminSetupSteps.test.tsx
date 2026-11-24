@@ -20,6 +20,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { StrictMode } from 'react'
 import { serve, visible } from './repofixture'
+import { helpIn } from './proseruns'
 
 type Json = Record<string, unknown>
 
@@ -366,13 +367,16 @@ describe('Admin › Setup says only what exists', () => {
     const row = document.querySelector('[data-step="verify"]') as HTMLElement
     // MUTATION: keep a "Run the console checks" button that nothing tells the person to press.
     expect(within(row).queryByRole('button', { name: /Run the console checks/ })).toBeNull()
-    expect(visible(row)).toContain('start by themselves when you hand over')
+    // Issue 81: a few words on the surface, the sentence behind the row's (i).
+    expect(visible(row)).toContain('start at hand-over')
+    expect(helpIn(row)).toContain('start by themselves when you hand over')
     cleanup()
     await mountSteps(state(teamWith({ grant: GRANTED })))
     const after = document.querySelector('[data-step="verify"]') as HTMLElement
     // MUTATION: wait on a click once handed over; swarm-api starts them on its next read.
     expect(within(after).queryByRole('button', { name: /Run the console checks/ })).toBeNull()
-    expect(visible(after)).toContain('swarm-api starts them on this page’s next read')
+    expect(visible(after)).toContain('start on next read')
+    expect(helpIn(after)).toContain('swarm-api starts them on this page’s next read')
   })
 
   it('draws the runs the hand-over started, each with its state, linked', async () => {

@@ -1945,6 +1945,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'Each secret the platform itself needs, with whether it is set, how many versions are enabled and how old the newest is. No value is shown and nothing is written from the console: the operator’s script writes every one.',
     long: [
       'The lead says whether any needs a look. A rotation within the last day is expected, not a fault.',
+      'Read from Secret Manager metadata. No value, length or version content is read, and nothing on this page can set one.',
     ],
   },
 

@@ -1445,9 +1445,11 @@ export function familyNote(kind: PoolKind, pools: readonly Pool[], global: Pool 
   if (noun === undefined || global === undefined || !complete) return null
   const sum = pools.filter((p) => poolKind(p.name) === kind).reduce((n, p) => n + p.active, 0)
   if (sum === global.active) return null
-  if (sum > global.active) return `These pools add up to ${sum} units in use, more than global's ${global.active}.`
+  // SHORT FACTS, NOT A SENTENCE (issue 81): a fact list joined by ' · ' is
+  // judged fact by fact, so the reconciliation reads at a glance.
+  if (sum > global.active) return `pools sum to ${sum} in use · more than global's ${global.active}`
   const rest = global.active - sum
-  return `These pools add up to ${sum} of global's ${global.active} units in use: ${rest} ${rest === 1 ? 'is' : 'are'} outside any ${noun}.`
+  return `pools sum to ${sum} of global's ${global.active} in use · ${rest} outside any ${noun}`
 }
 
 function Family({

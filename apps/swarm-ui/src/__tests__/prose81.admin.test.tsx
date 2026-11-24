@@ -21,6 +21,7 @@
 import { act, render } from '@testing-library/react'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
+import { HELP } from '../help'
 import { PLATFORM_TICKS } from '../PlatformCounts'
 import { AdminRoleRefusal } from '../WorkspaceRefusal'
 import { helpIn, longRuns, shownIn } from './proseruns'
@@ -146,7 +147,7 @@ describe('issue 81: the admin and voice pages, on the fixture build, as the plat
     moved(
       'A workspace granted here may ask for a browser agent signed in to this console as the QA account. Grant it only with a reason; a revoke takes effect at the agent’s next credential renewal.',
     )
-    stays('A granted workspace’s agents may sign in as QA.')
+    stays('Granted workspaces’ agents may sign in as QA.')
     moved(
       'QA identity grants cannot be read from this deployment: its swarm-api is a release from before the QA identity, and has none of its routes. Deploy the current release of swarm-api to grant it; until then no workspace can name it.',
     )
@@ -183,7 +184,12 @@ describe('issue 81: the admin and voice pages, on the fixture build, as the plat
     await page('admin/platform-secrets')
     moved('It is in the catalogue but nothing was stored.')
     moved('One other is mid-rotation, which is expected for 24 h.')
-    moved('Read from Secret Manager metadata. No value, length or version content is read, and nothing on this page can set one.')
+    // Into the page's help topic, not an (i): the banner it sat in is dark,
+    // and an (i)'s border there is under the spacing sweep's floor.
+    const said = 'Read from Secret Manager metadata. No value, length or version content is read, and nothing on this page can set one.'
+    noLongRun('Read from Secret Manager')
+    expect(surface()).not.toContain(said)
+    expect(HELP['platform-secrets'].long).toContain(said)
     stays('No value is read.')
     expect(ownLongRuns()).toEqual([])
   }, 60_000)
