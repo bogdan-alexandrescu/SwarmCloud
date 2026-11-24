@@ -270,6 +270,7 @@ run "critical_and_error_reach_the_urgent_channels_and_warning_does_not" {
     dead_letter_subscription       = "swarm-scheduler-wake-dlq-sub"
     safety_tick_job                = "swarm-scheduler-tick"
     tenant_ids                     = ["eng"]
+    front_door_hostname            = "swarm.example.com"
     extra_notification_channels    = ["projects/example-project/notificationChannels/1111111111"]
     urgent_notification_channels   = ["projects/example-project/notificationChannels/2222222222"]
     require_alert_channels         = true
@@ -301,15 +302,19 @@ run "critical_and_error_reach_the_urgent_channels_and_warning_does_not" {
           google_monitoring_alert_policy.workspace_stuck[0],
           google_monitoring_alert_policy.pr_stranded[0],
           google_monitoring_alert_policy.tenant_namespace_mismatch[0],
+          google_monitoring_alert_policy.front_door_down[0],
+          google_monitoring_alert_policy.reconciler_pass_slow[0],
+          google_monitoring_alert_policy.nat_drops[0],
+          google_monitoring_alert_policy.browser_secret_grant[0],
         ],
         values(google_monitoring_alert_policy.workspace),
       ) : p.severity
       ]) == tolist(concat(
-      [for i in range(6) : "CRITICAL"],
-      [for i in range(8) : "ERROR"],
-      [for i in range(7) : "WARNING"],
+      [for i in range(7) : "CRITICAL"],
+      [for i in range(10) : "ERROR"],
+      [for i in range(8) : "WARNING"],
     ))
-    error_message = "the module creates 6 CRITICAL, 8 ERROR and 7 WARNING policies (#1817's proposal); a change to that split is a routing change and must be made on purpose"
+    error_message = "the module creates 7 CRITICAL, 10 ERROR and 8 WARNING policies (#1817's proposal plus the four operational monitors: browser-secret grant CRITICAL, front door and NAT drops ERROR, reconciler pass duration WARNING); a change to that split is a routing change and must be made on purpose"
   }
 
   # MUTATION: add a `resource "google_monitoring_alert_policy"` block to any
@@ -318,8 +323,8 @@ run "critical_and_error_reach_the_urgent_channels_and_warning_does_not" {
     condition = length(google_monitoring_alert_policy.workspace) == 6 && sum([
       for f in fileset("../../terraform/modules/monitoring", "*.tf") :
       length(regexall("(?m)^resource \"google_monitoring_alert_policy\" ", file("../../terraform/modules/monitoring/${f}")))
-    ]) == 16
-    error_message = "the module declares 16 alert policy resources (15 single policies plus the workspace map of 6); a new one must join the routing assertions here"
+    ]) == 20
+    error_message = "the module declares 20 alert policy resources (19 single policies plus the workspace map of 6); a new one must join the routing assertions here"
   }
 
   # MUTATION: give CRITICAL or ERROR only local.notification_channels in the
@@ -344,6 +349,10 @@ run "critical_and_error_reach_the_urgent_channels_and_warning_does_not" {
           google_monitoring_alert_policy.workspace_stuck[0],
           google_monitoring_alert_policy.pr_stranded[0],
           google_monitoring_alert_policy.tenant_namespace_mismatch[0],
+          google_monitoring_alert_policy.front_door_down[0],
+          google_monitoring_alert_policy.reconciler_pass_slow[0],
+          google_monitoring_alert_policy.nat_drops[0],
+          google_monitoring_alert_policy.browser_secret_grant[0],
         ],
         values(google_monitoring_alert_policy.workspace),
       ) :
@@ -376,6 +385,10 @@ run "critical_and_error_reach_the_urgent_channels_and_warning_does_not" {
           google_monitoring_alert_policy.workspace_stuck[0],
           google_monitoring_alert_policy.pr_stranded[0],
           google_monitoring_alert_policy.tenant_namespace_mismatch[0],
+          google_monitoring_alert_policy.front_door_down[0],
+          google_monitoring_alert_policy.reconciler_pass_slow[0],
+          google_monitoring_alert_policy.nat_drops[0],
+          google_monitoring_alert_policy.browser_secret_grant[0],
         ],
         values(google_monitoring_alert_policy.workspace),
       ) :
