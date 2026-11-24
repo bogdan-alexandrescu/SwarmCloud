@@ -102,7 +102,8 @@ function Tab(props: {
   const screenRef = useRef<HTMLDivElement>(null)
   const [node, setNode] = useState<HTMLElement | null>(null)
   useEffect(() => {
-    // eslint-disable-next-line no-new
+    // The socket is opened for the side effect the test observes, not kept.
+    // eslint-disable-next-line sonarjs/constructor-for-side-effects
     new WebSocket('wss://console.invalid/v1/tasks/' + (props.taskId ?? TASK) + '/live')
     setNode(screenRef.current)
   }, [props.taskId])

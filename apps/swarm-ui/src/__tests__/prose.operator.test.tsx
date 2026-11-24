@@ -318,7 +318,6 @@ describe('the operator screens carry data, not prose', () => {
   it('reports what it measured, so the number in the report is this number', () => {
     // Printed rather than asserted: the assertions above are the gate, and this
     // is the evidence a reviewer reads without re-deriving it.
-    // eslint-disable-next-line no-console
     console.log('[prose] rendered words:', JSON.stringify(measured))
     expect(Object.keys(measured).length).toBeGreaterThan(0)
   })
