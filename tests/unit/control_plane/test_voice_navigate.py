@@ -1,3 +1,4 @@
+# source-text: contract - the Navigate card's destinations must be paths.ts's FIXED addresses, with HELP_ROUTE read from help.ts
 """Voice it's Navigate card: the planner offers a console page from a fixed
 list, and only a person's yes accepts it (docs/design/voice-it.md §3.12.3).
 

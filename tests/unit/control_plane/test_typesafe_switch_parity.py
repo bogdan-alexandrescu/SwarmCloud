@@ -1,3 +1,4 @@
+# source-text: contract - TYPESAFE_INJECT_ENV in scheduler/dispatch.py must equal the SWITCH_ENV and SWITCH_ON typesafe_shim.py reads
 """The scheduler's TypeSafe switch is the worker's, by name and by value
 (lane TS-INJECT, part of archived issue 1347).
 

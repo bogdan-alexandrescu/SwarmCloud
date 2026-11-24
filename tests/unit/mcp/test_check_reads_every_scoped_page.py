@@ -1,3 +1,4 @@
+# source-text: forbidden-pattern - no PAGE constant may be assigned in both check.py and sc.py: a join of two modules' assignments, which a per-file rule cannot see, plus an import-time identity check
 """The check, attach-all and the workflows list read EVERY running workflow
 they are scoped to (CHECK-FILTER, archived issue 1749).
 

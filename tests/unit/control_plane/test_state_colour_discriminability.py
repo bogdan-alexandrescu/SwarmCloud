@@ -1,3 +1,4 @@
+# source-text: forbidden-pattern - the fill and grey sweeps resolve every .tsx element against the whole cascade of styles.css and each inline sheet at once, a cross-file computation; it also pins marks.tsx and StatePill.tsx
 """The state colours carried the entire signal and were one tone in greyscale.
 
 THE DEFECT. `apps/swarm-ui/src/styles.css` spread `--ok`, `--warn` and `--bad`

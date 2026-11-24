@@ -1,3 +1,4 @@
+# source-text: forbidden-pattern - no live-deployment literal in apps/ runtime strings; it stays a test because what is live comes from the DEPLOYMENT_PATTERNS list at run time, parsed by the imported deployment_values guard
 """No service under `apps/` carries a live-deployment literal at runtime.
 
 Lesson 5 of the Day One install (docs/design/day-one/lessons.md): defaults

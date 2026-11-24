@@ -378,8 +378,8 @@ def test_the_script_reads_the_same_file_and_states_no_second_copy():
             ("MIN_PRS=", "MAX_WAIT_MINUTES=")) and knob in line)
         assert "gather_default" in assignment, assignment
         assert not re.search(r":-\d", assignment), assignment
-    source = Path(trainboard.__file__).read_text()
-    assert not re.search(r"\b(?:max_wait_minutes|min_prs)\s*=\s*\d", source)
+    # trainboard.py's own side is the lint rule `merge-train-window-has-one-source`
+    # (scripts/source_text_rules/control_plane_am.py).
 
 
 def test_the_repository_variable_sets_the_window_as_merge_train_yml_hands_it(db, wake_client,

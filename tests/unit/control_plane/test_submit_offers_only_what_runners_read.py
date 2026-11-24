@@ -1,3 +1,4 @@
+# source-text: contract - Submit.tsx's SUGGESTED and ACTION_SHAPE tables must offer only the input keys the runner modules and limits.py read
 """The Submit form offers a profile only what it declares, and its runner reads (archived pull request 213 review, archived issue 218).
 
 `SUGGESTED` in apps/swarm-ui/src/Submit.tsx is what the form offers per

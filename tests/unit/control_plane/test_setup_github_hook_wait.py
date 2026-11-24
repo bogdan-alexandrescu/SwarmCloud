@@ -1,3 +1,4 @@
+# source-text: contract - the GITHUB_HOOKS_URL locals.tf renders must end in the PATH receiver.py declares
 """The GitHub App's webhook: its URL carries the receiver's route, the manifest
 is never posted without it, and the install engine recognises swarm-api's
 "not yet" answer while a revision without the URL still takes traffic

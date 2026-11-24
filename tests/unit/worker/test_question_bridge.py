@@ -1,3 +1,4 @@
+# source-text: fixture - reads the file a planted link pointed at, to show the hook did not follow the link
 """The question bridge spike (agent plugins plan; docs/design/agent-plugins-question-bridge.md).
 
 A headless claude-code agent's question is captured by a PreToolUse hook on

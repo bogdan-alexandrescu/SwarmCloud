@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import hashlib
 import io
 import json
@@ -293,23 +292,9 @@ def test_an_invalid_environment_writes_nothing(no_network, env):
     assert bucket.reads == [] and bucket.creates == []
 
 
-def test_no_module_imports_a_network_client():
-    forbidden = {"socket", "ssl", "http", "urllib.request", "requests", "httpx", "subprocess", "ctypes"}
-    for path in sorted((APP / "plugin_intake").glob("*.py")):
-        for node in ast.walk(ast.parse(path.read_text())):
-            names = []
-            if isinstance(node, ast.Import):
-                names = [alias.name for alias in node.names]
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                names = [node.module]
-            for name in names:
-                if path.name == "nonet.py" and name == "socket":
-                    continue
-                # The bucket's one channel: the metadata server and Cloud
-                # Storage only, through the sockets nonet leaves it (bucket.py).
-                if path.name == "bucket.py" and name in {"socket", "ssl", "http.client"}:
-                    continue
-                assert name not in forbidden and name.split(".")[0] not in {"http", "ssl", "requests", "httpx"}, (path.name, name)
+# That no module of plugin_intake imports a network client (but nonet.py's socket
+# and bucket.py's socket, ssl and http.client) is the lint rule
+# `plugin-intake-no-network-client` in scripts/source_text_rules/scripts_tree.py.
 
 
 def test_the_image_runs_the_job_as_a_non_root_user_with_no_dependencies():

@@ -1,3 +1,4 @@
+# source-text: contract - server.serve must route each reply through _answered; also pins the build board's plugin.json version, README and hook text
 """The build board keeps itself current (BOARD-WIRE, part of archived issue 1773).
 
 Owner requirements, 2026-10-20 (archived issue 1773): the board is "updated automatically

@@ -1,3 +1,4 @@
+# source-text: contract - OUTCOME_SECTIONS in api.ts and the sections Activity.tsx's cards ask for must be the route's section keys
 """`GET /v1/outcomes?section=…`: one Timeline card's part of the ledger (archived issue 377).
 
 Owner decision 2026-09-30: every Timeline card reads its own part of the

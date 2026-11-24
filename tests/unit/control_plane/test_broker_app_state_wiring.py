@@ -1,3 +1,4 @@
+# source-text: contract - each app.state name a route in the broker's main.py reads must be one main.py assigns
 """Everything a broker route reads off `app.state` must be put there.
 
 `finish_account_authorization` (main.py) reads

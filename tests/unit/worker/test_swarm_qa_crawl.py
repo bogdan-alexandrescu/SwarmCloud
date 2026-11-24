@@ -1,3 +1,4 @@
+# source-text: contract - the crawl's selector pattern and excluded controls must agree with swarm_api/qaspec.py, read without importing swarm-api
 """QAENV-CRAWL (docs/design/qa-environments.md §3.1, §3.5, §4, §10; part of
 archived issue 2136): `swarm_qa capture --crawl` discovers while it captures.
 

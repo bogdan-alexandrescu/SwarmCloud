@@ -1,3 +1,4 @@
+# source-text: contract - workflows.submit must send POST /v1/workflows through send_submission with SUBMIT_TIMEOUT_SECONDS
 """A dispatch or workflow submission waits 120 seconds, and a timeout says the
 first call may have been accepted (improvement plan 2026-11-23, item 4).
 

@@ -1,3 +1,4 @@
+# source-text: contract - Submit.tsx's SUGGESTED table and api.ts's catalogue fixtures must carry this profile, as must the Dockerfile and locals.tf
 """`claude-code-browser` is claude-code on agent-runtime-browser (contract
 request 67, accepted by the owner 2026-10-11).
 

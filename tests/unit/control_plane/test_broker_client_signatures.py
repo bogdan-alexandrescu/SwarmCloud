@@ -1,3 +1,4 @@
+# source-text: contract - the keywords of every self._call(...) in BrokerClient must be parameters _call declares
 """BrokerClient's own methods, driven through the real `_call`.
 
 WHY THIS FILE EXISTS. `BrokerClient.begin_sign_in` and `finish_sign_in` called
@@ -32,7 +33,7 @@ import inspect
 import json
 
 
-from swarm_api.brokerclient import AccountPool, BrokerClient
+from swarm_api.brokerclient import BrokerClient
 
 
 class _Recorder:
@@ -150,18 +151,7 @@ def test_every_broker_call_site_uses_a_real_parameter_of_call():
     )
 
 
-def test_the_account_pool_protocol_declares_and_does_not_implement():
-    """The Protocol carried real method bodies for these two members while
-    every sibling was `...`, and BrokerClient's broken versions were pasted
-    from it. A Protocol that implements is a Protocol that can be copied
-    wrong."""
-    for name in ("begin_sign_in", "finish_sign_in", "refresh", "remove", "set_state"):
-        fn = getattr(AccountPool, name, None)
-        if fn is None:
-            continue
-        body = inspect.getsource(fn)
-        assert "_call" not in body, (
-            f"AccountPool.{name} contains an implementation calling _call. "
-            "AccountPool is a Protocol; it declares the interface and an implementer "
-            "need not have a _call at all."
-        )
+# That AccountPool, a Protocol, declares and never calls `_call` -- the bodies
+# BrokerClient's broken versions were pasted from -- is the lint rule
+# `account-pool-protocol-only-declares`
+# (scripts/source_text_rules/control_plane_am.py).

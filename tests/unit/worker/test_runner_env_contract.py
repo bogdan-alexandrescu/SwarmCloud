@@ -1,3 +1,4 @@
+# source-text: contract - every runner module that calls run_child must put SWARM_ARTIFACTS_DIR and SWARM_WORK_DIR in its child's env, bound to ctx paths in cliagent.py
 """Every runner must tell its agent where to put work.
 
 `runners/base.py` documents the contract in its module docstring:

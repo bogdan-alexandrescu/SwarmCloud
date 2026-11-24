@@ -1,3 +1,4 @@
+# source-text: fixture - reads only the deployment pattern list a run names; the checker selects it through a variable name that elsewhere in the file holds a .py path (render.py, imported, not read)
 """Kubernetes rendering takes the project and the subjects from its caller,
 never a default (DAYONE-K8S-1, part of archived issue 2688; design §7, lessons 29 and 32).
 
