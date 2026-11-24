@@ -37,7 +37,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from swarm_api.codec import attempt_to_api
 from swarm_common.models import CREDENTIAL_TIERS, Attempt, EndCause
 from swarm_common.states import ParkReason
 
@@ -71,6 +70,10 @@ def _attempt(**fields) -> Attempt:
 
 
 def test_attempt_to_api_serves_the_credential_an_attempt_ran_on():
+    # Imported here, not at module top: tests/unit/scripts collects cheaply
+    # (test_collection_stays_cheap.py), and swarm_api loads the service stack.
+    from swarm_api.codec import attempt_to_api
+
     served = attempt_to_api(_attempt(account_id="acct-1", credential_source="account_pool",
                                      credential_tier=CREDENTIAL_TIERS[0]))
     assert {name: served[name] for name in RUN_ON} == {
