@@ -2280,6 +2280,12 @@ def run(
     rowless = launch.rowless(out["running"]["single_tasks"])
     if rowless:
         out["rowless_tasks"] = rowless
+    # The push path (`sc await --mine`): run in the background, it exits on
+    # the first of this session's running work to finish or need a person.
+    from . import awaitchange
+
+    out[awaitchange.FIELD] = awaitchange.await_command(
+        mine=bool(out["running"]["workflows"] or out["running"]["single_tasks"]))
     if not out["running"]["workflows"] and not out["running"]["single_tasks"]:
         # Said, not acted on (SC-AUTO-WATCH, owner 2026-10-14): an armed watch
         # with nothing to watch costs one read per interval, so the check

@@ -15,6 +15,7 @@ allowed-tools:
   - Bash(sc capacity:*)
   - Bash(sc task:*)
   - Bash(sc trouble:*)
+  - Bash(sc await:*)
   - Bash(sc whoami:*)
   - Bash(sc config:*)
   - Bash(sc debug:*)
@@ -103,6 +104,7 @@ follow it exactly as if it were written here.
 | `secrets list`, `secrets link` | `reference/secrets.md` |
 | `roles`, `roles set\|clear\|default` | `reference/roles.md` |
 | the full `check` rule table and every field of its reply | `reference/check.md` |
+| a reply's `await_in_background`: the background wait that ends on news | `reference/await.md` |
 
 ### `check`
 

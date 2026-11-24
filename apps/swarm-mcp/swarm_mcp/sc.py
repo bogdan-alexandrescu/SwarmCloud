@@ -100,7 +100,7 @@ from typing import Any, Callable, Sequence
 
 from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES, TERMINAL_STATES, TaskState
 
-from . import board, keys, render, session
+from . import awaitchange, board, keys, render, session
 from .client import SwarmClient, SwarmError, chosen_tenant, outputs_of
 from .follow import with_console
 from .invocation import help_command, terminal_command
@@ -647,6 +647,33 @@ def cmd_capacity(client: SwarmClient, args, out) -> int:
         _dump(snap, out)
         return code
     _emit(render.render_capacity_view(snap, style), out)
+    return code
+
+
+def cmd_await(client: SwarmClient, args, out) -> int:
+    """`sc await`: the push path (`awaitchange`). Read-only; one line per
+    change, then exit 0; `awaitchange.EXIT_DEADLINE` when nothing changed."""
+    try:
+        timeout = awaitchange.timeout_seconds(args.timeout)
+    except SwarmError as exc:
+        print(f"sc: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    given = list(args.ids or [])
+    if bool(given) == bool(args.mine):
+        print("sc: sc await takes task or workflow ids, or --mine; not both, not neither", file=sys.stderr)
+        return EXIT_USAGE
+    if args.mine:
+        try:
+            given, why = awaitchange.mine(client)
+        except SwarmError as exc:
+            given, why = [], f"this session's running work could not be listed: {exc}"
+        if not given:
+            out.write(f"{why}\n")
+            return awaitchange.EXIT_NOTHING
+    code, lines = awaitchange.wait(client, awaitchange.resolve(client, given), timeout=timeout)
+    for text in lines:
+        out.write(text + "\n")
+    out.flush()
     return code
 
 
@@ -5272,6 +5299,20 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("task_id")
     _common(t, root=False)
     t.set_defaults(func=cmd_task)
+
+    aw = sub.add_parser(
+        "await",
+        help=("wait for the first of these to finish or need a person, print one line per change "
+              "and exit 0; exit 4 when the deadline passes first. Read-only"),
+    )
+    aw.add_argument("ids", nargs="*", help="task ids, or a workflow id (wf_...) for every step of it")
+    aw.add_argument("--mine", action="store_true",
+                    help="this session's running work in this project, as /sc check scopes it")
+    aw.add_argument("--timeout", default=str(awaitchange.DEFAULT_TIMEOUT_SECONDS),
+                    help=(f"the deadline in seconds (default {awaitchange.DEFAULT_TIMEOUT_SECONDS}, "
+                          f"at most {awaitchange.MAX_TIMEOUT_SECONDS})"))
+    _common(aw, root=False)
+    aw.set_defaults(func=cmd_await)
 
     r = sub.add_parser("trouble", help="what is wrong right now (exit 3 if anything is down)")
     _common(r, root=False)
