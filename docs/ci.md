@@ -39,7 +39,7 @@ Three reasons, in the order they cost the most:
 
 | workflow | runs on | jobs |
 |---|---|---|
-| `application.yml` | push to `main`; **every** pull request (no path filter since 2026-10-07: its `ci-gate` job is the required check). Its `what this change reaches` job skips every other job unless the change touches `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml`, `auto-merge.yml`, `.dockerignore`, `.gcloudignore` or the workflow itself ([below](#the-merge-pipelines-wall-time)) | `what this change reaches` · `shellcheck` · `release workflow wiring (actionlint)` (also lints `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml` and `auto-merge.yml`) · `ruff check` ([below](#ruff-lint-is-the-house-python-linter-and-formatting-is-not-adopted)) · `format / unit tests` (stands for `lock / contract / format / bridge install` and the four `unit tests (k/4)` shards) · `swarm-ui typecheck / component tests` (stands for `swarm-ui typecheck / build` and the one to eight `swarm-ui component tests (k/N)` shards, sized by measured weight — [below](#the-component-test-shards-are-sized-by-measured-weight)) · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) · `build changed images without pushing` (**pull requests only** — [below](#images-are-built-on-a-pull-request-without-pushing)) · `record the tested tree` (every run but main's: what it passed, keyed by its tree, which main's push run reuses — [below](#main-reuses-the-tested-tree)) · `ci-gate` — `needs` every job above but the two name-keepers `format / unit tests` and `swarm-ui typecheck / component tests` (whose own `needs` it holds; [below](#where-pull-request-ci-time-goes-2026-10-09)) and passes only when each passed or was skipped by its own `if:`, then waits for this commit's `terraform.yml` run ([below](#the-ruleset-on-main-and-ci-gate)) |
+| `application.yml` | push to `main`; **every** pull request (no path filter since 2026-10-07: its `ci-gate` job is the required check). Its `what this change reaches` job skips every other job unless the change touches `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml`, `auto-merge.yml`, `.dockerignore`, `.gcloudignore` or the workflow itself ([below](#the-merge-pipelines-wall-time)) | `what this change reaches` · `shellcheck` · `release workflow wiring (actionlint)` (also lints `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml` and `auto-merge.yml`) · `ruff check` ([below](#ruff-lint-is-the-house-python-linter-and-formatting-is-not-adopted)) · `format / unit tests` (stands for `lock / contract / format / bridge install` and the four `unit tests (k/4)` shards) · `swarm-ui typecheck / component tests` (stands for `swarm-ui typecheck / build` and the one to eight `swarm-ui component tests (k/N)` shards, sized by measured weight — [below](#the-component-test-shards-are-sized-by-measured-weight)) · `integration tests (emulator)` · `pyright (basic, baseline)` ([below](#pyright-runs-beside-the-unit-shards)) · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) · `build changed images without pushing` (**pull requests only** — [below](#images-are-built-on-a-pull-request-without-pushing)) · `record the tested tree` (every run but main's: what it passed, keyed by its tree, which main's push run reuses — [below](#main-reuses-the-tested-tree)) · `ci-gate` — `needs` every job above but the two name-keepers `format / unit tests` and `swarm-ui typecheck / component tests` (whose own `needs` it holds; [below](#where-pull-request-ci-time-goes-2026-10-09)) and passes only when each passed or was skipped by its own `if:`, then waits for this commit's `terraform.yml` run ([below](#the-ruleset-on-main-and-ci-gate)) |
 | `terraform.yml` | push to `main`; pull requests touching `terraform/`, `tests/terraform/`, the plan guard, the destroy guard, the unlabelable-type list or the workflow itself | `fmt / validate / tflint` · `terraform test` · `checkov` · `plan` (**not** on a pull request) · `plan (not run on a pull request)` |
 | `security.yml` | every pull request; push to `main`; Mondays 06:00 UTC | `trivy (repo)` · `secret scan` · `checkov (terraform + kubernetes)` · `platform policy assertions` · `trivy (published images)` (schedule / dispatch only) |
 | `release.yml` | **every** push to `main` (no path filter since 2026-10-26: only the newest commit is released, and a release whose commit `main` has moved past ends green, superseded — [below](#only-the-newest-commit-on-main-is-built-and-released)); or manual dispatch with an environment | `verify` (**dispatch only** — on a push CI proved the same SHA, [below](#the-release-timeline)) · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming `dev` or `prod` — prod waits here) · `promote` · `terraform apply` · `terraform apply, IAM (dev-iam)` (dev only, and only when the plan changes IAM — the owner approves it [below](#a-dev-release-that-changes-iam-waits-for-the-owner)) · `deploy` (verifies the digests; **on prod** also warms, smokes and proves GKE) — the apply and deploy jobs only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
@@ -4304,6 +4304,56 @@ figures alone. A shard's balance only moves when a heavy file's weight moves,
 so a refresh is due when a slice is added, split or made faster, or when the
 `pick` lines in a run's log (`shard k runs n, ~s s of measured test time
 (shards: ...)`) stop matching the shards' real test times.
+
+### pyright runs beside the unit shards
+
+**Why (issue 55).** No workflow ran a type checker, and 78 `# type: ignore[...]`
+comments sat in `apps/` with nothing to say which still suppressed anything.
+`scripts/typecheck.sh` runs pyright, pinned exactly (`PYRIGHT_VERSION`, run as
+`uv tool run --from pyright[nodejs]==<pin>` so it adds nothing to `uv.lock`),
+in basic mode from `[tool.pyright]` in the root `pyproject.toml`, and fails
+only on an error a (file, rule) has over `scripts/lib/pyright-baseline.json`.
+`reportUnnecessaryTypeIgnoreComment` is an error, so a dead ignore fails like
+any other new error; the 12 dead ones were removed when it was turned on
+(comment-only changes: no code changed to satisfy the checker).
+
+**The baseline only shrinks.** `test_typecheck.py` holds its total under
+`BASELINE_CEILING`, the same ceiling-constant ratchet as ruff's BLE001
+baseline. Regenerate it with `scripts/typecheck.sh --write-baseline` after
+fixing errors (lower the ceiling with it) or after a deliberate pin bump.
+It was set once at 1,364 when CI began running the check (2026-11-24): the
+1,245 of 2026-11-22 had grown by the code merged while nothing ran it.
+
+**Fixed thread count.** pyright's `--threads 4`: the errors it reports can
+depend on how the files are split over its workers (one `# type: ignore` in
+`swarm_api/roles.py` is needed in one thread and dead in four; three
+four-thread runs agreed exactly), so the count is fixed and the baseline is
+written with it.
+
+**It adds no wall-clock time to a merge.** Measured 2026-11-24 in a SwarmCloud
+container (whole script: venv sync, pyright, comparison):
+
+| run | wall |
+|---|---:|
+| one thread (pyright's default), cold or warm | 179 s |
+| 4 threads, 4 cores (`taskset`), cold uv cache | 91 s |
+| 4 threads, 4 cores, warm | 89 s |
+| 4 threads, 6 cores, warm | 73 s |
+
+The `pyright (basic, baseline)` job needs only `what this change reaches`, as
+the unit shards do, so it starts beside them and ends ~2 minutes later
+(checkout and uv setup included), against a unit shard's ~212 s median run
+([above](#where-pull-request-ci-time-goes-2026-10-09)): it is never the last
+job before `ci-gate`. It runs on a GitHub-hosted `ubuntu-24.04` (4 vCPUs),
+not the self-hosted pool, because runner queues were half of the critical
+path: it takes no pool VM (`test_ci_fold.py`'s per-pull-request count is
+unchanged). It is HEAVY in `scripts/lib/ci_reuse.py` (a full run only, like
+the shards: a lane's fast-checks pull request does not start it) and reaches
+only `python == 'all'` (never a docs- or swarm-ui-only change), and `main`
+reuses its result by tree like every other check. If a run ever shows it
+finishing after the slowest shard, move it to the nightly
+[`coverage.yml`](#where-it-runs-nightly-off-the-merge-path) rather than
+let it set a merge's pace.
 
 ## Coverage floors
 
