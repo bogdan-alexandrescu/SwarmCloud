@@ -1689,7 +1689,7 @@ it would without the entry.
   admin does -- secrets, MCP servers, git-token slots, provider keys,
   private plugins, repository, merge, plan and QA settings, the workspace's
   name, ending runs. Each refuses it 403 `probe_admin_not_permitted` and
-  writes nothing.
+  writes nothing (a refused member removal only its refusal row, below).
 
 **Why one choke point.** `RoleStore.resolve` answers `admin` for a probe
 admin only when the call passes `probe_admin=True`, which only the routes on
@@ -1725,6 +1725,26 @@ platform admin storing an `admin` grant between the early check and the
 write aborts the probe admin's transaction, and its retry refuses it 403
 `role_admin_required` with nothing written (epic 21; the race tests in
 `test_probe_admin_scope.py` and `test_probe_admin_join_approval.py`).
+
+**A refused probe-admin change is recorded** (epic 21). A probe admin's
+member removal refused 403 `probe_admin_not_permitted`, and its approval,
+role set or role clear refused 403 `role_admin_required` because the person
+holds `admin` (or would be named it), each leave exactly one
+`admin_audit` row, `workspace_probe_admin_refused`: who tried (`by`), on
+whom (`target_email`), in which workspace (`target_tenant_id`), and
+`detail: {route, via: "probe_admin", to?, refused}` with the refusal's code.
+The row is the same whichever check fired -- the early, non-transactional
+one or the one inside the write's transaction -- and, like
+`workspace_last_admin_refused`, it is written after the transaction rolled
+back, never inside it, by `last_admin.probe_admin_refusals` around the
+route. A row that cannot be written is logged and the 403 is unchanged:
+the same status, code and message. Why: these are the refusals that keep a
+probe identity from taking a workspace from its admins, so an attempt is
+worth seeing in Admin › People and roles (`RoleStore.audit` serves the row
+in the workspace's role events). No other 403 is recorded -- not the other
+`probe_admin_not_permitted` routes, and not an ordinary member refused as
+a non-admin. `test_probe_admin_routes.py`, `test_probe_admin_scope.py` and
+`test_probe_admin_join_approval.py` pin it.
 
 **What outlives the entry.** It never sets `is_admin`, so it is not in the
 `ADMIN_USERS` migration into `admin_roles`, not in any admin listing, and

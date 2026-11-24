@@ -36,6 +36,7 @@ def _target() -> gate_qt.QaTarget:
         "credential": {"username": "qa-" + secrets.token_hex(4) + "@example.com",
                        "password": "pw-" + secrets.token_hex(12)},
         "idp_token_path": TOKEN_PATH,
+        "idp_token_origin": IDP,
     })
     return target
 
