@@ -8745,8 +8745,8 @@ entries:
   stage: 13
   provider: engine
   check: gcloud alpha monitoring policies list --project=$P --format='value(displayName)' | wc -l
-  apply: 'module.monitoring -> terraform/modules/monitoring/alerts.tf (13 policies: safety_tick_absent, service_errors, job_failures, generation_fenced, dead_letter_backlog, wake_backlog, tasks_dead_lettered, dispatch_failing_by_backend, reconciler_blind, spec_signature_invalid, worker_action_ended, schedule_needs_attention, workspace_stuck) + terraform/modules/monitoring/stranded_prs.tf:89 (pr_stranded) + terraform/modules/monitoring/tenant_namespace.tf:99 (tenant_namespace_mismatch) + terraform/modules/monitoring/workspace_alerts.tf:370 for_each over 6 keys (outside_personal_workers, foreign_runtime, job_changed, foreign_run, front_door_iam, tenant_secret_iam) = 21 total'
-  verify: gcloud alpha monitoring policies list --project=$P --format='value(displayName)' returns exactly 21 swarm-prefixed policies, and each has at least one notification channel attached
+  apply: 'module.monitoring -> terraform/modules/monitoring/alerts.tf (13 policies: safety_tick_absent, service_errors, job_failures, generation_fenced, dead_letter_backlog, wake_backlog, tasks_dead_lettered, dispatch_failing_by_backend, reconciler_blind, spec_signature_invalid, worker_action_ended, schedule_needs_attention, workspace_stuck) + terraform/modules/monitoring/stranded_prs.tf:89 (pr_stranded) + terraform/modules/monitoring/tenant_namespace.tf:99 (tenant_namespace_mismatch) + terraform/modules/monitoring/workspace_alerts.tf:370 for_each over 6 keys (outside_personal_workers, foreign_runtime, job_changed, foreign_run, front_door_iam, tenant_secret_iam) = 21 total; plus front_door_down, reconciler_pass_slow, nat_drops and browser_secret_grant (alerts.tf, the operational monitors) = 25, and the front_door uptime check (google_monitoring_uptime_check_config) when front_door_hostname is set'
+  verify: gcloud alpha monitoring policies list --project=$P --format='value(displayName)' returns exactly 25 swarm-prefixed policies (24 with no front_door_hostname), and each has at least one notification channel attached
   explain: 'Every pool/fencing/dispatch/reconciler/workspace failure mode this platform knows about has an alert. #1817: until 2026-10-21, every one of the 21 policies had NO notification channel -- they fired and notified nobody. A guard (require_alert_channels) now fails the plan if no channel is set.'
   guards: '#1817 -- 21 policies reached nobody; guarded now by a plan-time error_message requiring extra_notification_channels and/or urgent_notification_channels to be set'
   secret_entry: null
@@ -8769,6 +8769,7 @@ entries:
     - modules/monitoring/google_monitoring_alert_policy.tenant_namespace_mismatch
     - modules/monitoring/google_monitoring_alert_policy.workspace
     - modules/monitoring/google_monitoring_alert_policy.*
+    - modules/monitoring/google_monitoring_uptime_check_config.front_door
     variable:
     - infra/require_alert_channels
     - infra/create_alerts
@@ -8798,7 +8799,7 @@ entries:
   stage: 13
   provider: engine
   check: gcloud logging metrics list --project=$P --filter='name~swarm'
-  apply: 'grouped: terraform/modules/monitoring/metrics.tf (events, peak_rss, oom_near_miss, safety_tick_attempts, dispatch_failures, spec_signature_invalid, spec_upstream_invalid, worker_action_ended, schedule_auto_paused, schedule_needs_owner, workspace_stuck) + alerts.tf:573 reconciler_backend_unavailable, :602 reconciler_not_repairing + stranded_prs.tf:52 pr_stranded + tenant_namespace.tf:63 tenant_namespace_mismatch'
+  apply: 'grouped: terraform/modules/monitoring/metrics.tf (events, peak_rss, oom_near_miss, safety_tick_attempts, dispatch_failures, spec_signature_invalid, spec_upstream_invalid, worker_action_ended, schedule_auto_paused, schedule_needs_owner, workspace_stuck) + alerts.tf:573 reconciler_backend_unavailable, :602 reconciler_not_repairing + stranded_prs.tf:52 pr_stranded + tenant_namespace.tf:63 tenant_namespace_mismatch + alerts.tf reconciler_pass_duration'
   verify: each metric shows a nonzero sample count once the matching log line is emitted by the service it watches
   explain: Log-based metrics that feed monitoring.alert-policies; without these, the matching alert policy has nothing to threshold on.
   guards: null
@@ -8828,6 +8829,7 @@ entries:
     - modules/monitoring/google_logging_metric.reconciler_not_repairing
     - modules/monitoring/google_logging_metric.pr_stranded
     - modules/monitoring/google_logging_metric.tenant_namespace_mismatch
+    - modules/monitoring/google_logging_metric.reconciler_pass_duration
 - id: monitoring.notification-channel
   kind: monitoring
   scope: core

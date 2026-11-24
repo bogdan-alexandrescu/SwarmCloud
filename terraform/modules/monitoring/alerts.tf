@@ -1077,3 +1077,431 @@ resource "google_monitoring_alert_policy" "workspace_stuck" {
   # without it.
   user_labels = merge(var.labels, { "managed-by" = "swarm-terraform" })
 }
+
+# ===========================================================================
+# The four operational monitors: the front door's uptime, the reconciler's
+# pass duration, Cloud NAT dropping packets, and a browser secret granted
+# outside swarm-api's slot. Each reads a signal something already writes;
+# the emitter is cited above each.
+# ===========================================================================
+
+locals {
+  # The gateway terraform/modules/network creates: google_compute_router_nat
+  # "this", named "${var.name_prefix}-nat".
+  nat_gateway_name = coalesce(var.nat_gateway_name, "${var.name_prefix}-nat")
+
+  # `[.]` rather than `\.`, as workspace_alerts.tf: inside a quoted Logging
+  # string a backslash is the query language's escape before the regex's.
+  browser_project_re = replace(var.project_id, ".", "[.]")
+  swarm_api_email    = "swarm-api@${var.project_id}.iam.gserviceaccount.com"
+
+  # The three secret shapes swarm_api.browser_slots accepts, by the tail of
+  # resourceName (projects/<number>/secrets/<name>): a workflow's carry
+  # (-browser-wf-), a park's browser (-browser-park-) and a named login
+  # (-browser-login-). Any tenant, not only u-*: swarm-api refuses group
+  # tenants, so an entry on a group tenant's browser secret is someone else.
+  browser_secret_re = "/secrets/swarm-tenant-[a-z0-9-]+-browser-(wf|park|login)-[^/]+$"
+
+  # What a slot grant is: the tenant's personal worker
+  # (swarm_api.browser_slots.worker_member, swarm-agent-worker-<tenant>, a
+  # personal tenant's id starting u-) on SLOT_ROLES, nothing else.
+  browser_member_re = "^serviceAccount:swarm-agent-worker-u-[a-z0-9-]+@${local.browser_project_re}[.]iam[.]gserviceaccount[.]com$"
+  browser_roles_re  = "^roles/secretmanager[.](secretAccessor|secretVersionAdder)$"
+}
+
+# ---------------------------------------------------------------------------
+# The front door: the API's health route through the load balancer.
+#
+# THE SIGNAL: Cloud Monitoring's own uptime check on
+# https://<front_door_hostname>/healthz -- the swarm-api route
+# (swarm_api/routes/health.py) the front door's URL map sends to the API's
+# backend (terraform/modules/frontend, the API path rule).
+#
+# THE HEALTHY ANSWER IS 302, NOT 200. That backend has IAP on, and IAP
+# answers every unauthenticated request with a redirect to sign-in before
+# swarm-api sees it. An uptime check follows no redirect, and its service-
+# agent token cannot pass IAP (IAP here admits only an allowlisted OAuth
+# client's audience). So the check proves the hostname resolves, the
+# certificate is valid, the forwarding rule and URL map route /healthz, and
+# IAP is gating it. It cannot see swarm-api itself: service_errors and the
+# safety tick watch that. A 200 here would mean IAP is OFF on the API, which
+# is why 2xx is NOT accepted (docs/web-ui/01-reachability.md: an IAP 302 must
+# never be read as the API's 200). The owner's choice: questions.json of the
+# pull request that added this.
+# ---------------------------------------------------------------------------
+resource "google_monitoring_uptime_check_config" "front_door" {
+  count = var.create_alerts && var.front_door_hostname != "" ? 1 : 0
+
+  project      = var.project_id
+  display_name = "swarm-${var.environment}-front-door-healthz"
+  period       = var.front_door_check_period
+  timeout      = var.front_door_check_timeout
+
+  http_check {
+    path           = "/healthz"
+    port           = 443
+    use_ssl        = true
+    validate_ssl   = true
+    request_method = "GET"
+
+    accepted_response_status_codes {
+      status_value = 302
+    }
+  }
+
+  monitored_resource {
+    type = "uptime_url"
+    labels = {
+      project_id = var.project_id
+      host       = var.front_door_hostname
+    }
+  }
+
+  user_labels = merge(var.labels, { "managed-by" = "swarm-terraform" })
+}
+
+resource "google_monitoring_alert_policy" "front_door_down" {
+  count = var.create_alerts && var.front_door_hostname != "" ? 1 : 0
+
+  project      = var.project_id
+  display_name = "swarm-${var.environment}-front-door-down"
+  combiner     = "OR"
+  severity     = "ERROR"
+
+  conditions {
+    display_name = "The front door's /healthz failed from more than ${var.front_door_failing_regions} region(s) for ${var.front_door_down_seconds}s"
+
+    condition_threshold {
+      # A built-in metric, written by the check itself: no log-based metric,
+      # so nothing to wait for.
+      filter = join(" AND ", [
+        "metric.type = \"monitoring.googleapis.com/uptime_check/check_passed\"",
+        "resource.type = \"uptime_url\"",
+        "metric.labels.check_id = \"${google_monitoring_uptime_check_config.front_door[0].uptime_check_id}\"",
+      ])
+
+      # Count the regions whose latest check failed (Cloud Monitoring's own
+      # uptime-alert shape): ALIGN_NEXT_OLDER keeps each region's last
+      # result, REDUCE_COUNT_FALSE counts the failures.
+      comparison      = "COMPARISON_GT"
+      threshold_value = var.front_door_failing_regions
+      duration        = "${var.front_door_down_seconds}s"
+
+      aggregations {
+        alignment_period     = "1200s"
+        per_series_aligner   = "ALIGN_NEXT_OLDER"
+        cross_series_reducer = "REDUCE_COUNT_FALSE"
+        group_by_fields      = ["resource.label.project_id", "resource.label.host"]
+      }
+    }
+  }
+
+  notification_channels = local.channels_by_severity["ERROR"]
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = <<-DOC
+      The front door stopped giving IAP's sign-in redirect for `/healthz` from
+      more than one checker region. People cannot reach the console or the
+      API through it; workers, the scheduler and the reconciler do not use it
+      and keep running.
+
+      Read the uptime check's last result (Monitoring -> Uptime checks): the
+      status code says which layer failed.
+
+      * TLS or certificate error -- the managed certificate expired or no
+        longer matches the hostname's A record (`terraform/modules/frontend`,
+        output `ip_address`).
+      * DNS failure -- the A record at the registrar is gone or points
+        elsewhere.
+      * 404 -- the URL map no longer routes `/healthz` to the API backend.
+      * 200 -- IAP is OFF on the API's backend. Treat as an access-control
+        incident: the API is reachable without sign-in.
+      * 5xx -- the load balancer cannot reach IAP or the backend service.
+
+      The check cannot see swarm-api itself behind IAP; `control-plane-5xx`
+      watches that.${local.alert_docs_suffix}
+    DOC
+  }
+
+  alert_strategy {
+    auto_close = "1800s"
+  }
+
+  user_labels = merge(var.labels, { "managed-by" = "swarm-terraform" })
+}
+
+# ---------------------------------------------------------------------------
+# The reconciler's passes are slower than its tick.
+#
+# THE EMITTER: reconciler/repair.py, Reconciler.run_once, ends every pass with
+#     self._log.info("reconciliation pass complete", **report.as_dict() ...)
+# through reconciler.logs.StructuredLogger, which writes the keyword fields at
+# the TOP LEVEL of jsonPayload with component="reconciler". PassReport.as_dict
+# carries `duration_seconds`: (finished_at - started_at) in float seconds,
+# rounded to the millisecond. scripts/bench-reconcile.sh reads the same line.
+# tests/unit/control_plane/test_reconciler_gke_namespaced.py runs a real pass
+# and holds that line to this metric's filter and extractor.
+#
+# WHY IT MATTERS: the tick is */1 and a pass holds a lock; a pass still running
+# when the next tick arrives makes that tick answer 409 already_running
+# (reconciler/service.py) and log nothing. Passes slower than a minute are
+# passes skipped: dead leases held longer, capacity released later.
+# ---------------------------------------------------------------------------
+resource "google_logging_metric" "reconciler_pass_duration" {
+  project = var.project_id
+  name    = "${var.name_prefix}/reconciler-pass-duration"
+
+  description = "Seconds each reconciliation pass took (the `duration_seconds` of the reconciler's `reconciliation pass complete` line)."
+
+  filter = join(" AND ", [
+    local.reconciler_log_filter,
+    "jsonPayload.message=\"reconciliation pass complete\"",
+  ])
+
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "DISTRIBUTION"
+    unit        = "s"
+  }
+
+  value_extractor = "EXTRACT(jsonPayload.duration_seconds)"
+
+  # Seconds. Fine where passes live (p50 3.0s, p90 8.7s, measured 2026-09-24/25),
+  # a bound at 60 so the default threshold is exact, and up to 900s, the
+  # reconciler service's request timeout (terraform/infra, swarm-reconciler),
+  # past which no pass completes to log.
+  bucket_options {
+    explicit_buckets {
+      bounds = [1, 2, 5, 10, 20, 30, 45, 60, 90, 120, 180, 300, 600, 900]
+    }
+  }
+
+  # Readable by the alert policy only some minutes after it is created: the
+  # policy waits on this create-time sleep (log_metric_settle_seconds, metrics.tf).
+  # Runs on create or replace only. on_failure = continue: a failed sleep must
+  # not taint the metric, which the next apply would then replace.
+  provisioner "local-exec" {
+    command    = "sleep ${local.log_metric_settle_seconds}"
+    on_failure = continue
+  }
+}
+
+resource "google_monitoring_alert_policy" "reconciler_pass_slow" {
+  count = var.create_alerts ? 1 : 0
+
+  project      = var.project_id
+  display_name = "swarm-${var.environment}-reconciler-pass-slow"
+  combiner     = "OR"
+  severity     = "WARNING"
+
+  conditions {
+    display_name = "p99 reconciliation pass above ${var.reconciler_pass_slow_seconds}s for ${var.reconciler_pass_slow_duration_seconds}s"
+
+    condition_threshold {
+      filter = join(" AND ", [
+        "resource.type = \"cloud_run_revision\"",
+        "metric.type = \"logging.googleapis.com/user/${google_logging_metric.reconciler_pass_duration.name}\"",
+      ])
+
+      # Five passes per 300s window at the */1 tick, so the p99 is the
+      # window's slowest pass; the max across revisions, so a second
+      # instance's fast passes do not hide a slow one.
+      comparison      = "COMPARISON_GT"
+      threshold_value = var.reconciler_pass_slow_seconds
+      duration        = "${var.reconciler_pass_slow_duration_seconds}s"
+
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_PERCENTILE_99"
+        cross_series_reducer = "REDUCE_MAX"
+      }
+    }
+  }
+
+  notification_channels = local.channels_by_severity["WARNING"]
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = <<-DOC
+      Reconciliation passes are taking longer than the one-minute tick, so
+      ticks are being skipped (a tick that finds a pass running answers 409
+      and does nothing). Dead leases are released and stranded resources
+      collected later than they should be.
+
+      Read the recent `reconciliation pass complete` lines (or the
+      `reconciler_passes` collection): `duration_seconds` against
+      `tasks_examined`, `leases_examined`, `executions_examined`, `sweep`
+      (`full` passes read more) and `errors`. A backend listing that has grown,
+      or a slow Firestore read, shows there. `scripts/bench-reconcile.sh`
+      measures pass time on demand.${local.alert_docs_suffix}
+    DOC
+  }
+
+  alert_strategy {
+    auto_close = "3600s"
+  }
+
+  user_labels = merge(var.labels, { "managed-by" = "swarm-terraform" })
+}
+
+# ---------------------------------------------------------------------------
+# Cloud NAT is dropping the platform's outbound packets.
+#
+# THE EMITTER: Cloud NAT itself. Every NAT gateway writes
+# router.googleapis.com/nat/dropped_sent_packets_count (resource nat_gateway,
+# label `reason`) -- a built-in metric, so no log-based metric and no wait.
+# The gateway is terraform/modules/network's google_compute_router_nat "this",
+# `<name_prefix>-nat`, which also logs each drop (log_config ERRORS_ONLY, the
+# nat_flows log the 2026-10-09 incident read). With endpoint-independent
+# mapping off, every drop is OUT_OF_RESOURCES: a worker's new connection to a
+# model provider or a forge that never opened.
+#
+# The filter names the gateway and the region: the project is shared, and
+# another team's NAT drops are not ours to page on.
+# ---------------------------------------------------------------------------
+resource "google_monitoring_alert_policy" "nat_drops" {
+  count = var.create_alerts ? 1 : 0
+
+  project      = var.project_id
+  display_name = "swarm-${var.environment}-nat-dropping-packets"
+  combiner     = "OR"
+  severity     = "ERROR"
+
+  conditions {
+    display_name = "${local.nat_gateway_name} dropped packets in every ${var.nat_drop_window_seconds}s window for ${var.nat_drop_duration_seconds}s"
+
+    condition_threshold {
+      filter = join(" AND ", [
+        "metric.type = \"router.googleapis.com/nat/dropped_sent_packets_count\"",
+        "resource.type = \"nat_gateway\"",
+        "resource.labels.gateway_name = \"${local.nat_gateway_name}\"",
+        "resource.labels.region = \"${var.region}\"",
+      ])
+
+      comparison      = "COMPARISON_GT"
+      threshold_value = var.nat_drop_threshold
+      duration        = "${var.nat_drop_duration_seconds}s"
+
+      aggregations {
+        alignment_period     = "${var.nat_drop_window_seconds}s"
+        per_series_aligner   = "ALIGN_SUM"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["metric.labels.reason"]
+      }
+    }
+  }
+
+  notification_channels = local.channels_by_severity["ERROR"]
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = <<-DOC
+      Cloud NAT has been dropping the platform's outbound packets for fifteen
+      minutes. Workers' new connections to model providers and forges fail
+      or stall; attempts time out and retry.
+
+      `reason` OUT_OF_RESOURCES (the only one possible with endpoint-
+      independent mapping off) means a VM or pod ran out of NAT ports: read
+      the drops with
+
+          gcloud logging read 'resource.type="nat_gateway" AND jsonPayload.allocation_status="DROPPED"'
+
+      and see whether they come from one source. Raise
+      `nat_max_ports_per_vm` or `nat_static_ip_count` (terraform/infra) if
+      the platform's own concurrency grew; look for a runaway connection loop
+      in one attempt if not. docs/incidents/2026-10-09-egress-open-delay.md
+      has the earlier reading.${local.alert_docs_suffix}
+    DOC
+  }
+
+  alert_strategy {
+    auto_close = "3600s"
+  }
+
+  user_labels = merge(var.labels, { "managed-by" = "swarm-terraform" })
+}
+
+# ---------------------------------------------------------------------------
+# A browser secret was granted outside swarm-api's slot.
+#
+# THE EMITTER: Secret Manager's Admin Activity audit log, which cannot be
+# turned off. swarm_api.browser_slots (BrowserSlots._bind_only) grants a
+# signed-in browser session's secret by set_iam_policy on that one secret,
+# making it exactly the tenant's personal worker on secretAccessor and
+# secretVersionAdder; every such call writes a SetIamPolicy entry with the
+# caller in authenticationInfo and the change in serviceData.policyDelta. The
+# app logs no line of its own on a grant, so this is the signal.
+#
+# THE ONE EXPECTED GRANT DOES NOT PAGE: swarm-api, a personal worker, the two
+# slot roles. Anything else on a browser secret -- another principal writing
+# its policy, a member who is not a personal worker, a third role -- is a
+# person's signed-in session readable by someone it was not made for
+# (terraform/bootstrap/browser_logins.tf: "IAM IS THE WHOLE BOUNDARY").
+# Each `!~` on the repeated bindingDeltas is true when ANY delta fails it, as
+# workspace_alerts.tf relies on. One consequence: swarm-api's own rewrite
+# REMOVING an intruder also pages, which is the right thing to look at.
+#
+# A filter cannot compare the member's tenant with the secret's; swarm-api
+# checks that (the secret's swarm-tenant label) before it binds.
+# ---------------------------------------------------------------------------
+resource "google_monitoring_alert_policy" "browser_secret_grant" {
+  count = var.create_alerts ? 1 : 0
+
+  project      = var.project_id
+  display_name = "swarm-${var.environment}-browser-secret-grant-outside-slot"
+  combiner     = "OR"
+  severity     = "CRITICAL"
+
+  conditions {
+    display_name = "A browser-session secret's IAM was written other than by swarm-api's slot grant"
+
+    condition_matched_log {
+      filter = join(" AND ", [
+        "logName=\"projects/${var.project_id}/logs/cloudaudit.googleapis.com%2Factivity\"",
+        "protoPayload.serviceName=\"secretmanager.googleapis.com\"",
+        "protoPayload.methodName=~\"(?i)setiampolicy$\"",
+        "protoPayload.resourceName=~\"${local.browser_secret_re}\"",
+        "(${join(" OR ", [
+          "NOT protoPayload.authenticationInfo.principalEmail=\"${local.swarm_api_email}\"",
+          "protoPayload.serviceData.policyDelta.bindingDeltas.member!~\"${local.browser_member_re}\"",
+          "protoPayload.serviceData.policyDelta.bindingDeltas.role!~\"${local.browser_roles_re}\"",
+        ])})",
+      ])
+    }
+  }
+
+  notification_channels = local.channels_by_severity["CRITICAL"]
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = <<-DOC
+      A signed-in browser session's secret (`swarm-tenant-<tenant>-browser-wf-*`,
+      `-browser-park-*` or `-browser-login-*`) had its IAM policy written by
+      someone other than swarm-api, or given a member that is not a personal
+      worker (`swarm-agent-worker-u-*`), or a role other than
+      `secretAccessor` / `secretVersionAdder`. That secret holds a person's
+      logged-in session; whoever the binding names can act as them on the
+      site it is for.
+
+      1. Read the entry (it is linked from the incident): the principal,
+         the secret, and `serviceData.policyDelta.bindingDeltas`.
+      2. Remove the binding, or delete the secret: the person signs in again.
+      3. If the principal was not swarm-api, find how it came to hold
+         `secretmanager.secrets.setIamPolicy` on the secret. If it was
+         swarm-api, its slot check let the call through: read swarm-api's
+         log for `browser-session/slot` around the entry's time.${local.alert_docs_suffix}
+    DOC
+  }
+
+  # A log-match policy must say how often it may notify; it opens one incident
+  # per matching entry otherwise.
+  alert_strategy {
+    notification_rate_limit {
+      period = "${var.browser_secret_grant_notify_seconds}s"
+    }
+    auto_close = "1800s"
+  }
+
+  user_labels = merge(var.labels, { "managed-by" = "swarm-terraform" })
+}

@@ -473,6 +473,10 @@ Terraform creates these when `create_alerts = true`:
 | `wake-messages-dead-lettered` | the scheduler is not acking pushes | scheduler errors, or Firestore unreachable |
 | `scheduler-not-draining` | wake backlog sustained | raise scheduler instances or leases/run |
 | `tasks-dead-lettered` | agents exhausting every attempt | a broken runner or a bad repository; also a cost problem |
+| `front-door-down` | the front door's `/healthz` stopped giving IAP's sign-in redirect from more than one checker region for 5 minutes (only made when `enable_frontend` is on) | read the uptime check's last status: TLS/DNS is the certificate or the A record, 404 the URL map, **200 means IAP is off on the API** (an access-control incident), 5xx the load balancer |
+| `reconciler-pass-slow` | the p99 reconciliation pass took over 60 s for 15 minutes, so ticks are skipped | read `duration_seconds` and the counts on recent `reconciliation pass complete` lines; `scripts/bench-reconcile.sh` |
+| `nat-dropping-packets` | Cloud NAT (`<prefix>-nat`) dropped outbound packets in every 5-minute window for 15 minutes | read the `nat_gateway` `DROPPED` log entries for their source; raise `nat_max_ports_per_vm` or `nat_static_ip_count`, or stop a runaway attempt |
+| `browser-secret-grant-outside-slot` | a browser-session secret's IAM was written by someone other than swarm-api, or given a member that is not a personal worker or a role other than the slot's two | remove the binding or delete the secret, then find how the principal could write it |
 
 `generation-fencing` firing repeatedly deserves attention even though the system
 is behaving correctly — it means the reconciler keeps deciding live workers are
@@ -497,6 +501,41 @@ labels are read widely, and an address there is personal data
 the document it already read for the agent, and a fence line with no submitter is
 still counted.
 
+**Why the four at the end of the table read what they read.** Each is built
+on a signal something already writes; none adds an emitter.
+
+* `front-door-down` is a Cloud Monitoring uptime check on
+  `https://<frontend_hostname>/healthz`, run every 60 s from every checker
+  region. `/healthz` goes to the API's backend, and **IAP is on there**: an
+  unauthenticated request gets IAP's 302 to sign-in before swarm-api sees it,
+  and an uptime check cannot pass IAP. So the check accepts **302 only**. It
+  proves DNS, the certificate, the forwarding rule, the URL map and IAP. It
+  cannot see swarm-api itself (`control-plane-5xx` and the safety tick watch
+  that). A 200 would mean the API answered without sign-in, which is why 2xx
+  is a failure here, not a pass.
+* `reconciler-pass-slow` reads the log-based distribution
+  `reconciler-pass-duration`. It is the `duration_seconds` field of the line
+  `reconciliation pass complete`, which `reconciler/repair.py` writes at the
+  end of every pass. The tick is `*/1`, and a tick that finds a pass still
+  running answers 409 and does nothing, so a pass over 60 s means skipped
+  passes. The 300 passes measured on 2026-09-24/25 ran p50 3.0 s, p90 8.7 s
+  and max 111 s, so one slow pass must not page; 15 minutes of them does.
+* `nat-dropping-packets` reads Cloud NAT's own
+  `router.googleapis.com/nat/dropped_sent_packets_count` for the platform's
+  gateway in its region only. The project is shared, and another team's NAT
+  is not ours to page on. The only burst on record lasted 27 ms
+  (`docs/incidents/2026-10-09-egress-open-delay.md`) and would not fire it.
+* `browser-secret-grant-outside-slot` reads Secret Manager's Admin Activity
+  audit entry `SetIamPolicy` on a
+  `swarm-tenant-<tenant>-browser-{wf,park,login}-*` secret. The application
+  logs no line of its own when it grants. swarm-api's slot grant (a personal
+  worker on `secretAccessor` and `secretVersionAdder`) is the one expected
+  write and does not page. Anything else does, at CRITICAL, as the other
+  isolation tripwires do.
+
+Every threshold and duration is a module variable with its default explained
+next to it (`terraform/modules/monitoring/variables.tf`).
+
 `pr-stranded` notifies once a pull request has been reported stranded for an
 hour, as one incident per tenant and reason that stays open while any stays
 stranded and closes about seven hours after the last is merged. Before the seven-day incident-volume measurement
@@ -509,7 +548,7 @@ the provider's own message (dev's release of 2026-11-23). Each such metric
 now sleeps `log_metric_settle_seconds` (600; 0 when `create_alerts = false`)
 in a create-time provisioner, and its policy is created after. That runs only
 when a metric is created or replaced: a release that creates none waits zero
-seconds, and one that does waits up to 600. A fresh install creates up to 17 such
+seconds, and one that does waits up to 600. A fresh install creates up to 18 such
 metrics at once, up to 10 sleeping per wave (Terraform's default
 parallelism), so its apply can take up to about 20 minutes longer.
 
@@ -542,8 +581,8 @@ severity, the owner's choice of 2026-10-21:
 
 | Severity | Policies | Notifies |
 |---|---|---|
-| CRITICAL (6) and ERROR (8) | the tick, the isolation and IAM tripwires, 5xx, dispatch, the reconciler, the wake backlog and dead letters | `urgent_notification_channels` (Slack) **and** `extra_notification_channels` (email) |
-| WARNING (7) | `generation-fencing`, `job-executions-failing`, `pr-stranded`, `schedule-needs-attention`, `tasks-dead-lettered`, `worker-action-ended`, `workspace-stuck` | `extra_notification_channels` (email) only |
+| CRITICAL (7) and ERROR (10) | the tick, the isolation and IAM tripwires (the browser-secret grant among them), 5xx, dispatch, the reconciler, the wake backlog and dead letters, the front door and NAT drops | `urgent_notification_channels` (Slack) **and** `extra_notification_channels` (email) |
+| WARNING (8) | `generation-fencing`, `job-executions-failing`, `pr-stranded`, `reconciler-pass-slow`, `schedule-needs-attention`, `tasks-dead-lettered`, `worker-action-ended`, `workspace-stuck` | `extra_notification_channels` (email) only |
 
 Each policy takes its channels from its own `severity` field
 (`channels_by_severity` in `terraform/modules/monitoring/alerts.tf`), so a
