@@ -148,7 +148,7 @@ describe('Approvals keeps what is not on the board (U2)', () => {
   })
 
   it('keeps loading and a failed read apart from the empty list', async () => {
-    await mount('', routes(null, { status: 200, body: pipeline(0) }, (m, url) => (url.split('?')[0] === '/v1/approvals' ? { status: 500, body: { code: 'internal', message: 'the inbox read broke' } } : null)))
+    await mount('', routes(null, { status: 200, body: pipeline(0) }, (_m, url) => (url.split('?')[0] === '/v1/approvals' ? { status: 500, body: { code: 'internal', message: 'the inbox read broke' } } : null)))
     await waitFor(() => expect(document.querySelector('.state.failed')).not.toBeNull(), { timeout: 20000 })
     expect(screen.queryByTestId('apl-nothing')).toBeNull()
     expect(screen.queryByTestId('apl-board')).toBeNull()
