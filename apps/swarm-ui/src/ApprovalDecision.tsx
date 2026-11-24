@@ -32,6 +32,7 @@ import { InfoTip } from './InfoTip'
 import { PersonName } from './PersonName'
 import { FROZEN_AREA, Legend, PlanChangeMap, base, dir, type ChangeKind, type MapChange, type MapEdge, type MapNode } from './PlanChangeMap'
 import { useRoleGate } from './roleGate'
+import { PlanBar, PlanDocument, newerThan, shownRevision, useNewerRevision, type NewerRevision, type ShownRevision } from './PlanDocument'
 import { HeldButton, untilWords } from './Schedules'
 import { InApp } from './InApp'
 import { rememberScheduleNames, useScheduleName } from './scheduleNames'
@@ -802,6 +803,9 @@ function refusalWords(e: ApiError): string {
   }
 }
 
+/** The refusals that mean the plan moved on: the page offers to read it again. */
+const CHANGED_CODES: ReadonlySet<string> = new Set(['plan_changed', 'approval_changed'])
+
 /** The words a one-person tenant types to approve its own hold (SD11), from a 403's detail. */
 function confirmationOf(e: ApiError): string | null {
   const d = e.detail as { confirm?: unknown } | undefined
@@ -985,7 +989,7 @@ function ContractStepBar({ d, go }: { d: Decision; go: (to: string) => void }) {
  * in place. Reject asks for its reason only once pressed (the cards mock-up):
  * the reason field, Reject and Cancel take the verbs' place.
  */
-function Decide({ d, onDecided, edit = null }: { d: Decision; onDecided: (word: string) => void; edit?: { to: string; go: (to: string) => void } | null }) {
+function Decide({ d, onDecided, edit = null, digest, onReload }: { d: Decision; onDecided: (word: string) => void; edit?: { to: string; go: (to: string) => void } | null; digest?: string | null; onReload?: () => void }) {
   const a = d.approval
   const now = useNow()
   const md = a.may_decide ?? null
@@ -1019,7 +1023,8 @@ function Decide({ d, onDecided, edit = null }: { d: Decision; onDecided: (word: 
   const approve = async () => {
     setBusy('approve')
     setRefused(null)
-    const r = await approveApproval(a.approval_id, { digest: a.digest ?? null, ...(confirm === null ? {} : { confirm: confirm.typed.trim() }) })
+    // The digest the bar names (PlanDocument.tsx's PlanBar) when there is one: exactly what Approve approves.
+    const r = await approveApproval(a.approval_id, { digest: digest === undefined ? (a.digest ?? null) : digest, ...(confirm === null ? {} : { confirm: confirm.typed.trim() }) })
     setBusy(null)
     if (r.status === 'ok' || r.status === 'empty') return onDecided('Approved')
     if (r.status !== 'error') return
@@ -1106,6 +1111,14 @@ function Decide({ d, onDecided, edit = null }: { d: Decision; onDecided: (word: 
       {refused !== null && !(confirm !== null && confirm.typed === '' && confirmationOf(refused) !== null) && (
         <p className="c-hint ad-refused apd-line" role="alert" data-code={refused.code ?? ''}>
           {refusalWords(refused)}
+          {onReload !== undefined && CHANGED_CODES.has(refused.code ?? '') && (
+            <>
+              {' '}
+              <Button kind="secondary" size="sm" onClick={onReload}>
+                Read the new revision
+              </Button>
+            </>
+          )}
         </p>
       )}
     </Strip>
@@ -1348,7 +1361,7 @@ function BriefCard({ id, title, aside, tone, children }: { id: string; title: st
 }
 
 /** The header card: the question, the purpose, why, the four facts, what it touches, and the decision. */
-function BriefHead({ d, b, kind, go, onDecided }: { d: Decision; b: PlanBrief; kind: string | null; go: (to: string) => void; onDecided: (word: string) => void }) {
+function BriefHead({ d, b, kind, go, onDecided, shown, newer, onReload }: { d: Decision; b: PlanBrief; kind: string | null; go: (to: string) => void; onDecided: (word: string) => void; shown: ShownRevision; newer: NewerRevision | null; onReload: () => void }) {
   const a = d.approval
   const now = useNow()
   const size = sizeOf(b)
@@ -1442,7 +1455,14 @@ function BriefHead({ d, b, kind, go, onDecided }: { d: Decision; b: PlanBrief; k
           ))}
         </p>
       )}
-      {a.state === 'pending' ? <Decide d={d} onDecided={onDecided} edit={runId === null ? null : { to: runAddress(runId), go }} /> : <Outcome d={d} kind={kind} go={go} />}
+      {a.state === 'pending' ? (
+        // The bar names the revision and digest Approve sends (plans-pipeline §2.3 D:P2a, D:P2c).
+        <PlanBar shown={shown} newer={newer} onRead={onReload}>
+          <Decide d={d} onDecided={onDecided} edit={runId === null ? null : { to: runAddress(runId), go }} digest={shown.digest} onReload={onReload} />
+        </PlanBar>
+      ) : (
+        <Outcome d={d} kind={kind} go={go} />
+      )}
     </section>
   )
 }
@@ -1768,14 +1788,22 @@ function RawFold({ steps }: { steps: BriefStep[] }) {
 }
 
 /** A plan's decision page as its brief. */
-function PlanBriefPage({ d, plan, docs, pulls, kind, go, onDecided }: { d: Decision; plan: Json; docs: ShownDocuments | null; pulls: OpenPull[]; kind: string | null; go: (to: string) => void; onDecided: (word: string) => void }) {
+function PlanBriefPage({ d, plan, docs, pulls, kind, go, onDecided, served, onReload }: { d: Decision; plan: Json; docs: ShownDocuments | null; pulls: OpenPull[]; kind: string | null; go: (to: string) => void; onDecided: (word: string) => void; served: ServedPlan | null; onReload: () => void }) {
   const a = d.approval
   const b = planBrief(plan, pulls)
   const hold = a.hold ?? null
   const multi = b.steps.length > 1
+  const run = served?.run ?? null
+  const shown = shownRevision(text(a.digest), run)
+  // A newer revision is one the run already named when it was read, or one a
+  // poll brings while this page is open; either way the shown one stays.
+  const polled = useNewerRevision(a.state === 'pending' ? (text(a.subject.run_id) ?? text(d.run?.id)) : null, shown.digest)
+  const newer = a.state !== 'pending' ? null : (polled ?? (run === null ? null : newerThan(shown.digest, run)))
   return (
     <section className="ap-detail ad-page ab-page" data-testid="ap-detail" data-state={a.state} aria-label={`${APPROVAL_KIND[a.kind] ?? a.kind}: ${a.summary}`}>
-      <BriefHead d={d} b={b} kind={kind} go={go} onDecided={onDecided} />
+      <BriefHead d={d} b={b} kind={kind} go={go} onDecided={onDecided} shown={shown} newer={newer} onReload={onReload} />
+      {/* The plan as a document with the planner's reasons in its margin (§2.3, U3). */}
+      <PlanDocument plan={plan} run={run} read={served?.read ?? null} digest={shown.digest} onRead={onReload} />
       {hold !== null && (
         <BriefCard id="ab-hold" title="Why it is held" tone="medium">
           <HoldBody hold={hold} itemApprovers={a.approvers} />
@@ -1829,13 +1857,18 @@ function Pair({ name, children }: { name: string; children: ReactNode }) {
  * strip. The head says no state word: a waiting item asks through the strip,
  * a decided one says its word there.
  */
-export function ApprovalDecision({ d, kind, go, onDecided, served = null }: { d: Decision; kind: string | null; go: (to: string) => void; onDecided: (word: string) => void; served?: ServedPlan | null }) {
+export function ApprovalDecision({ d, kind, go, onDecided, served = null, onReload = () => undefined }: { d: Decision; kind: string | null; go: (to: string) => void; onDecided: (word: string) => void; served?: ServedPlan | null; onReload?: () => void }) {
   const a = d.approval
   const now = useNow()
   // A plan reads as its brief: the run's own read when it answered (it carries
-  // the planner's sections), else the plan the approval served.
-  const plan = served?.plan ?? (d.run?.plan as Json | null | undefined) ?? null
-  if (plan !== null && (a.kind === 'plan' || a.kind === 'hold')) return <PlanBriefPage d={d} plan={plan} docs={served?.docs ?? null} pulls={served?.pulls ?? []} kind={kind} go={go} onDecided={onDecided} />
+  // the planner's sections), else the plan the approval served. A run read
+  // naming a different digest has moved past the approval: the approval's
+  // plan is the one shown, and the bar says a newer revision arrived.
+  const runDigest = text(served?.run?.plan_digest)
+  const moved = runDigest !== null && a.digest != null && runDigest !== a.digest
+  const plan = (moved ? null : served?.plan) ?? (d.run?.plan as Json | null | undefined) ?? null
+  if (plan !== null && (a.kind === 'plan' || a.kind === 'hold'))
+    return <PlanBriefPage d={d} plan={plan} docs={served?.docs ?? null} pulls={served?.pulls ?? []} kind={kind} go={go} onDecided={onDecided} served={served} onReload={onReload} />
   const who = decidersWords(a.may_decide) ?? approversWords(a.approvers)
   const pending = a.state === 'pending'
   const s = a.subject ?? {}
@@ -1923,6 +1956,10 @@ export interface ServedPlan {
   plan: Json | null
   docs: ShownDocuments | null
   pulls: OpenPull[]
+  /** The run read's fields beside the plan (`plan_revisions`, `plan_risk`, `expected_cost_usd`); null when it did not answer. */
+  run?: Json | null
+  /** That read's Result, so the document says loading, empty, stale and error apart. */
+  read?: Result<unknown> | null
 }
 
 /**
@@ -1938,9 +1975,9 @@ async function servedPlan(d: Decision): Promise<ServedPlan | null> {
   if (runId === null) return null
   try {
     const r = await loadRun(runId)
-    if (r.status !== 'ok' && r.status !== 'stale') return null
-    const run = r.data.run as unknown as { plan?: Json | null; planner_documents?: PlannerDocuments | null; open_work?: { pull_requests?: OpenPull[] } | null }
-    return { plan: run.plan ?? null, docs: await loadPlannerDocuments(run.planner_documents), pulls: run.open_work?.pull_requests ?? [] }
+    if (r.status !== 'ok' && r.status !== 'stale') return { plan: null, docs: null, pulls: [], run: null, read: r }
+    const run = r.data.run as unknown as Json & { plan?: Json | null; planner_documents?: PlannerDocuments | null; open_work?: { pull_requests?: OpenPull[] } | null }
+    return { plan: run.plan ?? null, docs: await loadPlannerDocuments(run.planner_documents), pulls: run.open_work?.pull_requests ?? [], run, read: r }
   } catch {
     return null
   }
@@ -1952,9 +1989,11 @@ async function servedPlan(d: Decision): Promise<ServedPlan | null> {
  * expired, lands on what became of it (AUT-6) rather than on the list.
  */
 export function ApprovalDecisionScreen({ itemId, kind, round, go, onDecided }: { itemId: string; kind: string | null; round: number; go: (to: string) => void; onDecided: (word: string) => void }) {
+  // Reading a newer revision reads the item and its run again (D:P2c).
+  const [again, setAgain] = useState(0)
   return (
     <Screen
-      key={`approval:${itemId}:${round}`}
+      key={`approval:${itemId}:${round}:${again}`}
       title="Approvals"
       // The read is wrapped so the page says a missing item in its own words
       // (the link names an item that does not exist here), not the Screen's.
@@ -1968,7 +2007,7 @@ export function ApprovalDecisionScreen({ itemId, kind, round, go, onDecided }: {
         <>
           <BackToList kind={kind} go={go} />
           {r.status === 'ok' ? (
-            <ApprovalDecision d={r.data} kind={kind} go={go} onDecided={onDecided} served={served} />
+            <ApprovalDecision d={r.data} kind={kind} go={go} onDecided={onDecided} served={served} onReload={() => setAgain((n) => n + 1)} />
           ) : r.status === 'error' ? (
             <p className="c-hint" role="alert" data-testid="ap-detail">
               {r.error.kind === 'not_found'
