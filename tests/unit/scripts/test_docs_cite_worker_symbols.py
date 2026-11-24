@@ -63,3 +63,13 @@ def test_every_symbol_multi_tenancy_cites_exists():
     text = (REPO / "docs" / "multi-tenancy.md").read_text(encoding="utf-8")
     for path, qualname in _ANY_SYMBOL.findall(text):
         _cited_symbol(path, qualname)
+
+
+def test_a_worker_method_moved_into_a_mixin_still_resolves_and_a_missing_one_does_not():
+    """`Worker._park_for_quota` lives in `parking.ParkMixin` (issue 68), which
+    `Worker` inherits: a `lifecycle.py::Worker._park_for_quota` citation is
+    still true. A member no base defines still fails."""
+    source = _cited_symbol(f"{WORKER}/lifecycle.py", "Worker._park_for_quota")
+    assert source.lstrip().startswith("def _park_for_quota(")
+    with pytest.raises(AssertionError, match="no Worker._no_such_park"):
+        _cited_symbol(f"{WORKER}/lifecycle.py", "Worker._no_such_park")

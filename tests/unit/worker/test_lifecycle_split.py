@@ -1,6 +1,6 @@
 """Concerns moved out of `lifecycle.py` (part of issue 68): the publish guard into
 `publish_guard.py`, then a runner's run and spend into `spend.py`, then the
-account pool into `accountpool.py`.
+account pool into `accountpool.py`, then the parks into `parking.py`.
 
 A mechanical move: each name below lives in `publish_guard` now. The names
 `lifecycle` itself still calls, or another module or a test still reads
@@ -25,7 +25,7 @@ LIFECYCLE = Path(lifecycle.__file__)
 
 #: Set just above `lifecycle.py`'s length after the move. Lower it as the
 #: split goes on; never raise it.
-LIFECYCLE_LINE_CEILING = 18_610
+LIFECYCLE_LINE_CEILING = 17_670
 
 #: Moved, and still read through `lifecycle` (by itself, another module or a
 #: test): bound there as the same object.
@@ -359,6 +359,173 @@ def test_importing_accountpool_does_not_import_lifecycle():
 
     code = (
         "import sys, agent_worker.accountpool\n"
+        "assert 'agent_worker.lifecycle' not in sys.modules"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
+# -- parking: `parking.ParkMixin` ------------------------------------------------
+
+
+def _parking():
+    """`agent_worker.parking`, imported when a test runs so each test below
+    says on its own what is missing."""
+    return importlib.import_module("agent_worker.parking")
+
+
+#: Methods `Worker` inherits from `ParkMixin`; `Worker` defines none of them.
+PARK_METHODS = [
+    "_park_for_owner_questions",
+    "_park_ci_pending",
+    "_await_children",
+    "_park_awaiting",
+    "_await_owner_or_release",
+    "_question_bridge_on",
+    "_question_bridge_env",
+    "_resume_parked_question",
+    "_checkout_revision",
+    "_park_for_bridged_question",
+    "_bridge_checkpoint_gaps",
+    "_fail_bridged_question",
+    "_park_for_answers",
+    "_park_for_release",
+    "_incomplete_parents",
+    "_park_dependency_incomplete",
+    "_park_no_account",
+    "_park_credential_missing",
+    "_park_for_human",
+    "_time_limit_continuations",
+    "_time_limit_refusal",
+    "_continuation_note_path",
+    "_write_continuation_note",
+    "_read_continuation_note",
+    "_continuation_env",
+    "_continue_at_time_limit",
+    "_park_for_quota",
+    "_quota_from_child",
+    "_park_mcp_credential",
+]
+
+#: Module names only the park methods read: they live in `parking` and are
+#: not bound in `lifecycle`, so a stale patch of one there raises.
+PARK_DROPPED = [
+    "QUESTION_ANSWER_NAME",
+    "NO_CONTINUATION_CANCEL",
+    "_parse_iso",
+    # Imports only the park methods called: patch them in `parking`.
+    "ACCOUNTS_FULL",
+    "ACCOUNT_UNREADABLE",
+    "BROKER_REFUSED",
+    "NO_RECENT_READING",
+    "POOL_PAUSED",
+    "RELEASE_WAIT_MAX_RESUMES",
+    "TIME_LIMIT_DETAIL_KEY",
+    "ControlPlaneError",
+    "QuotaDecision",
+    "read_runner_signal",
+    "question_bridge",
+    "EXIT_QUOTA_EXHAUSTED",
+    "QUESTION_ANSWER_FILE_ENV",
+    "RESUME_ANSWERED",
+    "RESUME_REASON_ENV",
+    "RESUME_TIME_LIMIT",
+    "subprocess",
+    "timedelta",
+]
+
+#: Names the park methods read from `lifecycle` when they run, because
+#: `lifecycle` uses them outside this concern or a test reads or patches them
+#: there: still defined in `lifecycle`, not bound in `parking` (`Outcome` only
+#: under `TYPE_CHECKING`, for the annotations).
+PARK_READ_FROM_LIFECYCLE = [
+    "_FULL_SHA_RE",
+    "CONTINUATION_NOTE_NAME",
+    "NO_CONTINUATION_CHECKPOINT",
+    "NO_CONTINUATION_CAP",
+    "NO_CONTINUATION_BUDGET",
+    "NO_ACCOUNT_RETRY_SECONDS",
+    "STALE_READING_RETRY_SECONDS",
+    "POOL_UNANSWERED",
+    "agent_stream_files",
+    "Outcome",
+]
+
+
+@pytest.mark.parametrize("name", PARK_METHODS)
+def test_each_park_method_is_inherited_from_park_mixin(name):
+    parking = _parking()
+    assert name in vars(parking.ParkMixin), f"ParkMixin does not define {name}"
+    assert name not in vars(lifecycle.Worker), f"Worker still defines {name} itself"
+    assert getattr(lifecycle.Worker, name) is vars(parking.ParkMixin)[name]
+
+
+@pytest.mark.parametrize("name", PARK_DROPPED)
+def test_a_park_name_lives_in_parking_alone(name):
+    assert hasattr(_parking(), name), f"parking does not bind {name}"
+    assert not hasattr(lifecycle, name), f"lifecycle.{name} is bound; read or patch parking.{name}"
+
+
+@pytest.mark.parametrize("name", PARK_READ_FROM_LIFECYCLE)
+def test_a_name_the_park_methods_read_from_lifecycle_stays_there(name):
+    assert hasattr(lifecycle, name), f"lifecycle no longer binds {name}"
+    assert not hasattr(_parking(), name), (
+        f"parking binds {name}: a patch of lifecycle.{name} would not reach it"
+    )
+
+
+def test_the_park_methods_import_what_stayed_from_lifecycle_when_they_run():
+    """Each method that reads a name left in `lifecycle` imports it there in
+    its body, at call time, so a patch of `lifecycle.agent_stream_files` (as
+    `test_bridged_question_park` makes) is what `_park_for_bridged_question`
+    reads."""
+    multi_line = {
+        "_park_no_account": (
+            "NO_ACCOUNT_RETRY_SECONDS", "POOL_UNANSWERED", "STALE_READING_RETRY_SECONDS", "Outcome",
+        ),
+        "_time_limit_refusal": (
+            "NO_CONTINUATION_BUDGET", "NO_CONTINUATION_CAP", "NO_CONTINUATION_CHECKPOINT",
+        ),
+    }
+    one_line = {
+        "_checkout_revision": "_FULL_SHA_RE",
+        "_park_for_bridged_question": "agent_stream_files",
+        "_continuation_note_path": "CONTINUATION_NOTE_NAME",
+    }
+    for method in (
+        "_park_for_owner_questions", "_park_ci_pending", "_park_awaiting",
+        "_fail_bridged_question", "_park_for_answers", "_park_for_release",
+        "_park_dependency_incomplete", "_park_credential_missing", "_park_for_human",
+        "_continue_at_time_limit", "_park_for_quota", "_park_mcp_credential",
+    ):
+        one_line[method] = "Outcome"
+    for method, names in one_line.items():
+        source = inspect.getsource(getattr(lifecycle.Worker, method))
+        assert f"from .lifecycle import {names}\n" in source, method
+    for method, listed in multi_line.items():
+        source = inspect.getsource(getattr(lifecycle.Worker, method))
+        block = "".join(f"            {name},\n" for name in listed)
+        assert f"from .lifecycle import (\n{block}        )\n" in source, method
+
+
+def test_a_patch_of_lifecycle_agent_stream_files_reaches_the_bridged_park(monkeypatch):
+    """`_park_for_bridged_question` reads `agent_stream_files` from `lifecycle`
+    when it runs: `parking` does not bind it, so the patch is the one it reads."""
+    sentinel = object()
+    monkeypatch.setattr(lifecycle, "agent_stream_files", sentinel)
+    from agent_worker.lifecycle import agent_stream_files
+
+    assert agent_stream_files is sentinel
+    assert "agent_stream_files" not in vars(_parking())
+
+
+def test_importing_parking_does_not_import_lifecycle():
+    """No module-level import of `lifecycle` from `parking`: that would be
+    circular, as `lifecycle` imports `parking` for `Worker`'s bases."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys, agent_worker.parking\n"
         "assert 'agent_worker.lifecycle' not in sys.modules"
     )
     subprocess.run([sys.executable, "-c", code], check=True)

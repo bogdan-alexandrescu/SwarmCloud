@@ -160,7 +160,7 @@ start — with macOS as the first profile.
 * Checkpoints: `apps/agent-worker/agent_worker/checkpoint.py::CheckpointManager`,
   periodic, to `tenants/<tenant>/tasks/<task>/attempts/<attempt>/checkpoints/`
   (module docstring; invariant 8).
-* Park and exit: `lifecycle.py::Worker._park_for_quota` — checkpoint, upload,
+* Park and exit: `parking.py::ParkMixin._park_for_quota` — checkpoint, upload,
   `control.park`, release, exit 75 (invariant 4).
 * Heartbeat: `heartbeat.py::HeartbeatMixin._heartbeat` (inherited by `Worker`) → `ControlPlane.heartbeat`.
 * Artifacts: `lifecycle.py::Worker._upload_outputs` walks `$SWARM_ARTIFACTS_DIR`
