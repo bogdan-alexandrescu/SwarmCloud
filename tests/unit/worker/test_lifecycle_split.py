@@ -1,4 +1,5 @@
-"""The publish guard moved out of `lifecycle.py` into `publish_guard.py` (part of issue 68).
+"""Concerns moved out of `lifecycle.py` (part of issue 68): the publish guard into
+`publish_guard.py`, then a runner's run and spend into `spend.py`.
 
 A mechanical move: each name below lives in `publish_guard` now. The names
 `lifecycle` itself still calls, or another module or a test still reads
@@ -11,6 +12,7 @@ raises `AttributeError` rather than succeeding and changing nothing (issue
 
 from __future__ import annotations
 
+import importlib
 import inspect
 from pathlib import Path
 
@@ -22,7 +24,7 @@ LIFECYCLE = Path(lifecycle.__file__)
 
 #: Set just above `lifecycle.py`'s length after the move. Lower it as the
 #: split goes on; never raise it.
-LIFECYCLE_LINE_CEILING = 20_000
+LIFECYCLE_LINE_CEILING = 19_700
 
 #: Moved, and still read through `lifecycle` (by itself, another module or a
 #: test): bound there as the same object.
@@ -127,3 +129,86 @@ def test_lifecycle_stays_under_its_line_ceiling():
         f"lifecycle.py has {lines} lines, over its ceiling of {LIFECYCLE_LINE_CEILING}; "
         "move a concern out rather than raising the ceiling"
     )
+
+
+# -- a runner's run and its spend: `spend.SpendMixin` ---------------------------
+
+
+def _spend():
+    """`agent_worker.spend`, imported when a test runs so each test below says
+    on its own what is missing."""
+    return importlib.import_module("agent_worker.spend")
+
+
+#: Methods `Worker` inherits from `SpendMixin`; `Worker` defines none of them.
+SPEND_METHODS = [
+    "_child_ended",
+    "_open_run",
+    "_close_run",
+    "_collect_spend",
+    "_note_model_mismatch",
+    "_note_runner_spend_start",
+    "_stopped_run_usage",
+    "_record_spend",
+]
+
+#: Module names only the spend methods read: they live in `spend` and are not
+#: bound in `lifecycle`, so a stale patch of one there raises.
+SPEND_DROPPED = [
+    "_RUN_TOKEN_KEYS",
+    "_reread_of",
+]
+
+#: `usage` names the spend methods read from `spend`'s binding. `lifecycle`
+#: bound them only for `_collect_spend` and binds them no more.
+USAGE_DROPPED_FROM_LIFECYCLE = [
+    "_unpriced_sessions",
+    "_cost_incomplete",
+]
+
+#: `usage` names a test still reads through `lifecycle`: the same object in
+#: `lifecycle`, `spend` and `usage`.
+USAGE_KEPT = [
+    "_add_spend",
+    "_stream_usage",
+    "_usage_summary",
+]
+
+
+@pytest.mark.parametrize("name", SPEND_METHODS)
+def test_each_spend_method_is_inherited_from_spend_mixin(name):
+    spend = _spend()
+    assert name in vars(spend.SpendMixin), f"SpendMixin does not define {name}"
+    assert name not in vars(lifecycle.Worker), f"Worker still defines {name} itself"
+    assert getattr(lifecycle.Worker, name) is vars(spend.SpendMixin)[name]
+
+
+@pytest.mark.parametrize("name", SPEND_DROPPED)
+def test_a_spend_helper_lives_in_spend_alone(name):
+    assert hasattr(_spend(), name), f"spend does not define {name}"
+    assert not hasattr(lifecycle, name), f"lifecycle.{name} is bound; read or patch spend.{name}"
+
+
+@pytest.mark.parametrize("name", USAGE_DROPPED_FROM_LIFECYCLE)
+def test_a_usage_name_only_spend_reads_is_not_bound_in_lifecycle(name):
+    from agent_worker import usage
+
+    assert getattr(_spend(), name) is getattr(usage, name)
+    assert not hasattr(lifecycle, name), f"lifecycle.{name} is bound; patch spend.{name}"
+
+
+@pytest.mark.parametrize("name", USAGE_KEPT)
+def test_a_usage_name_a_test_reads_is_one_object_everywhere(name):
+    from agent_worker import usage
+
+    assert getattr(lifecycle, name) is getattr(usage, name)
+    assert getattr(_spend(), name) is getattr(usage, name)
+
+
+def test_a_patch_of_a_spend_name_reaches_the_worker(monkeypatch):
+    """The spend methods read their module names from `spend`, so a patch
+    there is what the worker calls."""
+    spend = _spend()
+    sentinel = object()
+    monkeypatch.setattr(spend, "agent_stream_files", sentinel)
+    assert lifecycle.Worker._stopped_run_usage.__globals__["agent_stream_files"] is sentinel

@@ -1,10 +1,10 @@
 """What an attempt used: its token counts and cost, summed across its runs.
 
 Moved out of `lifecycle.py` unchanged (issue 68, the first slice of splitting
-that file by concern). `lifecycle` binds only the names it or a test still
-reads through it -- `_add_spend`, `_stream_usage`, `_unpriced_sessions`,
-`_cost_incomplete` and `_usage_summary` (issue 193); read every other name
-here.
+that file by concern). `lifecycle` binds only the names a test still reads
+through it -- `_add_spend`, `_stream_usage` and `_usage_summary` (issue 193);
+the worker's spend methods (`spend.py`) import theirs from here; read every
+other name here.
 """
 
 from __future__ import annotations
