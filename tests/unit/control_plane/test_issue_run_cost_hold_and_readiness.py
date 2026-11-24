@@ -324,3 +324,18 @@ def test_the_prepass_is_on_by_default(monkeypatch):
     assert issueruns.readiness_prepass_enabled() is True
     monkeypatch.setenv(issueruns.READINESS_ENV, "off")
     assert issueruns.readiness_prepass_enabled() is False
+
+
+def test_a_run_waiting_on_its_prepass_names_the_prepass_as_its_live_work(
+        client, db, api_context, prepass_on):
+    """A schedule's cancel reaches the pre-pass while no planner is linked;
+    its cancellation then ends the run CANCELLED on the next advance."""
+    from swarm_api.routes import schedules as schedule_routes
+
+    run = _create(client).json()["run"]
+    prepass = _prepass_id(db, run["id"])
+    assert schedule_routes._run_targets(api_context, "eng", run["id"]) == [("task", prepass)]
+
+    db.docs[f"tasks/{prepass}"]["state"] = "CANCELLED"
+    assert _run(client, run["id"]).json()["run"]["state"] == "CANCELLED"
+    assert len(_run_tasks(db, run["id"])) == 1
