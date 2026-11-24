@@ -134,6 +134,7 @@ from .schemas import (
 from .served_limits import configured_limits
 from .settings import ApiSettings
 from .specsigning import SpecSigner, sign_task_specs, stored_refusal
+from . import idempotency
 from . import steprerun
 from . import wfdescription
 from .store import Store, derived_service_account
@@ -267,6 +268,9 @@ class SubmissionResult:
     #: `{"server", "expires_at"}` (docs/design/registered-mcp-servers.md
     #: §4.3): never the value, its length, a prefix or a hash.
     mcp_credentials: Mapping[str, list[dict[str, Any]]] = field(default_factory=dict)
+    #: True when this answers an earlier submission's idempotency key
+    #: (`idempotency`): the tasks are that submission's, and nothing was created.
+    replayed: bool = False
 
 
 @dataclass(frozen=True)
@@ -287,6 +291,8 @@ class WorkflowSubmission:
     integrator_step_id: str | None
     #: The workflow's stored per-run MCP credentials, as `SubmissionResult`'s.
     mcp_credentials: list[dict[str, Any]] = field(default_factory=list)
+    #: As `SubmissionResult.replayed`.
+    replayed: bool = False
 
 
 @dataclass(frozen=True)
@@ -1418,16 +1424,89 @@ class SubmissionService:
             message = f"step {step_id!r}: {message}"
         refusals.refuse(BrowserToolUnavailable(message, detail=detail))
 
+    # -- idempotency keys -------------------------------------------------
+
+    def _submission_key(
+        self, ctx: AuthContext, tenant: Tenant, key: str | None, *, kind: str, payload: Any,
+    ) -> tuple[idempotency.Keyed | None, idempotency.Claim | None]:
+        """This request's key in its scope -- the tenant `tenant_for` checked
+        and the verified email, never anything from the body -- and the live
+        claim it already holds, if any. (None, None) without a key."""
+        if idempotency.check_key(key) is None:
+            return None, None
+        keys = idempotency.SubmissionKeys(self._store.db, now=self._now)
+        keyed = keys.keyed(tenant_id=tenant.tenant_id, submitter=ctx.email, key=key,
+                           kind=kind, payload=payload)
+        return keyed, keys.find(keyed)
+
+    def _claim_after_race(self, keyed: idempotency.Keyed) -> idempotency.Claim:
+        """The winner's claim, read after this submit's batch lost the create."""
+        claim = idempotency.SubmissionKeys(self._store.db, now=self._now).find(keyed)
+        if claim is None:
+            raise idempotency.ReplayIncomplete(
+                "a submission with this idempotency_key is being written; send it again "
+                "with the same key in a few seconds to read its ids",
+                detail={"field": "idempotency_key"})
+        return claim
+
+    def _replayed_tasks(self, tenant_id: str, claim: idempotency.Claim) -> list[Task]:
+        tasks: list[Task] = []
+        for task_id in claim.task_ids:
+            try:
+                tasks.append(self._store.get_task(tenant_id, task_id, submitted_by=None))
+            except NotFound:
+                raise idempotency.ReplayIncomplete(
+                    "the submission this idempotency_key names is still being written; "
+                    "send it again with the same key in a few seconds to read its ids",
+                    detail={"field": "idempotency_key"}) from None
+        return tasks
+
+    def _replay_workflow(self, tenant_id: str, claim: idempotency.Claim) -> WorkflowSubmission:
+        try:
+            workflow = self._store.get_workflow(tenant_id, claim.workflow_id or "",
+                                                submitted_by=None)
+        except NotFound:
+            raise idempotency.ReplayIncomplete(
+                "the workflow this idempotency_key names is still being written; send it "
+                "again with the same key in a few seconds to read its ids",
+                detail={"field": "idempotency_key"}) from None
+        echo = claim.dispatch
+        return WorkflowSubmission(
+            workflow=workflow,
+            tasks=self._replayed_tasks(tenant_id, claim),
+            dispatch=DispatchOptions(
+                strategy=str(echo.get("strategy") or DispatchOptions.strategy),
+                carrier=str(echo.get("carrier") or DispatchOptions.carrier),
+                continues=echo.get("continues_task"),
+            ),
+            integrator_step_id=echo.get("integrator_step_id"),
+            replayed=True,
+        )
+
     def submit_tasks(
-        self, ctx: AuthContext, specs: Sequence[TaskCreate], *, service_submission: bool = False
+        self, ctx: AuthContext, specs: Sequence[TaskCreate], *, service_submission: bool = False,
+        idempotency_key: str | None = None, idempotency_kind: str = idempotency.KIND_BATCH,
     ) -> SubmissionResult:
         """`service_submission` is set by the platform's own automation that
         submits as the person who registered a repository (`repoindex`), never
         by a route from a request: the owner's D4 for automation (2026-10-07)
-        runs repository indexing with the tenant token."""
+        runs repository indexing with the tenant token.
+
+        `idempotency_key` (`idempotency`): a key this workspace and submitter
+        used within `KEY_WINDOW` answers that submission's tasks with
+        `replayed` set and creates nothing; the same key with another payload
+        is refused 409. `idempotency_kind` is the route's: one task or a batch."""
         validate_batch_size(len(specs), self._settings.core.max_batch_size)
         tenant = self.tenant_for(ctx)
         self.workspace_gate(ctx, tenant)
+        dumped = [spec.model_dump(mode="json") for spec in specs] if idempotency_key else []
+        keyed, claim = self._submission_key(
+            ctx, tenant, idempotency_key, kind=idempotency_kind,
+            payload=(dumped[0] if idempotency_kind == idempotency.KIND_TASK and dumped
+                     else {"tasks": dumped}))
+        if claim is not None:
+            return SubmissionResult(tasks=self._replayed_tasks(tenant.tenant_id, claim),
+                                    woke_scheduler=False, replayed=True)
         now = self._now()
         budget_scope = self.budget_scope(tenant.tenant_id)
         try:
@@ -1501,7 +1580,19 @@ class SubmissionService:
                 credentials=spec.mcp_credentials, by=ctx.email)
             if stored:
                 mcp_stored[task.id] = stored
-        self._store.create_tasks(tasks, tenant_member=ctx.tenant_member)
+        if keyed is not None:
+            keyed.task_ids = [task.id for task in tasks]
+        try:
+            self._store.create_tasks(tasks, tenant_member=ctx.tenant_member, claim=keyed)
+        except idempotency.Raced:
+            # Nothing of this submission was written (`Store.create_tasks`).
+            # A per-run MCP credential stored above is left to its TTL, as a
+            # failed write's always is (`_store_mcp_credentials`).
+            if keyed is None:
+                raise
+            winner = self._claim_after_race(keyed)
+            return SubmissionResult(tasks=self._replayed_tasks(tenant.tenant_id, winner),
+                                    woke_scheduler=False, replayed=True)
         for task in tasks:
             self._metrics.tasks_submitted.labels(
                 tenant=task.tenant_id, runner_profile=task.runner_profile
@@ -1526,7 +1617,10 @@ class SubmissionService:
 
     def submit_workflow(self, ctx: AuthContext, spec: WorkflowCreate, *,
                         fix_loop_round: Mapping[str, Any] | None = None,
-                        step_stages: Mapping[str, str] | None = None) -> WorkflowSubmission:
+                        step_stages: Mapping[str, str] | None = None,
+                        idempotency_key: str | None = None) -> WorkflowSubmission:
+        # `idempotency_key` as on `submit_tasks`; only the create route
+        # passes it, from the request it is answering.
         # `step_stages` is the compiler's step id -> stage map (contract
         # request 135): only the issue-run compilers pass it, no route
         # builds it from a request, so the class it picks is the platform's.
@@ -1549,6 +1643,11 @@ class SubmissionService:
         tenant = self.tenant_for(ctx)
         # Before compiling any step: the workflow is admitted or refused whole.
         self.workspace_gate(ctx, tenant)
+        keyed, claim = self._submission_key(
+            ctx, tenant, idempotency_key, kind=idempotency.KIND_WORKFLOW,
+            payload=spec.model_dump(mode="json") if idempotency_key else None)
+        if claim is not None:
+            return self._replay_workflow(tenant.tenant_id, claim)
         integrator_step_id: str | None = None
         try:
             # The WORKFLOW's own metadata, up front and inside this try. It is
@@ -2142,7 +2241,23 @@ class SubmissionService:
         mcp_stored = self._store_mcp_credentials(
             tenant.tenant_id, owner_id=workflow_id, owner_kind=OWNER_WORKFLOW,
             credentials=spec.mcp_credentials, by=ctx.email)
-        self._store.create_workflow(workflow, tasks, tenant_member=ctx.tenant_member)
+        if keyed is not None:
+            keyed.task_ids = [task.id for task in tasks]
+            keyed.workflow_id = workflow_id
+            keyed.dispatch = {
+                "strategy": dispatch.strategy,
+                "carrier": dispatch.carrier,
+                "integrator_step_id": integrator_step_id,
+                **({"continues_task": dispatch.continues} if dispatch.continues else {}),
+            }
+        try:
+            self._store.create_workflow(workflow, tasks, tenant_member=ctx.tenant_member,
+                                        claim=keyed)
+        except idempotency.Raced:
+            # As in `submit_tasks`: none of this workflow was written.
+            if keyed is None:
+                raise
+            return self._replay_workflow(tenant.tenant_id, self._claim_after_race(keyed))
         self._metrics.workflows_submitted.labels(tenant=tenant.tenant_id).inc()
         self._wake("workflow_submitted", tenant_id=tenant.tenant_id, workflow_id=workflow_id)
         # A workflow submitted without a description gets one written for it,

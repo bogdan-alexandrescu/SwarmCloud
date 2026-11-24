@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import copy
 import itertools
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -383,6 +384,13 @@ class FakeDocumentRef:
         else:
             self._db.docs[self.path] = copy.deepcopy(data)
 
+    def create(self, data: dict[str, Any], **_call: Any) -> None:
+        """Create-if-absent, as `DocumentReference.create`: ALREADY_EXISTS
+        when the document is there."""
+        if self.path in self._db.docs:
+            raise gexc.AlreadyExists(f"document already exists: {self.path}")
+        self._db.docs[self.path] = copy.deepcopy(data)
+
     def update(self, data: dict[str, Any], **_call: Any) -> None:
         if self.path not in self._db.docs:
             # Real Firestore refuses to update a document that does not exist;
@@ -407,14 +415,31 @@ class FakeWriteBatch:
     def update(self, ref: FakeDocumentRef, data: dict[str, Any]) -> None:
         self._ops.append(("update", ref, data))
 
+    def create(self, ref: FakeDocumentRef, data: dict[str, Any]) -> None:
+        self._ops.append(("create", ref, data))
+
     def delete(self, ref: FakeDocumentRef) -> None:
         self._ops.append(("delete", ref, {}))
 
     def commit(self) -> list[Any]:
         if len(self._ops) > 500:
             raise gexc.InvalidArgument("a Firestore write batch is capped at 500 operations")
+        # A batch commits whole, as Firestore's does: every `create`'s
+        # precondition is checked before anything is written, under one lock,
+        # so two threads committing the same create cannot both succeed.
+        with self._db.commit_lock:
+            for op, ref, _data in self._ops:
+                if op == "create" and ref.path in self._db.docs:
+                    self._ops.clear()
+                    raise gexc.AlreadyExists(f"document already exists: {ref.path}")
+            self._apply()
+        return []
+
+    def _apply(self) -> None:
         for op, ref, data in self._ops:
-            if op == "set":
+            if op == "create":
+                ref.create(data)
+            elif op == "set":
                 ref.set(data)
             elif op == "set_merge":
                 ref.set(data, merge=True)
@@ -423,7 +448,6 @@ class FakeWriteBatch:
             else:
                 ref.delete()
         self._ops.clear()
-        return []
 
 
 class FakeTransaction:
@@ -498,6 +522,9 @@ class FakeTransaction:
 class FakeFirestore:
     def __init__(self) -> None:
         self.docs: dict[str, dict[str, Any]] = {}
+        #: Held by a write batch's commit, which checks its creates and
+        #: applies its writes as one step.
+        self.commit_lock = threading.Lock()
         self.transactions_begun = 0
         self.transactions_committed = 0
         self.transaction_reads = 0

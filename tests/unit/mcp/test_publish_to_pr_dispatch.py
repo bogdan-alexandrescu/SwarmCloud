@@ -88,7 +88,10 @@ def test_without_it_the_body_is_unchanged():
     _dispatch(with_none, publish_to_pr=None)
     _dispatch(without)
     assert "publish_to_pr" not in _body(without)
-    assert _body(with_none) == _body(without)
+    # Two submissions: equal but for each one's own idempotency key.
+    first, second = dict(_body(with_none)), dict(_body(without))
+    assert first.pop("idempotency_key") != second.pop("idempotency_key")
+    assert first == second
 
 
 def test_without_it_the_reply_names_none():
