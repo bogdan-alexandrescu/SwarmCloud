@@ -174,6 +174,7 @@ from . import pythonenv as pythonenv_mod
 from .heartbeat import HeartbeatMixin
 from .checkpointing import CheckpointMixin
 from .spend import SpendMixin
+from .live_browser_end import LiveBrowserEndMixin
 from .accountpool import AccountPoolMixin
 from .parking import ParkMixin
 from . import owner_questions as owner_questions_mod
@@ -907,7 +908,9 @@ def _cut_at_word(text: str, limit: int) -> str:
     return head.rstrip().rstrip(".,;:") + "…"
 
 
-class Worker(HeartbeatMixin, CheckpointMixin, SpendMixin, AccountPoolMixin, ParkMixin):
+class Worker(
+    HeartbeatMixin, CheckpointMixin, SpendMixin, LiveBrowserEndMixin, AccountPoolMixin, ParkMixin
+):
     """One attempt, start to finish."""
 
     def __init__(self, config: WorkerConfig, deps: WorkerDeps) -> None:
@@ -3806,16 +3809,9 @@ class Worker(HeartbeatMixin, CheckpointMixin, SpendMixin, AccountPoolMixin, Park
                     # BROWSER-USE-FLAG: one mark when the agent has run
                     # BROWSER_IDLE_SECONDS without touching its browser.
                     self._note_browser_idle(child)
-                    # Live-browser §4.1-§4.3: answer the agent's requests and
-                    # watch an open hand-off's hold. Never raises.
-                    with self._heartbeat_meanwhile("hand-off"):
-                        ended = self.handoff.tick(ws.work, self.control.fetch_task)
-                        # LB-RETURN: swarm-api decides whether the hold really
-                        # ran out, against a viewer who came as it did.
-                        if ended == handoff_mod.HOLD_EXPIRED and not self.handoff.confirm_expired():
-                            ended = None
-                    if ended is not None:
-                        return self._park_for_human(child, cause=ended)
+                    outcome = self._hand_off_tick(child, ws.work)
+                    if outcome is not None:
+                        return outcome
 
             if now >= self._runner_deadline:
                 self.log.error("task timeout reached", timeout_seconds=cfg.timeout_seconds)
