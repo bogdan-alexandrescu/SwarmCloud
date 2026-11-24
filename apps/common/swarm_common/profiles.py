@@ -1941,6 +1941,28 @@ _CLAUDE_CODE_BROWSER_INPUTS: dict[str, RunnerInput] = {
 }
 
 
+#: CONTRACT REQUEST 158, accepted by the owner 2026-11-24 (per-role session
+#: limits): a step's own, LOWER session limits, read by the claude-code
+#: runner's context ceiling (`agent_worker.runners.ceiling.PAYLOAD_KEY`). The
+#: bounds stop at the owner's ceilings, 200,000 tokens and 150 tool calls
+#: (`CONTEXT_CEILING_HARD_CAP`, `TOOL_CALL_HARD_CAP`), and the worker clamps
+#: again, so it can never raise one. Two bounded integers: no image, command
+#: or resource (invariant 10). Its own dict, NOT a key of _CLI_AGENT_INPUTS,
+#: which `codex` also takes and whose runner ignores it; merged into the input
+#: dicts of the seven profiles whose `runner_argv` is the claude-code runner.
+_CONTEXT_CEILING_INPUTS: dict[str, RunnerInput] = {
+    "context_ceiling": RunnerInput(
+        "object",
+        means="lowers this step's session limits; never raises them",
+        variants={
+            "limits": {
+                "tokens": RunnerInput("integer", minimum=1, maximum=200_000),
+                "tool_calls": RunnerInput("integer", minimum=1, maximum=150),
+            },
+        },
+    ),
+}
+
 #: Why the three #295 profiles are refused, served to a caller who names one.
 _DISABLED_UNTIL_342 = (
     "the merge chain (#295) is disabled for every tenant until signed step "
@@ -2005,7 +2027,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
         secrets_any_of=True,
         timeout_seconds=7200,
-        inputs=_CLI_AGENT_PR_INPUTS,   # contract request 88; pull_request (#3470)
+        inputs={**_CLI_AGENT_PR_INPUTS, **_CONTEXT_CEILING_INPUTS},   # request 88; pull_request (#3470); request 158
         secret_slots={"files": _FILES_SLOT},   # contract request 80
         # Contract request 101 (owner's Q3, 2026-10-17): every class, opus by
         # default (R3: a step naming no class runs opus).
@@ -2039,7 +2061,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
         secrets_any_of=True,
         timeout_seconds=14400,
-        inputs=_CLI_AGENT_MCP_INPUTS,
+        inputs={**_CLI_AGENT_MCP_INPUTS, **_CONTEXT_CEILING_INPUTS},   # request 158
         secret_slots={"files": _FILES_SLOT},
         model_classes=_CLAUDE_CODE_MODEL_CLASSES,
         default_model_class="opus",
@@ -2064,7 +2086,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
         secrets_any_of=True,
         timeout_seconds=7200,
-        inputs=_CLI_AGENT_MCP_INPUTS,
+        inputs={**_CLI_AGENT_MCP_INPUTS, **_CONTEXT_CEILING_INPUTS},   # request 158
         secret_slots={"files": _FILES_SLOT},
         model_classes=_CLAUDE_CODE_MODEL_CLASSES,
         default_model_class="opus",
@@ -2217,7 +2239,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
         secrets_any_of=True,
         timeout_seconds=7200,
-        inputs=_CLI_AGENT_REVIEW_INPUTS,   # pull_request (#3470)
+        inputs={**_CLI_AGENT_REVIEW_INPUTS, **_CONTEXT_CEILING_INPUTS},   # pull_request (#3470); request 158
         never_restore_checkpoint=True,
         available=False,
         disabled_reason=_DISABLED_UNTIL_342,
@@ -2251,7 +2273,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
         secrets_any_of=True,
         timeout_seconds=7200,
-        inputs=_CLI_AGENT_INPUTS,
+        inputs={**_CLI_AGENT_INPUTS, **_CONTEXT_CEILING_INPUTS},   # request 158
         secret_slots={"files": _FILES_SLOT},   # contract request 80
         # Contract request 101 (owner's Q3): claude-code's classes and default.
         model_classes=_CLAUDE_CODE_MODEL_CLASSES,
@@ -2281,7 +2303,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets_any_of=True,
         timeout_seconds=7200,
         # Contract request 77: claude-code's inputs plus `browser_tool`.
-        inputs=_CLAUDE_CODE_BROWSER_INPUTS,
+        inputs={**_CLAUDE_CODE_BROWSER_INPUTS, **_CONTEXT_CEILING_INPUTS},   # request 158
         # Contract request 71 (LB-D): the one live-browser profile.
         live_browser=True,
         # Contract requests 80 and 117.
@@ -2313,7 +2335,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
         secrets_any_of=True,
         timeout_seconds=7200,
-        inputs=_CLI_AGENT_MCP_INPUTS,   # claude-code's; no browser_tool
+        inputs={**_CLI_AGENT_MCP_INPUTS, **_CONTEXT_CEILING_INPUTS},   # claude-code's; no browser_tool; request 158
         secret_slots={"files": _FILES_SLOT},
         model_classes=_CLAUDE_CODE_MODEL_CLASSES,
         default_model_class="opus",
