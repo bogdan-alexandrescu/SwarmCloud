@@ -38,7 +38,7 @@ import type { RepoRecord } from './RepositoriesData'
 import { JevBackendCard } from './JudgmentBackend'
 import { SecretsActions, nameProblem, readersOf, ruleWords, scLine, type ActionsFormLink } from './SecretsActions'
 import { PageHead } from './Shell'
-import { InfoTip } from './People'
+import { InfoTip } from './InfoTip'
 import { AboutTip } from './Profile'
 import { timeAgo } from './types'
 import {

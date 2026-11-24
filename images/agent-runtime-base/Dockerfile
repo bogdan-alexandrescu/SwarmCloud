@@ -919,25 +919,25 @@ ARG GCLOUD_SHA256=e11c443efa5d59bbb457cdf28e025246483d01db5b7fde772fe8a339a7ca20
 ARG GKE_PLUGIN_VERSION=592.0.0
 ARG GKE_PLUGIN_POOL_ID=a8fc8016eccf144b786a0d64a6f464aa
 ARG GKE_PLUGIN_SHA256=3a1da42673e0df59b86958c817d2369ef89d5b435767d1fea85e453707007df4
-# kubectl 1.36.6: the newest 1.36 patch (https://dl.k8s.io/release/stable-1.36.txt
-# on 2026-10-28), built on go1.26.10, which fixes CVE-2026-111943 and
-# CVE-2026-56857 in kubectl (1.36.5 was go1.26.8), and CVE-2026-78667 in
-# it. It still links golang.org/x/net v0.56.0 (CVE-2026-78669, fixed in
-# 0.60.0), and so does every kubectl release: the newest, 1.37.2, carries
-# v0.57.0 (read 2026-10-31), so that one id is accepted in .trivyignore.yaml.
-# One minor ahead of the 1.35 control plane as kubectl's skew
-# policy allows and the line docs/versions.md pins for operators. The static
-# binary from dl.k8s.io rather than Google's `kubectl` .deb, which is 141 MB
-# of several bundled versions. Checksum:
-# https://dl.k8s.io/release/v1.36.6/bin/linux/amd64/kubectl.sha256.
-# CVE-2026-97054 (net/http MaxBytesReader, fixed in Go 1.26.11 / 1.27.4),
-# 2026-11-20: 1.36.6 is still the newest 1.36 (stable-1.36.txt) and it and
-# the newest release, 1.37.2, are go1.26.10; Google's newest gcloud, 594.0.0,
-# ships gcloud-crc32c on go1.27.2 and gke-gcloud-auth-plugin on go1.27.3 (each
-# .deb's SHA256 matched the index). No fixed build of any of the three
-# exists, so the id is accepted for them in .trivyignore.yaml.
-ARG KUBECTL_VERSION=1.36.6
-ARG KUBECTL_SHA256=29818b6729dc9262b692307470d0558d027725e738be5dd47c760261868a2634
+# kubectl 1.37.2: the newest release (https://dl.k8s.io/release/stable.txt on
+# 2026-11-24), built on go1.26.10 and linking golang.org/x/net v0.57.0 and
+# x/text v0.40.0 (read from the binary's build info after its checksum
+# matched, 2026-11-24). From 2026-11-24 01:45Z the scan refused 1.36.6 on
+# CVE-2026-39821 (x/net/idna, fixed in 0.57.0); 1.36.6, 1.35.10 and 1.34.13
+# all link v0.56.0, so 1.37.2 is the only fixed build. It is one minor ahead
+# of the platform's 1.36 control plane (read 2026-11-24, rapid channel), as
+# kubectl's skew policy allows; it needs a 1.36 or newer control plane
+# (docs/versions.md). Still unfixed in every kubectl release and accepted in
+# .trivyignore.yaml: x/net CVE-2026-78669 (0.60.0) and CVE-2026-78661
+# (0.62.0), x/text CVE-2026-56851 (0.41.0) and Go CVE-2026-97054 (1.26.11).
+# The static binary from dl.k8s.io rather than Google's `kubectl` .deb, which
+# is 141 MB of several bundled versions. Checksum:
+# https://dl.k8s.io/release/v1.37.2/bin/linux/amd64/kubectl.sha256.
+# Google's newest gcloud, 594.0.0, ships gcloud-crc32c on go1.27.2 and
+# gke-gcloud-auth-plugin on go1.27.3 (each .deb's SHA256 matched the index,
+# 2026-11-20), so CVE-2026-97054 is accepted for them too.
+ARG KUBECTL_VERSION=1.37.2
+ARG KUBECTL_SHA256=c04487523e7aa7d1493f7808174c899db93d7a9cf57531420cd76b9bd415f8f4
 # dpkg runs with /usr/sbin on PATH because it refuses to start without
 # ldconfig and start-stop-daemon, which live there and which the runtime PATH
 # deliberately omits; /usr/local/bin is there for the postinst's python3.

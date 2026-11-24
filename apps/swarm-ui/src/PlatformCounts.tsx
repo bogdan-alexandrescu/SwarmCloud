@@ -66,8 +66,7 @@ export function forgetLastRun(): void {
  * "every recurring thing" and held 7 of the 12, schedule_tick among the
  * missing though its own report headed the page then. `name` is the job's
  * resource name in jobs.tf and `job` its name after the prefix, `<tenant>`
- * for a per-tenant job; `adminSchedules.test.tsx` and
- * `schedules.onepage.test.tsx` read jobs.tf and fails
+ * for a per-tenant job; the schedules tests read jobs.tf and fail
  * when the two disagree.
  *
  * HERE SINCE SCHED-ONE-PAGE (owner decision 2026-10-13). They were the third
@@ -653,7 +652,7 @@ function Scope({
           contract defines is absent from a histogram of the contract's states.
           A reader who does not open it is left with an unexplained list, which
           is the only place on this screen where that is true.
-          `honesty.counts.test.tsx` pins it to this foot.
+          the counts honesty test pins it to this foot.
 
           AFTER THE LABEL, NEVER AFTER A VALUE (AH-24). It trailed the list --
           `never written: A · B · C ?` -- where it read as a footnote on the

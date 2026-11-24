@@ -323,7 +323,7 @@ export type OutcomesHead = Omit<Outcomes, 'coverage' | 'previous'> & Partial<Pic
 
 /**
  * WHAT A FIGURE'S ROWS MAY BE, `swarm_api.outcomes.ROW_OUTCOMES` (held there
- * by `test_outcomes_rows.py`). Failed is FAILED + DEAD_LETTERED, the one
+ * by the outcomes-rows test). Failed is FAILED + DEAD_LETTERED, the one
  * definition the drawing and the Reliability table use.
  */
 export type RowOutcome = 'failed' | 'cancelled' | 'succeeded'
@@ -386,7 +386,7 @@ export const GROUPS: readonly GroupBy[] = ['runner_profile', 'submitted_by', 'te
 
 // THE ROUTE'S LIMITS, RESTATED SO THE PAGE NEVER ASKS FOR WHAT IT REFUSES.
 // Each is `swarm_api.outcomes`'s constant of the same name, and
-// tests/unit/control_plane/test_outcomes_ui_field_contract.py holds every one
+// the outcomes UI field-contract test holds every one
 // equal to it (docs/mirrored-values.md), so a changed limit turns CI red
 // instead of turning a control into a 422.
 

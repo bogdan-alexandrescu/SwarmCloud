@@ -152,6 +152,9 @@ AS_HEARD_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # The work feed (voice-it.md §3.12.5): a delegation's lifecycle and the
     # roster's changed rows, a record of the session's work, never an act.
     ("POST", "/v1/voice/sessions/{session_id}/work"),
+    # The planner's brief of the project (voice/projectbrief.py): a note the
+    # next turn reads, never an act of the person's.
+    ("POST", "/v1/voice/sessions/{session_id}/brief"),
 })
 
 #: A route template whose last step names a gated verb, or a DELETE: what the

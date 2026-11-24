@@ -16,7 +16,9 @@
  *             into four cards: Models (end of speech to final words, first
  *             partial, real-time factors, first audio), Machine (peaks, model
  *             load and warm-up), Start (the start's phases) and Cost (minutes,
- *             the ledger's machine cost against both caps, stock-outs).
+ *             the ledger's machine cost against both caps, stock-outs),
+ *             under its record: Download transcript and the summary
+ *             (SessionRecord.tsx).
  *   Trace     debug mode's card (voice/DebugTrace.tsx, the owner's pick of 10
  *             November 2026, "Trace on Telemetry"): the recent traced
  *             sessions and one opened, every planner turn in full.
@@ -56,6 +58,7 @@ import { PageHead } from '../Shell'
 import { currentZone } from '../timezone'
 import { clockTime } from '../types'
 import { DebugTrace } from './DebugTrace'
+import { SessionRecord } from './SessionRecord'
 import { Bars, CapMeter, PhaseTrack, Spark, Tile, orderedPhases, phaseWord, quantile, usd } from './telemetryCharts'
 import '../styles/voice-settings.css'
 import '../styles/voice-telemetry.css'
@@ -446,6 +449,8 @@ function SessionCards({ s, day, detail, detailError, onRetry }: { s: VoiceTeleme
   const peaks = s.peaks
   return (
     <>
+      {/* The session's transcript and summary (SessionRecord.tsx), ended sessions as much as the live one. */}
+      <SessionRecord sessionId={s.session_id} />
       {detailError !== null && <Fail what="Samples" error={detailError} onRetry={onRetry} />}
       <div className="vset-grid">
         <Card title="Models" id="models">

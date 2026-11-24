@@ -227,7 +227,7 @@ from .schemas import (
 )
 from swarm_common.profiles import MODEL_CLASSES, RUNNER_PROFILES, step_model_class
 
-from . import planhistory, reviewgate, sessiontag, stepclass, workcontract
+from . import donewhen, planfiles, planhistory, reviewgate, sessiontag, stepclass, workcontract
 from .plansections import (
     MAX_CHANGES,
     MAX_GRAPH_EDGES,
@@ -390,6 +390,10 @@ MAX_PLAN_REQUIREMENTS = 40
 MAX_PLAN_OVERLAPS = 30
 MAX_STEP_FILES = 60
 MAX_STEP_TESTS = 30
+#: A step's `done_when` statements (`PlanStep.done_when`): a short list the
+#: review answers one by one, so a handful, each one line a person can check.
+MAX_STEP_DONE_WHEN = 8
+MAX_DONE_WHEN_CHARS = 300
 
 #: The planner's whole prompt, in UTF-8 bytes, open-work section included.
 #: The claude-code runner passes the prompt as ONE argv string
@@ -640,6 +644,10 @@ class _PlanModel(BaseModel):
 
 _Path = Annotated[str, Field(min_length=1, max_length=300)]
 _Line = Annotated[str, Field(min_length=1, max_length=500)]
+#: One `done_when` statement: plain text on one line, no control character
+#: (a newline would let it pose as a line of the prompt that quotes it).
+_Statement = Annotated[str, Field(min_length=1, max_length=MAX_DONE_WHEN_CHARS,
+                                  pattern=r"^[^\x00-\x1f\x7f]+$")]
 
 #: `owner/repo#N`: GitHub's owner and repository name rules, and an issue or
 #: pull request number. Another repository's work may be named too.
@@ -727,6 +735,14 @@ class PlanStep(_PlanModel):
     #: digest.
     requirements: list[Annotated[int, Field(ge=1, le=MAX_PLAN_REQUIREMENTS)]] | None = Field(
         default=None, max_length=MAX_PLAN_REQUIREMENTS)
+    #: When this step is done, as statements a reviewer can check, each true
+    #: or false of the branch (improvement plan wave 2, 'Plans that can be
+    #: checked'). DATA, like every other text of the plan: the build, the
+    #: review and the fix see them fenced (`donewhen`), and the review answers
+    #: each by its id, `<step_id>.<n>`. Optional and never defaulted into the
+    #: dump, so a plan stored before it keeps its digest and compiles as it
+    #: did; the plan lint only warns on a step of several without them.
+    done_when: list[_Statement] | None = Field(default=None, max_length=MAX_STEP_DONE_WHEN)
 
     @field_validator("model_class")
     @classmethod
@@ -2012,6 +2028,7 @@ _PLAN_SHAPE = (
     '              "prompt": "<the full instructions for an engineer doing this step>",\n'
     '              "files": ["<repository path this step touches>"],\n'
     '              "tests": ["<a test this step adds, written first>"],\n'
+    '              "done_when": ["<one statement a reviewer can check is true of the branch>"],\n'
     '              "estimate": "<this step>",\n'
     '              "requirements": [<numbers of the requirements this step delivers, 1 up>],\n'
     '              "rationale": "<why this step is needed and built this way, two sentences>",\n'
@@ -2048,6 +2065,19 @@ _SECTIONS_RULES = (
     "other pull request does to the files you share. A longer why goes in a design doc "
     "beside the plan, never in these. A section written wrong is dropped from the plan "
     "with a note, so check each against the shape.\n\n"
+)
+
+
+#: What the planner is told about `PlanStep.done_when` (improvement plan wave
+#: 2, 'Plans that can be checked'): asked for on every step. A step of several
+#: without them is a plan lint WARNING (`planlint.warnings`), never a refusal.
+_DONE_WHEN_RULES = (
+    '"done_when" on every step lists when that step is done: 1 to '
+    f"{MAX_STEP_DONE_WHEN} short statements, each one plain-text line of at most "
+    f"{MAX_DONE_WHEN_CHARS} characters that a reviewer can check is true or false of the "
+    "branch -- a behaviour a test shows, a file that exists, a call that is gone -- never "
+    'a wish such as "the code is clean". The step\'s build is shown its own, and the '
+    "review answers each one by name. "
 )
 
 
@@ -2252,7 +2282,8 @@ def planner_prompt(
         "it touches and the tests it adds, and the tests are written before the change. "
         '"requirements" on a step lists the numbers of the requirements it delivers, 1 up; '
         "every requirement is delivered by at least one step. "
-        f"Between 1 and {MAX_PLAN_STEPS} steps. step_id is lowercase letters, digits and "
+        + _DONE_WHEN_RULES
+        + f"Between 1 and {MAX_PLAN_STEPS} steps. step_id is lowercase letters, digits and "
         f"dashes, and may not be {REVIEW_STEP!r}, {FIX_STEP!r} or {REREVIEW_STEP!r}.\n\n"
         'Every overlap\'s "action" is mandatory: "none" when this plan does nothing about '
         'it, "required" when this plan or a person must act; its "note" says what '
@@ -2480,6 +2511,16 @@ def lint_failed(plan: Mapping[str, Any] | None) -> bool:
     if not plan_lint_enabled():
         return False
     return plan is None or bool(lint(plan))
+
+
+def plan_warnings(plan: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """The plan lint's warnings on `plan` (`planlint.warnings`), as the run's
+    read and the plan comment show them; [] with the lint switched off."""
+    from .planlint import warnings  # it imports this module
+
+    if not plan_lint_enabled() or not isinstance(plan, Mapping):
+        return []
+    return warnings(plan)
 
 
 #: The most findings a run's read serves.
@@ -2955,7 +2996,8 @@ def expected_cost(plan: Mapping[str, Any] | None, rates: Mapping[str, float], *,
 
 
 def compile_plan(run: "IssueRun", review_context: str | None = None, *,
-                 class_models: Mapping[str, str] | None = None) -> WorkflowCreate:
+                 class_models: Mapping[str, str] | None = None,
+                 changed: planfiles.ChangedFiles = planfiles.AT_APPROVAL) -> WorkflowCreate:
     """The approved plan as a workflow: implementers, review, gated fix, then
     the fix loop or, while it is unavailable, the re-review (`_with_review_rounds`).
 
@@ -2969,14 +3011,18 @@ def compile_plan(run: "IssueRun", review_context: str | None = None, *,
     delimited and bounded. None is today's review prompt. `class_models` is
     the deployment's pinned classes (`Settings.worker_class_models`): the
     requirements check runs the cheap class only where it is pinned
-    (`_check_class`).
+    (`_check_class`). The review and the fix also carry each plan step's
+    files and tests, and the files `changed` lists outside the plan
+    (`planfiles.plan_files_section`): at approval no build has run, so it is
+    `planfiles.AT_APPROVAL` and the section says the list is missing and why.
     """
     refuse_auto_merge(run.auto_merge)
     if run.plan is None:
         raise InvalidPlan("this run has no plan to compile")
     plan = parse_plan(run.plan, stored=True)
     if _uses_dependencies(plan["steps"]):
-        staged = _compile_staged(run, plan, review_context, class_models=class_models)
+        staged = _compile_staged(run, plan, review_context, class_models=class_models,
+                                 changed=changed)
         return _workflow(run, _with_security_review(run, staged))
     ref = run.issue
     steps: list[dict[str, Any]] = []
@@ -2990,6 +3036,7 @@ def compile_plan(run: "IssueRun", review_context: str | None = None, *,
             f"The plan: {plan['summary']}\n\n"
             f"This step -- {step['title']}:\n{step['prompt']}\n\n"
             + _step_detail(step)
+            + _step_done_when(run.id, step)
             + (
                 "The earlier steps' work is already on this branch. "
                 if previous is not None else ""
@@ -3031,12 +3078,14 @@ def compile_plan(run: "IssueRun", review_context: str | None = None, *,
             "prompt": (
                 f"Review the change on this branch for GitHub issue {ref.short} against the "
                 f"approved plan: {plan['summary']}\n\n" + _requirements_text(plan)
+                + _review_plan_files(run, plan, changed)
                 + _review_impact(review_context)
                 + f"{PATCH_FILE} holds the last step's diff; "
                 "the whole change is this branch against the default branch. Do not edit "
                 f"files. Write $SWARM_ARTIFACTS_DIR/{VERDICT_FILE}: "
                 '{"verdict": "MERGE" or "NOT_YET", ' + COMMIT_SHAPE + FINDINGS_SHAPE
-                + _requirements_shape(plan) + "}. " + FINDINGS_LOCATION_NOTE
+                + _requirements_shape(plan) + donewhen.review_shape(plan) + "}. "
+                + FINDINGS_LOCATION_NOTE
                 + NO_CLOSING_KEYWORD
             ),
         },
@@ -3052,11 +3101,11 @@ def compile_plan(run: "IssueRun", review_context: str | None = None, *,
             "issue": ref.number,
             "prompt": (
                 f"Fix every finding in {VERDICT_FILE} for GitHub issue {ref.short}. "
-                "Change nothing else. " + NO_CLOSING_KEYWORD
+                "Change nothing else." + _fix_plan_files(run, plan, changed) + NO_CLOSING_KEYWORD
             ),
         },
     })
-    steps = _with_security_lens(run, plan, steps, by_parent=False)
+    steps = _with_security_lens(run, plan, steps, by_parent=False, changed=changed)
     return _workflow(run, _with_security_review(
         run, _with_review_rounds(run, steps, class_models=class_models)))
 
@@ -3128,7 +3177,9 @@ def _security_lens_prompt(ref: IssueRef, plan: Mapping[str, Any], hits: list[str
 
 
 def _with_security_lens(run: "IssueRun", plan: Mapping[str, Any], steps: list[dict[str, Any]],
-                        *, by_parent: bool) -> list[dict[str, Any]]:
+                        *, by_parent: bool,
+                        changed: planfiles.ChangedFiles = planfiles.AT_APPROVAL,
+                        ) -> list[dict[str, Any]]:
     """`steps`, with the security lens beside the first review when the plan's
     files touch a risk path (`risk_path_hits`); exactly `steps` otherwise.
 
@@ -3173,7 +3224,8 @@ def _with_security_lens(run: "IssueRun", plan: Mapping[str, Any], steps: list[di
                     f"Fix every finding in {VERDICT_FILE} (the code review's verdict) and "
                     f"in {SECURITY_VERDICT_FILE} (the security review's) for GitHub issue "
                     f"{ref.short}; a file whose verdict is MERGE has no blocker for you. "
-                    "Change nothing else. " + NO_CLOSING_KEYWORD
+                    "Change nothing else." + _fix_plan_files(run, plan, changed)
+                    + NO_CLOSING_KEYWORD
                 )},
             }
         out.append(step)
@@ -3329,7 +3381,7 @@ def _step_class(step: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _step_prompt(ref: IssueRef, plan: Mapping[str, Any], index: int, step: Mapping[str, Any],
-                 context: str) -> str:
+                 context: str, run_id: str = "") -> str:
     """An implementer's prompt: the same frame as the chain's, with its own context line."""
     return (
         f"You are doing step {index} of {len(plan['steps'])} of the approved plan for GitHub "
@@ -3337,10 +3389,36 @@ def _step_prompt(ref: IssueRef, plan: Mapping[str, Any], index: int, step: Mappi
         f"The plan: {plan['summary']}\n\n"
         f"This step -- {step['title']}:\n{step['prompt']}\n\n"
         + _step_detail(step)
+        + _step_done_when(run_id, step)
         + context
         + "Do this step only. " + NO_CLOSING_KEYWORD
         + _verification_text(plan)
     )
+
+
+def _step_done_when(run_id: str, step: Mapping[str, Any]) -> str:
+    """The step's own `done_when` statements (`donewhen`) and a blank line, or nothing."""
+    section = donewhen.build_section(run_id, step)
+    return f"{section}\n" if section else ""
+
+
+def _review_plan_files(run: "IssueRun", plan: Mapping[str, Any],
+                       changed: planfiles.ChangedFiles) -> str:
+    """Each plan step's files and tests (`planfiles`), then every step's
+    `done_when` statements (`donewhen`), each and a blank line, or nothing."""
+    sections = (planfiles.plan_files_section(run.id, plan, changed),
+                donewhen.review_section(run.id, plan))
+    return "".join(f"{section}\n" for section in sections if section)
+
+
+def _fix_plan_files(run: "IssueRun", plan: Mapping[str, Any],
+                    changed: planfiles.ChangedFiles) -> str:
+    """The fix's copy of the files section and its `done_when` section, between
+    blank lines; one space when there is neither, so a plan that declares
+    nothing compiles as it did."""
+    sections = [section for section in (planfiles.plan_files_section(run.id, plan, changed),
+                                         donewhen.fix_section(run.id, plan)) if section]
+    return "\n\n" + "\n".join(sections) + "\n" if sections else " "
 
 
 def _review_impact(review_context: str | None) -> str:
@@ -3378,7 +3456,9 @@ def _attach_plan_contract(spec: dict[str, Any], run: "IssueRun", plan: Mapping[s
 
 def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
                     review_context: str | None = None, *,
-                    class_models: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
+                    class_models: Mapping[str, str] | None = None,
+                    changed: planfiles.ChangedFiles = planfiles.AT_APPROVAL,
+                    ) -> list[dict[str, Any]]:
     """Implementers wired by the plan's `depends_on`, then review and the gated fix.
 
     A step with no dependency starts from the default branch at once. A step
@@ -3451,7 +3531,7 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
                     + ", ".join(f"{_impl_id(d)}/{PATCH_FILE} ({titles[d]})" for d in staged)
                     + ". "
                 )
-        spec["input"] = {"prompt": _step_prompt(ref, plan, index, step, context),
+        spec["input"] = {"prompt": _step_prompt(ref, plan, index, step, context, run.id),
                          "issue": ref.number}
         _attach_plan_contract(spec, run, plan, step)
         steps.append(spec)
@@ -3474,6 +3554,7 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
             "prompt": (
                 f"Review the change for GitHub issue {ref.short} against the approved plan: "
                 f"{plan['summary']}\n\n" + _requirements_text(plan)
+                + _review_plan_files(run, plan, changed)
                 + _review_impact(review_context)
                 + f"The plan's steps ran in {len(plan_stages(plan))} stages, "
                 "some side by side on separate branches, and the pull request will carry ALL "
@@ -3486,7 +3567,8 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
                 "two of them touch the same code. Do not edit files. Write "
                 f"$SWARM_ARTIFACTS_DIR/{VERDICT_FILE}: "
                 '{"verdict": "MERGE" or "NOT_YET", ' + COMMIT_SHAPE + FINDINGS_SHAPE
-                + _requirements_shape(plan) + "}. " + FINDINGS_LOCATION_NOTE
+                + _requirements_shape(plan) + donewhen.review_shape(plan) + "}. "
+                + FINDINGS_LOCATION_NOTE
                 + NO_CLOSING_KEYWORD
             ),
         },
@@ -3502,11 +3584,11 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
             "issue": ref.number,
             "prompt": (
                 f"Fix every finding in {VERDICT_FILE} for GitHub issue {ref.short}. "
-                "Change nothing else. " + NO_CLOSING_KEYWORD
+                "Change nothing else." + _fix_plan_files(run, plan, changed) + NO_CLOSING_KEYWORD
             ),
         },
     })
-    steps = _with_security_lens(run, plan, steps, by_parent=True)
+    steps = _with_security_lens(run, plan, steps, by_parent=True, changed=changed)
     return _with_review_rounds(run, steps, class_models=class_models)
 
 
@@ -4424,6 +4506,10 @@ class IssueRun:
             # The plan lint: the re-plan count and, on a run held for a
             # person, the findings the run page and the plugin show.
             "plan_lint": served_plan_lint(self.plan_lint),
+            # What the plan lint REPORTS with the plan but never fails it on
+            # (`planlint.warnings`): computed from the plan as it is now, so
+            # an edit's are current. [] with no plan or the lint switched off.
+            "plan_warnings": plan_warnings(self.plan),
             # §4.4-§4.5: the hard-stop hold and who may decide it, whether
             # the merge waits for an approval, the one given, and the firing
             # that made the run.

@@ -192,7 +192,7 @@ type Envelope = {
 const unsure = (kind: ApiErrorKind, httpStatus: number | null, message: string): Submission => ({ kind: 'uncertain', error: { kind, httpStatus, code: null, message } })
 
 /** POST /v1/workflows. fetch.ts owns reads and has no write half yet.
- *  Exported for `submit.workflow.refusal.test.ts`, which hands it real responses. */
+ *  Exported for the submit refusal test, which hands it real responses. */
 export async function postWorkflow(body: unknown): Promise<Submission> {
   // The fixture build answers the submit as the 201 does (QA2-FIX-07, runs2-02).
   if (USE_FIXTURES) {

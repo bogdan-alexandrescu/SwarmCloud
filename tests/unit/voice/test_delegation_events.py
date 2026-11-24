@@ -261,6 +261,8 @@ def test_a_start_refused_at_a_cap_runs_nothing_and_says_the_caps_one_sentence(re
         assert delegation.done.is_set() and delegation.state == "done"
         assert delegation.spoken == worksink.CAP_SENTENCES[reason]
         assert calls == []
+        # The planner lets what it kept warm for the session go.
+        assert h.world.planner.cooled == [(delegation.voice_id, "a spend cap")]
         # Only the start was asked; swarm-api wrote nothing, so no end is sent.
         assert h.api.states() == ["started"]
     run(body)

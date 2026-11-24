@@ -278,7 +278,9 @@ describe('the Sky spine shell', () => {
       /* storage may be absent */
     }
   })
-  afterEach(() => {
+  afterEach(async () => {
+    // A test's lazy screen left loading across the next test's module reset never settles.
+    await screenLoaded()
     vi.unstubAllEnvs()
     window.history.replaceState(null, '', '/')
   })
@@ -324,10 +326,11 @@ describe('the Sky spine shell', () => {
     await waitFor(() => expect(window.location.pathname).toBe('/agents'))
     fireEvent.click(screen.getByTitle('Submit (N)'))
     await waitFor(() => expect(window.location.pathname).toBe('/submit'))
+    await screenLoaded()
     expect(screen.getByRole('heading', { name: 'Submit' })).toBeTruthy()
   })
 
-  it('collapses to the spine, remembers it per browser, and survives storage that throws', () => {
+  it('collapses to the spine, remembers it per browser, and survives storage that throws', async () => {
     const { unmount } = render(<App />)
     expect(document.querySelector('.sk-panel')).not.toBeNull()
     fireEvent.click(screen.getByLabelText('Collapse the panel'))
@@ -342,6 +345,8 @@ describe('the Sky spine shell', () => {
     })
     expect(() => render(<App />)).not.toThrow()
     get.mockRestore()
+    // The tests below reset the modules; a lazy screen left loading across that never settles.
+    await screenLoaded()
   })
 
   it('shows a non-admin no Admin, and no locked rows, on a direct Admin link (NAV-ADMIN-ROLE)', async () => {
@@ -354,6 +359,7 @@ describe('the Sky spine shell', () => {
     // The panel draws no Admin pages at all: no disabled row, no lock, no note.
     expect(document.querySelectorAll('.sk-panel .sk-pk')).toHaveLength(0)
     expect(document.querySelector('.sk-panel [aria-disabled="true"]')).toBeNull()
+    await screenLoaded()
   })
 
   it('draws the red bar and pill only where the environment measured production', async () => {
@@ -362,6 +368,7 @@ describe('the Sky spine shell', () => {
     render(<LiveApp />)
     await waitFor(() => expect(document.querySelector('.sk-prodbar')).not.toBeNull())
     expect(document.querySelector('.sk-panel .sk-pill.is-prod')?.textContent).toBe('PROD')
+    await screenLoaded()
   })
 
   it('leaves the bar off for a declared non-production environment', async () => {
@@ -371,6 +378,7 @@ describe('the Sky spine shell', () => {
     await waitFor(() => expect(document.querySelector('.sk-tenant b')?.textContent).toBe('Engineering'))
     expect(document.querySelector('.sk-prodbar')).toBeNull()
     expect(document.querySelector('.sk-panel .sk-pill')?.textContent).toBe('Dev')
+    await screenLoaded()
   })
 })
 

@@ -111,6 +111,15 @@ resource "google_logging_metric" "voice_session_idle" {
     value_type  = "INT64"
     unit        = "1"
   }
+
+  # Readable by the alert policy only some minutes after it is created: the
+  # policy waits on this create-time sleep (log_metric_settle_seconds, terraform/modules/monitoring/metrics.tf).
+  # Runs on create or replace only. on_failure = continue: a failed sleep must
+  # not taint the metric, which the next apply would then replace.
+  provisioner "local-exec" {
+    command    = "sleep ${local.log_metric_settle_seconds}"
+    on_failure = continue
+  }
 }
 
 resource "google_logging_metric" "speech_machine_unheld" {
@@ -126,6 +135,15 @@ resource "google_logging_metric" "speech_machine_unheld" {
     metric_kind = "DELTA"
     value_type  = "INT64"
     unit        = "1"
+  }
+
+  # Readable by the alert policy only some minutes after it is created: the
+  # policy waits on this create-time sleep (log_metric_settle_seconds, terraform/modules/monitoring/metrics.tf).
+  # Runs on create or replace only. on_failure = continue: a failed sleep must
+  # not taint the metric, which the next apply would then replace.
+  provisioner "local-exec" {
+    command    = "sleep ${local.log_metric_settle_seconds}"
+    on_failure = continue
   }
 }
 

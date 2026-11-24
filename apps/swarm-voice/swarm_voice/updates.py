@@ -122,6 +122,7 @@ TOOL_PHRASES = {
     "list_repositories": "reading the repositories",
     "list_schedules": "reading the schedules",
     "search": "searching SwarmCloud",
+    "project_status": "reading this project's status",
     "show_file": "putting a file on screen",
     "show_diff": "putting a diff on screen",
     "show_log": "putting a log on screen",

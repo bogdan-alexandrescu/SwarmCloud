@@ -117,8 +117,19 @@ vulnerabilities:
   # the indexer image is fixed at source (0.39.1 links x/net 0.62.0) by its own
   # pull request. Both entries below move to 2026-11-28, narrowed to kubectl and
   # the plugin; revisit the same way.
+  # REVISITED 2026-11-24 ~02:30Z UTC (owner rule of 2026-11-01: take every
+  # fixed build). kubectl is now pinned at 1.37.2, # measured 2026-11-24 from the 1.37.2 tag's go.mod and from the binary's
+  # build info after its SHA256 matched dl.k8s.io's kubectl.sha256: go1.26.10,
+  # golang.org/x/net v0.57.0, golang.org/x/text v0.40.0. The pin moved from
+  # 1.36.6 to 1.37.2 that day because CVE-2026-39821 (x/net/idna, fixed in
+  # 0.57.0) refused six images from 01:45Z, and 1.36.6, 1.35.10 and 1.34.13
+  # all link v0.56.0. The platform's control plane was read at 02:13Z as
+  # 1.36.5 (rapid channel), so 1.37.2 is one minor ahead, inside kubectl's
+  # skew. 1.37.2 still
+  # links x/net below 0.60.0, so this entry stays; only the statement's
+  # kubectl version changes. Id and expiry unchanged.
   - id: CVE-2026-78669
-    statement: "golang.org/x/net http2 DoS inside vendor-built kubectl (1.36.6 links x/net v0.56.0; the newest release, 1.37.2, v0.57.0); no kubectl release links x/net 0.60.0 yet. The GKE plugin is fixed at 592.0.0."
+    statement: "golang.org/x/net http2 DoS inside vendor-built kubectl (1.37.2, pinned and the newest release, links x/net v0.57.0); no kubectl release links x/net 0.60.0 yet. The GKE plugin is fixed at 592.0.0."
     expired_at: 2026-11-28
   # Same class, added the same night (owner, 2026-10-10): the next release after
   # PR 992 was refused on this id alone, in the same vendor binaries and images,
@@ -164,6 +175,17 @@ vulnerabilities:
   # the indexer image is fixed at source (0.39.1 links x/net 0.62.0) by its own
   # pull request. Both entries below move to 2026-11-28, narrowed to kubectl and
   # the plugin; revisit the same way.
+  # REVISITED 2026-11-24 ~02:30Z UTC (owner rule of 2026-11-01: take every
+  # fixed build). kubectl is now pinned at 1.37.2, # measured 2026-11-24 from the 1.37.2 tag's go.mod and from the binary's
+  # build info after its SHA256 matched dl.k8s.io's kubectl.sha256: go1.26.10,
+  # golang.org/x/net v0.57.0, golang.org/x/text v0.40.0. The pin moved from
+  # 1.36.6 to 1.37.2 that day because CVE-2026-39821 (x/net/idna, fixed in
+  # 0.57.0) refused six images from 01:45Z, and 1.36.6, 1.35.10 and 1.34.13
+  # all link v0.56.0. The platform's control plane was read at 02:13Z as
+  # 1.36.5 (rapid channel), so 1.37.2 is one minor ahead, inside kubectl's
+  # skew. 1.37.2's x/net
+  # v0.57.0 is still below the fixed 0.62.0 and inside the statement's range,
+  # so no word of the statement is false. Id and expiry unchanged.
   - id: CVE-2026-78661
     statement: "golang.org/x/net/html DoS inside vendor-built kubectl and gke-gcloud-auth-plugin (x/net v0.56.0 to v0.61.0, plugin 594.0.0 included); no vendor build links the fixed 0.62.0 yet."
     expired_at: 2026-11-28
@@ -182,6 +204,17 @@ vulnerabilities:
   # Same bound: a panic ends one kubectl invocation inside a non-root, read-only,
   # capability-dropped attempt, which the platform retries. Revisit by bumping
   # KUBECTL_VERSION in both Dockerfiles once a release ships x/text >= 0.41.0.
+  # REVISITED 2026-11-24 ~02:30Z UTC (owner rule of 2026-11-01: take every
+  # fixed build). kubectl is now pinned at 1.37.2, # measured 2026-11-24 from the 1.37.2 tag's go.mod and from the binary's
+  # build info after its SHA256 matched dl.k8s.io's kubectl.sha256: go1.26.10,
+  # golang.org/x/net v0.57.0, golang.org/x/text v0.40.0. The pin moved from
+  # 1.36.6 to 1.37.2 that day because CVE-2026-39821 (x/net/idna, fixed in
+  # 0.57.0) refused six images from 01:45Z, and 1.36.6, 1.35.10 and 1.34.13
+  # all link v0.56.0. The platform's control plane was read at 02:13Z as
+  # 1.36.5 (rapid channel), so 1.37.2 is one minor ahead, inside kubectl's
+  # skew. 1.37.2's x/text
+  # v0.40.0 is still below the fixed 0.41.0, so the statement stands. Id and
+  # expiry unchanged.
   - id: CVE-2026-56851
     statement: "golang.org/x/text precis Nickname panic inside vendor-built kubectl; no kubectl release ships x/text 0.41.0 yet."
     expired_at: 2026-12-17
@@ -277,8 +310,19 @@ vulnerabilities:
   #
   # Revisit by bumping GCLOUD_VERSION (and the plugin's pool id and checksums)
   # in both Dockerfiles once Google ships the plugin on Go >= 1.26.9 / 1.27.2.
+  # REVISITED 2026-11-24 ~02:30Z UTC (owner rule of 2026-11-01: take every
+  # fixed build). kubectl is now pinned at 1.37.2, # measured 2026-11-24 from the 1.37.2 tag's go.mod and from the binary's
+  # build info after its SHA256 matched dl.k8s.io's kubectl.sha256: go1.26.10,
+  # golang.org/x/net v0.57.0, golang.org/x/text v0.40.0. The pin moved from
+  # 1.36.6 to 1.37.2 that day because CVE-2026-39821 (x/net/idna, fixed in
+  # 0.57.0) refused six images from 01:45Z, and 1.36.6, 1.35.10 and 1.34.13
+  # all link v0.56.0. The platform's control plane was read at 02:13Z as
+  # 1.36.5 (rapid channel), so 1.37.2 is one minor ahead, inside kubectl's
+  # skew. kubectl stays
+  # fixed for this id (go1.26.10); only the statement's kubectl version
+  # changes. Id and expiry unchanged.
   - id: CVE-2026-56857
-    statement: "Go os.Root junction escape, Windows-only; in Google's gcloud-crc32c and gke-gcloud-auth-plugin, no fixed vendor build yet; kubectl is bumped to 1.36.6 (go1.26.10) instead; our images are Linux."
+    statement: "Go os.Root junction escape, Windows-only; in Google's gcloud-crc32c and gke-gcloud-auth-plugin, no fixed vendor build yet; kubectl is bumped to 1.37.2 (go1.26.10) instead; our images are Linux."
     expired_at: 2026-11-28
 
   # swarm-speech's 99 entries (45 for apps/swarm-speech/uv.lock, the same 45
@@ -319,6 +363,17 @@ vulnerabilities:
   # every fixed build, extend one week only if upstream is still unfixed):
   # re-read each newest release, run `go version -m` on it, bump the pin and
   # drop its path; delete the entry when no path is left (docs/versions.md).
+  # REVISITED 2026-11-24 ~02:30Z UTC (owner rule of 2026-11-01: take every
+  # fixed build). kubectl is now pinned at 1.37.2, # measured 2026-11-24 from the 1.37.2 tag's go.mod and from the binary's
+  # build info after its SHA256 matched dl.k8s.io's kubectl.sha256: go1.26.10,
+  # golang.org/x/net v0.57.0, golang.org/x/text v0.40.0. The pin moved from
+  # 1.36.6 to 1.37.2 that day because CVE-2026-39821 (x/net/idna, fixed in
+  # 0.57.0) refused six images from 01:45Z, and 1.36.6, 1.35.10 and 1.34.13
+  # all link v0.56.0. The platform's control plane was read at 02:13Z as
+  # 1.36.5 (rapid channel), so 1.37.2 is one minor ahead, inside kubectl's
+  # skew. 1.37.2 is still
+  # go1.26.10, below the fixed 1.26.11, so kubectl's path stays and the
+  # statement stands. Id and expiry unchanged.
   - id: CVE-2026-97054
     paths:
       - usr/lib/google-cloud-sdk/bin/gcloud-crc32c

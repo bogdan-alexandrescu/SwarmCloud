@@ -48,7 +48,7 @@ from urllib.parse import urlsplit
 from swarm_common.models import PROVIDER_POOL_UNITS
 from swarm_common.profiles import MODEL_CLASSES, RESOURCE_CLASSES
 
-from . import artifacts, checkout, compact, config, keys, progress, qatargets, suitegate
+from . import artifacts, awaitchange, checkout, compact, config, keys, progress, qatargets, suitegate
 from . import secrets as secret_tools
 from . import profiles as catalogue
 from . import workflows
@@ -62,7 +62,7 @@ from .client import (
     chosen_tenant,
     enter_hold_lane,
     outputs_of,
-    submit_guard,
+    send_submission,
     task_id_of,
     task_payload,
     tenant_listing,
@@ -3366,8 +3366,8 @@ def _send_task(client: Any, credentials: dict[str, Any] | None, **fields: Any) -
         return client.dispatch(**fields)
     payload = task_payload(**fields)
     payload["mcp_credentials"] = credentials
-    with submit_guard("/v1/tasks"):
-        return unwrap_task(client.request("POST", "/v1/tasks", payload=payload, timeout=SUBMIT_TIMEOUT_SECONDS))
+    return unwrap_task(send_submission("/v1/tasks", payload, lambda body: client.request(
+        "POST", "/v1/tasks", payload=body, timeout=SUBMIT_TIMEOUT_SECONDS)))
 
 
 def _step_servers(steps: list[dict[str, Any]]) -> set[str]:
@@ -4341,6 +4341,7 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
         "collect_with": "swarm_collect",
         "follow_with": "swarm_follow",
         "follow_live_with": follow_command(ids),
+        awaitchange.FIELD: awaitchange.await_command(ids),
         # A row per task, started by the session from this reply (archived issue 830).
         "rows": _dispatch_rows([
             (task_id, (item.get("label") if isinstance(item, dict) else None) or None, task)
@@ -5714,6 +5715,8 @@ def _workflow_created(
     if task_ids:
         created["follow_with"] = "swarm_follow"
         created["follow_live_with"] = follow_command(task_ids)
+        # The push path names the workflow, not its steps (`sc await`).
+        created[awaitchange.FIELD] = awaitchange.await_command([workflow_id])
     # A workflow now exists for this session to follow (SC-AUTO-WATCH).
     created.update(_submitted_session_fields())
     return json.dumps(created, indent=2)
@@ -5901,6 +5904,9 @@ def _call(
                 # binary that is not on PATH.
                 "follow_with": "swarm_follow",
                 "follow_live_with": follow_command([task_id]),
+                # The push path (`sc await`): run it in the background, and
+                # its exit is the session's news of this task.
+                awaitchange.FIELD: awaitchange.await_command([task_id]),
                 # Which target applied, and which layer chose it (S8).
                 "target": placed,
             }, task)

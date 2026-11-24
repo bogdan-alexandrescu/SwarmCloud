@@ -19,11 +19,11 @@
  * A long form says what the reader sees, what it means and what to do. WHY
  * the console draws a state the way it does -- the screen that would have
  * lied -- is design rationale, and it lives in docs/web-ui/help-rationale.md
- * (archived issue 131), held there by `src/__tests__/help.rationale.test.tsx`.
+ * (archived issue 131), held there by a test of the rationale document.
  *
  * So nothing in this file may be load-bearing. If a panel needs this module to
  * be read before it can be told apart from a zero, the panel is wrong, not
- * this module. `tests/help.test.ts` asserts that for the exemplar screen.
+ * this module. A help test asserts that for the exemplar screen.
  *
  * ONE RECORD, TWO RENDERERS. `<HelpCard topic="x">` renders `short`; the Help
  * section renders `title` + `long` at `anchor`. Both read this record, so a
@@ -45,7 +45,7 @@
  * name or a figure. Where a topic needs one it declares `values()`, which
  * READS the list from the module that owns it (`types.ts`, this UI's single
  * mirror of `apps/common/swarm_common`) at render time. Rename a state there
- * and the Help section renames with it. `tests/help.test.ts` greps this file's
+ * and the Help section renames with it. A help test greps this file's
  * source for every state and reason literal and fails if one appears, so the
  * rule survives the next person who adds a topic in a hurry.
  */
@@ -213,9 +213,9 @@ export const HELP_GROUPS: readonly { id: HelpGroupId; title: string }[] = [
   // their pages' topics sat under How the platform behaves or had none, and
   // each Config page's `?` led to the first group. In the panel's order. The
   // ids are not section ids, so `/help/<group>` is never read as a section's
-  // old address (help.anchor.test.tsx). A title is at most 30 characters, the
+  // old address (an anchor test holds it). A title is at most 30 characters, the
   // length of the Config one: a longer one overruns the rail's text track at
-  // 1440 and pushes its count out of the column (help.vq055.test.tsx).
+  // 1440 and pushes its count out of the column (a rail-width test holds it).
   { id: 'automating-work', title: 'Automate: schedules, approvals' },
   { id: 'configuring-a-workspace', title: 'Config: setting up a workspace' },
   { id: 'administering-the-platform', title: 'Admin: running the platform' },
@@ -395,7 +395,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
   // (swarm_api/routes/tasks.py, `list_events`). What is true is narrower and is
   // about the UI: api.ts asks for one page, oldest-first, and never sends the
   // token back. The toolbar's strings now say that too, so the card and the
-  // marks still agree, and tests/help.test.ts reads both the route and api.ts
+  // marks still agree, and a help test reads both the route and api.ts
   // and holds this topic to whichever of them changes.
   'event-paging': {
     group: 'an-attempt',
@@ -876,7 +876,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     // WRITTEN FOR EVERY SCREEN THAT LINKS IT (AH-13 rule 2): the Timeline's
     // footer index (its People table went with archived issue 185), the Pools footer and the
     // Profile headroom footer.
-    // tests/help.test.ts finds the linking screens in the sources, so a fourth
+    // A help test finds the linking screens in the sources, so a fourth
     // fails there until this is written for it too.
     long: [
       'Every agent and workflow read the console makes is answered for the calling tenant, an administrator’s included: the API takes the scope from the verified caller, never from a parameter. A figure drawn from those reads is the caller’s own and never a total across tenants. The one exception is the platform scope on the Timeline screen, which an administrator asks for by name, which the API refuses to anyone else, and whose figures then name the tenants they cover.',
@@ -1177,7 +1177,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
   'refresh-now-probe': {
     group: 'an-account',
     // NO DOUBLE QUOTES IN A TITLE. `renderToStaticMarkup` escapes them, and
-    // `tests/help.test.ts` asserts the title appears in the rendered Help page
+    // a help test asserts the title appears in the rendered Help page
     // by substring -- so a quoted title fails a test that is right to fail.
     title: 'What the refresh button does',
     short:
@@ -1964,7 +1964,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
  * WHERE A TOPIC'S ACTION CAN SEND A READER (archived issue 131): the screens a topic is
  * answered on, by the router's own address, with the name the panel gives
  * each. An address here that the router does not know is caught by
- * `src/__tests__/help.guidance.test.tsx`, and a name that drifts from the
+ * the guidance test, and a name that drifts from the
  * panel's label is caught there too.
  */
 export const HELP_PLACES = {
@@ -2536,7 +2536,7 @@ export const PAGE_TOPIC: Readonly<Record<string, TopicId>> = {
   'automate/approvals': 'approvals',
   // Admin › People and roles answers differently by reader (ADMIN-PEOPLE-ROLES):
   // its topic rides the section's `?` rather than a second glyph by the title,
-  // which the console's glyph ceiling (tests/help.test.ts) has no room for.
+  // which the console's glyph ceiling (a help test holds it) has no room for.
   'admin/people': 'people-and-roles-scope',
   // VQ-055 (visual QA 2026-10-26): every Config page's `?` opened the same
   // section card, whose `Help →` led to Help's first group. Each page now

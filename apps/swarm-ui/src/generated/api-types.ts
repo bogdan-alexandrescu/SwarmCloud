@@ -7,8 +7,8 @@
 //
 //   uv run python scripts/gen_api_types.py
 //
-// tests/unit/scripts/test_api_types_drift.py fails while this file differs
-// from what that command writes.
+// An offline drift test fails while this file differs from what that
+// command writes.
 
 /**
  * Register a Claude subscription or a ChatGPT plan into the CALLER's pool.
@@ -273,6 +273,10 @@ export interface AuthorizeBody {
 
 export interface BindingBody {
   provider: string
+}
+
+export interface BriefWrite {
+  text: string
 }
 
 /**
@@ -1665,10 +1669,12 @@ export interface Task {
 
 export interface TaskBatchCreate {
   tasks: TaskCreate[]
+  idempotency_key?: string | null
 }
 
 export interface TaskCreate {
   runner_profile: string
+  idempotency_key?: string | null
   input?: { [key: string]: unknown }
   priority?: number
   metadata?: { [key: string]: unknown }
@@ -1823,6 +1829,7 @@ export interface WorkReport {
 
 export interface WorkflowCreate {
   steps: WorkflowStepCreate[]
+  idempotency_key?: string | null
   priority?: number
   on_step_failure?: 'fail_workflow' | 'continue'
   metadata?: { [key: string]: unknown }

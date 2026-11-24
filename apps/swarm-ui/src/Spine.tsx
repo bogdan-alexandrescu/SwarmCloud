@@ -56,18 +56,18 @@ import { poolLabelAmong, type Capacity, type Me, type Stats, type TaskState } fr
 import { ThemeToggle } from './ThemeToggle'
 import { derivedStateOf } from './workflowlist'
 import { useResourceClasses } from './Blockers'
-import { needsALook } from './Capacity'
+import { needsALook } from './poolLook'
 import { SignOutButton, SignedBackIn } from './SignOut'
 import { iapFronted, signingOut } from './signoutState'
 import { AppTakeover, OfflineBanner, wholeAppFault, useOnline } from './AppStates'
 import { feedData, notificationsSnapshot, subscribeNotifications } from './notificationFeed'
 import { firstName } from './PersonName'
-import { NEAR_CEILING } from './AdminSettings'
+import { NEAR_CEILING } from './poolLook'
 import { roleOf } from './roles'
 import { ConfigBadgeMark, SetupContext, SetupMeter, setupSteps, setupUnfinished, useConfigBadges, type SetupRead } from './ConfigSetup'
-import { voiceItOpen } from './voice/Section'
+import { voiceItOpen } from './voice/voiceOpen'
 import { VoiceFloatLayer, VoiceMarker } from './voice/Floating'
-import { HOME_JUMPS } from './Home'
+import { HOME_JUMPS } from './homeJumps'
 import { aboutOf } from './WorkflowFacts'
 
 export type SpineSection = 'profile' | 'home' | 'overview' | 'work' | 'automate' | 'capacity' | 'config' | 'admin' | 'voice' | 'help' | null
@@ -85,7 +85,7 @@ interface PanelPage {
   /**
    * An admin page among pages that are not (archived issue 136): drawn with the `admin`
    * mark. Never set in the Admin section, whose heading already says it.
-   * `spine.labels.test.tsx` holds these to App.tsx `SECTIONS`' admin flags.
+   * A labels test holds these to App.tsx `SECTIONS`' admin flags.
    */
   admin?: boolean
   kids?: { key: string; label: string; to: string; admin?: boolean }[]
@@ -397,7 +397,7 @@ export function hrefOf(to: string): string {
 /**
  * The Overview page's regions, as jump links (overview.html O1), in the order
  * the page draws them. Cost so far and Pools were on the page and not here
- * (G1-14, QA pass 2026-10-07); `qa.g1.jumps.test.tsx` reads Overview's
+ * (G1-14, QA pass 2026-10-07); a jump-links test reads Overview's
  * sections and holds this list to them.
  */
 export const OVERVIEW_JUMPS: readonly { id: string; label: string }[] = [
@@ -1629,7 +1629,7 @@ const SPINE: readonly { key: Exclude<SpineSection, null>; label: string; to: str
   // a workflow is one more click away and never hidden. Opening Workflows
   // instead would change where every Work link in the console lands. That
   // is an IA decision for the owner, asked in the PR rather than made here.
-  // spine.qafix.test.tsx holds the panel row.
+  // a Spine test holds the panel row.
   { key: 'work', label: 'Work', to: 'work/running' },
   { key: 'automate', label: 'Automate', to: 'automate/schedules' },
   { key: 'capacity', label: 'Capacity', to: 'capacity/pools' },

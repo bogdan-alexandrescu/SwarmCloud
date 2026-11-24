@@ -36,7 +36,7 @@ from starlette.concurrency import run_in_threadpool
 from swarm_common.models import Attempt, Task
 from swarm_common.states import TaskState
 
-from .. import agent_questions, contractreask, mergewake, roles, route_scope
+from .. import agent_questions, contractreask, idempotency, mergewake, roles, route_scope
 from ..agent_output import AgentOutputService
 from ..attempt_totals import IN_LIMIT as ATTEMPTS_IN_LIMIT
 from ..attempt_totals import PER_TASK_CAP as ATTEMPTS_PER_TASK_CAP
@@ -140,29 +140,46 @@ def create_task(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     require_member(ctx, auth)
-    result = ctx.submissions.submit_tasks(auth, [body])
+    result = ctx.submissions.submit_tasks(
+        auth, [body], idempotency_key=body.idempotency_key, idempotency_kind=idempotency.KIND_TASK)
     task = result.tasks[0]
     response.headers["Location"] = f"/v1/tasks/{task.id}"
+    if result.replayed:
+        # The first submission's task, created then; nothing is created now.
+        response.status_code = status.HTTP_200_OK
     return {
         "task": task_to_api(task, console_url=ctx.settings.console_url),
         "scheduler_woken": result.woke_scheduler,
+        "idempotent_replay": result.replayed,
     }
 
 
 @router.post("/batch", status_code=status.HTTP_201_CREATED)
 def create_task_batch(
     body: TaskBatchCreate,
+    response: Response,
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     require_member(ctx, auth)
-    result = ctx.submissions.submit_tasks(auth, body.tasks)
+    if any(spec.idempotency_key is not None for spec in body.tasks):
+        # One key names the whole batch: a key per task would let half a
+        # batch replay and half be created.
+        raise ValidationFailed(
+            "idempotency_key belongs on the batch, not on a task inside it",
+            detail={"field": "tasks[].idempotency_key"})
+    result = ctx.submissions.submit_tasks(
+        auth, body.tasks, idempotency_key=body.idempotency_key,
+        idempotency_kind=idempotency.KIND_BATCH)
+    if result.replayed:
+        response.status_code = status.HTTP_200_OK
     return {
         "tasks": [
             task_to_api(task, console_url=ctx.settings.console_url) for task in result.tasks
         ],
         "count": len(result.tasks),
         "scheduler_woken": result.woke_scheduler,
+        "idempotent_replay": result.replayed,
     }
 
 

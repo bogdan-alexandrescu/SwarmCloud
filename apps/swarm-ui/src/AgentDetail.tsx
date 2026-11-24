@@ -198,7 +198,7 @@ export function AgentDetailScreen({
   // runs before Screen's sees it, so it needs its own guard. Without one a
   // read that outlived its pane scheduled a React update into a torn-down
   // document: in CI, `ReferenceError: window is not defined` after
-  // walk.agent.test.tsx's environment was gone, failing a run whose every
+  // the walkthrough test's environment was gone, failing a run whose every
   // test had passed.
   const mounted = useRef(true)
   useEffect(() => {
@@ -384,7 +384,7 @@ export function drawerPoll(r: AgentRun | null, now: number = Date.now()): number
 /**
  * The screen's body, once the load has resolved.
  *
- * EXPORTED FOR ONE REASON. `tests/agentdetail.test.tsx` is the acceptance test
+ * EXPORTED FOR ONE REASON. The agent-detail test is the acceptance test
  * for B7.1 -- it renders this screen with a cost that was never reported and
  * asserts that the surface, with every help card CLOSED, still tells absent
  * from zero. `AgentDetailScreen` above wraps this in `Screen`, whose load runs
@@ -988,7 +988,7 @@ function copyIssue(copy: TaskInputCopy | null): string | null {
  * THE PROMPT AND `issue` ARE THE MASKED COPY'S (`GET /v1/tasks/{id}/input`,
  * #184), the one Input draws and shares through `loadTaskInputOnce`, NEVER
  * `task.input`: an API older than read-time masking serves that unmasked, and
- * details.followup.test.tsx holds Details to never drawing it. Until the copy
+ * a follow-up test holds Details to never drawing it. Until the copy
  * is read the line says what the task read gave.
  */
 export function buildingOf(
@@ -2444,7 +2444,7 @@ export { Mark, type MarkKind } from './primitives'
  *
  *   - an absent tile's value is a PHRASE ("not recorded", "not reported") on
  *     the `is-absent` treatment, where the landing strip draws a mark. Both
- *     are the design system's; `tests/agentdetail.test.tsx` renders this
+ *     are the design system's; the agent-detail test renders this
  *     screen with every help card CLOSED and asserts the phrase.
  *   - `explain` publishes a topic's short form at the label and draws no `?`
  *     (B7.4). The tile already tells an absence from a zero on the surface.
@@ -3354,7 +3354,7 @@ export function AttemptModel({ a, task, isLatest }: { a: AttemptRow; task: Task 
           // shape stays, with the word that is true, and the reason is on
           // the glass beside it rather than in an accessible name only --
           // a few words, since it repeats on every attempt card (prose
-          // budget, prose.runs.test.tsx); the whole sentence is its title.
+          // budget, held by the runs prose test); the whole sentence is its title.
           // Which reason is `modelAbsence`'s (6:task-003).
           <>
             <span className="ctl-mark is-absent">not recorded</span>
@@ -4378,7 +4378,7 @@ function cpuReading(from: CpuFrom, a: AttemptRow, end: AttemptEnd): CpuReading {
  *     shows only below 560px. On a phone it is the only place `at exit`
  *     appears.
  *
- * The rules are in styles.css beside `.att-rss-note`. details.cpu.test.tsx
+ * The rules are in styles.css beside `.att-rss-note`. A details CPU test
  * asks the shipped sheet's cascade what a 390px viewport shows, because jsdom
  * applies no stylesheet and would pass either way.
  */
@@ -5487,7 +5487,7 @@ function PublishOutcome({ git, task }: { git: GitSummary; task: Task }) {
   // a task whose dispatch this API did not report AND whose summary predates the
   // worker's structured fields. Both substrings are the worker's own, quoted
   // from `_publish` in agent_worker/lifecycle.py -- see the seam test in
-  // tests/unit/control_plane/test_dispatch_ui_surface.py, which asserts these
+  // the dispatch UI-surface test, which asserts these
   // still appear there verbatim.
   const isCollect = strategy === 'collect' || lower.includes("strategy is 'collect'")
   const isContributor = role === 'contributor' || lower.includes('this step is a contributor')

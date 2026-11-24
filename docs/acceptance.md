@@ -209,7 +209,7 @@ that file.**
 | expected_outputs | `a`'s `metadata.expected_outputs` names the file `b` stages; a parent that writes the wrong file ends `FAILED outputs_missing`, `result_summary.expected_outputs_missing` names the file, it was retried to `max_attempts`, and its child ends `CANCELLED` having never held a lease |
 | on_step_failure | a failing root's child and grandchild both end `CANCELLED workflow_sweep` with no lease ever, and the workflow's derived state is `FAILED` (the fail_workflow sweep in `apps/scheduler/scheduler/loop.py` `_sweep_failed_workflow` cancels every not-started step of the workflow ahead of the per-parent `failed_parent` cascade, dependent or not, and always records `end_cause=WORKFLOW_SWEEP`) |
 | integrate chain | implement (fix the bug, stage its `change.diff`) -> review (apply the staged `change.diff`, judge it, write `verdict.json`, then reverse the patch) -> fix (read the staged `verdict.json`, write `verdict-seen.txt` and `pr-title.txt`), strategy `integrate`: all three succeed, review's `result_summary.staged_inputs` lists implement's `change.diff` (without it review would be judging repository_ref's unfixed fixture, not implement's work -- strategy `integrate` gives a non-integrator step no other way to see an upstream step's tree, docs/workflows.md), exactly one pull request exists and fix opened it, fix read the verdict review wrote (`MERGE`), the pull request's body lists the implement branch as merged, and its diff removes the bug line (those two are read back from the private sandbox, and are a SKIP in a run with no token for it, as the release's is). Then the pull request and every branch are cleaned up |
-| carry | docs/workflows.md's park-and-carry recipe: `a` (mock, `quota_exhausted` + `artifact_before_park`) writes `notes.md` and parks, then succeeds on a later attempt that writes nothing; `a` has at least two attempt documents, counted from the documents rather than `attempt_count`, because a quota park refunds its attempt and leaves `attempt_count` at 1 after the second lease (an unreadable attempts query fails the check); `a`'s `result_summary.artifacts` has one `notes.md`, whose `carried_from` is the attempt the `parked` event names and whose `uri` is that attempt's object, none under the finishing attempt's prefix; `b` succeeds, its `staged_inputs` names that object, and its checkpoint's `notes.md` is `a`'s bytes. It exists because the park-and-carry 403 finding was reopened by a live dev measurement (a 403), and only a live measurement the other way closes it: the owner asked for this one on 2026-10-08 |
+| carry | docs/workflows.md's park-and-carry recipe: `a` (mock, `quota_exhausted` + `artifact_before_park`) writes `notes.md` and parks, then succeeds on a later attempt that writes nothing; `a` has at least two attempt documents, counted from the documents rather than `attempt_count`, because a quota park refunds its attempt and leaves `attempt_count` at 1 after the second lease (an unreadable attempts query fails the check); a parent that did not succeed also fails with its own `last_error`, redacted, so a red run says what failed the first attempt (issue 202: the 2026-11-23 22:30 run read FAILED with one attempt and no park, and its log could not say why); `a`'s `result_summary.artifacts` has one `notes.md`, whose `carried_from` is the attempt the `parked` event names and whose `uri` is that attempt's object, none under the finishing attempt's prefix; `b` succeeds, its `staged_inputs` names that object, and its checkpoint's `notes.md` is `a`'s bytes. It exists because the park-and-carry 403 finding was reopened by a live dev measurement (a 403), and only a live measurement the other way closes it: the owner asked for this one on 2026-10-08 |
 
 ### browser
 
@@ -568,6 +568,28 @@ id, the body carries the task id, the diff stays under
 `tests/acceptance/fixtures/` and removes the bug line, an integrate body lists
 its merged branches and leaves none out -- and fails the job on any defect
 ([ci.md](ci.md#release-acceptance-runs-in-the-smoke-tenant-against-a-private-sandbox)).
+
+Each pull request is judged by the check that opened it, never by another's.
+`github-verify.sh` tells them apart in order: the git-tools group's (its body's
+marker, or an integrate block over that group's fixtures), the workflow
+group's fix-loop check's, then the claude-code group's (direct-pr and
+integrate, and the workflow integrate chain, which edits the same `calc.py`)
+when it changes a file under `tests/acceptance/fixtures/claude-code/`. A pull
+request that matches none fails as **unclassified**, naming its files; it
+never gets the claude-code rules. On 2026-11-23 the fix loop's pull request
+fell through to them and failed on `calc.py`.
+
+The fix-loop check's pull request carries `acceptance-workflow: fix-loop` in
+its body (its fix step writes it into `pr-body.md`), or changes only
+`tests/acceptance/fixtures/workflow/fix-loop-rounds.txt`. It must change that
+file and nothing else, and its diff may only append lines reading `fix`.
+How many lines there are is for the suite to judge: a loop held by a
+quota-parked workspace leaves one. The file is under
+`tests/acceptance/fixtures/`, in the workflow group's own directory, because
+every check writes there and only there. Until 2026-11-24 it sat at the
+repository root, so the read-back failed it as outside the fixtures and the
+sweep, which closes only fixture-only pull requests, left it open. The
+directory is not on the sandbox's `main`; the fix step creates it.
 The `collect` patch is applied in the suite to the swarm-verify image's own
 copy of `calc.py`, the same commit `sandbox-sync.sh` put on the sandbox. Then
 the job runs `scripts/acceptance/github-cleanup.sh` with the sandbox's own

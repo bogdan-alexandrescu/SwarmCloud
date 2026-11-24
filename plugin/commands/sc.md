@@ -26,6 +26,7 @@ allowed-tools:
   - Bash(swarm doctor:*)
   - CronList
   - CronCreate
+  - Bash(sc await:*)
 ---
 
 Run the requested view and show the operator its output:
@@ -57,6 +58,9 @@ Read-only: report and attach; never cancel, retry or re-dispatch.
    whose prompt is `/sc:check` or `/sc check` exists, call
    `swarm_check_schedule` with `arm_watch.save_with.args`, then CronCreate
    with `arm_watch.args`, and say its `then_say`.
+5. If `swarm_check`'s `await_in_background` is set and no `sc await --mine`
+   runs in this session yet, run it with Bash in the background; when it
+   exits, report its lines (exit 4: nothing changed, run it again).
 
 If the arguments are `watch [interval]` or `watch off`, do **not** run them
 here either: they are the `sc` skill's verbs -- the CronCreate schedule

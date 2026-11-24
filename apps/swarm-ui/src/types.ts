@@ -270,7 +270,7 @@ export function providerTenantPool(provider: string, tenant: string): string {
  * the API's enum printed as a name. These are words.ts `backendWord`'s words,
  * restated because words.ts imports this module through StatePill; `AUTO` is
  * a choice, never a pool. Exported so a test holds the two maps together
- * (qa1b13.types.help.styles.test.tsx): a backend added to one alone fails it.
+ * (a help-styles test): a backend added to one alone fails it.
  */
 export const BACKEND_POOL_WORD: Readonly<Record<string, string>> = {
   CLOUD_RUN_JOB: 'Cloud Run',
@@ -1791,7 +1791,7 @@ export interface LeasePage {
    * filtered down to nothing.
    *
    * REQUIRED because this API serves it on every response, and
-   * test_ui_api_field_contract.py holds the two together. A reader still
+   * a field-contract test holds the two together. A reader still
    * checks it is a number (Holders.tsx `leaseCoverage`): a console served
    * beside an older API receives no such key, and absent is not zero.
    */
@@ -2286,7 +2286,7 @@ export interface Runtime {
   models?: Record<string, string>
   /**
    * The class resolved inline. Field-identical to a `/v1/resource-classes`
-   * entry, and `test_sizing_agrees_with_the_resource_classes_route` asserts the
+   * entry, and a sizing test asserts the
    * two routes never disagree -- so the same type is reused rather than a
    * second one declared that could drift from it.
    */
@@ -3022,7 +3022,7 @@ export type ParkReason =
 export const PARK_REASONS = [
   // ONE PER LINE, and not for taste. `SCHEDULED_RETRY` and `MANUAL_PAUSE` are
   // spelled identically in `BlockedReason`, a different enum, and
-  // `test_no_screen_declares_its_own_grouping_of_reasons` reads any LINE
+  // a guard test reads any LINE
   // carrying two of those names as a screen inventing its own blocker
   // grouping. Wrapping these three declarations one-per-line keeps that check
   // able to do its job instead of teaching it about a second enum.
@@ -3073,7 +3073,7 @@ export const PARK_NEEDS_A_PERSON: ReadonlySet<string> = new Set<ParkReason>([
   // its tenant (contract request 92, docs/design/human-steps.md §4.5). Only
   // an answer moves it on; its declared expiry (at most a day) ends it, and
   // never resumes the work a person was asked about. No apostrophes in this
-  // comment: test_overview_workflow_checks.py reads the quoted names.
+  // comment: a workflow-checks test reads the quoted names.
   'AWAITING_INPUT',
 ])
 
@@ -3620,7 +3620,7 @@ const RUN_STATES: ReadonlySet<TaskState> = new Set<TaskState>(['STARTING', 'RUNN
  * a wait the document can time, and for it the whole age is one.
  *
  * NOTE ON WIDTH. Every form here fits the Agents list's `[age]` track, whose
- * floor `shell.test.tsx` derives from this function over every state, started
+ * floor the shell test derives from this function over every state, started
  * or not: the longest is `waiting 99d 23h`, 15 characters.
  *
  * WHAT THE TASK DOCUMENT CANNOT TELL APART. For a finished task the figure is

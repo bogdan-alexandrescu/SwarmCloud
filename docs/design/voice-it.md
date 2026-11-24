@@ -521,15 +521,32 @@ planner used to call the Messages API with an Anthropic API key read from the
 person's own secret, which needed a per-secret accessor grant and a stored key.
 It now runs each delegation turn the way a worker runs an agent:
 
-* **One lease per turn** (`swarm_voice/plannerlease.py`). swarm-voice asks the
+* **One lease and one child per session, kept warm**
+  (`swarm_voice/plannerwarm.py`). A cold turn paid the broker's assign and
+  Claude Code's start before its first model call, and again at the next
+  delegation. The session's first delegated turn now starts both and the next
+  ones reuse them. The session's end, a pause, a spend cap and
+  `WARM_IDLE_SECONDS` (two minutes) with no delegated turn each stop the child
+  and then give the lease back; a turn that is running is never cut for it. Two
+  minutes, because a hold is one of an account's slots (six by default, one
+  until the account's first reading) and an idle one is a slot another session
+  or lane cannot have. At most `MAX_IDLE` (two) idle children stay in the pod
+  at once, for its 2Gi; past it the longest idle one goes. A child that is
+  dead, silent or spent, and a hold that is lost, leave that turn to a lease
+  and a child of its own, as below; a turn that drew, acted or spoke is never
+  run twice. A child is reused only for the same session, person, project,
+  grant, model and tools, its tool calls are refused between turns, and its
+  HOME, with the only copy of the conversation, is removed with it.
+* **The lease** (`swarm_voice/plannerlease.py`). swarm-voice asks the
   broker's `POST /v1/accounts/assign` for an `anthropic` account with holder
   `voice-planner`, the session's person and the voice session id. The broker
   resolves the person's OWN workspace (never one the body names), picks the
   account with `choose()` over that workspace's pool, and records the hold on
   the account like an agent's, so `max_agents` and the windows see it. The hold
-  is renewed every four minutes and released in a `finally` whatever the turn
-  did. If swarm-voice dies the hold lapses on the broker's TTL, which a turn
-  (four minutes at most) never outlives unrenewed.
+  is renewed every four minutes and, for a turn of its own, released in a
+  `finally` whatever the turn did. If swarm-voice dies the hold lapses on the
+  broker's TTL, which neither a turn (four minutes at most) nor a warm child
+  outlives unrenewed.
 * **A full pool is a refusal, never a wait.** With no account free the voice
   says so ("Every Claude account in your workspace's pool is busy right
   now..."), or that the workspace has none, and nothing runs.
@@ -549,7 +566,7 @@ It now runs each delegation turn the way a worker runs an agent:
   the read tools and `speak`. It holds nothing itself: each call goes over a
   unix socket in the private HOME (checked against a per-turn nonce) back to
   swarm-voice, which runs it through swarm-api with the session grant the
-  child never sees. The turn stops the child once `speak` is answered.
+  child never sees. The turn ends at `speak`: a cold child is stopped, a warm one interrupted.
 * **Nothing secret captured.** Every line the child prints is scrubbed of the
   token and the grant before it is parsed, as the worker's redaction does. So
   are the prompt, the tool results, the cards and the spoken summary.
@@ -559,7 +576,7 @@ It now runs each delegation turn the way a worker runs an agent:
   session's $100 and the day's $300, never counts it as $0 spent, and counts
   it in `subscription_turns`.
 * **The windows.** A planner turn is one agent on one account for at most
-  four minutes. It competes with the workspace's lanes for that account's
+  four minutes, and for two idle minutes after it. It competes with the workspace's lanes for that account's
   five-hour window exactly as one more short agent would, and the broker's
   `choose()` spreads it like one. This was the reason the earlier design kept
   the planner off the pool. The owner accepted that cost on 2 November 2026.

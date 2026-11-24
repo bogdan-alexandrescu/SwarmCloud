@@ -36,6 +36,16 @@ the front says its `total` and names at most three rows by title, spoken, never
 as a bulleted list and never by a delegation. Anything that draws, shows,
 plans or acts is still delegated: the front holds no draw, visual or act tool.
 
+THIS PROJECT'S STATUS IS THE FRONT'S TOO (the plan item "voice, better
+answers"). "What is running" or "did that finish" about the project itself
+went to the planner: a leased account and a turn of up to 240 s for a
+status line. The front now holds `project_status` (tools_read.py), the
+project's own cards and roster as the person's project page shows them, read
+through the same grant and `Planner.read` as every other read and fenced as
+data: swarm-api applies the roster route's own person, workspace and project
+checks, and refuses a grant any project but its session's. The front answers
+from it and delegates only work.
+
 ONE ACCOUNT FOR THE SESSION. `PlannerAccounts(broker, holder="voice-front")`
 assigns one Claude account of the person's own workspace pool at the start,
 renews it every 240 s while the session lives and releases it on end, idle,
@@ -167,6 +177,9 @@ FRONT_INSTRUCTIONS = (
     "its `total`, and never count with `search`; to say which ones, name at most three of its rows "
     "by title in the same sentence and say how many more there are. Say only what the read "
     "returned. "
+    "When the person asks about this project's own work (what is running, did that finish, what "
+    "is waiting on them, what is on its cards), call `project_status` once and answer from its "
+    "cards and roster in this turn; a status question is never delegated. "
     "When the person asks for something to be planned, drawn, shown on screen, explained in "
     "depth, or done (a task, a merge, a cancel, an approval), call the `delegate` tool with "
     "what they asked for in one sentence, then say in a few words that you are on it, for example "
@@ -655,6 +668,10 @@ class FrontSessions:
                 session.running, delegation.state, delegation.spoken = None, "done", CAP_SENTENCES[refused]
                 delegation.done.set()
                 self._trim(session)
+                cool = getattr(self._planner, "cool", None)
+                if cool is not None:
+                    # No further turn runs: its account and child are not kept for one.
+                    cool(session.voice_id, "a spend cap")
                 log.info("voice session %s: delegation %s refused at a cap (%s)", session.voice_id,
                          delegation.delegation_id, refused)
                 continue

@@ -10,7 +10,6 @@ import {
   loweredCeiling,
   nearCeiling,
   poolHref,
-  poolProblemRank,
   poolViewer,
   tableMode,
   useLinkedPool,
@@ -30,7 +29,6 @@ import {
   ceilingCopy,
   needsAPerson,
   overCeiling,
-  poolGroup,
   poolKind,
   poolLabel,
   poolScope,
@@ -40,6 +38,9 @@ import {
   type Pool,
 } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
+import { needsALook } from './poolLook'
+
+export { needsAction, needsALook } from './poolLook'
 
 /**
  * Screen B -- the capacity board.
@@ -133,7 +134,7 @@ export function CapSeg({ view }: { view: 'ceilings' | 'profiles' }) {
         label="Pools views"
         value={view}
         options={[
-          // JSX labels: test_nav_headings_agree.py reads `>By runner profile<`
+          // JSX labels: the nav-headings test reads `>By runner profile<`
           // out of this file as the in-page strip's text.
           { key: 'ceilings', label: <>Ceilings</>, href: '#capacity/pools' },
           { key: 'profiles', label: <>By runner profile</>, href: '#capacity/profiles' },
@@ -339,45 +340,6 @@ function scopeWord(name: string, viewer: string | undefined): string {
   const owner = /(?:^|:)tenant:([^:]+)$/.exec(name)?.[1]
   if (owner === undefined || owner === viewer) return 'this tenant'
   return `tenant ${owner}`
-}
-
-/**
- * True when a pool is one a person has to act on: `poolGroup` (types.ts)
- * files it under `needs_action` by `blockerGroup`, the rule the Agents list's
- * Waiting split uses -- paused, set to zero by a person, no limit set, over
- * its ceiling (drift), or below one task of its class. A `resource:` pool is
- * weighed against its class's `units` from the catalogue; no other pool has
- * one class. Every such pool is also in `needsALook`, so nothing Agents calls
- * needs-action is left down in a family here.
- */
-export function needsAction(pool: Pool, classes: ResourceClasses | null): boolean {
-  const units = poolKind(pool.name) === 'resource' ? classUnits(classes, pool.name.slice('resource:'.length)) : null
-  return poolGroup(pool, units) === 'needs_action'
-}
-
-/**
- * True when a pool belongs in Pools' top group, "Needs a look": full,
- * lowered, paused or at `POOL_NEAR_CEILING` (80%) of its ceiling or more, the
- * group capacity.html A draws -- and every pool `needsAction` takes, so a
- * pool at 0, with no limit, over its ceiling or too small for its class leads
- * as well. `poolProblemRank` is the rule the marks and the family order
- * already use: anything it ranks above `ok` is something to look at.
- *
- * owner'S ANSWER, 2026-10-26 08:20-08:30Z (VQ-031, task_06d63267fd684e27a419):
- * "Needs a look, as the mock-up draws it". It REVERSES the 2026-10-01 note
- * that made this group "Needs action", filed by the Agents list's Waiting
- * split, which kept a full or AIMD-lowered pool in its family because
- * waiting clears it. That split answers a different question -- which of a
- * TASK's refusals a person must clear -- and Agents keeps it. Pools answers
- * "which pools should I look at": the 46-of-50 pool read `ok` at the foot of
- * Providers under that rule (pass 1), and the mock-up's group of full and
- * lowered pools is what the owner picked.
- */
-/** `poolProblemRank`'s rank for a pool with nothing to look at (capacityPoll.ts). */
-const POOL_RANK_OK = 6
-
-export function needsALook(pool: Pool, classes: ResourceClasses | null): boolean {
-  return needsAction(pool, classes) || poolProblemRank(pool) < POOL_RANK_OK
 }
 
 /**

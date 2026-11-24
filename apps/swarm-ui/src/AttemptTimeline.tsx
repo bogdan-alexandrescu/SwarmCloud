@@ -392,7 +392,7 @@ function Body({ t }: { t: AttemptTimeline }) {
             the page token the route returns (archived pull request 19), so "this is everything" is
             a claim it is never entitled to make and a reader has no way to
             derive that from the counts in front of them.
-            `prose.runs.test.tsx` pins it to this toolbar's label (AH-24).
+            the runs prose test pins it to this toolbar's label (AH-24).
 
             IT OPENS `event-paging` (AG-19). It opened `partial-read`, whose
             card is "One message belongs to one failure" -- a topic about

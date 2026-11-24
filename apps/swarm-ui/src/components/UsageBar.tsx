@@ -142,7 +142,7 @@ export function UsageBar({
  * 1.11:1 in the light one (design-system.md §6.4), so in the light theme the
  * `~` Overview writes before the figure is what tells a projected reading
  * from a live one, not this fill. It keeps the name it shipped with, because
- * `test_state_colour_discriminability.py` lists it BY NAME in
+ * the colour-discriminability guard test lists it BY NAME in
  * `DOCUMENTED_GREYS` and resolves it to a text grey. Anything else is the
  * monochrome default.
  *
@@ -164,7 +164,7 @@ export type TrackTone = 'is-warn' | 'is-bad' | 'is-paused' | 'ov-projected'
  * IT KEEPS ITS OWN LOOK (`.ctl-util-*`), NOT `.c-bar`'s, ON PURPOSE: the grey
  * no-verdict fill and the textured warn/bad/paused fills are the owner's
  * decision of 2026-09-24 (design-system.md §6.4), held by
- * tests/unit/control_plane/test_state_colour_discriminability.py, because a
+ * the colour-discriminability guard test, because a
  * bare track has no words beside it to carry the verdict the way `UsageBar`'s
  * triangle does. components.html A's sky fill and hatch-only rule would undo
  * that decision, which is the owner's to make (raised with the owner on the archived issue 503 pull request).

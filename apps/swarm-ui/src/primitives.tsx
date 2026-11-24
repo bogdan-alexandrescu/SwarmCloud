@@ -31,7 +31,7 @@ import './styles/primitives.css'
  *   - Colour on a bar is a verdict. A fill with nothing to report is grey; the
  *     three verdict tones and the one documented grey are the only classes a
  *     fill can take, and they are named here as literals so
- *     test_state_colour_discriminability.py can trace every one of them.
+ *     the state-colour discriminability test can trace every one of them.
  *   - The six kinds of nothing have six words and one set of silhouettes, and
  *     no screen invents a seventh phrasing of "we do not know".
  */

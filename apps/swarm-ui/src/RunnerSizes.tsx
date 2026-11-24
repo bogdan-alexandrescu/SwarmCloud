@@ -38,7 +38,7 @@ import { loadRunnerSizes, loadRunnerSizeVersions, previewRunnerSizes, restoreRun
 import { usePhoneTables } from './capacityPoll'
 import { Banner, Button, Card, Dialog, ToneMark, TypedConfirm } from './components'
 import type { ApiError, Result } from './fetch'
-import { InfoTip } from './People'
+import { InfoTip } from './InfoTip'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { ReadTick } from './PlatformOverTime'
 import { PageHead } from './Shell'

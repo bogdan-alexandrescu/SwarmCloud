@@ -49,25 +49,10 @@ import { addressToPath } from './paths'
 import { dayWords, EditSchedule, HARD_STOPS, plainValue } from './ScheduleEdit'
 import { gapWords } from './ScheduleTemplates'
 import { HistoryTimeline, workAddress } from './ScheduleHistoryTimeline'
-import {
-  AskWord,
-  DryRunChip,
-  InApp,
-  SCHEDULES_ADDRESS,
-  STATE_WORD,
-  STATE_WORD_SAID,
-  Said,
-  ScheduleActions,
-  SpendFigure,
-  localTime,
-  scheduleAddress,
-  sheetClosed,
-  slashBreaks,
-  untilWords,
-  type ActNotice,
-  type StateWord,
-} from './Schedules'
-import { APPROVALS_ADDRESS } from './Approvals'
+import { AskWord, DryRunChip, STATE_WORD, STATE_WORD_SAID, Said, ScheduleActions, SpendFigure, localTime, sheetClosed, slashBreaks, untilWords, type ActNotice, type StateWord } from './Schedules'
+import { InApp } from './InApp'
+import { SCHEDULES_ADDRESS, scheduleAddress } from './schedulePaths'
+import { APPROVALS_ADDRESS } from './approvalPaths'
 import { Info } from './AccountsVerdict'
 import { FailedPanel, Screen, timeAgo } from './Shell'
 import type { RepoRecord } from './RepositoriesData'

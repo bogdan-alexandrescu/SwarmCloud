@@ -94,6 +94,15 @@ resource "google_logging_metric" "tenant_namespace_mismatch" {
     tenant_id = "EXTRACT(jsonPayload.tenant_id)"
     severity  = "EXTRACT(severity)"
   }
+
+  # Readable by the alert policy only some minutes after it is created: the
+  # policy waits on this create-time sleep (log_metric_settle_seconds, metrics.tf).
+  # Runs on create or replace only. on_failure = continue: a failed sleep must
+  # not taint the metric, which the next apply would then replace.
+  provisioner "local-exec" {
+    command    = "sleep ${local.log_metric_settle_seconds}"
+    on_failure = continue
+  }
 }
 
 resource "google_monitoring_alert_policy" "tenant_namespace_mismatch" {

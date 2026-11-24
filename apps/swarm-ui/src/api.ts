@@ -9,7 +9,7 @@ import {
   type HealthStatus,
   type PoolHealth,
 } from './accountHealthModel'
-import { apiHeaders, chosenTenant, dropRefusedTenant, noteFixtureProbe, read, route, tenantQuery, write, type ApiError, type ApiRoute, type Result } from './fetch'
+import { apiHeaders, chosenTenant, classifyFailure, dropRefusedTenant, noteFixtureProbe, read, route, tenantQuery, write, type ApiError, type ApiRoute, type ErrorEnvelope, type Result } from './fetch'
 // A VALUE import, not a type: the attempt fixture needs the terminal-state set
 // so a live task's newest attempt is rendered as live, and the task fixture
 // needs the concurrency set to decide which rows hold a lease -- invariant 1's
@@ -85,7 +85,7 @@ export const USE_FIXTURES = import.meta.env.DEV && !import.meta.env.VITE_LIVE
  * the same document. A capture sees the times it always saw, because its page
  * clock IS this instant; a session on a running clock sees them as past.
  * `fetchedAt` stays the client's own clock: it is when the browser read, not
- * a time the fixture serves. Held to routes.json by qafix6.fixture.test.tsx.
+ * a time the fixture serves. A fixture test holds it to routes.json.
  */
 export const FIXTURE_CLOCK = '2026-10-19T12:00:00Z'
 const FIXTURE_NOW = Date.parse(FIXTURE_CLOCK)
@@ -730,7 +730,7 @@ export async function loadCheckpoints(
   if (options.limit) query.set('limit', String(options.limit))
   // The path is a literal of its own and the query is passed beside it,
   // rather than interpolated into the same template. That is not style: the
-  // UI/API seam test in test_runtimes_screen.py scans this file for versioned
+  // UI/API seam test in the runtimes screen's tests scans this file for versioned
   // path literals and compares their SHAPE against the router's declarations,
   // and a trailing `${suffix}` inside the template normalises to a path
   // segment the API does not serve. Keeping them apart keeps the seam
@@ -799,7 +799,7 @@ async function fixtureCheckpoints(taskId: string): Promise<Result<CheckpointsPag
   // and `att_1`, which the attempts read never served -- one of them never
   // started -- so '2 written, 2 kept' sat over a paragraph calling both
   // written checkpoints reclaimed. Written is kept here; a reclaimed one is a
-  // component test's case (checkpoint.reclaimed.test.tsx), not this fixture's.
+  // component test's case (the reclaimed-checkpoint test), not this fixture's.
   const task = fixtureTaskDoc(taskId)
   const span = task === undefined ? undefined : fixtureNewestSpan(task)
   const written = span?.checkpoints ?? []
@@ -2119,8 +2119,8 @@ async function fixtureCreateRun(body: RunCreateBody): Promise<Result<IssueRunRea
 
 async function fixturePlanAction(runId: string, action: 'approve' | 'edit' | 'reject', plan?: RunPlan, reason = ''): Promise<Result<IssueRunRead>> {
   await new Promise((r) => setTimeout(r, 60))
-  // Spelled out per action, not `plan:${action}`: tests/unit/control_plane
-  // test_every_v1_path_the_ui_calls_is_served_by_this_api reads these literals
+  // Spelled out per action, not `plan:${action}`: the control-plane test that
+  // every v1 path the UI calls is served by the API reads these literals
   // and a template hole in the verb matches no route the API declares.
   const planPath = action === 'approve' ? '/v1/runs/{id}/plan:approve'
     : action === 'edit' ? '/v1/runs/{id}/plan:edit' : '/v1/runs/{id}/plan:reject'
@@ -2824,7 +2824,7 @@ async function fixtureRuntimeTopology(): Promise<Result<RuntimeTopology>> {
  * `loadRuntimeTopology`, and since archived issue 185 the Timeline's profile filter through
  * `loadRunnerProfiles`; both call this, so the route has one reader and its
  * payload one type. Two readers of one route drift, which is the rule
- * tests/unit/control_plane/test_runtimes_screen.py holds.
+ * the runtimes screen's seam test holds.
  */
 function readRuntimes(): Promise<Result<{ runtimes: Record<string, Runtime> }>> {
   return read<{ runtimes: Record<string, Runtime> }>(
@@ -4548,7 +4548,7 @@ export function priceRefusals(error: ApiError): { fields: Record<string, string>
  * NOT hand-written and NOT recomputed here: the literal output of
  * `swarm_api.headroom.analyse_profile` over exactly those rows. That is why a
  * fixture can carry it without becoming a second implementation of the rule --
- * and `tests/unit/control_plane/test_blocker_ui_surface.py` re-runs the
+ * and the blocker UI-surface test re-runs the
  * analyser over the same rows and asserts this is still what it produces, so a
  * fixture that drifts from the server fails a test rather than teaching a shape
  * the API never sends.
@@ -4562,7 +4562,7 @@ export function priceRefusals(error: ApiError): { fields: Record<string, string>
  * to recognise, and they are real numbers off the dev platform, not staged ones.
  *
  * `browser` was regenerated at 1 unit when contract request 79 dropped the
- * class from 2; test_blocker_ui_surface.py's `FIXTURE_PROFILES` carries the
+ * class from 2; the blocker UI-surface test's `FIXTURE_PROFILES` carries the
  * weight it is generated with, so change both in one commit.
  */
 const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
@@ -5109,7 +5109,7 @@ const FIXTURE_REASON_GROUPS: Record<string, string[]> = {
  * A block for EVERY profile, empty lists included, for the reason
  * `input_contract` gives: an empty list is a measured "nothing required" and
  * must be reachable too. Strict JSON because
- * tests/unit/control_plane/test_ui_fixture_input_contract.py parses this literal
+ * the UI-fixture input-contract test parses this literal
  * and compares it with the server's function -- so a runner that starts
  * demanding a key fails that test here rather than teaching the screen a rule
  * production does not apply.
@@ -5123,7 +5123,7 @@ const FIXTURE_REASON_GROUPS: Record<string, string[]> = {
  * `inputs`, which the test above holds it to; the other profiles still leave
  * it out, which that test permits. claude-code-browser takes MCP servers too,
  * but its block declares `qa_identity`, and serving it would offer the QA
- * identity on every fixture Submit form, which qa-identity.test.tsx holds the
+ * identity on every fixture Submit form, which a QA-identity test holds the
  * fixture to not declaring. No fixture MCP server allows it, so the form and
  * the table still agree.
  *
@@ -5158,7 +5158,7 @@ const FIXTURE_INPUT_CONTRACTS: Record<string, FixtureInputContract> = {
  * which is how the disabled branch of all three shipped unexercised.
  *
  * A COPY OF THE FROZEN CATALOGUE'S TWO FIELDS, and therefore a strict-JSON
- * literal: `test_capacity_serves_availability.py` reads it with the same
+ * literal: the capacity-availability test reads it with the same
  * `json_literal` the input-contract table above is held by and compares it to
  * `RUNNER_PROFILES`, so re-enabling a profile there fails here until this
  * follows.
@@ -5282,9 +5282,9 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
  * one unit each, because every lease is a unit of every pool on its profile's
  * list (invariant 2): typed as 5, they sat under Overview's 7 holding
  * capacity (run 6 task-007, box 6343775508). The 7 is a LITERAL because
- * tests/unit/control_plane/test_blocker_ui_surface.py reads these rows out of
+ * the blocker UI-surface test reads these rows out of
  * this file, between `fixtureCapacity` and `fixtureTasks`, to regenerate
- * FIXTURE_ADMISSION; qafix6.fixture.test.tsx holds it to the task list, so a
+ * FIXTURE_ADMISSION; a fixture test holds it to the task list, so a
  * live task added or removed fails there by name. And each provider-tenant pool
  * carries what its quota document's broker writes -- `quota_derived_limit`,
  * the document's cap, and its `adaptive_target` -- so its ceiling is the
@@ -5671,7 +5671,7 @@ function fixtureWaitingTasks(listed: Task[]): Task[] {
  * the agents list, the task window, Outcomes and every count stay as other
  * tests pin them.
  *
- * Their shapes are agent.budget.test.tsx's: a step's $1 under a $5 default,
+ * Their shapes are the agent budget test's: a step's $1 under a $5 default,
  * the warning a `running` event carrying `cause: budget_warning` at $0.81,
  * and a stop at $1.02 on a turn boundary. The figures agree everywhere they
  * are shown: the warning's and the stop's `used`, the attempt's usage
@@ -5743,7 +5743,7 @@ function fixtureBudgetTasks(listed: Task[]): Task[] {
     })
   // The budgeted blocks are the codec's four keys plus `budget`, kept as
   // named values: an inline dispatch literal is held to exactly the four
-  // (test_dispatch_ui_surface.py), which predate the budget.
+  // (the dispatch UI-surface test), which predate the budget.
   const warned = { ...dispatch, budget: FIXTURE_BUDGET } as unknown as Task['dispatch']
   const stopped = { ...dispatch, strategy: 'direct-pr', budget: FIXTURE_BUDGET } as unknown as Task['dispatch']
   const usage = FIXTURE_BUDGET_STOP_USAGE
@@ -6384,7 +6384,7 @@ function fixtureTaskRows(): Task[] {
     // title, beside task_a073aff5 above, which has none and reads
     // `claude-code agent · a073aff5`. The summary view serves metadata as
     // the title alone, so this is the whole of what the list sees. No
-    // `(#N)` in it: the copy sweep (walk.copy.test.tsx) reads every page
+    // `(#N)` in it: the copy sweep test reads every page
     // this build draws and refuses an issue number in visible copy.
     mk('task_8ea5c26d', 'RUNNING', 'claude-code', 5, {
       metadata: { title: 'Fix flaky lease heartbeat test' },
@@ -9416,7 +9416,7 @@ export async function loadOutcomes(
 /**
  * THE PARTS OF THE LEDGER ONE READ MAY ASK FOR (archived issue 377): `section`, repeatable,
  * names the response keys wanted -- `swarm_api.outcomes.SECTIONS`, in its
- * order, which `test_outcomes_sections.py` holds this list to. Everything
+ * order, which the outcomes-sections test holds this list to. Everything
  * else in the payload (the resolved range, scope, filters, vocab, reads,
  * cached, generated_at) is the envelope and comes with every section. No
  * section is the whole payload, as it always was.
@@ -14868,7 +14868,7 @@ export async function closeLiveToMembers(taskId: string): Promise<Result<unknown
 /**
  * One recorded segment of a live session (§7), as `GET .../live/recordings`
  * serves it: every field both views read (`RecordingSegmentView` in
- * `swarm_api.live`, held by tests/fixtures/live/recordings.json). The
+ * `swarm_api.live`, held by the live recordings fixture). The
  * Attempts tab's player reads `name`, `key`, `bytes` and `created_at`; the
  * theater's scrubber reads `seq`, `object` and `started_at`.
  */
@@ -15950,7 +15950,7 @@ function fixtureSetupState(): Record<string, unknown> {
  * The fixture build's latest doctor run, in the shape swarm-doctor writes
  * (`scheduled_doctor.report()`: every row is `doctor.Finding.to_json()`, and
  * `findings` repeats each row that is not met): two met, one unmet, one
- * unknown. AdminSetupHealth.test.tsx holds these rows to the writer's keys.
+ * unknown. A setup-health test holds these rows to the writer's keys.
  */
 export function fixtureSetupHealth(): Record<string, unknown> {
   const fix = (why: string, step: string, id: string) => `${why} Fix: the install's step ${step} makes it: swarm install --repair ${id}.`
@@ -18187,6 +18187,138 @@ export async function loadPendingReadback(sessionId: string): Promise<Result<Voi
   const r = await read<unknown>(target, () => false)
   if (r.status !== 'ok' && r.status !== 'stale') return r
   return { ...r, data: normVoiceReadback((r.data as { readback?: unknown } | null)?.readback) }
+}
+
+// ---- Voice it › one session: its transcript and its summary (swarm-api voice routes) ----
+
+/** `GET`: the session's transcript, text/plain, served as an attachment. */
+export const VOICE_SESSION_TRANSCRIPT = '/v1/voice/sessions/{session_id}/transcript'
+/** `GET`: the session's summary and where it stands. */
+export const VOICE_SESSION_SUMMARY = '/v1/voice/sessions/{session_id}/summary'
+
+/** Where a session's summary stands: written, still to be written, not written (the cap, a failure), or none to write. */
+export type VoiceSummaryState = 'written' | 'pending' | 'capped' | 'failed' | 'none'
+export const VOICE_SUMMARY_STATES: readonly VoiceSummaryState[] = ['written', 'pending', 'capped', 'failed', 'none']
+
+export interface VoiceSessionSummary {
+  session_id: string
+  state: VoiceSummaryState
+  text: string | null
+  at: string | null
+}
+
+/** A served summary; a state this console does not know is `none`, so nothing is drawn for it. */
+export function normVoiceSessionSummary(raw: unknown, sessionId: string): VoiceSessionSummary {
+  const o = raw !== null && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  return {
+    session_id: typeof o.session_id === 'string' ? o.session_id : sessionId,
+    state: VOICE_SUMMARY_STATES.find((s) => s === o.state) ?? 'none',
+    text: typeof o.text === 'string' ? o.text : null,
+    at: typeof o.at === 'string' ? o.at : null,
+  }
+}
+
+/** `GET /v1/voice/sessions/{s}/summary`. */
+export async function loadVoiceSessionSummary(sessionId: string): Promise<Result<VoiceSessionSummary>> {
+  const target = route(VOICE_SESSION_SUMMARY, { session_id: sessionId })
+  if (USE_FIXTURES) {
+    return voiceFixtureOk(target, {
+      session_id: sessionId,
+      state: 'written',
+      text: 'Planned the export page, agreed its two lanes and opened the first.',
+      at: new Date(FIXTURE_NOW - 3_600_000).toISOString(),
+    })
+  }
+  const r = await read<unknown>(target, () => false)
+  if (r.status !== 'ok' && r.status !== 'stale') return r
+  return { ...r, data: normVoiceSessionSummary(r.data, sessionId) }
+}
+
+/** A transcript read for saving: its bytes and the file name to save them under. */
+export interface VoiceTranscriptFile {
+  blob: Blob
+  filename: string
+}
+
+/** The transcript read's fetch options that never vary: the IAP cookie, same origin only. */
+const TRANSCRIPT_READ = { sameOrigin: 'same-origin' } as const satisfies Record<string, RequestCredentials>
+
+/**
+ * The file name from a Content-Disposition, its last path segment only, or
+ * the session's own name when the server gave none.
+ */
+export function transcriptFilename(disposition: string | null, sessionId: string): string {
+  const fallback = `voice-${sessionId}-transcript.txt`
+  if (disposition === null) return fallback
+  let name: string | undefined
+  const star = /filename\*\s*=\s*utf-8''([^;]+)/i.exec(disposition)?.[1]
+  if (star !== undefined) {
+    try {
+      name = decodeURIComponent(star.trim())
+    } catch {
+      name = undefined
+    }
+  }
+  name ??= /filename\s*=\s*"([^"]*)"/i.exec(disposition)?.[1] ?? /filename\s*=\s*([^;\s]+)/i.exec(disposition)?.[1]
+  const last = (name ?? '').split(/[\\/]/).pop()?.trim() ?? ''
+  return last === '' || last === '.' || last === '..' ? fallback : last
+}
+
+/**
+ * `GET /v1/voice/sessions/{s}/transcript`, for a download. Not `read()`: the
+ * body is text, not JSON. It carries what `read()` carries (the chosen
+ * tenant's header and the IAP cookie), which a bare link cannot, and it
+ * classifies a refusal as `read()` does. A sign-in page in place of the file
+ * (an expired IAP session answers 200 with HTML) is an expired sign-in,
+ * never a transcript.
+ */
+export async function loadVoiceTranscript(sessionId: string): Promise<Result<VoiceTranscriptFile>> {
+  const target = route(VOICE_SESSION_TRANSCRIPT, { session_id: sessionId })
+  if (USE_FIXTURES) {
+    return voiceFixtureOk(target, {
+      blob: new Blob(['person: Draw the export page\nvoice: On it\n'], { type: 'text/plain' }),
+      filename: transcriptFilename(null, sessionId),
+    })
+  }
+  const tenant = chosenTenant()
+  let res: Response
+  try {
+    res = await fetch(target.url, { headers: apiHeaders({ accept: 'text/plain' }, tenant), credentials: TRANSCRIPT_READ.sameOrigin })
+  } catch (err) {
+    return { status: 'error', error: { kind: 'unreachable', httpStatus: null, code: null, message: err instanceof Error ? err.message : 'The request did not complete.' } }
+  }
+  const type = res.headers.get('content-type') ?? ''
+  if (!res.ok) {
+    let env: ErrorEnvelope | null = null
+    if (type.includes('application/json')) {
+      try {
+        const v: unknown = await res.json()
+        if (v !== null && typeof v === 'object') {
+          const o = v as Record<string, unknown>
+          env = typeof o.message === 'string' ? (o as ErrorEnvelope) : { message: typeof o.detail === 'string' ? o.detail : undefined }
+        }
+      } catch {
+        env = null
+      }
+    }
+    const ra = Number(res.headers.get('retry-after'))
+    const err = classifyFailure(res.status, env, Number.isFinite(ra) && ra > 0 ? ra : undefined)
+    dropRefusedTenant(res.status, err.code, tenant)
+    return { status: 'error', error: err.kind === 'not_found' ? { ...err, template: target.template } : err }
+  }
+  if (type.includes('text/html')) {
+    return {
+      status: 'error',
+      error: {
+        kind: 'session_expired',
+        httpStatus: res.status,
+        code: null,
+        message: 'The API answered with a page instead of the transcript, which is how an expired sign-in arrives. Reload to sign in again.',
+      },
+    }
+  }
+  const blob = await res.blob()
+  return { status: 'ok', fetchedAt: Date.now(), data: { blob, filename: transcriptFilename(res.headers.get('content-disposition'), sessionId) } }
 }
 
 /**

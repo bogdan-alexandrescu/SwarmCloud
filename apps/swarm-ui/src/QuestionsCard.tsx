@@ -53,7 +53,7 @@ import { errorHeading, type ApiError, type Result } from './fetch'
 import { humanReady, ownerQuestionsHold, type HeldQuestion } from './Handoff'
 import { feedData, markRead, notificationsSnapshot, subscribeNotifications } from './notificationFeed'
 import { addressToPath } from './paths'
-import { useRoleGate } from './Profile'
+import { useRoleGate } from './roleGate'
 import { useRead } from './RunFiles'
 import { timeAgo, type Task } from './types'
 

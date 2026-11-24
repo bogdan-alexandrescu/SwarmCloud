@@ -177,8 +177,8 @@ export function FixLoopPill({ loop, state }: { loop: FixLoopRead; state: TaskSta
  * marks must be the brand marks everywhere, never a local dot or glyph").
  *
  * Every tone keeps its own silhouette, so colour is never the only thing
- * telling two apart (design-system.md §6.6, held by test_state_colour_
- * discriminability.py and components.test.tsx):
+ * telling two apart (design-system.md §6.6, held by a state-colour
+ * discriminability guard and the component tests):
  *
  *   ok       check          grey    healthy is quiet: never a hue
  *   info     flat bar       grey    a fact, not a verdict
