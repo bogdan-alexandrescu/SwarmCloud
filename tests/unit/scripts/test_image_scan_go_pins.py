@@ -25,6 +25,8 @@ import re
 import tomllib
 from pathlib import Path
 
+import yaml
+
 REPO = Path(__file__).resolve().parents[3]
 BASE = REPO / "images" / "agent-runtime-base" / "Dockerfile"
 WORKSPACE_APPLY = REPO / "images" / "workspace-apply" / "Dockerfile"
@@ -60,6 +62,12 @@ MIN_GO = (1, 27, 4)
 #: pyasn1 0.6.4 carries the findings 0.6.5 fixes on the swarm-api image.
 MIN_PYASN1 = (0, 6, 5)
 
+#: kubectl releases measured to link golang.org/x/net below 0.57.0, the release that
+#: fixes CVE-2026-39821 (x/net/idna): 1.34.13, 1.35.10 and 1.36.6 link v0.56.0, read
+#: from each binary's build info and by trivy rootfs on 2026-11-24. 1.37.2 links
+#: v0.57.0, but kubectl supports one minor either side of the 1.35 control plane.
+KUBECTL_IDNA_UNFIXED = {"1.34.13", "1.35.10", "1.36.6"}
+
 
 def _args(path: Path) -> dict[str, str]:
     return dict(re.findall(r"^ARG ([A-Z0-9_]+)=(\S+)$", path.read_text(), re.M))
@@ -88,6 +96,17 @@ def test_workspace_apply_takes_agent_runtime_bases_gcloud_and_its_image() -> Non
         assert apply[var] == base[var], f"workspace-apply's {var} is not agent-runtime-base's"
     image = apply["GCLOUD_IMAGE"]
     assert f"google-cloud-cli:{base['GCLOUD_VERSION']}-stable@sha256:" in image, image
+
+
+def test_the_idna_acceptance_covers_kubectl_alone_and_leaves_with_the_unfixed_pin() -> None:
+    # 2026-11-24: the scan refused six images on this id in usr/local/bin/kubectl
+    # and in nothing else, so the acceptance names that path (an id alone would
+    # hide it in every binary, ours included) and goes once the pin is fixed.
+    entries = [e for e in yaml.safe_load((REPO / ".trivyignore.yaml").read_text())["vulnerabilities"]
+               if e["id"] == "CVE-2026-39821"]
+    unfixed = _args(BASE)["KUBECTL_VERSION"] in KUBECTL_IDNA_UNFIXED
+    assert [e.get("paths") for e in entries] == ([["usr/local/bin/kubectl"]] if unfixed else []), entries
+    assert all(e.get("statement") and e.get("expired_at") for e in entries), entries
 
 
 def test_the_indexers_go_carries_the_fixed_standard_library() -> None:
