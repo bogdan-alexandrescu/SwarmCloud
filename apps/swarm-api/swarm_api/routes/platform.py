@@ -25,7 +25,7 @@ from .. import route_scope, runnerimages, runnersizes
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context
 from ..served_limits import configured_limits
-from ..wire_types import Capacity, ProvidersPage, Stats
+from ..wire_types import Capacity, ProvidersPage, RuntimesPage, Stats
 from .accounts import account_pool
 
 router = APIRouter(prefix="/v1", tags=["platform"])
@@ -189,7 +189,7 @@ def resource_classes(
     }
 
 
-@router.get("/runtimes")
+@router.get("/runtimes", responses={200: {"model": RuntimesPage}})
 @route_scope.reachable_by(route_scope.CONTINUATION)
 def runtimes(
     # Declared, not used -- the same reason as /v1/resource-classes above: it

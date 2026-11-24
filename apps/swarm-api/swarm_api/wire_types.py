@@ -40,11 +40,14 @@ in `types.ts` extends its generated shape and keeps only its own narrowing.
 from __future__ import annotations
 
 from datetime import datetime
+from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from swarm_common.states import TaskState
+
+from . import outcomes as _outcomes
 
 
 class TaskLinks(BaseModel):
@@ -795,3 +798,669 @@ class TaskEventPage(BaseModel):
     task_id: str
     events: list[TaskEvent]
     next_page_token: str | None
+
+
+# --------------------------------------------------------------------------
+# The outcome ledger: `GET /v1/outcomes` (part of #72).
+#
+# The Timeline's types, once copied into `outcomes.ts` and held by a parser of
+# that file. Every nested object is modelled, because the page reads them all;
+# the unions the page switches on are enums built from the live tuples in
+# `swarm_api.outcomes`, so a failure class added there reaches the generated
+# type on the next regeneration. NULL MEANS NOT KNOWN, NEVER ZERO: every field
+# typed `| None` below is null for that reason, and is required (always sent).
+# --------------------------------------------------------------------------
+
+
+def _enum(name: str, values: tuple[str, ...], doc: str) -> type[Enum]:
+    """A string enum over live values: a named type in the OpenAPI document,
+    a string-literal union in the generated TypeScript."""
+    enum = Enum(name, [(value, value) for value in values], type=str)  # type: ignore[misc]
+    enum.__doc__ = doc
+    return enum
+
+
+FailureClassKey = _enum("FailureClassKey", _outcomes.FAILURE_KEYS,
+                        "Why an ended task failed (`swarm_api.outcomes.FAILURE_CLASSES`).")
+CancelCauseKey = _enum("CancelCauseKey", _outcomes.CANCEL_KEYS,
+                       "Why a task was cancelled (`swarm_api.outcomes.CANCEL_CAUSES`).")
+LedgerBucketSize = _enum("LedgerBucketSize", _outcomes.BUCKETS,
+                         "The bucket a ledger read is cut into (`swarm_api.outcomes.BUCKETS`).")
+GroupBy = _enum("GroupBy", _outcomes.GROUPS,
+                "The Timeline's group picker (`swarm_api.outcomes.GROUPS`).")
+UnreadReason = _enum("UnreadReason", tuple(sorted(_outcomes._REASON_ORDER)),
+                     "Why a bucket or a tenant-day was not read.")
+BucketState = _enum("BucketState", ("sealed", "open", "unread"),
+                    "A bucket's state; when `unread`, every count on it is null.")
+
+
+class Rate(BaseModel):
+    """k succeeded of n decided, with its Wilson 95 % interval. Null when n = 0."""
+
+    model_config = ConfigDict(title="Rate")
+
+    k: int
+    n: int
+    p: float
+    lo: float
+    hi: float
+
+
+class CancelSplit(BaseModel):
+    """Cancels by cause; none of them is a failure."""
+
+    model_config = ConfigDict(title="CancelSplit")
+
+    total: int
+    requested: int
+    after_failure: int
+    after_cancel: int = Field(description=(
+        "A cascade cancel that followed a cancel somebody asked for, at its parent or further "
+        "up the chain -- not a failure (archived issue 185, decision 2)."
+    ))
+    workflow_sweep: int
+    child_cascade: int | None = Field(None, description=(
+        "Contract request 41: a child task cancelled because its parent was cancelled, ended, "
+        "or out-waited its await. OPTIONAL: an API before DERIVE_VERSION 6 does not send it, "
+        "and absent is not zero."
+    ))
+    other: int
+
+
+class CostCell(BaseModel):
+    """Reported cost over some attempts."""
+
+    model_config = ConfigDict(title="CostCell")
+
+    sum_usd: float | None = Field(description=(
+        "null when no attempt reported a cost: an absence, never $0.00."))
+    attempts: int
+    reporting: int
+
+
+class OutcomeBucket(BaseModel):
+    """One bucket. When `state` is unread, every count below is null."""
+
+    model_config = ConfigDict(title="OutcomeBucket")
+
+    start: str
+    end: str
+    state: BucketState
+    in_progress: bool = Field(description="end > generated_at: the current period, drawn as \"so far\".")
+    unread_reason: UnreadReason | None
+    submitted: int | None = Field(description="By created_at: the ONLY submission-time field on a bucket.")
+    ended: int | None
+    succeeded: int | None
+    failed: int | None
+    dead_lettered: int | None
+    cancelled: CancelSplit | None
+    rate: Rate | None
+    failure_classes: dict[FailureClassKey, int] | None  # type: ignore[valid-type]
+    cost: CostCell | None
+
+
+class Stat(BaseModel):
+    """A latency distribution, in seconds."""
+
+    model_config = ConfigDict(title="Stat")
+
+    n: int
+    p50_s: float
+    p95_s: float
+    max_s: float
+    values_s: list[float] | None = Field(description=(
+        "Only when n < 5: the values themselves, because a percentile of four is a guess."))
+
+
+class LatencyOutcome(BaseModel):
+    model_config = ConfigDict(title="LatencyOutcome")
+
+    n: int
+    wait: Stat | None
+    run: Stat | None
+    total: Stat | None
+
+
+class LatencyRow(BaseModel):
+    model_config = ConfigDict(title="LatencyRow")
+
+    runner_profile: str
+    timeout_s: float | None = Field(description=(
+        "null when the row's tasks do not share one timeout_seconds."))
+    succeeded: LatencyOutcome
+    failed: LatencyOutcome = Field(description="Includes dead-lettered.")
+
+
+class SeriesPoint(BaseModel):
+    model_config = ConfigDict(title="SeriesPoint")
+
+    k: int
+    n: int
+
+
+class GroupRow(BaseModel):
+    model_config = ConfigDict(title="GroupRow")
+
+    key: str = Field(description=(
+        "Grouped by person, `''` is the tasks with no submitter recorded: a row, but not a name."))
+    submitted: int | None = Field(description=(
+        "Null for the `model` group: arrivals are counted per task, before an attempt has run "
+        "on any model, so no model can be credited with them."))
+    ended: int
+    succeeded: int
+    failed: int
+    dead_lettered: int
+    cancelled: CancelSplit
+    rate: Rate | None
+    cost: CostCell
+    declared_cost: bool
+    series: list[SeriesPoint | None] | None = Field(description=(
+        "Aligned 1:1 with buckets; a null entry is an unread bucket. The whole field is null "
+        "past 120 buckets."))
+
+
+class FirstFailed(BaseModel):
+    model_config = ConfigDict(title="FirstFailed")
+
+    step_id: str | None = Field(description=(
+        "The task's own, which the route reads as it is and does not promise."))
+    task_id: str
+    failure_class: FailureClassKey  # type: ignore[valid-type]
+    ended_at: str
+
+
+class WorkflowSteps(BaseModel):
+    model_config = ConfigDict(title="WorkflowSteps")
+
+    total: int
+    succeeded: int
+    failed: int
+    dead_lettered: int
+    cancelled: int
+    open: int
+    unreadable: int
+
+
+class WorkflowFailedRow(BaseModel):
+    model_config = ConfigDict(title="WorkflowFailedRow")
+
+    workflow_id: str
+    tenant_id: str
+    submitted_by: str | None = Field(description=(
+        "`''` as well as null when no submitter was recorded: both are an absence, never a name."))
+    first_failed: FirstFailed | None
+    cascade_cancelled: int
+    last_ended_at: str
+    state: str
+    steps: WorkflowSteps | None
+
+
+class CostByOutcome(BaseModel):
+    model_config = ConfigDict(title="CostByOutcome")
+
+    succeeded: CostCell
+    failed: CostCell
+    dead_lettered: CostCell
+    cancelled: CostCell
+
+
+class PerSucceededTask(BaseModel):
+    model_config = ConfigDict(title="PerSucceededTask")
+
+    n: int
+    of: int
+    p50_usd: float | None
+    p95_usd: float | None
+    max_usd: float | None
+    values_usd: list[float] | None
+
+
+class DeclaredCost(CostCell):
+    model_config = ConfigDict(title="DeclaredCost")
+
+    profiles: list[str]
+
+
+class TotalsCost(CostCell):
+    model_config = ConfigDict(title="TotalsCost")
+
+    by_outcome: CostByOutcome
+    per_succeeded_task: PerSucceededTask
+    retries: CostCell
+    declared: DeclaredCost
+
+
+class OutcomeTotals(BaseModel):
+    model_config = ConfigDict(title="OutcomeTotals")
+
+    complete: bool
+    buckets: int
+    buckets_read: int
+    submitted: int
+    ended: int
+    succeeded: int
+    failed: int
+    dead_lettered: int
+    cancelled: CancelSplit
+    rate: Rate | None
+    failure_classes: dict[FailureClassKey, int]  # type: ignore[valid-type]
+    cost: TotalsCost
+
+
+class TenantScope(BaseModel):
+    model_config = ConfigDict(title="TenantScope")
+
+    kind: Literal["tenant"]
+    tenant_id: str
+
+
+class PlatformScope(BaseModel):
+    model_config = ConfigDict(title="PlatformScope")
+
+    kind: Literal["platform"]
+    tenants: list[str]
+    excluded: list[str]
+    tenants_complete: bool
+
+
+class OutcomesRequested(BaseModel):
+    model_config = ConfigDict(title="OutcomesRequested")
+
+    span: str | None
+    since: str | None
+    until: str | None
+    bucket: str
+
+
+class OutcomesBasis(BaseModel):
+    """WHICH TIMESTAMP EACH SERIES IS PLACED BY, as the route says it."""
+
+    model_config = ConfigDict(title="OutcomesBasis")
+
+    outcomes: str
+    submitted: str
+
+
+class OutcomesFilters(BaseModel):
+    model_config = ConfigDict(title="OutcomesFilters")
+
+    profile: list[str]
+    submitted_by: list[str]
+    kind: str
+    tenant: list[str]
+    exclude_tenant: list[str]
+    group: GroupBy  # type: ignore[valid-type]
+
+
+class FailureClassLabel(BaseModel):
+    model_config = ConfigDict(title="FailureClassLabel")
+
+    key: FailureClassKey  # type: ignore[valid-type]
+    label: str
+
+
+class CancelCauseLabel(BaseModel):
+    model_config = ConfigDict(title="CancelCauseLabel")
+
+    key: CancelCauseKey  # type: ignore[valid-type]
+    label: str
+
+
+class OutcomesVocab(BaseModel):
+    model_config = ConfigDict(title="OutcomesVocab")
+
+    failure_classes: list[FailureClassLabel]
+    cancel_causes: list[CancelCauseLabel]
+    classifier_version: int
+
+
+class RetryTries(BaseModel):
+    model_config = ConfigDict(title="RetryTries")
+
+    attempts: str
+    tasks: int
+    succeeded: int
+    failed: int
+    dead_lettered: int
+    cancelled: int
+
+
+class NeededRetry(BaseModel):
+    model_config = ConfigDict(title="NeededRetry")
+
+    k: int
+    of: int
+
+
+class ExitCount(BaseModel):
+    model_config = ConfigDict(title="ExitCount")
+
+    exit_code: int | None
+    label: str
+    n: int
+
+
+class NotFinal(BaseModel):
+    model_config = ConfigDict(title="NotFinal")
+
+    attempts: int
+    by_exit: list[ExitCount]
+
+
+class OutcomeRetries(BaseModel):
+    model_config = ConfigDict(title="OutcomeRetries")
+
+    tries: list[RetryTries]
+    needed_retry: NeededRetry
+    rescued: int
+    failed_after_retry: int
+    not_final: NotFinal
+    admissions_without_attempt_doc: int
+
+
+class OutcomeLatency(BaseModel):
+    model_config = ConfigDict(title="OutcomeLatency")
+
+    percentile_method: str
+    by_profile: list[LatencyRow]
+    wait_excluded: int = Field(description=(
+        "The same number as `coverage.wait_excluded`, carried here so the latency card need not "
+        "read `coverage`."))
+
+
+class OutcomeGroups(BaseModel):
+    model_config = ConfigDict(title="OutcomeGroups")
+
+    by: GroupBy  # type: ignore[valid-type]
+    rows_total: int
+    rows: list[GroupRow]
+
+
+class FailingStep(BaseModel):
+    model_config = ConfigDict(title="FailingStep")
+
+    step_id: str
+    n: int
+
+
+class WorkflowsFailed(BaseModel):
+    model_config = ConfigDict(title="WorkflowsFailed")
+
+    applicable: bool
+    with_ended_steps: int | None = Field(description=(
+        "null when `applicable` is false (kind=standalone): nothing was counted, so no count "
+        "is a zero."))
+    with_failed_steps: int | None
+    rows_total: int | None
+    rows: list[WorkflowFailedRow]
+    failing_steps: list[FailingStep]
+
+
+class CoverageDays(BaseModel):
+    """TENANT-DAYS ON THE UTC CALENDAR, the rollup's own unit."""
+
+    model_config = ConfigDict(title="CoverageDays")
+
+    total: int
+    sealed: int
+    live: int
+    unread: int
+
+
+class UnreadDay(BaseModel):
+    model_config = ConfigDict(title="UnreadDay")
+
+    tenant_id: str
+    day: str
+    reason: UnreadReason  # type: ignore[valid-type]
+
+
+class OutcomeCoverage(BaseModel):
+    model_config = ConfigDict(title="OutcomeCoverage")
+
+    days: CoverageDays
+    unread: list[UnreadDay]
+    derived_now: int
+    built_through: str | None
+    reopened: int
+    terminal_without_completed_at: int | None = Field(description=(
+        "null when the count query failed: not read, never 0."))
+    wait_excluded: int
+    seal_grace_s: int
+
+
+class OutcomePrevious(BaseModel):
+    model_config = ConfigDict(title="OutcomePrevious")
+
+    since: str
+    until: str
+    complete: bool
+    succeeded: int
+    failed: int
+    dead_lettered: int
+    cancelled_total: int
+    rate: Rate | None
+
+
+RowOutcome = _enum("RowOutcome", _outcomes.ROW_OUTCOMES,
+                   "What a figure's rows may be (`swarm_api.outcomes.ROW_OUTCOMES`). Failed is "
+                   "FAILED + DEAD_LETTERED, the one definition the drawing uses.")
+
+
+class EndedRow(BaseModel):
+    """One ended task, as the ledger placed it: by `completed_at`."""
+
+    model_config = ConfigDict(title="EndedRow")
+
+    id: str
+    tenant_id: str
+    state: Literal["SUCCEEDED", "FAILED", "DEAD_LETTERED", "CANCELLED"]
+    completed_at: str
+    runner_profile: str | None
+    submitted_by: str = Field(description="Lower case; '' when the task recorded no submitter.")
+    workflow_id: str | None
+    step_id: str | None
+    failure_class: FailureClassKey | None  # type: ignore[valid-type]
+    cancel_cause: CancelCauseKey | None  # type: ignore[valid-type]
+
+
+class EndedRows(BaseModel):
+    """THE ROWS BEHIND ONE FIGURE (`rows=`), from the fold the figure was counted
+    from, so `total` is the figure and `rows` are the tasks in it (newest end
+    first, at most `rows_max`). `at`/`end` name the bucket, or are null for the
+    span; `key` is the group row under `group`, or null for every row."""
+
+    model_config = ConfigDict(title="EndedRows")
+
+    outcome: RowOutcome  # type: ignore[valid-type]
+    at: str | None
+    end: str | None
+    unread_reason: UnreadReason | None  # type: ignore[valid-type]
+    group: GroupBy  # type: ignore[valid-type]
+    key: str | None
+    total: int
+    rows_max: int
+    rows: list[EndedRow]
+
+
+class Outcomes(BaseModel):
+    """`GET /v1/outcomes`: what the work in a span ended as, bucketed by when it ended.
+
+    `coverage` and `previous` are required here because a whole read sends
+    them; the console's `OutcomesHead` is the payload a `section` read may
+    send without them. `ended_rows` (`rows=`) and `usage` (`usage=`) are sent
+    only when asked for."""
+
+    model_config = ConfigDict(title="Outcomes")
+
+    scope: TenantScope | PlatformScope
+    tz: str
+    requested: OutcomesRequested
+    since: str
+    until: str
+    bucket: LedgerBucketSize  # type: ignore[valid-type]
+    bucket_chosen_by: Literal["server", "caller"]
+    basis: OutcomesBasis
+    filters: OutcomesFilters
+    vocab: OutcomesVocab
+    buckets: list[OutcomeBucket]
+    totals: OutcomeTotals
+    retries: OutcomeRetries
+    latency: OutcomeLatency
+    groups: OutcomeGroups
+    workflows_failed: WorkflowsFailed
+    coverage: OutcomeCoverage
+    previous: OutcomePrevious | None
+    reads: int
+    cached: bool
+    generated_at: str
+    ended_rows: EndedRows | None = Field(None, description="The tasks behind one figure, with `rows=`.")
+    usage: Any = Field(None, description="The agents' usage, with `usage=`.")
+
+
+# --------------------------------------------------------------------------
+# The runtimes catalogue: `GET /v1/runtimes` (part of #72).
+# --------------------------------------------------------------------------
+
+
+class ResourceClassSpec(BaseModel):
+    """A resource class's sizing, as `/v1/runtimes` joins it to each runtime."""
+
+    model_config = ConfigDict(title="ResourceClassSpec")
+
+    name: str
+    cpu: float
+    cpu_request: float | None = None
+    cpu_limit: float | None = None
+    memory_gib: float
+    disk_gib: float
+    units: int
+    size_version: int | None = None
+
+
+class Runtime(BaseModel):
+    """One runner profile as `/v1/runtimes` publishes it, keyed by its name."""
+
+    model_config = ConfigDict(title="Runtime")
+
+    name: str
+    available: bool
+    disabled_reason: str
+    image: str
+    node_version: str | None = None
+    backend: str
+    resolved_backend: str
+    provider: str | None
+    secrets: list[str]
+    secrets_any_of: bool
+    timeout_seconds: int
+    resource_class: str
+    model_classes: list[str] | None = None
+    default_model_class: str | None = None
+    models: dict[str, str] | None = None
+    resources: ResourceClassSpec
+    agent_memory_gib: float | None = None
+    display_memory_gib: float | None = None
+    pod_memory_gib: float | None = None
+
+
+class RuntimesPage(BaseModel):
+    """`GET /v1/runtimes`."""
+
+    model_config = ConfigDict(title="RuntimesPage")
+
+    runtimes: dict[str, Runtime]
+
+
+# --------------------------------------------------------------------------
+# The account listing: `GET /v1/accounts` (part of #72).
+# --------------------------------------------------------------------------
+
+
+class AccountWindow(BaseModel):
+    model_config = ConfigDict(title="AccountWindow")
+
+    utilization: float
+    resets_at: str
+    reset: bool
+
+
+class Account(BaseModel):
+    """One subscription account, as the broker serves it and swarm-api rebuilds it."""
+
+    model_config = ConfigDict(title="Account")
+
+    account_id: str
+    owner_tenant: str
+    label: str
+    display_name: str | None = None
+    provider: str
+    state: str
+    reason: str
+    lend_to: list[str]
+    assigned: int
+    windows: dict[str, AccountWindow]
+    observed_at: str | None
+    stale: bool
+    unreadable_by: list[str]
+    unreadable_now: list[str] = Field(description=(
+        "The tenants the pool is skipping this account for NOW (the verdict, with the server's "
+        "clock); `unreadable_by` is only the record, with no ages."))
+    last_assigned_at: str | None
+    # What the broker's `account_to_api` and swarm-api's rebuild add beside
+    # the fields above. Optional: the rebuild forwards whatever the broker it
+    # talks to serves, and an older broker sends fewer of them.
+    vendor: str | None = None
+    kind: str | None = None
+    tier: str | None = None
+    lends: dict[str, Any] | None = Field(None, description="Per borrowing tenant: its caps.")
+    per_workspace_max: dict[str, Any] | None = None
+    monthly_spend_cap_usd: float | None = None
+    month_spend_usd: float | None = None
+    lend_spend_usd: dict[str, Any] | None = None
+    exhausted_at: str | None = None
+    voice_dedicated: bool | None = None
+    model_classes: list[str] | None = None
+    organisation: Any = None
+    duplicate_of: str | None = None
+    duplicate_reason: str | None = None
+    duplicate_matched_on: Any = None
+    possible_duplicate: Any = None
+    max_agents: int | None = None
+    pools: list[str] | None = None
+    voice_it_people: list[Any] | None = None
+    voice_it_holder: Any = None
+    can_take_new_agent: bool | None = None
+    blocked_by: list[Any] | None = None
+    next_eligible_at: str | None = None
+    latest_hold_deadline: str | None = None
+    measured: bool | None = None
+    last_refresh_at: str | None = None
+    token_expires_at: str | None = None
+    last_refresh_reason: str | None = None
+    health_24h: dict[str, int] | None = Field(None, description="Health events by kind, last 24 h.")
+    health_status: str | None = None
+
+
+class RefreshSweep(BaseModel):
+    """Whether the broker's refresh sweep is still running; `readable: false` is unknown."""
+
+    model_config = ConfigDict(title="RefreshSweep")
+
+    last_completed_at: str | None
+    last_outcome: str | None
+    readable: bool
+
+
+class AccountsPage(BaseModel):
+    """`GET /v1/accounts`: every account this tenant may run on."""
+
+    model_config = ConfigDict(title="AccountsPage")
+
+    accounts: list[Account]
+    tenant_id: str | None
+    unreadable_documents: list[str]
+    unreadable_document_count: int = Field(description=(
+        "How many account documents the broker could not read; the ids are named only to "
+        "their owner."))
+    refresh_sweep: RefreshSweep | None = None

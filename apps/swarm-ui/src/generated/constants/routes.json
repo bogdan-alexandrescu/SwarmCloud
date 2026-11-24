@@ -1211,6 +1211,10 @@
     },
     {
       "method": "POST",
+      "path": "/v1/runs/{run_id}/plan:comment"
+    },
+    {
+      "method": "POST",
       "path": "/v1/runs/{run_id}/plan:edit"
     },
     {

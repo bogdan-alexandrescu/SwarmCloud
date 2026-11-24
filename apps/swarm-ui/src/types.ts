@@ -1,16 +1,23 @@
 // Shapes returned by swarm-api. `Task`, and the shapes imported below as
 // `Api*` (pools, runner profiles, capacity, task page, attempts, leases,
 // heartbeats, quota, tenants, stats, `me`, the dispatch switch, workflow,
-// providers and events), are GENERATED from the API's OpenAPI document
+// providers, events, the runtimes catalogue and its resource classes, and the
+// account listing), are GENERATED from the API's OpenAPI document
 // (./generated/api-types.ts, `scripts/gen_api_types.py`, from
-// `swarm_api/wire_types.py`; part of #72), and a unit test fails when that
-// file is stale. Each interface here extends its generated shape and keeps
-// only the console's own narrowing and doc comments; change a field in
-// wire_types.py and regenerate. Every other shape is still copied by hand
-// from apps/swarm-api/swarm_api/codec.py. Keep the comment references so the
-// next person can find the source.
+// `swarm_api/wire_types.py`; part of #72). A drift check (`gen_api_types.py
+// --check`, in CI and the unit suite) fails when that file is stale, and the
+// API's unit suite holds each model to what its routes serve, both
+// directions. Each interface here extends its generated shape and keeps only
+// the console's own narrowing and doc comments, which `tsc` holds to it;
+// change a field in wire_types.py and regenerate. The outcome ledger's shapes
+// are generated the same way and aliased in ./outcomes.ts. Every other shape
+// is still copied by hand from apps/swarm-api/swarm_api/codec.py and the
+// routes; keep the comment references so the next person can find the source.
 
 import type {
+  Account as ApiAccount,
+  AccountsPage as ApiAccountsPage,
+  AccountWindow as ApiAccountWindow,
   AttemptRow as ApiAttemptRow,
   Capacity as ApiCapacity,
   Counterfactual as ApiCounterfactual,
@@ -26,7 +33,9 @@ import type {
   ProviderEntry as ApiProviderEntry,
   ProvidersPage as ApiProvidersPage,
   QuotaState as ApiQuotaState,
+  ResourceClassSpec as ApiResourceClassSpec,
   RunnerProfile as ApiRunnerProfile,
+  Runtime as ApiRuntime,
   Stats as ApiStats,
   Task as ApiTask,
   TaskEvent as ApiTaskEvent,
@@ -2027,7 +2036,7 @@ export interface TaskEventsPage {
  * provider unions, the pool families. That is the second-best answer, used where
  * a route is not available. It is not a reason to start copying.)
  */
-export interface ResourceClassSpec {
+export interface ResourceClassSpec extends ApiResourceClassSpec {
   name: string
   /** The CPU REQUEST: guaranteed, charged and billed. The old name of `cpu_request`. */
   cpu: number
@@ -2164,7 +2173,7 @@ export type RunnerSizeChanges = Record<string, Record<string, number | Record<st
  * route that serves the value is the only remedy this repository has actually
  * made work". Nothing below is a value; every field is a hole the API fills.
  */
-export interface Runtime {
+export interface Runtime extends ApiRuntime {
   /** The exact string to send as `runner_profile`. */
   name: string
   /**
@@ -4175,7 +4184,7 @@ export type AccountStateName = 'AVAILABLE' | 'PAUSED' | 'DRAINING' | 'REAUTH_REQ
  * `utilization` is 0-1, NOT a percentage -- 0.87 is 87%. Multiplying is this
  * file's job precisely once, in `readingOf`, so no component can forget.
  */
-export interface AccountWindow {
+export interface AccountWindow extends ApiAccountWindow {
   utilization: number
   resets_at: string
   /**
@@ -4187,7 +4196,18 @@ export interface AccountWindow {
   reset: boolean
 }
 
-export interface Account {
+/**
+ * The generated `Account` declares every field the listing serves; the fields
+ * the broker's pool and caps add (`can_take_new_agent`, `blocked_by`, `lends`,
+ * ...) are still typed by hand in accountsPool.ts and api.ts (`PoolFields`,
+ * `PlanCaps`), so this interface takes only the fields it has always read.
+ */
+type AccountCoreField =
+  | 'account_id' | 'owner_tenant' | 'label' | 'display_name' | 'provider' | 'state' | 'reason'
+  | 'lend_to' | 'assigned' | 'windows' | 'observed_at' | 'stale' | 'unreadable_by'
+  | 'unreadable_now' | 'last_assigned_at'
+
+export interface Account extends Pick<ApiAccount, AccountCoreField> {
   /** `<owner_tenant>:<label>`. Opaque; never split for display. */
   account_id: string
   owner_tenant: string
@@ -4251,7 +4271,7 @@ export interface Account {
 }
 
 /** `GET /v1/accounts`. `tenant_id` is the scope the server actually applied. */
-export interface AccountsPage {
+export interface AccountsPage extends ApiAccountsPage {
   accounts: Account[]
   /** null when a platform caller asked for every tenant. */
   tenant_id: string | null
