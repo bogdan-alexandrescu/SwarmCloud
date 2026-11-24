@@ -114,6 +114,25 @@ def test_an_auto_plan_that_passes_is_approved_on_the_same_tick(client, db, objec
     assert len(_planners(db, run["id"])) == 1
 
 
+def test_steps_without_done_when_warn_but_neither_replan_nor_hold_the_auto_approval(
+        client, db, objects):
+    """CLEAN's two steps state no `done_when`: a warning served with the plan,
+    and the run goes on exactly as a plan that passes does."""
+    assert all("done_when" not in step for step in CLEAN["steps"])
+    run = _create(client, plan_approval="auto").json()["run"]
+    _finish_planner(db, objects, run, CLEAN)
+
+    read = _run(client, run["id"]).json()["run"]
+    assert [(w["code"], w["step"]) for w in read["plan_warnings"]] == [
+        (planlint.STEP_DONE_WHEN_MISSING, "sort-key"), (planlint.STEP_DONE_WHEN_MISSING, "ui")]
+    assert read["plan_lint"] is None
+
+    _tick(client)
+    stored = _stored(db, run["id"])
+    assert [h["to"] for h in stored["history"]] == ["PLANNING", "PLANNED", "APPROVED", "RUNNING"]
+    assert len(_planners(db, run["id"])) == 1
+
+
 # -- the one re-plan ---------------------------------------------------------
 
 @pytest.mark.parametrize("output, code", [
