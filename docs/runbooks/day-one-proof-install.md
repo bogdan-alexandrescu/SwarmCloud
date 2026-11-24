@@ -201,7 +201,10 @@ any existing project. Six mechanisms do the work; one gap is open.
    `run_pass`) refuses an IAM resource replaced destroy-first, an IAM
    condition over Google's limits, and a Cloud Run service not at 100 % to
    its latest revision. It asks for the project id, typed, before any destroy,
-   and `SWARM_ASSUME_YES` never answers.
+   and `SWARM_ASSUME_YES` never answers. It also refuses, before any apply, a
+   plan that names a project other than the one the install state records,
+   naming each resource and the project it names (see "The wrong-project
+   check" below).
 6. **Nothing above project level.** No Terraform resource sits at organisation,
    folder or billing level (the grep above).
 
@@ -217,13 +220,24 @@ typo, or the retry at "is taken", that lands on an existing project therefore
 changes it. The runbook's guard is a person's check (C1, C3); the engine does
 not stop it. It is in [decision O7](#8-open-decisions-for-the-owner).
 
-**Gap 2.** The repository's shell plan guard checks for a plan that writes
-outside the target project (`scripts/lib/plan-guard.sh`, the `wrong_project`
-check). The installer does not run it: no file in `SI/` calls `plan-guard.sh`
-(grep, 2026-11-24). The installer's in-engine review has no wrong-project
-check. Between them, mechanisms 1, 2, 3 and 6 (and a person's care at C1 and C3, see gap 1) are what keep the install inside
-the new project. The guard is not a code change for this runbook; it is
-[decision O7](#8-open-decisions-for-the-owner).
+**The wrong-project check (closed, issue 344).** The engine runs the same
+wrong-project rule as the repository's shell plan guard. The rule is written
+once, in `scripts/lib/wrong-project.jq`; `scripts/lib/destroy-guard.jq` (read
+by `scripts/lib/plan-guard.sh`) includes it, and the engine ships it in its
+wheel and runs it with jq over every plan it makes (`SI/planguard.py`, called
+from `SI/terraform.py` `run_pass`, `SI/uninstall.py` `destroy_root` and its
+unprotect pass, and `SI/upgrade.py`'s plan review and infra re-plan). A plan
+whose resource names another project in either half of its change is refused
+before any apply, with
+`<pass> would change resources outside the install's project <project>: <address> names project <other>. ... nothing was applied`.
+If jq is missing or gives no verdict, the plan is refused too. It does not
+close gap 1: stage 1's existing-project path runs before any Terraform plan.
+
+- **How to see it:** `tests/unit/install/test_plan_guard_wrong_project.py`
+  holds the refusal at each plan site, the fail-closed cases, the shell guard's
+  verdict equal to the engine's on one plan, and the wheel mapping. In a run,
+  an honest install never prints the refusal: no Terraform resource in this
+  repository names another project.
 
 **A shared project is refused outright.** `swarm uninstall` refuses the whole
 uninstall (exit 5) when the install state carries any deny-list entry at all
@@ -1163,13 +1177,27 @@ Also left:
   against a live project;
 - the files on the installer's machine (section 2.3).
 
-**R2. Confirm the uninstall finished.** Do both checks. They see only the remains record: nothing in the product proves the project is empty (decision O7).
+**R2. Confirm the uninstall finished.** Do all three checks. The first two
+read the remains record; the third reads the project itself.
 
 1. Run `swarm uninstall --project <project>` a second time. It prints
    `swarm uninstall: <project> is already uninstalled; what remains is in <path>`
    and exits 0, without asking anything (`SI/uninstall.py`, `Uninstall.run`).
 2. Every item in the remains record is one of the kinds listed above, and
    nothing else.
+3. Run `swarm doctor --project <project> --remains`. It lists, read-only,
+   what the project still holds, by kind and name (`SI/inventory.py`,
+   `SI/verbs/doctor.py` `run_remains`; [install.md § Uninstall](../install.md#uninstall)).
+   - **Worked when:** every line is a kind marked `expected` (what the
+     uninstall leaves on purpose), or one of the "Also left" items above (the
+     enabled APIs, a `default` network, the Firestore backups, the logging
+     buckets pending deletion); or it prints `Nothing remains in <project>.`.
+     It exits 0.
+   - **If it exits 3:** a kind could not be read and is printed as
+     `not read`, with the reason. The listing is then not complete and it
+     never says nothing remains: fix the permission it names and run it again.
+   - It never names a resource on the never-touch list, only counts them, and
+     it changes nothing.
 
 **Do not use `--status` or `doctor` as proof of "empty".** Once the state
 bucket is about to go, the uninstall makes the local file
@@ -1179,10 +1207,12 @@ bucket is about to go, the uninstall makes the local file
 copy (`SI/verbs/doctor.py`, `read_state`). So after an uninstall they still
 find a state. Their output is not checked for this case: log it.
 
-**Not checked:** a product command that lists every resource left in the
-project. There is none. The product's proof of "empty" is the two checks
-above. Whether to add a check outside the product, and to add the
-existing-project path (section 2.3, gap 1) to the engine's guarantees, is
+**Checked by the product (issue 344):** `swarm doctor --remains` (check 3)
+lists what the project still holds. It reads the kinds named in
+[install.md § Uninstall](../install.md#uninstall); a kind outside that list
+(for example the billing link of a project you kept, or Google's service
+agents) is not read, so "nothing remains" means nothing of those kinds. Gap 1
+of section 2.3 (the existing-project path) is still
 [decision O7](#8-open-decisions-for-the-owner).
 
 ---
@@ -1305,9 +1335,15 @@ release's upgrade test (plan §7.3), at about 10 USD a day.
 
 **O7. The gaps in "touches nothing else" and "empty again".**
 
+*Update (issue 344):* the wrong-project check now runs inside the engine
+(section 2.3, "The wrong-project check") and `swarm doctor --remains` lists
+what an uninstalled project still holds (section 6, R2 check 3). What remains
+of (b) is the typed approval before stage 1 changes an existing project
+(gap 1).
+
 - **(a)** Accept the engine's guarantees as written in section 2.3 (including
   gap 1, the existing-project path in stage 1, held off by the checks at C1
-  and C3), and the two checks in R2.
+  and C3), and the checks in R2.
 - **(b)** Before the release, add the shell plan guard's wrong-project check
   to the engine's Terraform passes, make stage 1 ask for the typed approval
   before it changes an existing project, and add a product check that lists what an
