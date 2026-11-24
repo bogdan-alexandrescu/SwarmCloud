@@ -20,7 +20,9 @@ history taught:
   bit (`hasOnly()` at most 10 entries, no `matches()` on Cloud Storage, at most
   12 logical operators) and by `iamPolicies:lintPolicy`; a Cloud Run service
   whose traffic is not 100 % to the latest revision is refused; any other
-  destroy needs the project id typed (never `SWARM_ASSUME_YES`).
+  destroy needs the project id typed (never `SWARM_ASSUME_YES`); a plan that
+  names a project other than the install's is refused by the operator
+  scripts' own rule (`planguard`, `scripts/lib/wrong-project.jq`; issue 344).
 * **Freshness is read from Terraform state, never from the registry** (lesson 9).
 """
 
@@ -35,7 +37,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import tfvars
+from . import planguard, tfvars
 from .api_client import deployer_email
 from .state import ObjectStore
 from .steps.preflight import TERRAFORM_VERSION
@@ -302,6 +304,9 @@ def run_pass(
             "object's earlier version; an empty state would plan to recreate everything"
         )
     plan = tf.plan(targets=targets, impersonate=deployer)
+    wrong = planguard.refusal(plan, project, pass_name)
+    if wrong:
+        raise TerraformRefused(wrong)
     review = review_plan(plan)
     if review.iam_destroy_first:
         raise TerraformRefused(

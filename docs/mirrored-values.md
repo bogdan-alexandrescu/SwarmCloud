@@ -245,6 +245,20 @@ recorded real plan with and without `--arg prefix` and requires identical
 verdicts — the `reason` of every foreign touch names the prefix, so any drift in
 the value is a difference the comparison sees.
 
+### Derived, not compared: the wrong-project rule (issue 344)
+
+The install engine needed the operator scripts' wrong-project check. Restating
+it in Python would have been a COMPARED pair across a language boundary; it is
+DERIVED instead. The predicate lives once, in `scripts/lib/wrong-project.jq`.
+`scripts/lib/destroy-guard.jq` includes it (`include "wrong-project"
+{search: "./"}`, resolved beside the including file, so its three callers pass
+no new argument), and the engine ships the same file in its wheel
+(`swarm_install/_guard/wrong-project.jq`, apps/swarm-install/pyproject.toml)
+and runs it with jq (`swarm_install/planguard.py`). The predicate's text is in
+neither reader: `tests/unit/install/test_plan_guard_wrong_project.py` fails if
+`destroy-guard.jq` or `planguard.py` spells it, and runs the shell guard and
+the engine over one plan and requires the same verdict.
+
 ## Covered elsewhere, deliberately not moved here
 
 These are compared, just not by `check-contract-parity.sh`. Each is listed so

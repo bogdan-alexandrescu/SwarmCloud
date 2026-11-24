@@ -990,3 +990,51 @@ Some things Google keeps, or does not let anyone delete:
 The uninstall writes this list to
 `~/.config/swarmcloud/install/<project>.remains.json`, so that you can remove
 these things by hand.
+
+#### See what the project still holds
+
+The remains record above is what the uninstall *expected* to leave. To see
+what the project actually holds, ask the product:
+
+```bash
+swarm doctor --project <project> --remains          # in words
+swarm doctor --project <project> --remains --json   # one JSON document
+```
+
+It reads the project and changes nothing: list calls only (HTTP GET), no
+create, enable, patch, delete or IAM change, and no `kubectl`
+(`swarm_install/inventory.py`). It needs the install state, which the
+uninstall keeps on your machine, for the region and the never-touch list.
+
+- It prints each resource it finds by kind and name: enabled APIs, clusters,
+  networks, subnets, firewall rules, addresses, buckets, service accounts made
+  in the project, custom roles, secrets, Cloud Run services and jobs,
+  Scheduler jobs, Pub/Sub topics and subscriptions, Artifact Registry
+  repositories, Firestore databases and backups, KMS key rings, Cloud DNS
+  zones, logging buckets you made, log metrics, alert policies, notification
+  channels and the OAuth brand. The kinds the uninstall leaves on purpose are
+  marked `expected`.
+- When every kind was read and none holds anything, it prints
+  `Nothing remains in <project>.` and exits 0.
+- A kind it could not read (a refused or failed list call) is printed as
+  `not read`, with the reason, and it exits 3. It then never says that nothing
+  remains: a listing that missed a kind is not offered as the whole one. A
+  kind whose API is off is `not read`, because turning an API off deletes
+  nothing (key rings, Firestore databases, secrets, topics and the rest
+  survive it). Only clusters count as empty, as `preflight.neighbours` argues.
+- A resource on the install's never-touch list is never named, only counted.
+- A project pending deletion is said plainly, and nothing in it is listed.
+
+Kinds outside that list are not read: a project you kept still carries its
+billing link and Google's own service agents, which the listing does not
+show.
+
+#### The engine stays in its own project
+
+Every Terraform plan the engine makes (each install pass, the uninstall's
+destroy and its deletion-protection pass, the upgrade's plan review) is
+checked before anything is applied with the same rule the operator scripts'
+plan guard runs, `scripts/lib/wrong-project.jq`: a plan that names a project
+other than the one the install state records is refused, naming each resource
+and the project it names, and nothing is applied. If the rule cannot run (no
+jq, or jq fails), the plan is refused too.
