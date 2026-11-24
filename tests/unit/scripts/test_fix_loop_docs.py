@@ -1,3 +1,4 @@
+# source-text: contract - the fix loop's bounds and mirrored literals must agree across validation.py, fixloop.py, the scheduler's loop.py, merge.py and the swarm-mcp server
 """The fix loop's bounds and mirrored literals agree across the modules that
 each keep their own copy (lane FL-DOCS, slice 1 of issue #71).
 

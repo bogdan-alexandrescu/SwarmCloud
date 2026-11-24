@@ -1,3 +1,4 @@
+# source-text: contract - every path::qualname docs/BUILD_PROMPT_V2.md cites must still be a symbol whose source holds the cited call
 """The spec says what the code does: owner decisions of 2026-10-01.
 
 WHY THIS EXISTS. Two documents described a platform this repository does not

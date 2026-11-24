@@ -1,3 +1,4 @@
+# source-text: contract - the swarm-voice egress policy's hosts must include textchat.py's CODEX_BASE host
 """swarm-voice runs as a one-replica StatefulSet in swarm-system, behind an egress
 policy for OpenAI and Anthropic only (docs/design/voice-it.md §3.4, §7,
 section 10 phase one; lane VOICE-STATEFULSET, part of archived issue 2688).

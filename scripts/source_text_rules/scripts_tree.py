@@ -6,14 +6,14 @@ confined to an allowed set, made by reading that file as text inside a test.
 The condition, the allowed names and the files are copied from the test it
 replaces; a rule reports what the test refused, never less.
 
-  plugin-intake-no-network-client      apps/plugin-intake/tests/test_intake_pinned.py
-  ui-copy-says-no-real-zero            tests/unit/scripts/test_no_real_zero_in_ui_copy.py
-  no-workflow-state-writer             tests/integration/test_e2e_suite_can_fail.py
-  caller-mcp-judge-impersonates-nobody tests/unit/scripts/test_caller_mcp_acceptance.py
-  workspace-apply-reads-no-kms         tests/unit/scripts/test_workspace_apply_approval.py
-  workspace-apply-imports-stdlib-only  tests/unit/scripts/test_workspace_apply_approval.py
-  verify-identity-imports-stdlib-only  tests/unit/scripts/test_acceptance_await_own_tenant.py
-  iso-probe-says-acceptance-runs-it    tests/unit/scripts/test_iso_accept_wiring.py
+  plugin-intake-no-network-client             apps/plugin-intake/tests/test_intake_pinned.py
+  ui-copy-says-no-real-zero                   tests/unit/scripts/test_no_real_zero_in_ui_copy.py
+  no-workflow-state-writer                    tests/integration/test_e2e_suite_can_fail.py
+  caller-mcp-judge-impersonates-nobody        tests/unit/scripts/test_caller_mcp_acceptance.py
+  workspace-apply-reads-no-kms                tests/unit/scripts/test_workspace_apply_approval.py
+  workspace-apply-stdlib-and-frozen-specsign  tests/unit/scripts/test_workspace_apply_approval.py
+  verify-identity-imports-stdlib-only         tests/unit/scripts/test_acceptance_await_own_tenant.py
+  iso-probe-says-acceptance-runs-it           tests/unit/scripts/test_iso_accept_wiring.py
 
 `strip_comments` and `real_zero_hits` are also what
 tests/unit/scripts/test_no_real_zero_in_ui_copy.py runs its planted copy
@@ -213,7 +213,7 @@ def _check_no_kms(path: str, text: str, tree: ast.Module | None) -> Hits:
     return _substring_hits(text, "cloudkms", message) + _substring_hits(text, "publicKey", message)
 
 
-# ---------------------------------------------- workspace-apply-imports-stdlib-only
+# ---------------------------------------------- workspace-apply-stdlib-and-frozen-specsign
 
 _ENTRY_IMPORT = re.compile(r"^(?:from|import) ([a-z0-9_.]+)", re.M)
 _ENTRY_ALLOWED = frozenset({
@@ -230,6 +230,12 @@ def _check_entry_imports(path: str, text: str, tree: ast.Module | None) -> Hits:
     if not _ENTRY_SPECSIGN.search(text):
         hits.append((1, "entry.py no longer imports the frozen swarm_common.specsign: the "
                         "canonical bytes and the digest must be the contract's"))
+    for call in ("specsign.jcs(", "specsign.spec_digest("):
+        if call not in text:
+            hits.append((1, f"entry.py no longer calls {call[:-1]}: the canonical bytes and "
+                            "the digest must be the frozen contract's"))
+    hits += _substring_hits(text, "json.dumps(payload",
+                            "a second RFC 8785 spelling beside the frozen one")
     return hits
 
 
@@ -267,6 +273,7 @@ _IDENTITY = "apps/common/swarm_common/identity.py"
 _JUDGE = "tests/acceptance/test_caller_mcp.py"
 _PROBE = "tests/acceptance/fixtures/tenant-isolation/test_cross_tenant_firestore.py"
 _STORE = "apps/swarm-api/swarm_api/store.py"
+_CALLS = "b = specsign.jcs(x)\nd = specsign.spec_digest(x)\n"
 
 RULES = (
     Rule(
@@ -368,20 +375,24 @@ RULES = (
         ),
     ),
     Rule(
-        id="workspace-apply-imports-stdlib-only",
+        id="workspace-apply-stdlib-and-frozen-specsign",
         why="the workspace-apply image's Debian python3 has nothing installed: entry.py imports "
-            "the standard library and the frozen swarm_common.specsign only (archived issue 847)",
+            "the standard library and the frozen swarm_common.specsign only, and spells RFC 8785 "
+            "through specsign alone (archived issue 847)",
         roots=(_ENTRY,),
         suffixes=(".py",),
         check=_check_entry_imports,
         bad=(
-            (_ENTRY, f"{_IMP} requests\nfrom swarm_common {_IMP} specsign\n"),
-            (_ENTRY, f"from google.cloud {_IMP} kms\nfrom swarm_common {_IMP} specsign\n"),
-            (_ENTRY, f"{_IMP} json\n"),
+            (_ENTRY, f"{_IMP} requests\nfrom swarm_common {_IMP} specsign\n" + _CALLS),
+            (_ENTRY, f"from google.cloud {_IMP} kms\nfrom swarm_common {_IMP} specsign\n" + _CALLS),
+            (_ENTRY, f"{_IMP} json\n" + _CALLS),
+            (_ENTRY, f"from swarm_common {_IMP} specsign\nb = specsign.jcs(x)\n"),
+            (_ENTRY, f"from swarm_common {_IMP} specsign\n" + _CALLS + "b = json.dumps(payload)\n"),
         ),
         good=(
             (_ENTRY, f"from __future__ {_IMP} annotations\n{_IMP} urllib.request\n"
-                     f"from collections.abc {_IMP} Mapping\nfrom swarm_common {_IMP} specsign\n"),
+                     f"from collections.abc {_IMP} Mapping\nfrom swarm_common {_IMP} specsign\n"
+                     + _CALLS),
         ),
     ),
     Rule(
