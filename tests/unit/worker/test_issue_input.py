@@ -43,6 +43,15 @@ from swarm_common.states import TaskState
 from test_cli_prompt_names_time_limit import without_limit_line
 from worker_seeds import TENANT, seed_attempt
 
+
+@pytest.fixture(autouse=True)
+def _no_inherited_children_spool(monkeypatch):
+    """Hermetic: inside a SwarmCloud container the worker's own SWARM_CHILDREN
+    is set, and the runner would add its child-tasks line to the prompt. Only
+    this module's tests are cleared; a caller importing `_prompt` keeps the
+    variable it set on purpose."""
+    monkeypatch.delenv("SWARM_CHILDREN", raising=False)
+
 needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 
 REPO = "https://github.com/octo/widgets.git"
@@ -483,9 +492,6 @@ def _prompt(tmp_path: Path, monkeypatch, payload: dict[str, Any], *, issue_text:
     binary.chmod(0o755)
     monkeypatch.setenv("FAKE_KEY", "sk-value-0123456789")
     monkeypatch.setenv("FAKE_BIN", str(binary))
-    # Hermetic: inside a SwarmCloud container the worker's own SWARM_CHILDREN is
-    # set, and the runner would add its child-tasks line to the prompt.
-    monkeypatch.delenv("SWARM_CHILDREN", raising=False)
     work = tmp_path / "work"
     artifacts = tmp_path / "artifacts"
     work.mkdir(exist_ok=True)
