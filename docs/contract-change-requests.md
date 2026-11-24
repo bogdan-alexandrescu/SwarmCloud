@@ -161,6 +161,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 154 | `profiles.py` / `states.py`: five comment lines name the owner by initials, and take the placeholder "the owner", behaviour unchanged (the repository move) | ACCEPTED by the owner 11 November 2026 and APPLIED by the pull request that adds this line |
 | 155 | `specsign.py`: a `"plans"` block in `SETTINGS_MAC_FIELDS`, `("diagrams", "chat_model_class")`, so a workspace's plan-review settings (`workspace_settings/{tenant_id}.plans`, docs/design/plans-pipeline.md sections 6.4 and 7.8) are signed by the frozen list (PLAN-SETTINGS) | REQUESTED 2026-11-13 by the pull request that adds this line; not applied. Until it is, `canonical_settings_block` refuses the block and swarm-api cannot sign it through the frozen list |
 | 157 | `states.py`: the scheduler may end a re-review whose verdict gate is shut PARKED -> SUCCEEDED, guarded on its own promotion write, without a lease (re-review gate) | REQUESTED 2026-11-23 by the pull request that adds this line; not applied. Until it is, a re-review whose gate is shut is leased and dispatched as today |
+| 158 | `profiles.py`: declare `context_ceiling` as an optional object input on the claude-code runner family, so a step may carry its own lower session limits (per-role session limits) | REQUESTED 2026-11-23 by the pull request that adds this line; not applied. Until it is, swarm-api refuses a step that carries `context_ceiling` and every session runs at the worker's ceilings |
 
 ---
 
@@ -18257,3 +18258,138 @@ promotion writes no second SUCCEEDED and no second event.
 
 The owner: accepting it lets the scheduler write the edge. Awaiting the
 owner's acceptance.
+
+
+---
+
+## 158. `profiles.py`: declare `context_ceiling` as an optional object input on the claude-code runner family, so a step may carry its own lower session limits (per-role session limits)
+
+**Status:** REQUESTED 2026-11-23 by the pull request that adds this section;
+not applied. Nothing in `apps/common/swarm_common/` was changed for it, and
+nothing is built until the owner decides: a step that carries
+`context_ceiling` is refused today and stays refused.
+
+### What is true today
+
+The worker already takes a step's own, lower session limits from the step
+input named `context_ceiling`
+(`apps/agent-worker/agent_worker/runners/ceiling.py`, `PAYLOAD_KEY`):
+`{"tokens": N, "tool_calls": M}`, either key optional. `resolve_limits` starts
+from the owner's ceilings, `CONTEXT_CEILING_TOKENS = 200_000` and
+`TOOL_CALL_CEILING = 150`, and lets the step only lower them: a value that is
+not a positive integer is ignored, and a value above the ceiling is clamped
+to it (`CONTEXT_CEILING_HARD_CAP`, `TOOL_CALL_HARD_CAP`). `PROFILE_LIMITS`,
+the worker's own per-profile table, is empty today. Only the claude-code
+runner (`agent_worker.runners.claude_code`) turns the ceiling on
+(`context_ceiling=True`), and `cliagent.run_cli_agent` reads the payload.
+
+But no runner profile declares an input of that name. `RunnerProfile.inputs`
+is the whole of what a caller may send, so swarm-api refuses a step that
+carries `context_ceiling` as a key the profile does not declare, and the
+worker's reader can never see a value.
+
+### Why this is a contract request
+
+`profiles.py` is frozen, and a profile's declared inputs are part of the
+caller-facing surface (invariant 10).
+
+### The requested change
+
+In `apps/common/swarm_common/profiles.py`, one new `RunnerInput` named
+`context_ceiling`, kind `object`, optional (not `required`), declared on the
+profiles whose `runner_argv` is the claude-code runner, the only runner that
+enforces it: `claude-code`, `claude-code-large`, `claude-code-medium`,
+`claude-code-review`, `indexer`, `claude-code-browser` and
+`claude-code-lightpanda`. `codex`, `mock`, `generic`, `browser` and the
+control-plane profiles do not declare it. It must not be added to
+`_CLI_AGENT_INPUTS`, which `codex` also takes and whose runner ignores it, so
+it is a small dict of its own merged into each of those profiles' input dicts,
+as `_MCP_SERVER_INPUTS` is.
+
+How an object input is declared there: kind `"object"` takes `variants`, a
+mapping from the value of the object's **`type` key** to that shape's fields
+(`RunnerInput.check` refuses a value whose `type` is missing, not a string or
+not a name in `variants`, and refuses any other key the shape does not name),
+and an object input with no `variants` is refused at construction. So the
+input is declared with one shape, and a caller writes the `type` key too:
+
+```python
+"context_ceiling": RunnerInput(
+    "object",
+    means="lowers this step's session limits; never raises them",
+    variants={
+        "limits": {
+            "tokens": RunnerInput("integer", minimum=1, maximum=200_000),
+            "tool_calls": RunnerInput("integer", minimum=1, maximum=150),
+        },
+    },
+),
+```
+
+so a step carries `{"context_ceiling": {"type": "limits", "tokens": 120000,
+"tool_calls": 100}}`. `check` returns the value with `type` kept and the
+fields in sorted order; the worker reads only `tokens` and `tool_calls` and
+ignores `type`, so the worker needs no change. The shape's name, `limits`, is
+a suggestion: any single name does the same work.
+
+### What it enables
+
+The control plane could then stamp per-role default limits onto steps. The
+lane's plan: at each place that already resolves a step's role defaults,
+stamp `input.context_ceiling` from a per-role table, keeping the issue-runs
+module to one call. The values would be tuned from the scorecard's per-role
+session measures (`docs/scorecard.md`, "sessions ended at the ceiling %, by
+role", which merged 2026-11-23). The worker needs no change.
+
+### What it would break if accepted
+
+Nothing that exists. The input is optional and no step carries it today, so
+every existing spec is valid as it was. It is inside `input`, so the spec
+signature covers it, and a stamped step's spec bytes differ from an unstamped
+one, which is the point. No default, name or document shape moves.
+
+### What it preserves (CONTRACT.md)
+
+- **Invariant 10.** A caller still names a profile and nothing else that
+  selects images, commands, resources or backend parameters. The input is two
+  bounded integers; it picks no image, command or resource, and it cannot
+  raise a ceiling: the declared bounds stop at the owner's 200,000 and 150,
+  and the worker clamps again (`_lowered`), so a bound this file got wrong
+  would still not raise one.
+- **Invariant 8.** Checkpointing stays mandatory and periodic. The input
+  changes when a session is ended at a turn boundary and a fresh one started
+  from a handoff, which commits the tree first; it does not switch
+  checkpointing off or change its period. A lower limit means more handoffs,
+  each preceded by a commit, never fewer checkpoints.
+- **Invariants 1-3, 5-7, 9.** Not touched: nothing here changes what a step
+  costs the platform before it runs, its lease, its fencing generation, the
+  spot setting, its resources or its tenant.
+
+### The one caution the lane found
+
+The role used for stamping must never be read from a metadata field a caller
+can write. If it were, a caller could name a roomier role and get the higher
+limits, or a role of its own choosing to get others'. The role has to come
+from what the control plane itself resolved for the step (the role it
+resolved its defaults from), the same source the defaults already use.
+
+### If it is declined
+
+There are no per-role limits: every step runs at 200,000 tokens and 150 tool
+calls. Tuning stays possible per profile through the worker's own table,
+`PROFILE_LIMITS` in `ceiling.py`, which needs no contract change, but it
+cannot tell two roles of one profile apart.
+
+### How it would be tested
+
+Not built here. If accepted: a step carrying `context_ceiling` is accepted on
+each of the seven profiles and refused on `codex`; a missing `type`, an
+unknown key, `tokens: 0`, `tokens: 200001`, `tool_calls: 151` and a boolean
+are refused; the declared bounds equal `CONTEXT_CEILING_HARD_CAP` and
+`TOOL_CALL_HARD_CAP`; and the stamp's role is read from the control plane's
+resolved role and never from caller metadata.
+
+### Who decides
+
+The owner: accepting it lets a later lane declare the input and stamp it.
+Awaiting the owner's acceptance.
