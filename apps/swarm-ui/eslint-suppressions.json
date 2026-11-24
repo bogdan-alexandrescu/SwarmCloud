@@ -11145,7 +11145,7 @@
       "count": 4
     },
     "testing-library/no-node-access": {
-      "count": 43
+      "count": 42
     },
     "testing-library/prefer-find-by": {
       "count": 2
