@@ -621,6 +621,8 @@ What `claude-code` and `codex` declare, as `swarm_profiles` lists it:
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
 | `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
 | `pull_request` | integer 1..999999 | a pull request in the task's repository: its body, conversation and review threads are written to pull_request.md in the workspace and named in the prompt |
+| `context_ceiling` | object, `type` one of limits | lowers this step's session limits; never raises them |
+| `context_ceiling` `limits` | `tokens` integer 1..200000, `tool_calls` integer 1..150 | `tokens`: ; `tool_calls`:  |
 <!-- /runner-inputs:claude-code -->
 
 <!-- runner-inputs:codex generated from RUNNER_PROFILES["codex"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
@@ -640,6 +642,8 @@ disabled until archived issue 295 is enabled, and declares what `claude-code` do
 |---|---|---|
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
 | `pull_request` | integer 1..999999 | a pull request in the task's repository: its body, conversation and review threads are written to pull_request.md in the workspace and named in the prompt |
+| `context_ceiling` | object, `type` one of limits | lowers this step's session limits; never raises them |
+| `context_ceiling` `limits` | `tokens` integer 1..200000, `tool_calls` integer 1..150 | `tokens`: ; `tool_calls`:  |
 <!-- /runner-inputs:claude-code-review -->
 
 `indexer` is `claude-code` on `agent-runtime-indexer`, the image that carries
@@ -650,6 +654,8 @@ index runs on it; it declares what `claude-code` does:
 | input | kind and bounds | what the indexer runner does with it |
 |---|---|---|
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `context_ceiling` | object, `type` one of limits | lowers this step's session limits; never raises them |
+| `context_ceiling` `limits` | `tokens` integer 1..200000, `tool_calls` integer 1..150 | `tokens`: ; `tool_calls`:  |
 <!-- /runner-inputs:indexer -->
 
 `claude-code-browser` is `claude-code` on `agent-runtime-browser`, Playwright
@@ -664,6 +670,8 @@ class and runs on GKE Autopilot; it declares what `claude-code` does:
 | `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
 | `browser_tool` | string, one of auto \| playwright \| dev-browser \| jev | the live browser's tool: auto (every tool available; the default), playwright (the Playwright MCP tools only), dev-browser (the dev-browser CLI first, Playwright as fallback) or jev (the jev MCP tools, which send page text to TypeSafe and need a TypeSafe key; Playwright as fallback) |
 | `qa_identity` | string, one of console | sign the live browser in to this deployment's console as its QA identity, a service account with its own workspace; the platform adds the credential, the agent never holds it, and a tenant may name it only when a platform admin has granted it |
+| `context_ceiling` | object, `type` one of limits | lowers this step's session limits; never raises them |
+| `context_ceiling` `limits` | `tokens` integer 1..200000, `tool_calls` integer 1..150 | `tokens`: ; `tool_calls`:  |
 <!-- /runner-inputs:claude-code-browser -->
 
 `claude-code-large` is `claude-code` exactly (same image, runner, inputs,
@@ -678,6 +686,8 @@ on-demand (contract request 113). A heavy lane picks it by name when
 |---|---|---|
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
 | `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+| `context_ceiling` | object, `type` one of limits | lowers this step's session limits; never raises them |
+| `context_ceiling` `limits` | `tokens` integer 1..200000, `tool_calls` integer 1..150 | `tokens`: ; `tool_calls`:  |
 <!-- /runner-inputs:claude-code-large -->
 
 `claude-code-medium` is `claude-code` exactly (same image, runner, inputs,
@@ -692,6 +702,8 @@ It declares what `claude-code` does:
 |---|---|---|
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
 | `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+| `context_ceiling` | object, `type` one of limits | lowers this step's session limits; never raises them |
+| `context_ceiling` `limits` | `tokens` integer 1..200000, `tool_calls` integer 1..150 | `tokens`: ; `tool_calls`:  |
 <!-- /runner-inputs:claude-code-medium -->
 
 `claude-code-lightpanda` is `claude-code` on the `agent-runtime-lightpanda`
@@ -707,6 +719,8 @@ It has no live view and no `browser_tool`; a page it cannot read goes to a
 |---|---|---|
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
 | `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+| `context_ceiling` | object, `type` one of limits | lowers this step's session limits; never raises them |
+| `context_ceiling` `limits` | `tokens` integer 1..200000, `tool_calls` integer 1..150 | `tokens`: ; `tool_calls`:  |
 <!-- /runner-inputs:claude-code-lightpanda -->
 
 `--input issue=<number>` on `swarm dispatch`, or `"inputs": {"issue": <number>}`

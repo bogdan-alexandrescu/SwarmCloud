@@ -333,21 +333,28 @@ def test_the_declaring_profiles_and_no_declaration_names_execution_detail():
     # Contract request 106 gave claude-code-browser alone its QA identity, by name.
     # The owner's pick on archived pull request 3470 (2026-11-06) gave claude-code, codex and
     # claude-code-review the pull request a step works on, by number.
-    assert set(_declared("indexer")) == {"issue"}, _declared("indexer")
-    assert set(_declared("claude-code-review")) == {"issue", "pull_request"}, (
+    # Contract request 158 (accepted 2026-11-24) gave every profile on the
+    # claude-code runner `context_ceiling`, a step's lower session limits;
+    # codex, whose runner does not enforce them, not.
+    ceiling = {"context_ceiling"}
+    assert set(_declared("indexer")) == {"issue"} | ceiling, _declared("indexer")
+    assert set(_declared("claude-code-review")) == {"issue", "pull_request"} | ceiling, (
         _declared("claude-code-review")
     )
-    for name in ("claude-code", "codex"):
-        assert set(_declared(name)) == {"issue", "mcp_servers", "pull_request"}, (
-            name, _declared(name)
-        )
+    assert set(_declared("claude-code")) == {"issue", "mcp_servers", "pull_request"} | ceiling, (
+        _declared("claude-code")
+    )
+    assert set(_declared("codex")) == {"issue", "mcp_servers", "pull_request"}, (
+        _declared("codex")
+    )
     # Contract request 113: claude-code-large declares what claude-code did,
     # and contract request 127 the same for claude-code-lightpanda: no
     # browser_tool, and no pull_request, which archived pull request 3470 gave the three alone;
     # claude-code-medium (contract request 147) declares what claude-code-large does.
     for name in ("claude-code-large", "claude-code-lightpanda", "claude-code-medium"):
-        assert set(_declared(name)) == {"issue", "mcp_servers"}, (name, _declared(name))
-    assert set(_declared("claude-code-browser")) == {"issue", "browser_tool", "mcp_servers", "qa_identity"}
+        assert set(_declared(name)) == {"issue", "mcp_servers"} | ceiling, (name, _declared(name))
+    assert set(_declared("claude-code-browser")) == {
+        "issue", "browser_tool", "mcp_servers", "qa_identity"} | ceiling
     for name in RUNNER_PROFILES:
         named = set(_declared(name)) & set(_NEVER)
         if name == "generic":
@@ -410,6 +417,21 @@ def test_every_declared_input_is_one_its_runner_reads():
     # worker stages the pull request as work/pull_request.md and names it in
     # the brief (the owner's pick on archived pull request 3470). Held to the module that reads it.
     read_by_the_worker = {"pull_request": "agent_worker/pull_request.py"}
+    # Read by the claude-code runner's context ceiling, which cliagent hands
+    # the whole payload (`ceiling_mod.resolve_limits(payload, ...)`), by its
+    # `PAYLOAD_KEY` (contract request 158). Held to that module, and to the
+    # one CLI runner that turns the ceiling on.
+    read_by_the_ceiling = "agent_worker/runners/ceiling.py"
+    ceiling_source = (_REPO / "apps" / "agent-worker" / read_by_the_ceiling).read_text()
+    assert re.search(r"""^PAYLOAD_KEY = ["']context_ceiling["']$""", ceiling_source, re.M), (
+        f"{read_by_the_ceiling} no longer reads input.context_ceiling"
+    )
+    cli_source = (_REPO / "apps" / "agent-worker" / "agent_worker" / "runners"
+                  / "cliagent.py").read_text()
+    assert "ceiling_mod.resolve_limits(payload" in cli_source
+    for name, profile in RUNNER_PROFILES.items():
+        if "context_ceiling" in _declared(name):
+            assert profile.runner_argv[-1] == "agent_worker.runners.claude_code", name
     for key, module_path in read_by_the_worker.items():
         reader = (_REPO / "apps" / "agent-worker" / module_path).read_text()
         assert re.search(rf"""^INPUT_KEY = ["']{re.escape(key)}["']$""", reader, re.M), (
@@ -431,7 +453,8 @@ def test_every_declared_input_is_one_its_runner_reads():
         # which reads the four limits by name (`runners/limits.py`).
         limits = _limit_keys() if "resolve_limits(payload" in source else set()
         for key in declared:
-            if key in unread_until_the_worker_lane or key in read_by_the_worker:
+            if (key in unread_until_the_worker_lane or key in read_by_the_worker
+                    or key == "context_ceiling"):
                 continue
             checked += 1
             assert key in limits or re.search(
@@ -445,7 +468,8 @@ def test_the_profiles_view_says_what_each_profile_takes():
     from a sentence of prose that can go stale."""
     entries = {entry["name"]: entry for entry in catalogue.catalogue()}
     assert set(entries["mock"]["inputs"]) == set(_declared("mock"))
-    assert set(entries["claude-code"]["inputs"]) == {"issue", "mcp_servers", "pull_request"}
+    assert set(entries["claude-code"]["inputs"]) == {"issue", "mcp_servers", "pull_request",
+                                                     "context_ceiling"}
 
 
 def test_swarm_profiles_prints_the_declared_inputs(capsys):
