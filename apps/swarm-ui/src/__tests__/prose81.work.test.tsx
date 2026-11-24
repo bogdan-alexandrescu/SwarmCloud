@@ -233,7 +233,7 @@ async function mount(): Promise<void> {
   vi.stubEnv('VITE_LIVE', '1')
   vi.resetModules()
   const { IssueSubmitScreen } = await import('../IssueSubmit')
-  render(<IssueSubmitScreen go={vi.fn()} />)
+  mounted.push(render(<IssueSubmitScreen go={vi.fn()} />).unmount)
   await screen.findByRole('heading', { name: 'Submit from a GitHub issue', level: 1 }, WAIT)
   await screen.findByRole('radiogroup', { name: 'runner' }, WAIT)
 }
