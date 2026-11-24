@@ -526,13 +526,23 @@ _wf_check_integrate() {
 # acc_run_to_end's ACC_TIMEOUT (900 s by default) covers A's 60 s park plus
 # two mock attempts and B's one, with room for admission.
 _wf_check_carry() {
-  local wf="$1" notes="$2" a b state attempts events parked final artifacts entry count carried uri staged object
+  local wf="$1" notes="$2" a b state parent_state attempts events parked final artifacts entry count carried uri staged object
   acc_check "workflow: carry: a file written before a quota park reaches the attempt that succeeds by reference, and the child stages it"
   [[ -n "${wf}" ]] || { acc_fail "not submitted"; return 0; }
   a="$(workflow_step_task "${wf}" a)"
   b="$(workflow_step_task "${wf}" b)"
   acc_run_to_end state "${b}" || return 0
-  acc_assert_eq "SUCCEEDED SUCCEEDED" "$(task_state "${a}") ${state}" "parent and child" "${b}"
+  parent_state="$(task_state "${a}")"
+  acc_assert_eq "SUCCEEDED SUCCEEDED" "${parent_state} ${state}" "parent and child" "${b}"
+  # WHY THE PARENT ENDED, ON THE SAME RUN (issue 202). The 2026-11-23 22:30
+  # run read FAILED CANCELLED, one attempt document and no park event, and
+  # the job log said no more: the parent's own `last_error` names what failed
+  # its first attempt -- the mock's refusal to simulate a park without an
+  # attempt number, a runner crash, a park that raised -- and the next red run
+  # needs it to tell those apart without a Firestore session.
+  if [[ "${parent_state}" != "SUCCEEDED" ]]; then
+    acc_fail "the parent ended ${parent_state}: $(task_field "${a}" '.last_error // "no error"' | redact | tr '\n' ' ' | head -c 400)" "${a}"
+  fi
 
   # COUNTED FROM THE ATTEMPT DOCUMENTS, NOT FROM `attempt_count`. The recipe's
   # first attempt parks on PROVIDER_QUOTA_EXHAUSTED, and that park refunds its
