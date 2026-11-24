@@ -52,6 +52,7 @@ import { Absent } from './primitives'
 import type { RepoRecord } from './RepositoriesData'
 import { firingReaderTime, firingWallTime } from './Schedules'
 import { InApp } from './InApp'
+import type { PlanDiagrams, SchedulePlanDiagrams } from './types'
 import { SCHEDULES_ADDRESS, scheduleAddress } from './schedulePaths'
 import { budgetDefaultWords, gapWords, StartChoice, TemplateCard, TemplateTiles, TenantRoom, type Start } from './ScheduleTemplates'
 import { Screen } from './Shell'
@@ -128,6 +129,22 @@ function viewerZone(): string {
 
 type Scope = Schedule['scope']['mode']
 type Gate = Schedule['gate']
+/** A schedule as the form reads it: with its diagrams choice (plans-pipeline §6.4). */
+type Stored = Schedule & SchedulePlanDiagrams
+type EditBody = ScheduleEditBody & SchedulePlanDiagrams
+/** `proposes` (§2.4) is absent from an older API's catalogue. */
+type TypeRow = ScheduleTypeRow & { proposes?: boolean }
+
+/** A document without the field follows the workspace: `inherit` is the API's default. */
+function planDiagramsOf(s: Stored | null): PlanDiagrams {
+  return s?.plan_diagrams ?? 'inherit'
+}
+
+const PLAN_DIAGRAMS: readonly { value: PlanDiagrams; label: string }[] = [
+  { value: 'inherit', label: 'inherit' },
+  { value: 'on', label: 'on' },
+  { value: 'off', label: 'off' },
+]
 
 interface Draft {
   type: string
@@ -141,6 +158,8 @@ interface Draft {
   budget: { per_run_usd: string; per_day_usd: string; max_concurrent: string }
   policy: Schedule['policy']
   params: Record<string, unknown>
+  /** An edit's only: a create sends none, so a new schedule inherits. */
+  planDiagrams: PlanDiagrams
   /** A create's Start choice. "Dry run first" is enabled with `policy.dry_run`. */
   start: Start
 }
@@ -241,7 +260,7 @@ function placeholderOf(t: ScheduleTypeRow | null, key: keyof Schedule['budget'])
   return v === undefined || v === null ? undefined : String(v)
 }
 
-function draftFor(t: ScheduleTypeRow | null, s: Schedule | null, repos: RepoRecord[]): Draft {
+function draftFor(t: ScheduleTypeRow | null, s: Stored | null, repos: RepoRecord[]): Draft {
   if (s !== null) {
     return {
       type: s.type,
@@ -254,6 +273,7 @@ function draftFor(t: ScheduleTypeRow | null, s: Schedule | null, repos: RepoReco
       budget: { per_run_usd: budgetText(s.budget.per_run_usd), per_day_usd: budgetText(s.budget.per_day_usd), max_concurrent: budgetText(s.budget.max_concurrent) },
       policy: { ...s.policy },
       params: { ...s.params },
+      planDiagrams: planDiagramsOf(s),
       start: 'enabled',
     }
   }
@@ -271,6 +291,7 @@ function draftFor(t: ScheduleTypeRow | null, s: Schedule | null, repos: RepoReco
     budget: { per_run_usd: '', per_day_usd: '', max_concurrent: '' },
     policy: {},
     params: schemaDefaults(t),
+    planDiagrams: planDiagramsOf(null),
     // DRY RUN FIRST (AUT-2; the mockup's create variant A): a new schedule
     // records what it would do and creates nothing until the person turns
     // dry run off. Enabled is one deliberate click away, never the default.
@@ -836,8 +857,8 @@ export function createBody(d: Draft, t: ScheduleTypeRow, requestId: string): Sch
   return body
 }
 
-export function editBody(d: Draft, s: Schedule): ScheduleEditBody {
-  const body: ScheduleEditBody = { revision: s.revision }
+export function editBody(d: Draft, s: Stored): EditBody {
+  const body: EditBody = { revision: s.revision }
   if (d.name.trim() !== s.name) body.name = d.name.trim()
   const scope: Schedule['scope'] = d.scopeMode === 'repos' ? { mode: 'repos', repo_ids: d.repoIds } : { mode: d.scopeMode }
   const stored: Schedule['scope'] = s.scope.mode === 'repos' ? { mode: 'repos', repo_ids: s.scope.repo_ids ?? [] } : { mode: s.scope.mode }
@@ -852,6 +873,7 @@ export function editBody(d: Draft, s: Schedule): ScheduleEditBody {
   if (Object.keys(budget).length > 0) body.budget = budget
   const policy = changed(d.policy, s.policy)
   if (Object.keys(policy).length > 0) body.policy = policy
+  if (d.planDiagrams !== planDiagramsOf(s)) body.plan_diagrams = d.planDiagrams
   return body
 }
 
@@ -920,6 +942,7 @@ const CHANGE_LABEL: Readonly<Record<string, string>> = {
   overlap: 'If the last firing is still running',
   catch_up: 'After an outage',
   dry_run: 'Dry run',
+  plan_diagrams: 'Diagrams in plans',
 }
 
 function scopeWords(scope: Schedule['scope']): string {
@@ -932,7 +955,7 @@ function scopeWords(scope: Schedule['scope']): string {
  * WHAT A SAVE WOULD CHANGE (A3b), one line a field, read off `editBody` so
  * the sheet lists exactly what the PATCH sends and nothing it does not.
  */
-export function changeLines(d: Draft, s: Schedule, t: ScheduleTypeRow | null): { label: string; from: string; to: string }[] {
+export function changeLines(d: Draft, s: Stored, t: ScheduleTypeRow | null): { label: string; from: string; to: string }[] {
   const body = editBody(d, s)
   const out: { label: string; from: string; to: string }[] = []
   if (body.name !== undefined) out.push({ label: 'Name', from: s.name, to: body.name })
@@ -945,6 +968,7 @@ export function changeLines(d: Draft, s: Schedule, t: ScheduleTypeRow | null): {
   const known = (k: string) => CHANGE_LABEL[k] ?? k
   group(body.gate as Record<string, unknown> | undefined, s.gate as Record<string, unknown>, known)
   group(body.params, s.params, (k) => t?.params_schema.properties?.[k]?.title ?? k)
+  if (body.plan_diagrams !== undefined) out.push({ label: known('plan_diagrams'), from: planDiagramsOf(s), to: body.plan_diagrams })
   group(body.budget as Record<string, unknown> | undefined, s.budget as Record<string, unknown>, known)
   group(body.policy as Record<string, unknown> | undefined, s.policy as Record<string, unknown>, known)
   return out
@@ -1045,9 +1069,9 @@ function ScheduleForm({
   cancel,
   preferType = null,
 }: {
-  types: ScheduleTypeRow[]
+  types: TypeRow[]
   repos: Result<RepoRecord[]>
-  schedule: Schedule | null
+  schedule: Stored | null
   /** A new schedule's type, chosen before the form opened (a starter card's Use); ignored unless the catalogue serves it usable. */
   preferType?: string | null
   /** The saved schedule, or null when the write took but its echo was unreadable. */
@@ -1418,6 +1442,9 @@ function ScheduleForm({
                   onChange={(e) => set({ gate: { ...d.gate, approval_ttl_hours: e.target.value === '' ? undefined : Math.trunc(Number(e.target.value)) } })}
                 />
               </Field>
+              {schedule !== null && t?.proposes === true && (
+                <Segmented<PlanDiagrams> label={CHANGE_LABEL.plan_diagrams!} value={d.planDiagrams} options={PLAN_DIAGRAMS} onChange={(v) => set({ planDiagrams: v })} />
+              )}
             </div>
             {restatedOnes.length > 0 && (
               <div className="sc-facts">

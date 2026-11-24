@@ -9,7 +9,7 @@
 //   * the PATCH carries `plan_diagrams` only when it changed: a save of another
 //     field never sends it, and a choice put back leaves nothing to save;
 //   * each of the three values is read, chosen and sent as itself;
-//   * "Changes against revision N" lists it, and at 390px it wraps in one column.
+//   * "Changes against revision N" lists it, and at 390px it wraps, never scrolls.
 //
 // The bodies are `routes/schedules.py`'s shapes. Placeholders only.
 
@@ -103,11 +103,11 @@ async function edit(stored: Json = schedule(), types: Json[] = [SWEEP, REPORT]) 
   vi.stubEnv('VITE_LIVE', '1')
   vi.resetModules()
   const { SchedulesScreen } = await import('../Schedules')
-  render(<Routed Screen={SchedulesScreen} section="automate/schedules" start="schedule=sch_a&edit=1" spy={vi.fn()} />)
+  const { unmount } = render(<Routed Screen={SchedulesScreen} section="automate/schedules" start="schedule=sch_a&edit=1" spy={vi.fn()} />)
   await screen.findByTestId('sc-form', undefined, WAIT)
   // The Gates card is drawn, so an absent control is absent and not late.
   expect(screen.getByRole('radiogroup', { name: 'Plan' })).toBeTruthy()
-  return calls
+  return { calls, unmount }
 }
 
 const group = () => screen.getByRole('radiogroup', { name: LABEL })
@@ -116,7 +116,7 @@ const chosen = () => radios().filter((r) => r.getAttribute('aria-checked') === '
 const pick = (word: Value) => fireEvent.click(within(group()).getByRole('radio', { name: word }))
 const save = () => screen.getByRole('button', { name: 'Save changes' })
 
-type Calls = Awaited<ReturnType<typeof edit>>
+type Calls = Awaited<ReturnType<typeof edit>>['calls']
 const patches = (calls: Calls) => calls.filter((c) => c.method === 'PATCH' && c.url.split('?')[0] === '/v1/schedules/sch_a')
 
 async function saved(calls: Calls): Promise<unknown> {
@@ -166,7 +166,7 @@ describe('what the PATCH carries', () => {
     ['off', 'on'],
   ] as [Value, Value][])('reads %s, and sends %s and the revision alone', async (from, to) => {
     // MUTATION: send null for inherit, and the API reads "unchanged".
-    const calls = await edit(schedule({ plan_diagrams: from }))
+    const { calls } = await edit(schedule({ plan_diagrams: from }))
     expect(chosen()).toEqual([from])
     pick(to)
     expect(chosen()).toEqual([to])
@@ -175,24 +175,25 @@ describe('what the PATCH carries', () => {
 
   it.each([undefined, ...VALUES])('never sends it with another field’s change (stored %s)', async (stored) => {
     // MUTATION: send the draft's value whatever it was.
-    const calls = await edit(schedule(stored === undefined ? {} : { plan_diagrams: stored }))
+    const { calls } = await edit(schedule(stored === undefined ? {} : { plan_diagrams: stored }))
     fireEvent.click(screen.getByRole('button', { name: 'Weekly on Monday' }))
     expect(await saved(calls)).toEqual({ revision: 2, cron: '0 9 * * 1' })
   })
 
   it('never sends it for a type that does not propose, whatever is stored', async () => {
-    const calls = await edit(schedule({ type: 'cost-report', plan_diagrams: 'off' }))
+    const { calls } = await edit(schedule({ type: 'cost-report', plan_diagrams: 'off' }))
     fireEvent.click(screen.getByRole('button', { name: 'Weekly on Monday' }))
     expect(await saved(calls)).toEqual({ revision: 2, cron: '0 9 * * 1' })
   })
 
   it('has nothing to save once the choice is put back', async () => {
     // MUTATION: compare against undefined rather than inherit, and putting it back is a change.
-    const calls = await edit()
+    const { calls } = await edit()
     const sheet = screen.getByTestId('ae-sheet')
     pick('off')
     expect(visible(sheet)).toContain('Changes against revision 2')
-    expect(within(sheet).getByText(LABEL).closest('div')!.querySelector('dd')!.textContent).toBe('inherit → off')
+    expect(within(sheet).getByText(LABEL)).toBeTruthy()
+    expect(within(sheet).getByText('inherit → off')).toBeTruthy()
     pick('inherit')
     expect(visible(sheet)).not.toContain('Changes against revision')
     fireEvent.click(save())
@@ -201,11 +202,22 @@ describe('what the PATCH carries', () => {
 })
 
 describe('how it is drawn', () => {
-  it('is the sheet’s own segmented control, adds no words but its label and values, and fits 390', async () => {
+  it('adds no words to the form but its label and its three values', async () => {
+    // MUTATION: add a hint under the group.
+    const form = () => visible(screen.getByTestId('sc-form')).replace(/\s+/g, '')
+    const { unmount } = await edit()
+    const withIt = form()
+    unmount()
+    await edit(schedule(), [typeRow('issue-sweep', { proposes: false }), REPORT])
+    expect(withIt).toContain('Diagramsinplansinheritonoff')
+    expect(withIt.replace('Diagramsinplansinheritonoff', '')).toBe(form())
+  })
+
+  it('is the sheet’s own segmented control, which wraps rather than scrolls at 390', async () => {
+    // MUTATION: draw a select, or another group's classes.
     await edit()
-    const box = group().closest<HTMLElement>('.c-field')!
-    expect(visible(box).replace(/\s+/g, ' ').trim()).toBe(`${LABEL} inherit on off`)
     expect(group().className).toBe(screen.getByRole('radiogroup', { name: 'Who may approve' }).className)
-    expect(painted(box.closest<HTMLElement>('.sc-facts')!, 'grid-template-columns', PHONE)).toBe('minmax(0, 1fr)')
+    expect(painted(group(), 'flex-wrap', PHONE)).toBe('wrap')
+    expect(painted(group(), 'max-width', PHONE)).toBe('100%')
   })
 })
