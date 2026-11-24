@@ -57,7 +57,7 @@ entries:
   provider: engine
   step: preflight.tools
   check: $(kubectl_bin) version --client is 1.30 or newer
-  apply: preflight.tools fetches the pinned kubectl 1.36.6 from dl.k8s.io (SHA-256 from its kubectl.sha256,
+  apply: preflight.tools fetches the pinned kubectl 1.37.2 from dl.k8s.io (SHA-256 from its kubectl.sha256,
     pinned in swarm_install/tools.py) when the one found is missing or older than 1.30, links it first on the
     engine's PATH and points SWARM_KUBECTL at it when that named the old one; the old one is ignored and said
     once

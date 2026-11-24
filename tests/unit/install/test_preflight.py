@@ -609,7 +609,7 @@ def test_release_cve_acceptances_shown_with_expiry() -> None:
 
 PINNED_OUTPUT = {
     "terraform": "Terraform v1.16.2\non linux_amd64",
-    "kubectl": "Client Version: v1.36.6",
+    "kubectl": "Client Version: v1.37.2",
     "jq": "jq-1.8.2",
     "cosign": "GitVersion: v2.4.1",
     "gcrane": "0.20.2",

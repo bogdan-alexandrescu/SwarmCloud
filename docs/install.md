@@ -69,7 +69,8 @@ You need:
   or `shasum`.
   - `install.sh` installs uv if it is missing. uv needs Python 3.11 or newer.
   - Stage 0 fetches pinned, checksummed copies of Terraform, kubectl, jq,
-    cosign, gcrane and the GKE auth plugin.
+    cosign, gcrane and the GKE auth plugin. Its kubectl (1.37.2) needs a GKE
+    control plane of 1.36 or newer ([versions](versions.md)).
   - If the Google Cloud SDK is missing, stage 0 offers to install it.
 
 ### What it costs
