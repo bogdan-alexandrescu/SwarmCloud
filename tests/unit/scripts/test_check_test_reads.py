@@ -219,7 +219,7 @@ def test_a_bad_option_exits_2():
 
 def test_the_baselines_are_sorted_and_disjoint():
     names = sorted(p.name for p in BASELINES.glob("*.txt"))
-    assert names == ["scripts-ci.txt", "scripts-docs.txt", "unit-a.txt", "unit-b.txt"]
+    assert names == ["scripts-docs.txt", "unit-a.txt", "unit-b.txt"]
     seen: set[str] = set()
     for path in BASELINES.glob("*.txt"):
         entries = [line for line in path.read_text().splitlines() if line.strip()]
@@ -228,19 +228,32 @@ def test_the_baselines_are_sorted_and_disjoint():
         seen.update(entries)
 
 
-#: The most each baseline may list. A baseline only shrinks: a step of issue
-#: 71 that cleans files lowers its cap here with its list. scripts-ci.txt
-#: listed 73 files before step 3 cleaned the first half of them.
-BASELINE_CAPS = {"scripts-ci.txt": 36}
+#: The baselines a step of issue 71 has emptied and deleted. scripts-ci.txt
+#: listed the 73 CI-YAML readers under tests/unit/scripts/; steps 3 and 4
+#: cleaned them.
+FINISHED_BASELINES = ("scripts-ci.txt",)
 
 
-@pytest.mark.parametrize("name, cap", sorted(BASELINE_CAPS.items()))
-def test_a_cleaned_baseline_stays_under_its_cap(name, cap):
-    entries = [line for line in (BASELINES / name).read_text().splitlines()
-               if line.strip() and not line.startswith("#")]
-    # MUTATION: put a cleaned file back on scripts-ci.txt (with a read put
-    # back in it) and the list outgrows its cap -- red here, naming it.
-    assert len(entries) <= cap, (name, len(entries), cap)
+@pytest.mark.parametrize("name", FINISHED_BASELINES)
+def test_a_finished_baseline_does_not_come_back(name):
+    assert not (BASELINES / name).exists()
+
+
+def test_every_reader_left_under_unit_scripts_is_a_docs_reader():
+    # The CI-YAML half of tests/unit/scripts/ is done: what the scanner still
+    # finds there, scripts-docs.txt lists (the docs prose step's worklist).
+    # MUTATION: open .github/workflows/release.yml in any other file here.
+    found = {read.split(":", 1)[0] for read in _whole_tree_reads()
+             if read.startswith("tests/unit/scripts/")}
+    docs = set((BASELINES / "scripts-docs.txt").read_text().split())
+    assert found <= docs, sorted(found - docs)
+
+
+def _whole_tree_reads() -> list[str]:
+    result = subprocess.run([sys.executable, str(SCRIPT), "--root", str(ROOT)],
+                            capture_output=True, text=True, check=False)
+    assert result.returncode in (0, 1), result.stderr
+    return result.stdout.splitlines()
 
 
 def test_a_cleaned_file_is_not_read_back_into_a_baseline(tmp_path, capsys):
@@ -248,7 +261,7 @@ def test_a_cleaned_file_is_not_read_back_into_a_baseline(tmp_path, capsys):
     # scanner finds clean cannot stay listed (the baseline would be stale).
     helper = "tests/unit/scripts/cleaned.py"
     root = _tree(tmp_path, {helper: HEAD + "def x():\n    return (ROOT / 'apps' / 'x.py').read_text()\n",
-                            "baselines/scripts-ci.txt": helper + "\n"})
+                            "baselines/scripts-docs.txt": helper + "\n"})
     code = ctr.main(["--root", str(root), "--baseline-dir", str(root / "baselines")])
     assert code == 1
     assert helper in capsys.readouterr().out
