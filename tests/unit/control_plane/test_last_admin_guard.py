@@ -249,6 +249,36 @@ def test_an_unreadable_role_of_the_person_removed_is_a_503(client, ctx, db, monk
     assert written(db) == before
 
 
+def test_removing_a_non_admin_with_the_roles_store_unreadable_is_a_503(client, ctx, db,
+                                                                       monkeypatch) -> None:
+    """Fail-closed on purpose (epic 21; docs/design/join-requests.md, "Member
+    removal fails closed"): lee is a plain member, but with the roles store
+    down the route cannot know that, and a guess of "not an admin" is the
+    one that can remove a workspace's last admin. 503, and nothing at all is
+    written -- no `removed` grant, no guard document, no audit row."""
+    joined(client)
+    assert role_of(ctx, LEE) is None
+    real = roles.RoleStore.newest_valid
+
+    def newest_valid(self, tenant_id, subject, **kwargs):
+        # lee's role, the one the removal must read; alice's own still answers.
+        if subject == LEE:
+            raise RoleUnavailable("this workspace's roles could not be read; retry shortly")
+        return real(self, tenant_id, subject, **kwargs)
+
+    monkeypatch.setattr(roles.RoleStore, "newest_valid", newest_valid)
+    before = {k: v for k, v in db.dump().items() if not k.startswith("people/")}
+    response = remove(client, "alice", LEE)
+    # MUTATION: read the failed role read as "not an admin" -> 200, lee removed.
+    assert response.status_code == 503, response.text
+    assert response.json()["code"] == "role_unavailable"
+    message = response.json()["message"]
+    assert "Nothing was written" in message and "retry" in message, message
+    assert {k: v for k, v in db.dump().items() if not k.startswith("people/")} == before
+    monkeypatch.undo()
+    assert membership_store(ctx).read(LEE, fresh=True).newest["eng"].state == memberships.MEMBER
+
+
 class DownDirectory:
     def groups_for(self, email: str, candidates: tuple[str, ...], *,
                    fresh: bool = False) -> tuple[str, ...]:
