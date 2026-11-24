@@ -2,9 +2,8 @@
 
 One schema in swarm-api (swarm_api/voice/cards.py) validates every card
 write, is served to the planner as strict tool schemas, and is held here to
-the console's list in apps/swarm-ui/src/voice/cards.ts, the way
-test_issue_forms.py holds the forms to SECTIONS: red until both sides name the
-same kinds, fields, states and actions. An unknown kind, or a state its kind
+the console's list in apps/swarm-ui/src/voice/cards.ts, red until
+both sides name the same kinds, fields, states and actions. An unknown kind, or a state its kind
 does not use, is refused on write and nothing is stored. A credential card has
 no field that can hold a value, and no card carries a credential-shaped string.
 Firestore is the in-memory fake; no network.

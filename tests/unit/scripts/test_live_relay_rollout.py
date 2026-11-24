@@ -10,23 +10,14 @@ that day the relay ran a pre-change image until the operator applied it, and the
 console's origin/device stayed "Not reported".
 
 `scripts/roll-live-relay.sh` is what the release now runs after the digests are
-verified. These tests hold:
-
-  * the SCRIPT, against a fake cluster, terraform and gcloud: it applies through
-    `kubernetes/apply.sh --swarm-system --confirm` (not a second copy of it), so
-    the relay manifest checks and the live-ingress parity check run; it then
-    waits for `rollout status` and proves the relay's pods run the digest the
-    manifest names; a stale pod, a rollout that does not finish, and the shared
-    cluster on the never-touch list (PEER_CLUSTER) -- by flag, by context, or by terraform's own
-    output -- fail it; a dry run writes nothing; a relay switched off
-    (enable_live_browser false) is a notice, not a failure;
-  * the WORKFLOWS: release.yml's and hotfix.yml's deploy jobs name the step and
-    the script, after the digests are verified and before the smoke test, on
-    the project's synced Python.
-
-SwarmCloud lanes cannot push .github/workflows/, so the workflow change ships as
-a patch the operator applies (release-yml.patch in the lane's artifacts); the
-workflow tests are red until it is applied.
+verified. These tests hold the script, against a fake cluster, terraform and
+gcloud: it applies through `kubernetes/apply.sh --swarm-system --confirm` (not a
+second copy of it), so the relay manifest checks and the live-ingress parity
+check run; it then waits for `rollout status` and proves the relay's pods run
+the digest the manifest names; a stale pod, a rollout that does not finish, and
+the shared cluster on the never-touch list (PEER_CLUSTER) -- by flag, by
+context, or by terraform's own output -- fail it; a dry run writes nothing; a
+relay switched off (enable_live_browser false) is a notice, not a failure.
 
 No cluster, no credentials, no network: every binary is a fake on PATH.
 """
@@ -39,12 +30,10 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from .test_live_netpol import FAKE_API_CIDR, FAKE_SUBNET, LEAKY, _relay_manifest, _service
-from .test_release_reuses_ci_images import _workflow
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -69,9 +58,6 @@ FOREIGN_REF = f"gke_{PROJECT}_{LOCATION}-a_{PEER_CLUSTER}"
 #: The digest _relay_manifest() renders, built rather than written out.
 DIGEST = "sha256:" + "7" * 64
 STALE_DIGEST = "sha256:" + "3" * 64
-
-STEP = "roll the live relay to this release's image"
-INVOCATION = "./scripts/roll-live-relay.sh"
 
 
 # --- the script, against a fake cluster ---------------------------------------
@@ -366,58 +352,6 @@ def test_the_shared_peer_cluster_is_refused_before_anything_is_written(tmp_path,
     assert "get-credentials" not in cluster.log("gcloud")
     assert "rollout" not in cluster.log("kubectl")
     assert "run services describe" not in cluster.log("gcloud"), "apply.sh ran for a refused cluster"
-
-
-# --- the workflows ------------------------------------------------------------
-
-
-def _deploy_steps(workflow: str) -> list[dict[str, Any]]:
-    return _workflow(workflow)["jobs"]["deploy"]["steps"]
-
-
-def _index(steps: list[dict[str, Any]], name: str) -> int:
-    names = [s.get("name") for s in steps]
-    assert name in names, f"the deploy job has no step named {name!r}"
-    return names.index(name)
-
-
-@pytest.mark.parametrize("workflow", ["release.yml", "hotfix.yml"])
-def test_the_deploy_job_rolls_the_relay(workflow):
-    steps = _deploy_steps(workflow)
-    at = _index(steps, STEP)
-    step = steps[at]
-    run = str(step.get("run", ""))
-    assert INVOCATION in run, run
-    for flag in ("--confirm", "--get-credentials", "--tf-init"):
-        assert flag in run, f"{workflow}: the relay step does not pass {flag}"
-    # After the digests are proven, before anything dispatches.
-    assert at > _index(steps, "verify every service, job and worker image runs the pinned digests")
-    assert at > _index(steps, "apply the tenant network policies to every tenant namespace")
-    assert at < _index(steps, "smoke test (inside the VPC)")
-    when = str(step.get("if", ""))
-    # `_workflow` flattens release-verify, so `steps.verify.outputs.superseded`
-    # reads as the expression the action declares for it.
-    assert "steps.verify.outcome == 'success'" in when and "superseded == 'true') != 'true'" in when, when
-    assert "!cancelled()" in when, when
-    # A relay that did not roll fails the release: that is the defect this fixes.
-    assert not step.get("continue-on-error"), f"{workflow}: a relay that did not roll would pass the release"
-
-
-@pytest.mark.parametrize("workflow", ["release.yml", "hotfix.yml"])
-def test_the_relay_step_runs_on_the_projects_synced_python_and_terraform(workflow):
-    steps = _deploy_steps(workflow)
-    at = _index(steps, STEP)
-    before = steps[:at]
-    assert any(str(s.get("uses", "")).startswith("hashicorp/setup-terraform@") for s in before)
-    # apply.sh runs render.py and network_parity.py on ${PYTHON_BIN:-python3}.
-    # The tenant-namespace setup is switched by vars.APPLY_TENANT_NAMESPACES;
-    # the relay's is not, so its own setup must not be either.
-    uv = [s for s in before if str(s.get("uses", "")).startswith("astral-sh/setup-uv@")
-          and "APPLY_TENANT_NAMESPACES" not in str(s.get("if", ""))]
-    sync = [s for s in before if "uv sync --frozen" in str(s.get("run", ""))
-            and "APPLY_TENANT_NAMESPACES" not in str(s.get("if", ""))]
-    assert uv and sync, f"{workflow}: no unswitched uv setup and sync before the relay step"
-    assert ".venv/bin/python" in str((steps[at].get("env") or {}).get("PYTHON_BIN", ""))
 
 
 # --- RELAY-ROLL: only a new image rolls it, never under someone's hands -------

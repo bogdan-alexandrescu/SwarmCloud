@@ -2061,7 +2061,7 @@ entries:
   evidence:
   - terraform/bootstrap/wif.tf:57-73
   - terraform/bootstrap/wif.tf:194-200
-  notes: tests/unit/scripts/test_workflow_id_token_scope.py holds this list equal to the workflow files whose id-token step names GCP_DEPLOY_SA; a file missing here 403s its auth step on main.
+  notes: this list equals the workflow files whose id-token step names GCP_DEPLOY_SA; a file missing here 403s its auth step on main.
   step: bootstrap.pass-1
   refs:
     terraform:

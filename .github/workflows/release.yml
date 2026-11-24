@@ -109,7 +109,6 @@
 #      protection at all, so a missing `prod` would mean no wait. Measured
 #      2026-09-24: `prod` has required reviewer the owner and a
 #      deployment branch policy allowing only main; `dev` has no rule.
-#      tests/unit/scripts/test_release_prod_gate.py holds the ordering.
 
 name: release
 
@@ -535,8 +534,7 @@ jobs:
     # an always() job after the run is cancelled: on a skip_build prod
     # redeploy `promote` is skipped the moment `approval` succeeds, so a
     # reviewer who approved and cancelled a second later still got a prod
-    # apply (tests/unit/scripts/test_release_prod_gate.py, the cancellation
-    # tests).
+    # apply.
     #
     # NO `environment:` HERE, deliberately: `approval` holds this release's
     # one approval, and naming prod again would make GitHub ask again. The
@@ -638,9 +636,7 @@ jobs:
     # a bare `needs.infrastructure.result == 'success'` here does not stop
     # GitHub inserting success() in front of it: this job used to skip anyway,
     # every time, on a skip_build dev dispatch -- the IAM plan held but never
-    # applied, and the run still ended green (tests/unit/scripts/
-    # test_release_dev_iam_gate.py, test_a_skip_build_dev_release_with_an_iam_
-    # plan_still_reaches_dev_iam). `needs.infrastructure.result == 'success'`
+    # applied, and the run still ended green. `needs.infrastructure.result == 'success'`
     # stays: `needs.*` reads only a job's direct result, which success() does
     # not give us once a status function is spelled out.
     if: ${{ !cancelled() && github.event.inputs.environment != 'prod' && needs.infrastructure.result == 'success' && needs.infrastructure.outputs.iam == 'true' }}
@@ -1118,7 +1114,6 @@ jobs:
   #
   # It never runs on a first attempt, on "Re-run all jobs" (the approval runs
   # again and outputs the new attempt), on dev, or after a cancel.
-  # tests/unit/scripts/test_release_prod_gate.py holds all of that.
   # -------------------------------------------------------------------------
   stale-approval:
     name: prod approval is from an earlier attempt

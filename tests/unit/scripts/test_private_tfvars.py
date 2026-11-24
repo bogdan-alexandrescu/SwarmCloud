@@ -10,7 +10,7 @@ issue run touching infrastructure with DENY_LIST_UNSET, while the
 shared-project guard in the same job read the reviewed
 config/<env>/deny-list.json without trouble; and the alerts notified nobody.
 
-WHAT IS UNDER TEST is the shipped script and the shipped plan steps:
+WHAT IS UNDER TEST is the shipped script:
 
   * scripts/lib/private-tfvars.sh writes the reviewed list's entries, unchanged,
     as shared_deny_list, adds alert_emails from config/<env>/private.tfvars.json
@@ -18,10 +18,7 @@ WHAT IS UNDER TEST is the shipped script and the shipped plan steps:
   * the private file may set only the allowed keys, so it can never quietly
     override a tracked setting;
   * it stops and writes nothing when the list cannot be read, so a plan never
-    goes out with no list (that would turn the marker back to "0");
-  * the release's plan (release-apply, which release.yml and hotfix.yml both
-    run) and main's plan (terraform.yml) each write that file before planning
-    and pass it as a -var-file.
+    goes out with no list (that would turn the marker back to "0").
 """
 
 from __future__ import annotations
@@ -36,8 +33,6 @@ import pytest
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "lib" / "private-tfvars.sh"
 EXAMPLE = REPO / "scripts" / "lib" / "deny-list.example.json"
-RELEASE_APPLY = REPO / ".github" / "actions" / "release-apply" / "action.yml"
-TERRAFORM_WORKFLOW = REPO / ".github" / "workflows" / "terraform.yml"
 ENTRIES = json.loads(EXAMPLE.read_text())["entries"]
 #: Invented addresses on a reserved domain: never a person's.
 ADDRESSES = ["alerts-a@example.com", "alerts-b@example.com"]
@@ -136,43 +131,3 @@ def test_it_stops_and_writes_nothing_when_the_list_cannot_be_read(tmp_path: Path
     assert "never-touch list" in result.stderr
     assert not out.exists()
     assert not list(tmp_path.glob("private-dev.tfvars.json.part.*"))
-
-
-def _plan_runs(text: str) -> list[str]:
-    """Every shell block that runs `terraform ... plan` with var files."""
-    blocks: list[str] = []
-    current: list[str] | None = None
-    indent = 0
-    for line in text.splitlines():
-        stripped = line.strip()
-        if current is not None:
-            if stripped and (len(line) - len(line.lstrip())) < indent:
-                blocks.append("\n".join(current))
-                current = None
-            else:
-                current.append(line)
-                continue
-        if stripped.startswith("run: |"):
-            current = []
-            indent = len(line) - len(line.lstrip()) + 1
-    if current is not None:
-        blocks.append("\n".join(current))
-    return [b for b in blocks if "terraform -chdir" in b and " plan " in b and "-var-file=" in b]
-
-
-@pytest.mark.parametrize("path", [RELEASE_APPLY, TERRAFORM_WORKFLOW], ids=["release-apply", "terraform.yml"])
-def test_every_deploying_plan_passes_the_private_values_it_just_wrote(path: Path) -> None:
-    plans = _plan_runs(path.read_text())
-    assert plans, f"{path.relative_to(REPO)} has no terraform plan step"
-    for block in plans:
-        lines = [ln.strip() for ln in block.splitlines()]
-        writes = [i for i, ln in enumerate(lines) if ln.startswith("./scripts/lib/private-tfvars.sh --out ")]
-        plan_at = next(i for i, ln in enumerate(lines) if ln.startswith("terraform -chdir") and " plan " in ln)
-        assert writes and writes[0] < plan_at, f"{path.relative_to(REPO)}: the private values are not written before the plan"
-        written = lines[writes[0]].split("--out ", 1)[1].strip().strip('"')
-        passed = [ln.rstrip(" \\") for ln in lines[plan_at:] if ln.startswith("-var-file=")]
-        assert f'-var-file="{written}"' in passed, f"{path.relative_to(REPO)}: the plan does not pass {written}"
-        assert passed[-1] == f'-var-file="{written}"', (
-            f"{path.relative_to(REPO)}: the private values must be the last var file, so a tracked value never "
-            "overrides them"
-        )

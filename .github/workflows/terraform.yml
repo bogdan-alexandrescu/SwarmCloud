@@ -47,7 +47,7 @@ on:
   # through the merge queue"). ci-gate is required and waits for this
   # workflow's run at the entry's commit, so it runs there with NO path
   # filter -- a filtered-out run is one ci-gate waits ten minutes for and then
-  # fails the entry on (tests/unit/scripts/test_merge_queue_workflows.py).
+  # fails the entry on.
   # Never raised while the queue is off.
   merge_group:
     types: [checks_requested]
@@ -499,5 +499,3 @@ jobs:
       # the only reason this workflow asked for `pull-requests: write`. The plan
       # is in the run summary (above, addresses only). A pull
       # request has no plan to post -- see "WHY A PULL REQUEST DOES NOT PLAN".
-      # tests/unit/scripts/test_workflow_step_reachability.py fails on a step
-      # its own job can never reach.

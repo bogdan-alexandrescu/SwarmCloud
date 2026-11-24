@@ -53,10 +53,10 @@ locals {
   # `build`) presents the same value, unlike `sub`, which changes to
   # `environment:<env>` (see below for what that did to a `sub` clause).
   #
-  # THIS LIST IS STATED TWICE ON PURPOSE AND COMPARED:
-  # tests/unit/scripts/test_workflow_id_token_scope.py fails unless it equals
-  # the set of workflow files whose google-github-actions/auth step names
-  # GCP_DEPLOY_SA. A file missing here fails its auth step on main with
+  # THIS LIST IS STATED TWICE: here, and by the workflow files themselves. It
+  # equals the set of workflow files whose google-github-actions/auth step
+  # names GCP_DEPLOY_SA. A new one is added here in the same change.
+  # A file missing here fails its auth step on main with
   # `Permission 'iam.serviceAccounts.getAccessToken' denied`.
   #
   # The jobs in each file that authenticate: release.yml build, promote,

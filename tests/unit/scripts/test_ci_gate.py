@@ -520,8 +520,7 @@ def test_a_run_the_paths_did_not_predict_still_counts_when_it_fails(tmp_path):
 def test_a_late_unpredicted_failing_run_is_caught_inside_the_settle_window(tmp_path):
     """Nothing expected, so without a settle window the gate would pass on its
     first look. The gate job sets the window to zero because it starts after
-    the event's runs exist (test_unit_shards.py holds that reason); the
-    script's window still works when asked for. MUTATION: ignore CI_GATE_SETTLE."""
+    the event's runs exist; the script's window still works when asked for. MUTATION: ignore CI_GATE_SETTLE."""
     world = {"runs": [run(2, appears_after=3, conclusion="failure",
                           jobs=tf_jobs(**{"terraform test": "failure"}))]}
     proc, _ = wait(tmp_path, world, ["LICENSE"], CI_GATE_SETTLE="2")

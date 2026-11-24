@@ -28,8 +28,7 @@ fields and their consumers:
   (`"auto-merge.yml"`) or a path to the entry.
 * `files.<workflow>.jobs.<job id>.steps.<step key>.run` -- a workflow step's
   `run:` text exactly as YAML reads it. Consumer: `run_block`, called by
-  test_auto_merge_workflow.py, test_auto_merge_base_merge.py,
-  test_auto_merge_ready_on_green.py and test_merge_train.py, which execute it.
+  the tests under tests/unit/scripts/ that execute the step.
 * `files.<action>.steps.<step key>.run` -- the same for a composite action,
   whose steps sit under `runs.steps` and belong to no job. Consumer:
   `run_block(action, None, step)`.

@@ -593,8 +593,8 @@ run "a_malformed_ci_fixer_account_is_refused" {
 # (docs/merge-step.md M4/R4). Owner decision, 2026-10-02: job-level grants in
 # the workflows AND this pin. Each binding names one workflow FILE on one
 # allowed ref by `attribute.job_workflow_ref`, which GitHub sets from the file
-# the job runs. tests/unit/scripts/test_workflow_id_token_scope.py holds the
-# list in wif.tf equal to the workflows that authenticate as GCP_DEPLOY_SA.
+# the job runs. The list in wif.tf equals the workflows that authenticate as
+# GCP_DEPLOY_SA.
 run "the_deployer_is_bound_to_its_workflow_files_on_main" {
   command = plan
 

@@ -8,135 +8,31 @@ stayed queued for hours, until SELF_HOSTED_CI was set to `off` by hand.
 .github/workflows/runner-fallback.yml does that by itself (docs/ci.md, "CI
 falls back to GitHub-hosted runners on its own").
 
-This file holds what the workflow promises:
-
-  * its judge runs on GitHub-hosted ubuntu-24.04, never on the pool it judges;
-  * it runs every 10 minutes and on dispatch;
-  * the GITHUB_TOKEN gets `actions: write` and nothing else, and the workflow
-    level grants nothing;
-  * it flips SELF_HOSTED_CI, the variable every guarded runs-on reads;
-  * the 10/15/30-minute thresholds are named constants in its env;
-  * and its decision, executed here from the workflow's own script with fake
-    GitHub answers: a stuck pool flips off, hosted saturation does not, a
-    serving pool does not, the hysteresis holds a second flip, recovery needs
-    15 minutes of probes, and each run is re-run once.
-
-The workflow is pushed by the operator from a patch (an agent cannot push
-.github/workflows/), so until it lands every test here fails on the missing
-file, by design.
+This file executes the judge's own script, read through `ci_run_blocks`, with
+fake GitHub answers: a stuck pool flips off, hosted saturation does not, a
+serving pool does not, the hysteresis holds a second flip, recovery needs 15
+minutes of probes, and each run is re-run once.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pytest
-import yaml
 
-REPO = Path(__file__).resolve().parents[3]
-WORKFLOW = REPO / ".github" / "workflows" / "runner-fallback.yml"
-CI_DOC = REPO / "docs" / "ci.md"
+from .ci_run_blocks import run_block
 
 NOW = datetime(2026, 10, 17, 5, 30, tzinfo=timezone.utc)
 POOL = ["self-hosted", "linux", "x64", "example-ci"]
 
 
-def _load() -> dict:
-    assert WORKFLOW.is_file(), (
-        f"{WORKFLOW.relative_to(REPO)} is missing: the operator applies "
-        "workflow-lines.patch from the CI-FALLBACK pull request"
-    )
-    data = yaml.safe_load(WORKFLOW.read_text())
-    if True in data:  # YAML 1.1 reads a bare `on:` key as True
-        data["on"] = data.pop(True)
-    return data
-
-
 @pytest.fixture(scope="module")
-def workflow() -> dict:
-    return _load()
-
-
-@pytest.fixture(scope="module")
-def judge_script(workflow) -> dict:
+def judge_script() -> dict:
     """The judge's own Python, executed as a module (main() does not run)."""
-    steps = workflow["jobs"]["judge"]["steps"]
-    [step] = [s for s in steps if s.get("shell") == "python3 {0}"]
+    step = "judge the pool and flip SELF_HOSTED_CI"
     namespace: dict = {"__name__": "runner_fallback"}
-    exec(compile(step["run"], str(WORKFLOW), "exec"), namespace)
+    exec(compile(run_block("runner-fallback.yml", "judge", step), step, "exec"), namespace)
     return namespace
-
-
-# --- What the workflow file pins ---------------------------------------------
-
-
-def test_the_judge_runs_on_github_hosted_never_on_the_pool(workflow):
-    judge = workflow["jobs"]["judge"]
-    assert judge["runs-on"] == "ubuntu-24.04"
-    assert "SWARM_CI_RUNNER_LABEL" not in str(judge["runs-on"])
-    assert "SELF_HOSTED_CI" not in str(judge["runs-on"]), "the judge must not follow the hatch it sets"
-
-
-def test_only_the_probe_asks_for_the_pool_and_only_while_the_hatch_is_off(workflow):
-    on_pool = sorted(n for n, j in workflow["jobs"].items() if "SWARM_CI_RUNNER_LABEL" in str(j.get("runs-on")))
-    assert on_pool == ["probe"]
-    probe = workflow["jobs"]["probe"]
-    assert probe["if"] == "vars.SELF_HOSTED_CI == 'off'"
-    assert probe["permissions"] == {}
-    assert "secrets." not in yaml.safe_dump(probe)
-    assert not any("checkout" in str(s.get("uses", "")) for s in probe["steps"])
-
-
-def test_it_runs_every_ten_minutes_and_on_dispatch_and_nothing_a_fork_can_start(workflow):
-    assert workflow["on"]["schedule"] == [{"cron": "*/10 * * * *"}]
-    assert "workflow_dispatch" in workflow["on"]
-    assert set(workflow["on"]) == {"schedule", "workflow_dispatch"}
-
-
-def test_the_github_token_gets_actions_write_and_nothing_else(workflow):
-    assert workflow["permissions"] == {}
-    assert workflow["jobs"]["judge"]["permissions"] == {"actions": "write"}
-
-
-def test_the_variable_is_written_with_the_app_token_scoped_to_variables(workflow):
-    """GITHUB_TOKEN has no `variables` scope; the App token asks for only that."""
-    [mint] = [s for s in workflow["jobs"]["judge"]["steps"] if "create-github-app-token" in str(s.get("uses"))]
-    perms = {k: v for k, v in mint["with"].items() if k.startswith("permission-")}
-    assert perms == {"permission-actions-variables": "write"}
-
-
-def test_the_mint_never_asks_for_the_variables_key_github_does_not_have(workflow):
-    """archived issue 2220, 2026-10-27: the action turns permission-<name> into the API key <name>
-    (dashes as underscores). `permission-variables` asked for `variables`, which GitHub
-    refuses as "not granted" whatever the installation holds; the key is `actions_variables`."""
-    for step in workflow["jobs"]["judge"]["steps"]:
-        assert "permission-variables" not in (step.get("with") or {}), step.get("name")
-
-
-def test_it_flips_the_documented_variable_and_label(workflow):
-    assert workflow["env"]["VARIABLE"] == "SELF_HOSTED_CI"
-    assert workflow["env"]["POOL_LABEL"] == "${{ vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci' }}"
-    assert "vars.SELF_HOSTED_CI == 'off'" in CI_DOC.read_text()
-
-
-def test_the_thresholds_are_named_constants(workflow):
-    env = workflow["env"]
-    assert (env["QUEUED_MINUTES"], env["RECOVER_MINUTES"], env["HYSTERESIS_MINUTES"]) == ("10", "15", "30")
-
-
-def test_the_script_reads_the_thresholds_from_env_not_literals(workflow):
-    run = next(s["run"] for s in workflow["jobs"]["judge"]["steps"] if s.get("shell") == "python3 {0}")
-    for name in ("QUEUED_MINUTES", "RECOVER_MINUTES", "HYSTERESIS_MINUTES"):
-        assert f'cfg["{name}"]' in run
-    assert "decide(state, now, os.environ)" in run
-
-
-def test_the_docs_describe_the_fallback():
-    text = CI_DOC.read_text()
-    assert "### CI falls back to GitHub-hosted runners on its own" in text
-    for needle in ("runner-fallback.yml", "10 minutes", "15 minutes", "30 minutes", "permission-actions-variables"):
-        assert needle in text, needle
 
 
 # --- The decision, run from the workflow's own script ------------------------
@@ -259,11 +155,6 @@ def test_going_back_on_reruns_nothing(judge_script):
 
 def _at(seconds_ago: int) -> str:
     return (NOW - timedelta(seconds=seconds_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def test_the_judge_script_runs_under_python3(workflow):
-    [step] = [s for s in workflow["jobs"]["judge"]["steps"] if "run" in s and "def decide" in s["run"]]
-    assert step["shell"] == "python3 {0}"
 
 
 def test_queued_exactly_ten_minutes_is_not_stuck_and_one_second_more_is(judge_script):

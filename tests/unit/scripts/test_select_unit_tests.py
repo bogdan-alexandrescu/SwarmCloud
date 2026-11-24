@@ -20,11 +20,11 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
+
+from .ci_run_blocks import run_block
 
 REPO = Path(__file__).resolve().parents[3]
 SELECT = REPO / "scripts" / "lib" / "select_unit_tests.py"
-APPLICATION = REPO / ".github" / "workflows" / "application.yml"
 
 _spec = importlib.util.spec_from_file_location("select_unit_tests", SELECT)
 sel = importlib.util.module_from_spec(_spec)
@@ -416,17 +416,13 @@ def test_the_walkers_outside_apps_tests_and_docs_stay_cheap():
         assert weights.get(walker, median) < 5, (walker, weights.get(walker))
 
 
-# The walkers of .github/ and images/ (CI-GUARDS-DOCS, part of archived issue 1822): each
-# reads every workflow file, every issue form, every Dockerfile or every file of
-# one image directory, so a new workflow or image breaks it without naming it.
-# All weigh under 5 CI-seconds, about 12 s together; the heavier ones
-# (test_ci_gate, test_merge_queue_workflows, test_build_images_*, ...) stay
-# with main's push run. The last two -- test_auto_merge_base_merge (2.6 s)
-# and test_verify_deployer_trust (4.0 s), +6.6 CI-seconds a pull request -- read CLAUDE.md or docs/runbooks/merge-app.md by
-# name, so test_changed_guards.py's docs-only case allows a non-doc guard that
-# names a changed doc (CI-GUARDS-THREE, part of archived issue 1822).
+# The walkers of images/ and scripts/, and the tests that run a published CI
+# run block (CI-GUARDS-DOCS, part of archived issue 1822): each reads every Dockerfile,
+# every file of one image directory or scripts/generated/ci-run-blocks.json, so
+# a new image or run block breaks it without naming it. None opens a file under
+# .github/ (issue 71). All weigh under 5 CI-seconds; the heavier ones
+# (test_ci_gate, test_build_images_*, ...) stay with main's push run.
 GITHUB_AND_IMAGES_WALKERS = (
-    "tests/unit/scripts/test_workflow_step_reachability.py",
     "tests/unit/scripts/test_image_streaming.py",
     "tests/unit/scripts/test_pr_image_scan.py",
     "tests/unit/scripts/test_ui_node_line.py",
@@ -535,14 +531,8 @@ def test_on_this_repository_a_scheduler_module_selects_the_tests_that_import_it(
 
 
 # --------------------------------------------------------------------------
-# The workflow.
+# The workflow's `select` step, run from its published run block.
 # --------------------------------------------------------------------------
-def _select_step() -> dict:
-    steps = yaml.safe_load(APPLICATION.read_text())["jobs"]["changes"]["steps"]
-    (step,) = [s for s in steps if s.get("id") == "select"]
-    return step
-
-
 @pytest.mark.parametrize("event, python, areas", [
     ("push", "all", ""), ("merge_group", "all", ""), ("workflow_dispatch", "all", ""),
     ("pull_request", "subset", "docs"), ("pull_request", "none", ""),
@@ -551,7 +541,7 @@ def test_everything_but_a_pull_requests_all_passes_through(tmp_path, event, pyth
     """Main, a train, a queue entry and a dispatch keep the whole suite.
     MUTATION: narrow on a push too."""
     body = tmp_path / "step.sh"
-    body.write_text(_select_step()["run"])
+    body.write_text(run_block("application.yml", "changes", "select"))
     out = tmp_path / "out"
     out.write_text("")
     env = {**os.environ, "EVENT": event, "PYTHON": python, "AREAS": areas, "BASE_SHA": "", "HEAD_SHA": "",
@@ -560,20 +550,3 @@ def test_everything_but_a_pull_requests_all_passes_through(tmp_path, event, pyth
     assert proc.returncode == 0, proc.stderr
     got = dict(line.split("=", 1) for line in out.read_text().splitlines() if "=" in line)
     assert got == {"python": python, "areas": areas, "tests": ""}, got
-
-
-def test_the_step_uses_changed_guards_and_the_selector():
-    run = _select_step()["run"]
-    assert "./scripts/changed-guards.sh --files" in run and "--list" in run, run
-    assert "scripts/lib/select_unit_tests.py" in run, run
-
-
-def test_the_pick_step_runs_the_listed_files_in_selected_mode():
-    jobs = yaml.safe_load(APPLICATION.read_text())["jobs"]
-    (pick,) = [s for s in jobs["python-unit"]["steps"] if s.get("id") == "pick"]
-    assert pick["env"]["PYTHON_TESTS"] == "${{ needs.changes.outputs.tests }}", pick["env"]
-    # The selection lives in scripts/lib/unit_shards.py since LANE CI-EARLY
-    # (the `changes` job sizes the matrix with the same code).
-    assert "scripts/lib/unit_shards.py pick" in pick["run"], pick["run"]
-    script = (REPO / "scripts" / "lib" / "unit_shards.py").read_text()
-    assert 'mode == "selected"' in script and "PYTHON_TESTS" in script

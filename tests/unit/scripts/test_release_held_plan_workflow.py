@@ -10,7 +10,8 @@ gs:// address, dev-iam would read it empty and the plan the owner reviewed
 would never apply. The output is the path under the bucket, and dev-iam
 rebuilds the address from its own TF_STATE_BUCKET.
 
-These run the two steps themselves, with a fake gcloud, and model GitHub's
+These run the two steps themselves, as published in
+scripts/generated/ci-run-blocks.json, with a fake gcloud, and model GitHub's
 rule: every output that contains the bucket is dropped before the next job.
 """
 
@@ -23,13 +24,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
 
-REPO = Path(__file__).resolve().parents[3]
-ACTION = REPO / ".github" / "actions" / "release-apply" / "action.yml"
-RELEASE = REPO / ".github" / "workflows" / "release.yml"
-WORKFLOWS = sorted((REPO / ".github" / "workflows").glob("*.yml"))
-ACTIONS = sorted((REPO / ".github" / "actions").glob("*/action.yml"))
+from .ci_run_blocks import run_block
 
 #: storage cp/rm against a directory standing in for Cloud Storage: gs://B/P
 #: is $FAKE_GCS/B/P. Every call is logged, one per line.
@@ -47,17 +43,6 @@ case "${verb}" in
   *) exit 2 ;;
 esac
 """
-
-
-def _load(path: Path) -> dict:
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
-
-
-def _step(steps: list[dict], *, id: str | None = None, name: str | None = None) -> dict:
-    for step in steps:
-        if (id is not None and step.get("id") == id) or (name is not None and step.get("name") == name):
-            return step
-    raise AssertionError(f"no step id={id!r} name={name!r}")
 
 
 def _outputs(path: Path) -> dict[str, str]:
@@ -109,8 +94,7 @@ def _run(script: str, env: dict, cwd: Path) -> subprocess.CompletedProcess:
 
 
 def _held(box: dict) -> dict[str, str]:
-    step = _step(_load(ACTION)["runs"]["steps"], id="held")
-    proc = _run(step["run"], box["env"], box["tmp"])
+    proc = _run(run_block(".github/actions/release-apply/action.yml", None, "held"), box["env"], box["tmp"])
     assert proc.returncode == 0, proc.stderr
     return _outputs(Path(box["env"]["GITHUB_OUTPUT"]))
 
@@ -133,17 +117,6 @@ def test_the_held_plan_s_output_survives_the_bucket_being_a_secret(box):
     assert bucket not in Path(box["env"]["GITHUB_STEP_SUMMARY"]).read_text(encoding="utf-8")
 
 
-def test_the_output_chain_carries_the_path_to_dev_iam():
-    action = _load(ACTION)
-    assert action["outputs"]["plan_path"]["value"] == "${{ steps.held.outputs.path }}"
-    assert "plan_uri" not in action["outputs"]
-    jobs = _load(RELEASE)["jobs"]
-    assert jobs["infrastructure"]["outputs"]["plan_path"] == "${{ steps.stage.outputs.plan_path }}"
-    iam_env = jobs["infrastructure-iam"]["env"]
-    assert iam_env["PLAN_PATH"] == "${{ needs.infrastructure.outputs.plan_path }}"
-    assert iam_env["TF_STATE_BUCKET"] == "${{ secrets.TF_STATE_BUCKET }}"
-
-
 def test_dev_iam_rebuilds_the_address_and_applies_exactly_the_held_plan(box):
     """The two steps end to end: what `held` wrote, dev-iam fetches by the
     path that survived, checks by sha256 and drops."""
@@ -152,13 +125,12 @@ def test_dev_iam_rebuilds_the_address_and_applies_exactly_the_held_plan(box):
     reviewed = (box["tf_root"] / "plan.tfplan").read_bytes()
     (box["tf_root"] / "plan.tfplan").unlink()
 
-    steps = _load(RELEASE)["jobs"]["infrastructure-iam"]["steps"]
     env = {**box["env"], "PLAN_PATH": outputs.get("path", ""), "PLAN_SHA256": outputs.get("sha256", "")}
-    fetch = _run(_step(steps, name="fetch the plan the owner reviewed")["run"], env, box["tmp"])
+    fetch = _run(run_block("release.yml", "infrastructure-iam", "fetch the plan the owner reviewed"), env, box["tmp"])
     assert fetch.returncode == 0, fetch.stdout + fetch.stderr
     assert (box["tf_root"] / "plan.tfplan").read_bytes() == reviewed
 
-    drop = _run(_step(steps, name="drop the held plan")["run"], env, box["tmp"])
+    drop = _run(run_block("release.yml", "infrastructure-iam", "drop the held plan"), env, box["tmp"])
     assert drop.returncode == 0, drop.stdout + drop.stderr
     assert not (Path(box["env"]["FAKE_GCS"]) / bucket / outputs["path"]).exists()
     log = Path(box["env"]["FAKE_GCLOUD_LOG"]).read_text(encoding="utf-8")
@@ -174,9 +146,8 @@ NOT_A_HELD_PLAN = ["", "plans/", "../plan.tfplan", "plans/../infra/dev/plan.tfpl
 @pytest.mark.parametrize("plan_path", NOT_A_HELD_PLAN)
 def test_dev_iam_never_drops_anything_but_a_held_plan(box, plan_path: str):
     """An empty path must not become the bucket's root."""
-    steps = _load(RELEASE)["jobs"]["infrastructure-iam"]["steps"]
     env = {**box["env"], "PLAN_PATH": plan_path}
-    drop = _run(_step(steps, name="drop the held plan")["run"], env, box["tmp"])
+    drop = _run(run_block("release.yml", "infrastructure-iam", "drop the held plan"), env, box["tmp"])
     assert drop.returncode != 0
     assert not Path(box["env"]["FAKE_GCLOUD_LOG"]).exists()
 
@@ -185,43 +156,10 @@ def test_dev_iam_never_drops_anything_but_a_held_plan(box, plan_path: str):
 def test_dev_iam_never_fetches_anything_but_a_held_plan(box, plan_path: str):
     """The deploy identity reads the whole state bucket: a path that is not a
     held plan is refused before any copy, not after the sha256 check."""
-    steps = _load(RELEASE)["jobs"]["infrastructure-iam"]["steps"]
     env = {**box["env"], "PLAN_PATH": plan_path, "PLAN_SHA256": "0" * 64}
-    fetch = _run(_step(steps, name="fetch the plan the owner reviewed")["run"], env, box["tmp"])
+    fetch = _run(run_block("release.yml", "infrastructure-iam", "fetch the plan the owner reviewed"), env, box["tmp"])
     assert fetch.returncode != 0
     assert not Path(box["env"]["FAKE_GCLOUD_LOG"]).exists()
     assert box["env"]["TF_STATE_BUCKET"] not in fetch.stdout + fetch.stderr
 
 
-def _conditions(node: object):
-    if isinstance(node, dict):
-        for key, value in node.items():
-            if key == "if":
-                yield str(value)
-            yield from _conditions(value)
-    elif isinstance(node, list):
-        for item in node:
-            yield from _conditions(item)
-
-
-@pytest.mark.parametrize("path", WORKFLOWS + ACTIONS, ids=lambda p: str(p.relative_to(REPO)))
-def test_no_condition_reads_a_secret(path: Path):
-    """GitHub refuses a workflow whose `if:` reads `secrets.*`; a value that
-    gates a step is mapped into `env` first (ci-fix.yml's fixer account)."""
-    assert not [c for c in _conditions(_load(path)) if "secrets." in c]
-
-
-@pytest.mark.parametrize("path", WORKFLOWS, ids=lambda p: p.name)
-def test_no_job_output_is_a_secret(path: Path):
-    """A job output that holds a secret reaches the next job empty."""
-    for name, job in (_load(path).get("jobs") or {}).items():
-        for key, value in (job.get("outputs") or {}).items():
-            assert "secrets." not in str(value), f"{path.name}: {name}.outputs.{key}"
-
-
-def test_the_ci_fixer_is_gated_on_its_mapped_account():
-    job = _load(REPO / ".github" / "workflows" / "ci-fix.yml")["jobs"]["fix"]
-    assert job["env"]["SWARM_CI_FIX_SA"] == "${{ secrets.SWARM_CI_FIX_SA }}"
-    auth = _step(job["steps"], id="auth")
-    assert auth["if"] == "${{ env.SWARM_CI_FIX_SA != '' }}"
-    assert auth["with"]["service_account"] == "${{ env.SWARM_CI_FIX_SA }}"

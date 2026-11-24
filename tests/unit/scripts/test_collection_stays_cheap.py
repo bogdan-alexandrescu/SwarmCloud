@@ -36,7 +36,7 @@ UNIT = HERE.parent
 
 # Top-level packages a scripts test may use but must not import at module top.
 # `control_plane.conftest` is listed by full name: the `control_plane` package
-# itself is cheap and test_issue_forms reads a helper from it legitimately.
+# itself is cheap and test_qa_routes reads a helper from it legitimately.
 HEAVY = (
     "agent_worker",
     "control_plane.conftest",

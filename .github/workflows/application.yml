@@ -52,7 +52,7 @@ on:
   # through the merge queue"). ci-gate is required and is a job of this
   # workflow, so it runs there with NO filter -- a run that never starts is a
   # required check that never reports, and the queue drops the entry at its
-  # timeout (tests/unit/scripts/test_merge_queue_workflows.py).
+  # timeout.
   # Never raised while the queue is off.
   merge_group:
     types: [checks_requested]
@@ -658,9 +658,8 @@ jobs:
             CLAUDE.md
             CONTRACT.md
             .github/workflows/application.yml
-            # tests/unit/scripts/test_release_reuses_ci_images.py reads release.yml
-            # to hold it to reusing this workflow's build. release.yml never runs on
-            # a pull request, so without this a PR touching only it ran nothing.
+            # release.yml reuses this workflow's build and never runs on a pull
+            # request, so without this a PR touching only it ran nothing.
             .github/workflows/release.yml
             # The hotfix lane, and the stages both lanes run: held to their shape
             # by tests/unit/scripts/test_hotfix_release.py and the release tests,
@@ -670,7 +669,7 @@ jobs:
             .github/actions/**
             # Post-deploy acceptance runs only after a release completes on main,
             # so a pull request is the only place it is linted (actionlint below)
-            # and held to its shape (tests/unit/scripts/test_release_acceptance_job.py).
+            # and its `decide` step is run (tests/unit/scripts/test_release_acceptance_job.py).
             .github/workflows/accept.yml
             # actionlint and the YAML checks read the issue forms and the label
             # declaration. Without these a PR editing only a form would run
@@ -1455,7 +1454,6 @@ jobs:
         # on every supported line, so a fallback to the runner's Node (what an
         # empty version would mean) changes no result. The table's own
         # fail-under-CI is the guard that matters.
-        # tests/unit/scripts/test_python_job_node.py holds this step here.
         run: |
           set -euo pipefail
           dockerfile=images/swarm-ui/Dockerfile
@@ -1720,7 +1718,7 @@ jobs:
     # was skipped -- and on main `python-unit` and the lock / contract checks
     # skip whenever the tree was reused from its pull request -- so the job
     # was skipped on every main build although `python` succeeded (found
-    # 2026-11-11; tests/unit/scripts/test_workflow_needs_result_status.py).
+    # 2026-11-11).
     # With it, the job runs exactly when `python` succeeded on a push to
     # main, whatever was skipped above it; a cancelled run tags nothing.
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.python.result == 'success' && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository) }}
@@ -1839,8 +1837,8 @@ jobs:
         # of a line that reached end of life in April 2026 (docs/versions.md).
         # Reading it from the Dockerfile means the typecheck, the tests and the
         # build below run on the line the image uses, and a bump there moves
-        # this job with it. tests/unit/scripts/test_ui_node_line.py fails if a
-        # literal comes back.
+        # this job with it. tests/unit/scripts/test_ui_node_line.py runs
+        # this step.
         run: |
           set -euo pipefail
           dockerfile=images/swarm-ui/Dockerfile
@@ -1993,8 +1991,8 @@ jobs:
         # of a line that reached end of life in April 2026 (docs/versions.md).
         # Reading it from the Dockerfile means the typecheck, the tests and the
         # build below run on the line the image uses, and a bump there moves
-        # this job with it. tests/unit/scripts/test_ui_node_line.py fails if a
-        # literal comes back.
+        # this job with it. tests/unit/scripts/test_ui_node_line.py runs
+        # this step.
         run: |
           set -euo pipefail
           dockerfile=images/swarm-ui/Dockerfile
@@ -2333,8 +2331,7 @@ jobs:
       # As main builds it: swarm-ui bakes its environment in at build time.
       ENVIRONMENT: dev
       # The scanner the release's promotion runs, at the SAME pin
-      # (release.yml's TRIVY_VERSION; tests/unit/scripts/test_pr_image_scan.py
-      # holds the two equal): a pull request's scan that could disagree with
+      # (release.yml's TRIVY_VERSION): a pull request's scan that could disagree with
       # the release's would say nothing about whether the release will pass.
       TRIVY_VERSION: "0.74.0"
     steps:
@@ -2600,8 +2597,7 @@ jobs:
     # and stays so that a need added back cannot bring that skip back.
     # Main's push and a dispatch only: a lane push (`swarm/**`, LANE CI-EARLY)
     # is tested here but never builds or pushes an image. A disjunction, not
-    # parentheses: `&&` binds tighter than `||`, and the workflow models in
-    # tests/unit/scripts read this shape (test_workflow_step_reachability.py).
+    # parentheses: `&&` binds tighter than `||`.
     if: ${{ (!cancelled() && !failure() && github.event_name != 'pull_request' && github.event_name != 'merge_group' && github.ref == 'refs/heads/main' || !cancelled() && !failure() && github.event_name == 'workflow_dispatch') && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository) }}
     environment: build-pr
     # Authenticates to Google through workload identity: the only reason this

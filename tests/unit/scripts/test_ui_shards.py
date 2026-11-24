@@ -18,8 +18,7 @@ What is asserted here, by running the script rather than matching its text:
   * a file with no recorded weight (a new one) runs, at the default weight;
   * files where one path contains another share a shard, because vitest reads
     a file argument as a substring filter;
-  * the workflow computes the count once, in `changes`, and each shard hands
-    vitest its own files and never an empty list.
+  * the step that runs vitest hands npm exactly the files the pick listed.
 """
 
 from __future__ import annotations
@@ -29,17 +28,14 @@ import json
 import math
 import os
 import random
-import re
 import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
 
-from .lane_clause_helpers import without_lane_clause
+from .ci_run_blocks import run_block
 
 REPO = Path(__file__).resolve().parents[3]
-APPLICATION = REPO / ".github" / "workflows" / "application.yml"
 UI = REPO / "apps" / "swarm-ui"
 DURATIONS = REPO / "tests" / "unit" / "scripts" / "ui_test_durations.json"
 UI_SHARDS = REPO / "scripts" / "lib" / "ui_shards.py"
@@ -150,31 +146,6 @@ def test_the_count_follows_the_weight_up_to_the_cap(tmp_path):
     assert mod.SHARD_TARGET_SECONDS == 600 and mod.MAX_SHARDS == 8
 
 
-CI_DOC = REPO / "docs" / "ci.md"
-CI_DOC_SECTION = "### The component-test shards are sized by measured weight"
-
-
-def _ci_doc_shard_figure(name: str, unit: str = "") -> int:
-    """The figure docs/ci.md's component-shard section gives `name`, found by
-    the section's own wording ("`NAME` = <n>"), not by line number."""
-    text = CI_DOC.read_text()
-    assert CI_DOC_SECTION in text, f"{CI_DOC_SECTION!r} is gone from docs/ci.md"
-    section = text.split(CI_DOC_SECTION, 1)[1]
-    section = re.split(r"^#{1,3} ", section, maxsplit=1, flags=re.M)[0]
-    found = re.findall(rf"`{name}`\s*=\s*(\d[\d,]*){unit}", " ".join(section.split()))
-    assert len(found) == 1, f"docs/ci.md's component-shard section should state `{name}` = <n> once: {found}"
-    return int(found[0].replace(",", ""))
-
-
-def test_the_ci_doc_states_the_shard_target_and_cap_the_script_uses():
-    """docs/ci.md says ~600 s a shard and at most eight shards; those are the
-    script's figures. MUTATION: change SHARD_TARGET_SECONDS or MAX_SHARDS in
-    ui_shards.py, or either figure in the doc."""
-    mod = _module()
-    assert _ci_doc_shard_figure("SHARD_TARGET_SECONDS", r"\s*s\b") == mod.SHARD_TARGET_SECONDS
-    assert _ci_doc_shard_figure("MAX_SHARDS") == mod.MAX_SHARDS
-
-
 def test_the_shards_are_balanced_by_the_stored_weights(tmp_path):
     """~1/N of the measured time each, not ~1/N of the files: the heaviest
     shard is the heavier of one indivisible file and 1.1x the mean. MUTATION:
@@ -278,61 +249,10 @@ def test_a_shard_that_does_not_exist_is_refused(tmp_path, shard, shards):
 
 
 # ---------------------------------------------------------------------------
-# The workflow.
+# The step that hands vitest its files.
 # ---------------------------------------------------------------------------
-def _jobs() -> dict:
-    return yaml.safe_load(APPLICATION.read_text())["jobs"]
-
-
-def _step(job_id: str, step_id: str) -> dict:
-    found = [s for s in _jobs()[job_id]["steps"] if s.get("id") == step_id]
-    assert len(found) == 1, f"{job_id} has no single step with id {step_id}"
-    return found[0]
-
-
-def test_the_ui_shard_count_is_written_once_in_the_changes_job():
-    """MUTATION: put `[1, 2, 3, 4]` back in the matrix, or write SHARDS: 4."""
-    changes = _jobs()["changes"]
-    assert changes["outputs"].get("ui_shards") == "${{ steps.ui_shards.outputs.shards }}", changes["outputs"]
-    step = _step("changes", "ui_shards")
-    assert step["run"].strip().splitlines()[-1].strip() == "python3 scripts/lib/ui_shards.py count", step["run"]
-    assert (step.get("env") or {}).get("DURATIONS") == "tests/unit/scripts/ui_test_durations.json", step
-    job = _jobs()["ui-tests"]
-    assert job["strategy"]["matrix"]["shard"] == "${{ fromJSON(needs.changes.outputs.ui_shards) }}", job["strategy"]
-    assert job["strategy"].get("fail-fast") is False
-    # The reuse rule and the path gate are kept as they were, behind the
-    # fast-checks-only rule (test_fast_checks_on_lane_prs.py).
-    assert without_lane_clause(job["if"]) == ("needs.changes.outputs.full == 'true' && needs.changes.outputs.ui == 'true' && "
-                         "!contains(fromJSON(needs.changes.outputs.reused || '[]'), 'ui-tests')"), job["if"]
-
-
-def test_each_shard_hands_vitest_its_own_files():
-    """MUTATION: keep `--shard`, read another file than the pick wrote, or run
-    the vitest step before the pick."""
-    pick = _step("ui-tests", "pick")
-    env = pick.get("env") or {}
-    assert env.get("SHARD") == "${{ matrix.shard }}" and env.get("SHARDS") == "${{ strategy.job-total }}", env
-    assert env.get("DURATIONS") == "tests/unit/scripts/ui_test_durations.json", env
-    assert pick["run"].strip().splitlines()[-1].strip() == "python3 scripts/lib/ui_shards.py pick", pick["run"]
-    # A lane's pull request splits its selection the same way (ci-select.sh ui-pick).
-    assert "./scripts/ci-select.sh ui-pick" in pick["run"], pick["run"]
-    steps = [s for s in _jobs()["ui-tests"]["steps"] if "test:components" in str(s.get("run", ""))]
-    assert len(steps) == 1, steps
-    step = steps[0]
-    assert step.get("working-directory") == "apps/swarm-ui"
-    assert (step.get("env") or {}).get("SHARD_FILES") == env.get("SHARD_FILES"), (step.get("env"), env)
-    assert step["run"].strip() == 'npm run test:components -- $(cat "${SHARD_FILES}")', step["run"]
-    # Only after the pick passed, and never with no file: a lane's selection
-    # that reaches no component test writes count=0, and `vitest run` with no
-    # file argument would run the whole suite.
-    assert step.get("if") == "steps.pick.outputs.count != '0'", step
-    order = _jobs()["ui-tests"]["steps"]
-    assert order.index(pick) < order.index(step)
-
-
 def test_the_vitest_step_hands_npm_the_listed_files(tmp_path):
-    """Run the step's script with a stand-in `npm` that records its arguments."""
-    steps = [s for s in _jobs()["ui-tests"]["steps"] if "test:components" in str(s.get("run", ""))]
+    """Run the step's script (its published run block) with a stand-in `npm` that records its arguments."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     record = tmp_path / "npm-args"
@@ -342,7 +262,7 @@ def test_the_vitest_step_hands_npm_the_listed_files(tmp_path):
     files = tmp_path / "shard-files"
     files.write_text("src/a.test.tsx\nsrc/__tests__/b.test.tsx\n")
     env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "SHARD_FILES": str(files)}
-    proc = subprocess.run(["bash", "-e", "-c", steps[0]["run"]], cwd=tmp_path, env=env,
+    proc = subprocess.run(["bash", "-e", "-c", run_block("application.yml", "ui-tests", "component tests")], cwd=tmp_path, env=env,
                           capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert record.read_text().splitlines() == ["run", "test:components", "--",

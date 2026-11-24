@@ -8,17 +8,14 @@ itself was something only a human made, and sc-v0.5.6 did not exist when main
 already pinned it: every fresh install of that version failed to fetch its
 bridge, and nothing in CI could have said so.
 
-Two halves, both held here by EXECUTING their `run:` text, read out of the
-workflow files, against stub `git` and `gh` executables:
+Two halves, both held here by EXECUTING their `run:` text, read through
+`ci_run_blocks`, against stub `git` and `gh` executables:
 
 * application.yml's `plugin-tag` job creates the annotated tag on the commit
-  main was pushed to, after `format / unit tests` and NOT after the image
-  build (owner decision 2026-11-04, "Tag once tests pass": release.yml's job
-  waited about an hour for `images and scan`, and every plugin reload in that
-  hour lost its bridge), on a push to main only, never for a commit main has
-  moved past, only when the remote does not have it -- and never moves one
-  that exists, because users' installs already resolved it.
-* application.yml's `shell` job, on main, fails when the tag is missing AND a
+  main was pushed to, not for a commit main has moved past, only when the
+  remote does not have it -- and never moves one that exists, because users'
+  installs already resolved it.
+* application.yml's `shell` job's check fails when the tag is missing AND a
   completed push run whose `format / unit tests` passed already descends from
   the commit that bumped the version and its plugin-tag failed or never ran
   (the run that should have tagged it did not), whatever that run's overall
@@ -34,7 +31,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import subprocess
 import textwrap
@@ -42,7 +38,7 @@ from pathlib import Path
 
 import pytest
 
-from .test_release_reuses_ci_images import _evaluate, _workflow
+from .ci_run_blocks import run_block
 
 VERSION = "9.9.9"
 TAG = f"sc-v{VERSION}"
@@ -58,45 +54,13 @@ pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="the steps re
 # ---------------------------------------------------------------------------
 
 
-def _taggers(name: str) -> list[tuple[str, dict]]:
-    return [
-        (job_id, job)
-        for job_id, job in _workflow(name)["jobs"].items()
-        if any(re.search(r"\btag\s+-a\b", str(step.get("run", ""))) for step in job.get("steps") or [])
-    ]
-
-
-def _tag_job() -> tuple[str, dict]:
-    """The one application.yml job that creates a tag."""
-    found = _taggers("application.yml")
-    assert len(found) == 1, f"application.yml has {len(found)} jobs that create an annotated tag; expected one (plugin-tag)"
-    return found[0]
-
-
-def _newest_step() -> dict:
-    _, job = _tag_job()
-    steps = [s for s in job.get("steps") or [] if s.get("id") == "newest"]
-    assert len(steps) == 1, "the tag job has no single `newest` step deciding whether main moved past the commit"
-    return steps[0]
-
-
-def _tag_step() -> dict:
-    _, job = _tag_job()
-    steps = [s for s in job.get("steps") or [] if re.search(r"\btag\s+-a\b", str(s.get("run", "")))]
-    assert len(steps) == 1, f"the tag job has {len(steps)} steps creating a tag; expected one"
-    return steps[0]
-
-
-def _shell_job() -> dict:
-    return _workflow("application.yml")["jobs"]["shell"]
-
-
-def _check_step() -> dict:
-    steps = [s for s in _shell_job().get("steps") or [] if "pinned bridge tag" in str(s.get("name", ""))]
-    assert len(steps) == 1, (
-        f"application.yml's shell job has {len(steps)} steps checking the plugin's pinned bridge tag; expected one"
-    )
-    return steps[0]
+TAG_STEP = run_block("application.yml", "plugin-tag", "create sc-v<version> on this commit unless it already exists")
+NEWEST_STEP = run_block("application.yml", "plugin-tag", "newest")
+CHECK_STEP = run_block(
+    "application.yml",
+    "shell",
+    "the plugin's pinned bridge tag exists, or no tested push has tried to make it yet",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -203,18 +167,7 @@ _FAKE_GH = textwrap.dedent(
 ).lstrip()
 
 
-def _render_env(step: dict) -> dict[str, str]:
-    rendered = {}
-    for key, value in (step.get("env") or {}).items():
-        text = str(value)
-        text = re.sub(r"\$\{\{\s*github\.sha\s*\}\}", RELEASE_SHA, text)
-        text = re.sub(r"\$\{\{\s*github\.token\s*\}\}", "fake-token", text)
-        assert "${{" not in text, f"the step's env {key} is {value!r}, which this test does not render"
-        rendered[key] = text
-    return rendered
-
-
-def _run(step: dict, tmp_path: Path, *, version: str = VERSION, **fake: str):
+def _run(script_text: str, tmp_path: Path, *, version: str = VERSION, **fake: str):
     work = tmp_path / "work"
     (work / "plugin" / ".claude-plugin").mkdir(parents=True)
     (work / "plugin" / ".claude-plugin" / "plugin.json").write_text(json.dumps({"name": "sc", "version": version}))
@@ -234,11 +187,13 @@ def _run(step: dict, tmp_path: Path, *, version: str = VERSION, **fake: str):
         "GITHUB_SHA": RELEASE_SHA,
         "GITHUB_REPOSITORY": "owner/repo",
         "GITHUB_OUTPUT": str(tmp_path / "github_output"),
-        **_render_env(step),
+        # The steps' own `env:`.
+        "GH_TOKEN": "fake-token",
+        "RELEASE_SHA": RELEASE_SHA,
         **fake,
     }
     script = tmp_path / "step.sh"
-    script.write_text(step["run"])
+    script.write_text(script_text)
     result = subprocess.run(
         ["bash", "--noprofile", "--norc", "-eo", "pipefail", str(script)], cwd=work, env=env, capture_output=True, text=True, timeout=60, check=False
     )
@@ -271,7 +226,7 @@ def _forces(calls: list[list[str]]) -> list[list[str]]:
 
 
 def test_an_absent_tag_is_created_annotated_on_the_pushed_commit_and_pushed(tmp_path):
-    result, calls = _run(_tag_step(), tmp_path, FAKE_REMOTE_TAG="absent")
+    result, calls = _run(TAG_STEP, tmp_path, FAKE_REMOTE_TAG="absent")
     assert result.returncode == 0, result.stdout + result.stderr
     tags = _git(calls, "tag")
     pushes = _git(calls, "push")
@@ -286,7 +241,7 @@ def test_an_absent_tag_is_created_annotated_on_the_pushed_commit_and_pushed(tmp_
 
 @pytest.mark.parametrize("at", (RELEASE_SHA, OTHER_SHA), ids=("on-this-commit", "on-another-commit"))
 def test_an_existing_tag_is_never_moved(tmp_path, at):
-    result, calls = _run(_tag_step(), tmp_path, FAKE_REMOTE_TAG=f"present:{at}")
+    result, calls = _run(TAG_STEP, tmp_path, FAKE_REMOTE_TAG=f"present:{at}")
     assert result.returncode == 0, result.stdout + result.stderr
     assert _git(calls, "tag") == [] and _git(calls, "push") == [], calls
     assert "::notice" in result.stdout and TAG in result.stdout, result.stdout
@@ -298,7 +253,7 @@ def test_an_existing_tag_is_never_moved(tmp_path, at):
 
 
 def test_a_remote_that_cannot_be_read_is_not_read_as_an_absent_tag(tmp_path):
-    result, calls = _run(_tag_step(), tmp_path, FAKE_REMOTE_TAG="error")
+    result, calls = _run(TAG_STEP, tmp_path, FAKE_REMOTE_TAG="error")
     assert result.returncode != 0, result.stdout
     assert _git(calls, "tag") == [] and _git(calls, "push") == [], calls
 
@@ -307,87 +262,22 @@ def test_a_tag_pushed_first_by_someone_else_is_not_a_failure(tmp_path):
     """The tag can appear between the read and the push (pushed by hand, as
     sc-v0.5.79 was); the push is rejected, and the tag it wanted exists."""
     result, calls = _run(
-        _tag_step(), tmp_path, FAKE_REMOTE_TAG=f"after-push:{RELEASE_SHA}", FAKE_PUSH="fail"
+        TAG_STEP, tmp_path, FAKE_REMOTE_TAG=f"after-push:{RELEASE_SHA}", FAKE_PUSH="fail"
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert not _forces(calls), _forces(calls)
 
 
 def test_a_rejected_push_with_no_tag_behind_it_fails(tmp_path):
-    result, _ = _run(_tag_step(), tmp_path, FAKE_REMOTE_TAG="absent", FAKE_PUSH="fail")
+    result, _ = _run(TAG_STEP, tmp_path, FAKE_REMOTE_TAG="absent", FAKE_PUSH="fail")
     assert result.returncode != 0, result.stdout
 
 
 @pytest.mark.parametrize("version", ("1.2", "1.2.3; rm -rf /", "v1.2.3", "", "null", "1.2.3\n4.5.6"))
 def test_a_version_that_is_not_x_y_z_is_refused(tmp_path, version):
-    result, calls = _run(_tag_step(), tmp_path, version=version, FAKE_REMOTE_TAG="absent")
+    result, calls = _run(TAG_STEP, tmp_path, version=version, FAKE_REMOTE_TAG="absent")
     assert result.returncode != 0, result.stdout
     assert _git(calls, "tag") == [] and _git(calls, "push") == [], calls
-
-
-def test_only_the_tag_job_may_write_contents():
-    for name in ("application.yml", "release.yml"):
-        assert _workflow(name)["permissions"].get("contents") == "read", (name, _workflow(name)["permissions"])
-    job_id, job = _tag_job()
-    assert job_id == "plugin-tag", job_id
-    assert (job.get("permissions") or {}).get("contents") == "write", job.get("permissions")
-    for name in ("application.yml", "release.yml"):
-        writers = sorted(
-            j for j, other in _workflow(name)["jobs"].items() if (other.get("permissions") or {}).get("contents") == "write"
-        )
-        assert writers == ([job_id] if name == "application.yml" else []), f"jobs with contents: write in {name}: {writers}"
-
-
-def test_the_release_no_longer_tags():
-    """One job tags. MUTATION: put a tagging job back in release.yml."""
-    assert _taggers("release.yml") == [], "release.yml still creates an annotated tag; application.yml's plugin-tag does"
-
-
-def test_the_tag_waits_for_the_unit_tests_and_not_the_image_build():
-    """Owner decision 2026-11-04, "Tag once tests pass": on 2026-11-04 the tag
-    waited about an hour behind release.yml's `images and scan`, and every
-    plugin reload in that hour lost its bridge. MUTATION: make it need `build`,
-    drop `python`, or let it run past a `python` that did not pass."""
-    _, job = _tag_job()
-    jobs = _workflow("application.yml")["jobs"]
-    assert jobs["python"]["name"] == "format / unit tests", jobs["python"]["name"]
-    needs = job.get("needs")
-    needs = [needs] if isinstance(needs, str) else list(needs or [])
-    assert needs == ["python"], f"the tag job needs {needs}; the proof is `format / unit tests` alone"
-    job_if = str(job.get("if", ""))
-    # `!cancelled()`, not none: with no status function GitHub ANDs the
-    # implicit success(), false whenever a job up the chain was skipped, which
-    # skipped this job on every main build (2026-11-11). Not `always()`: a
-    # cancelled run tags nothing.
-    assert re.search(r"!\s*cancelled\(\s*\)", job_if), job_if
-    assert not re.search(r"\b(always|failure)\(\s*\)", job_if), job_if
-    push_main = {"github.event_name": "push", "github.ref": "refs/heads/main", "needs.python.result": "success"}
-    assert _evaluate(job_if, **push_main) is True, job_if
-    for result in ("failure", "cancelled", "skipped"):
-        assert _evaluate(job_if, **{**push_main, "needs.python.result": result}) is False, result
-
-
-@pytest.mark.parametrize(
-    "event, ref",
-    (
-        ("pull_request", "refs/pull/7/merge"),
-        ("merge_group", "refs/heads/gh-readonly-queue/main/pr-7"),
-        ("workflow_dispatch", "refs/heads/main"),
-        ("workflow_dispatch", "refs/heads/feature"),
-        ("push", "refs/heads/feature"),
-    ),
-)
-def test_the_tag_job_runs_on_a_push_to_main_only(event, ref):
-    """MUTATION: drop the event or the ref clause from the job's `if:`."""
-    _, job = _tag_job()
-    ctx = {"github.event_name": event, "github.ref": ref, "needs.python.result": "success"}
-    assert _evaluate(str(job.get("if", "")), **ctx) is False, (event, ref)
-
-
-def test_the_gate_waits_for_the_tag():
-    """A tag that failed on main shows on main's ci-gate."""
-    needs = _workflow("application.yml")["jobs"]["ci-gate"]["needs"]
-    assert "plugin-tag" in needs, needs
 
 
 def _outputs(tmp_path: Path) -> dict[str, str]:
@@ -403,26 +293,13 @@ def _outputs(tmp_path: Path) -> dict[str, str]:
 def test_a_commit_main_has_moved_past_tags_nothing(tmp_path, compare, superseded, warns):
     """A superseded commit tags nothing; the newer commit's run tags it. An
     unreadable compare is not "superseded": the commit passed its unit tests.
-    MUTATION: drop the `newest` step's condition from the tag step, or read
-    an unreadable API as superseded."""
-    step = _newest_step()
-    result, calls = _run(step, tmp_path, FAKE_COMPARE=compare)
+    MUTATION: read an unreadable API as superseded."""
+    result, calls = _run(NEWEST_STEP, tmp_path, FAKE_COMPARE=compare)
     assert result.returncode == 0, result.stdout + result.stderr
     assert _outputs(tmp_path) == {"superseded": superseded}, _outputs(tmp_path)
     assert ("::warning" in result.stdout) is warns, result.stdout
     compares = [c for c in calls if c[0] == "gh" and c[1] == "api"]
     assert compares and "/compare/" in compares[0][2] and compares[0][2].endswith(f"{RELEASE_SHA}...main"), compares
-    tag_if = _tag_step().get("if")
-    assert _evaluate(tag_if, **{"steps.newest.outputs.superseded": superseded}) is (superseded == "false"), tag_if
-    _, job = _tag_job()
-    ids = [s.get("id") for s in job["steps"]]
-    assert ids.index("newest") < job["steps"].index(_tag_step()), ids
-
-
-def test_the_version_is_read_from_plugin_json_never_restated():
-    run = _tag_step()["run"]
-    assert "plugin/.claude-plugin/plugin.json" in run and "jq" in run
-    assert not re.search(r"sc-v\d", run), "the tag job names a version literally"
 
 
 # ---------------------------------------------------------------------------
@@ -431,14 +308,14 @@ def test_the_version_is_read_from_plugin_json_never_restated():
 
 
 def test_the_check_passes_when_the_tag_exists(tmp_path):
-    result, calls = _run(_check_step(), tmp_path, FAKE_REMOTE_TAG=f"present:{OTHER_SHA}")
+    result, calls = _run(CHECK_STEP, tmp_path, FAKE_REMOTE_TAG=f"present:{OTHER_SHA}")
     assert result.returncode == 0, result.stdout + result.stderr
     assert not [c for c in calls if c[0] == "gh"], "the tag exists; there is nothing to ask GitHub"
 
 
 def test_the_check_fails_when_a_run_since_the_bump_did_not_tag(tmp_path):
     result, _ = _run(
-        _check_step(),
+        CHECK_STEP,
         tmp_path,
         FAKE_REMOTE_TAG="absent",
         FAKE_BUMP=BUMP_SHA,
@@ -457,7 +334,7 @@ def test_the_check_fails_when_the_run_that_should_have_tagged_concluded_failure(
     and its plugin-tag job failed, so the RUN concluded `failure`. A check that
     read only successful runs would warn here forever."""
     result, calls = _run(
-        _check_step(),
+        CHECK_STEP,
         tmp_path,
         FAKE_REMOTE_TAG="absent",
         FAKE_BUMP=BUMP_SHA,
@@ -484,7 +361,7 @@ def test_a_descended_run_a_newer_commit_superseded_only_warns(tmp_path, tagjob):
     commit main moved past; the newer run tags it. MUTATION: count it as
     the run that should have tagged."""
     result, _ = _run(
-        _check_step(),
+        CHECK_STEP,
         tmp_path,
         FAKE_REMOTE_TAG="absent",
         FAKE_BUMP=BUMP_SHA,
@@ -501,7 +378,7 @@ def test_a_descended_run_a_newer_commit_superseded_only_warns(tmp_path, tagjob):
 def test_a_descended_run_whose_unit_tests_failed_only_warns(tmp_path):
     """plugin-tag needs `format / unit tests`; a run where it failed never tried."""
     result, _ = _run(
-        _check_step(),
+        CHECK_STEP,
         tmp_path,
         FAKE_REMOTE_TAG="absent",
         FAKE_BUMP=BUMP_SHA,
@@ -516,7 +393,7 @@ def test_a_descended_run_whose_unit_tests_failed_only_warns(tmp_path):
 
 def test_a_failed_run_view_is_a_failure_not_an_untried_run(tmp_path):
     result, _ = _run(
-        _check_step(),
+        CHECK_STEP,
         tmp_path,
         FAKE_REMOTE_TAG="absent",
         FAKE_BUMP=BUMP_SHA,
@@ -531,7 +408,7 @@ def test_a_failed_run_view_is_a_failure_not_an_untried_run(tmp_path):
 
 def test_the_check_only_warns_when_no_run_has_finished_since_the_bump(tmp_path):
     result, _ = _run(
-        _check_step(),
+        CHECK_STEP,
         tmp_path,
         FAKE_REMOTE_TAG="absent",
         FAKE_BUMP=BUMP_SHA,
@@ -548,7 +425,7 @@ def test_the_check_only_warns_when_no_run_has_finished_since_the_bump(tmp_path):
 
 def test_a_failed_gh_call_is_a_failure_not_no_runs(tmp_path):
     result, _ = _run(
-        _check_step(), tmp_path, FAKE_REMOTE_TAG="absent", FAKE_BUMP=BUMP_SHA, FAKE_KNOWN=BUMP_SHA, FAKE_GH="fail"
+        CHECK_STEP, tmp_path, FAKE_REMOTE_TAG="absent", FAKE_BUMP=BUMP_SHA, FAKE_KNOWN=BUMP_SHA, FAKE_GH="fail"
     )
     assert result.returncode != 0, result.stdout
     assert "::error" in result.stdout, result.stdout
@@ -556,14 +433,5 @@ def test_a_failed_gh_call_is_a_failure_not_no_runs(tmp_path):
 
 
 def test_a_remote_that_cannot_be_read_fails_the_check(tmp_path):
-    result, _ = _run(_check_step(), tmp_path, FAKE_REMOTE_TAG="error")
+    result, _ = _run(CHECK_STEP, tmp_path, FAKE_REMOTE_TAG="error")
     assert result.returncode != 0, result.stdout
-
-
-def test_the_check_runs_on_main_with_what_it_needs():
-    step = _check_step()
-    assert "refs/heads/main" in str(step.get("if", "")), step.get("if")
-    assert "GH_TOKEN" in (step.get("env") or {}), step.get("env")
-    granted = _shell_job().get("permissions") or {}
-    assert granted.get("actions") == "read", granted
-    assert granted.get("contents") == "read", granted

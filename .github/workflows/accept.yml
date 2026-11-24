@@ -445,7 +445,6 @@ jobs:
     # schedule, workflow_dispatch from main (`target` already requires it) --
     # so the rule admits them; a dispatch from another branch is refused, and
     # that is the point. `deployment: false`: no deployment record.
-    # test_repo_secrets_environment.py.
     environment:
       name: repo-secrets
       deployment: false

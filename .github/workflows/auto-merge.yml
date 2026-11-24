@@ -241,7 +241,7 @@ jobs:
     # the rule admits them; a workflow_dispatch
     # from another branch is refused, and that is the point. `deployment:
     # false` (GitHub Actions, March 2026) reads the secrets without a
-    # deployment record on the pull request. test_repo_secrets_environment.py.
+    # deployment record on the pull request.
     environment:
       name: repo-secrets
       deployment: false
