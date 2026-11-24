@@ -9547,6 +9547,9 @@ class Worker(HeartbeatMixin, CheckpointMixin, SpendMixin, AccountPoolMixin):
             # Its own words, not "published_nothing": the branch IS pushed,
             # and the error says so with its name (archived issue 1623).
             return str(unopened)
+        if git.get(PUBLISH_FAILED_FIELD) is True:
+            # Refused or never ran (issue 284): `_publish_failed` names why.
+            return None
         if (
             git.get("published") is False
             and git.get("commit_count") == 0
@@ -10289,26 +10292,9 @@ class Worker(HeartbeatMixin, CheckpointMixin, SpendMixin, AccountPoolMixin):
         try:
             return open_with(token)
         except forge_mod.ForgeCredentialRejected:
-            self.log.warning(
-                "the forge refused the credential at the pull request; reading "
-                "its secret again and retrying once",
-                event="forge_token_reread", reason="pr_open_401", branch=branch,
-            )
+            pass
         unopened = f"branch {branch} pushed; pull request not opened"
-        refused = self._forge_write_refusal()
-        if refused is not None:
-            cause, reason = refused
-            self._emit_token_reread(branch, outcome=cause)
-            raise ForgeError(f"{unopened}: the re-read was refused: {cause}: {reason}")
-        refusal = self._git_token_refusal()
-        if refusal:
-            raise ForgeError(f"{unopened} (401): the token was not read again: {refusal}")
-        fresh = self._git_token(write=True)
-        if not fresh:
-            why = getattr(self, "_git_token_error", None) or "no forge credential was read"
-            self._emit_token_reread(branch, outcome="unread")
-            raise ForgeError(f"{unopened} (401): the token could not be read again: {why}")
-        self._emit_token_reread(branch, outcome="read")
+        fresh = self._write_token_read_again(branch, "pr_open_401", unopened, ForgeError)
         try:
             return open_with(fresh)
         except forge_mod.ForgeCredentialRejected as exc:
@@ -10348,27 +10334,7 @@ class Worker(HeartbeatMixin, CheckpointMixin, SpendMixin, AccountPoolMixin):
         except GitError as exc:
             if not token or not self._refused_credential(exc):
                 raise
-            self.log.warning(
-                "the forge refused the credential at the push; reading its secret "
-                "again and pushing once more",
-                event="forge_token_reread", reason="push_401", branch=branch,
-            )
-        unpushed = f"branch {branch} not pushed"
-        refused = self._forge_write_refusal()
-        if refused is not None:
-            cause, reason = refused
-            self._emit_token_reread(branch, outcome=cause, reason="push_401")
-            raise GitError(f"{unpushed}: the re-read was refused: {cause}: {reason}")
-        refusal = self._git_token_refusal()
-        if refusal:
-            raise GitError(f"{unpushed} (401): the token was not read again: {refusal}")
-        fresh = self._git_token(write=True)
-        if not fresh:
-            why = getattr(self, "_git_token_error", None) or "no forge credential was read"
-            self._emit_token_reread(branch, outcome="unread", reason="push_401")
-            raise GitError(f"{unpushed} (401): the token could not be read again: {why}")
-        self.log.register_secret(fresh)
-        self._emit_token_reread(branch, outcome="read", reason="push_401")
+        fresh = self._write_token_read_again(branch, "push_401", f"branch {branch} not pushed")
         self._own_before_forge_write("branch push")
         try:
             return push(fresh), fresh
@@ -10381,15 +10347,39 @@ class Worker(HeartbeatMixin, CheckpointMixin, SpendMixin, AccountPoolMixin):
                            branch=branch)
             # The marker first: `_publish_git` keeps 500 characters of the
             # reason, and git's own refusal is the longer, less useful part.
-            raise GitError(
-                f"{unpushed} (401 twice): {FORGE_REFUSED_TWICE}; the push said: {str(exc)[:200]}"
-            ) from None
+            raise GitError(f"branch {branch} not pushed (401 twice): {FORGE_REFUSED_TWICE}; "
+                           f"the push said: {str(exc)[:200]}") from None
+
+    def _write_token_read_again(self, branch: str, reason: str, failed: str, error=GitError) -> str:
+        """The ONE re-read after a 401 at a pull request's open, a push or the read before
+        it (issue 284), gates and all (`_forge_write_refusal`, `_git_token_refusal`, then
+        this task's own `_git_token(write=True)`): the fresh token, or `error` with no token.
+        """
+        self.log.warning("the forge refused the credential; reading its secret again and "
+                         "trying once more", event="forge_token_reread", reason=reason,
+                         branch=branch)
+        refused = self._forge_write_refusal()
+        if refused is not None:
+            cause, why = refused
+            self._emit_token_reread(branch, outcome=cause, reason=reason)
+            raise error(f"{failed}: the re-read was refused: {cause}: {why}")
+        refusal = self._git_token_refusal()
+        if refusal:
+            raise error(f"{failed} (401): the token was not read again: {refusal}")
+        fresh = self._git_token(write=True)
+        if not fresh:
+            why = getattr(self, "_git_token_error", None) or "no forge credential was read"
+            self._emit_token_reread(branch, outcome="unread", reason=reason)
+            raise error(f"{failed} (401): the token could not be read again: {why}")
+        self.log.register_secret(fresh)
+        self._emit_token_reread(branch, outcome="read", reason=reason)
+        return fresh
 
     def _emit_token_reread(
         self, branch: str, *, outcome: str, reason: str = "pr_open_401"
     ) -> None:
         """A `forge_token_reread` mark on the task's events (`reason`: `pr_open_401`,
-        or `push_401` for the publish push).
+        `push_401` or `pre_push_read_401`, the read before a publish_to_pr push).
 
         RUNNING with `cause`, as `_emit_startup_mark` writes: the frozen
         `EventType` has no note-only type. The branch and the outcome, never
@@ -13378,8 +13368,8 @@ class Worker(HeartbeatMixin, CheckpointMixin, SpendMixin, AccountPoolMixin):
 
     def _check_pull_before_push(
         self, publish_repo: Path, target: "publishpr_mod.Target", *,
-        access: RepoAccess, token: str, url: str,
-    ) -> tuple[PullHead, bool]:
+        access: RepoAccess, token: str, url: str, branch: str,
+    ) -> tuple[PullHead, bool, str]:
         """Read the pull request again and refuse, as a GitError, everything
         that would make the push onto it anything but a fast-forward of the
         head this step started from (archived issue 2183). Nothing has been pushed yet.
@@ -13387,19 +13377,31 @@ class Worker(HeartbeatMixin, CheckpointMixin, SpendMixin, AccountPoolMixin):
         Returns the pull request and whether its head moved ONLY BY THIS
         TASK'S OWN earlier generation (archived issue 2693, `_own_moved_pull_head`): then
         the lane's work stands on the head it started from, not on the
-        moved one, and `_publish_git` publishes nothing or replays onto it.
+        moved one, and `_publish_git` publishes nothing or replays onto it. And
+        the token that read it, a 401 read again once (issue 284), for the push.
         """
         ws = self.ws
         assert ws is not None
+        unread = f"publish_to_pr: could not read pull request #{target.number} before the push"
         try:
-            pull = self._read_pull(access, token, target.number)
+            try:
+                pull = self._read_pull(access, token, target.number)
+            except forge_mod.ForgeCredentialRejected:
+                token = self._write_token_read_again(
+                    branch, "pre_push_read_401", f"{unread}; nothing was pushed")
+                try:
+                    pull = self._read_pull(access, token, target.number)
+                except forge_mod.ForgeCredentialRejected as exc:
+                    self.log.error("the forge refused the re-read credential at the pull "
+                                   "request read as well", branch=branch)
+                    raise GitError(
+                        f"{unread} (401 twice); nothing was pushed: {FORGE_REFUSED_TWICE}; "
+                        f"the read said: {str(exc)[:120]}"
+                    ) from None
         except forge_mod.ForgeUnavailable as exc:
             raise _PullUnreachable(exc) from exc
         except ForgeError as exc:
-            raise GitError(
-                f"publish_to_pr: could not read pull request #{target.number} before "
-                f"the push: {exc}; nothing was pushed"
-            ) from exc
+            raise GitError(f"{unread}: {exc}; nothing was pushed") from exc
         why = publishpr_mod.refusal(
             pull, target=target, repository=access.ref.full_name,
             branch_prefix=self.cfg.git_branch_prefix,
@@ -13433,7 +13435,7 @@ class Worker(HeartbeatMixin, CheckpointMixin, SpendMixin, AccountPoolMixin):
                 "would not be a fast-forward; the head moved after the lane's first "
                 "step started. Nothing was pushed and nothing was forced"
             )
-        return pull, own_moved
+        return pull, own_moved, token
 
     def _own_moved_pull_head(
         self, publish_repo: Path, pull: PullHead, *, url: str, token: str
@@ -15252,11 +15254,12 @@ class Worker(HeartbeatMixin, CheckpointMixin, SpendMixin, AccountPoolMixin):
             # THIS STEP STARTED FROM (archived issue 2183): read again, checked again, and
             # the push below is leased on that head. Refused here, as the
             # attempt's error, before anything is pushed.
-            onto_pull, own_moved = (
+            onto_pull, own_moved, token = (
                 self._check_pull_before_push(
-                    publish_repo, onto_pr, access=access, token=token, url=url
+                    publish_repo, onto_pr, access=access, token=token, url=url,
+                    branch=branch,
                 )
-                if onto_pr is not None else (None, False)
+                if onto_pr is not None else (None, False, token)
             )
             workflow_paths = self._workflow_paths(publish_repo, floor=scan_floor)
             if workflow_paths and onto_pr is not None:
