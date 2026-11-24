@@ -16,6 +16,15 @@ plan), and one plain sentence.
     file_shared            two steps not on one dependency line name one file
     plan_invalid           the planner's output did not parse (`parse_findings`)
 
+`warnings(plan)` returns, in the same shape, what is REPORTED with the plan but
+never fails it: no re-plan, no hold, no refused auto-approval for these alone.
+Their codes are `WARNING_CODES`, never in `CODES`:
+
+    step_done_when_missing  a step of a plan of several states no `done_when`
+                            (improvement plan wave 2, per-step acceptance
+                            criteria): the review has nothing of that step's
+                            own to answer by name
+
 A step links to the requirements it delivers by `PlanStep.requirements`, their
 numbers 1 up, as `validation.tests[].requirements` numbers them. The one step
 of a single-step plan covers every requirement: there is no other step that
@@ -42,11 +51,14 @@ STEP_TESTS_MISSING = "step_tests_missing"
 REQUIREMENT_UNCOVERED = "requirement_uncovered"
 FILE_SHARED = "file_shared"
 PLAN_INVALID = "plan_invalid"
+STEP_DONE_WHEN_MISSING = "step_done_when_missing"
 
 CODES: tuple[str, ...] = (
     REQUIREMENTS_MISSING, STEP_FILES_MISSING, STEP_TESTS_MISSING, REQUIREMENT_UNCOVERED,
     FILE_SHARED, PLAN_INVALID,
 )
+#: The codes `warnings` reports: shown with the plan, never a failure.
+WARNING_CODES: tuple[str, ...] = (STEP_DONE_WHEN_MISSING,)
 
 #: The most findings one parse failure is read as, and the longest sentence:
 #: the schema's errors quote the planner's text, which a run stores and serves.
@@ -98,6 +110,23 @@ def lint(plan: Mapping[str, Any]) -> list[dict[str, Any]]:
             f"Steps {one!r} and {other!r} both name {path!r} and are not on one dependency line.",
             step=one))
     return findings
+
+
+def warnings(plan: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """The warnings on `plan`, in plan order; [] for none or no plan. Pure, as
+    `lint` is, and never part of what `lint` returns."""
+    steps = [step for step in _listed((plan or {}).get("steps")) if isinstance(step, Mapping)]
+    if len(steps) < 2:
+        return []
+    found: list[dict[str, Any]] = []
+    for step in steps:
+        if not _listed(step.get("done_when")):
+            sid = str(step.get("step_id") or "")
+            found.append(_finding(
+                STEP_DONE_WHEN_MISSING,
+                f"Step {sid!r} states no done_when, so the review has no statement of its "
+                "own to check it by.", step=sid))
+    return found
 
 
 def _sentence(text: str) -> str:
