@@ -15,6 +15,7 @@ import asyncio
 import json
 import secrets
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -144,6 +145,14 @@ async def _direct(fn, *args, **kwargs):
 
 
 class Harness:
+    #: The real seconds `until` waits at least. A count of turns alone is no
+    #: bound: 5,000 empty turns take about 75 ms, and a relay whose `to_thread`
+    #: is the real one needs the OS to run its worker thread first, which a busy
+    #: runner did not do in that time (issue 411). 10 s is over 50 times the
+    #: longest wait for ready measured beside 12 busy loops on one processor
+    #: (182 ms); a wait that is met never takes it.
+    give_up_seconds = 10.0
+
     def __init__(self, *, dialer: Dialer, turns: Any = None, image_changed: bool = False,
                  readback: Any = None) -> None:
         self.db = FakeFirestore()
@@ -184,9 +193,15 @@ class Harness:
             clock=self.clock.clock, sleep=sleep, to_thread=_direct)
 
     async def until(self, predicate, what: str) -> None:
-        for _ in range(5000):
+        # Real time, not the fake clock: what is waited for may be a thread.
+        # The turns stay a floor, so a process that was paused past the
+        # deadline still gets its turns.
+        deadline = time.monotonic() + self.give_up_seconds
+        turns = 0
+        while turns < 5000 or time.monotonic() < deadline:
             if predicate():
                 return
+            turns += 1
             await asyncio.sleep(0)
         raise AssertionError(f"never saw {what}; browser got {self.browser.frames()}")
 
