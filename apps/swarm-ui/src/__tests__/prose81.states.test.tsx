@@ -236,13 +236,10 @@ describe('QA targets: each state is one short line', () => {
         'The gate lets exactly a POST to https://id.example.test at this path through, after its own sign-in, so the app can refresh its token. Every other write there stays refused.',
       ],
     })
-    const writes = form.querySelector('[data-writes-notice]')
-    if (writes !== null) {
-      holds(writes, {
-        lines: ['Flows here may write to each ticked host.'],
-        moved: ['Flows on this environment may write, and their writes reach each ticked host as well as blog.example.test, a shared API among them.'],
-      })
-    }
+    holds(form.querySelector('[data-writes-notice]')!, {
+      lines: ['Flows here may write to each ticked host.'],
+      moved: ['Flows on this environment may write, and their writes reach each ticked host as well as blog.example.test, a shared API among them.'],
+    })
   })
 
   it('the one-time credential form: the link works once', async () => {
@@ -303,8 +300,7 @@ describe('QA targets: each state is one short line', () => {
     fireEvent.click(await button(page, 'Register QA target'))
     const form = formOf()
     fireEvent.change(form.querySelector('select[name="bypass_kind"]')!, { target: { value: 'header' } })
-    const signIn = form.querySelector<HTMLSelectElement>('select[name="sign_in_kind"], select[name="sign_in"]')
-    if (signIn !== null) fireEvent.change(signIn, { target: { value: 'own_login' } })
+    fireEvent.change(form.querySelector('select[name="kind"]')!, { target: { value: 'own_login' } })
     holds(form, {
       lines: ['Plain key=value pairs; never a token or password.', 'Only for an app your workspace owns.'],
       moved: [
@@ -361,7 +357,7 @@ describe('QA targets: each state is one short line', () => {
     })
     await qaPage()
     fireEvent.click(await button(await waitFor(() => { expect(card(SHOP)).not.toBeNull(); return card(SHOP) }, WAIT), 'Edit'))
-    fireEvent.change(formOf().querySelector('input[name="name"]')!, { target: { value: 'shop' } })
+    fireEvent.change(formOf().querySelector('input[name="name"]')!, { target: { value: 'shop two' } })
     fireEvent.submit(formOf().querySelector('form')!)
     const changed = (await screen.findByText('Changed shop', undefined, WAIT)).closest('.c-banner')!
     holds(changed, {

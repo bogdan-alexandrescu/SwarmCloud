@@ -11,6 +11,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
+import { helpIn, shownIn } from './proseruns'
 import { repo, serve, visible } from './repofixture'
 
 const WAIT = { timeout: 4000 }
@@ -331,9 +332,13 @@ describe('Approve host says where a non-production leg’s writes reach', () => 
   it('shows one sentence for a non-production leg with extra origins', async () => {
     const form = await openApprove(oneOrigin({ ...PENDING, environment: 'non_production' }))
     // MUTATION: drop the sentence, or show it for every leg, and this or the next test fails.
-    expect(notices(form)).toEqual([
+    const notice = form.querySelector('[data-writes-notice]')
+    expect(shownIn(notice)).toBe('Flows here may write to each ticked host.')
+    // Its detail sits behind the line's (i) (issue 81).
+    expect(helpIn(notice)).toBe(
       'Flows on this environment may write, and their writes reach each ticked host as well as shop.example.com, a shared API among them.',
-    ])
+    )
+    expect(notices(form)).toHaveLength(1)
   })
 
   it('is absent for a production leg', async () => {
