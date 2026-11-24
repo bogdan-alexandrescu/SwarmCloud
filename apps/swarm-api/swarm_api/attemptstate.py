@@ -176,6 +176,18 @@ QUOTA_MAX_RESUMES = 5
 #: looping, not finishing. The worker restates it
 #: (`control.TIME_LIMIT_MAX_CONTINUATIONS`), stops continuing at it and fails
 #: the task saying it ran out of continuations; it sends no number here.
+#: A WORKFLOW_PAUSED park (docs/design/workflow-pause.md section 5.4; the
+#: owner's decision Q1, 2026-11-24, "(a) refund both, bounded"): a pause is a
+#: person's choice, not a failed attempt, so the worker's pause park is
+#: refunded, counted in `metadata.pause_refunds`. 5 BECAUSE it is the quota
+#: park's number (QUOTA_MAX_RESUMES): without a refund two pauses of a running
+#: step exhaust a default three-attempt step and fail it, and the bound stops a
+#: step that only ever parks from looping on refunds; past it the park spends
+#: an attempt. The reconciler's pause-overdue requeue counts against the SAME
+#: key and bound (Q1), so a step has five pause refunds in all, not five per
+#: path. A worker sends no number here.
+PAUSE_REFUNDS = "pause_refunds"
+PAUSE_MAX_REFUNDS = 5
 TIME_LIMIT = "time_limit"
 TIME_LIMIT_CONTINUATIONS = "time_limit_continuations"
 TIME_LIMIT_MAX_CONTINUATIONS = 2
@@ -497,15 +509,29 @@ def _bounded(value: Any, what: str) -> Any:
     return value
 
 
-def fence_view(task: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    """What every writing answer carries (§4.2), enough for `ControlSignals`."""
+def fence_view(task: Mapping[str, Any] | None, attempt: AttemptTuple | None = None, *,
+               fenced: bool = False) -> dict[str, Any] | None:
+    """What every writing answer carries (§4.2), enough for `ControlSignals`.
+
+    `pause_requested` is the step's raw `pause_requested_at` mirror
+    (docs/design/workflow-pause.md sections 2.1 and 5.1): it rides the read the
+    poll already makes, and a cleared mirror (a resume) reads False. It is a
+    signal to the attempt that owns the task and to no other: when `attempt`
+    is given and is not the task's current generation (or tenant), or the
+    caller found the attempt `fenced`, it is False. A stale worker exits on
+    the fence; it must not park, so it learns nothing of the pause.
+    """
     if task is None:
         return None
+    owns = not fenced and (attempt is None or (
+        task.get("current_generation") == attempt.generation
+        and task.get("tenant_id") == attempt.tenant_id))
     return {
         "state": task.get("state"),
         "current_generation": task.get("current_generation"),
         "current_lease_id": task.get("current_lease_id"),
         "cancel_requested": bool(task.get("cancel_requested")),
+        "pause_requested": owns and bool(task.get("pause_requested_at")),
         "next_eligible_at": jsonable(task.get("next_eligible_at")),
     }
 
@@ -1178,8 +1204,12 @@ class AttemptState:
         return released
 
     @staticmethod
-    def _answer(task: Mapping[str, Any] | None, **extra: Any) -> dict[str, Any]:
-        return {"ok": True, "task": fence_view(task), **extra}
+    def _answer(task: Mapping[str, Any] | None, attempt: AttemptTuple | None = None,
+                **extra: Any) -> dict[str, Any]:
+        """The writing answer. A repeat passes its `attempt`: the task it read
+        is not fenced, and a newer generation may own it by now, whose pause
+        signal is not this attempt's to read (`fence_view`)."""
+        return {"ok": True, "task": fence_view(task, attempt), **extra}
 
     # -- the task's read-side views (contract request 132) -------------------
 
@@ -1244,7 +1274,7 @@ class AttemptState:
             "ok": True,
             "registration": registered,
             "task": jsonable(task),
-            "fence": fence_view(task),
+            "fence": fence_view(task, attempt),
             "lease": jsonable(lease),
             "attempt": jsonable(own),
             "restore_attempt": jsonable(restore),
@@ -1311,11 +1341,11 @@ class AttemptState:
         def _apply(txn: Any) -> dict[str, Any]:
             seen = self._seen(txn, attempt, event_id)
             if seen is not None:
-                return self._answer(seen, repeat=True)
+                return self._answer(seen, attempt, repeat=True)
             task = self._fenced(txn, attempt)
             current = TaskState(task["state"])
             if current is to:
-                return self._answer(task, repeat=True)
+                return self._answer(task, attempt, repeat=True)
             if not worker_may_transition(current, to):
                 raise TransitionRefused(
                     f"a worker may not move a task from {current.value} to {to.value}"
@@ -1582,7 +1612,9 @@ class AttemptState:
         human park, and DEPENDENCY_INCOMPLETE whose detail carries a
         `release_wait` block is `park_release_wait` (AU7-REFUND),
         PROVIDER_QUOTA_EXHAUSTED is `ControlPlane.park`'s quota refund
-        (archived issue 2350); any other reason is `ControlPlane.park`, no refund.
+        (archived issue 2350), WORKFLOW_PAUSED is the pause park's refund
+        (docs/design/workflow-pause.md section 5.4, decision Q1, bounded by
+        PAUSE_MAX_REFUNDS); any other reason is `ControlPlane.park`, no refund.
         """
         body: ParkBody = call.body
         attempt = call.attempt
@@ -1602,7 +1634,7 @@ class AttemptState:
         def _apply(txn: Any) -> dict[str, Any]:
             seen = self._seen(txn, attempt, event_id)
             if seen is not None:
-                return self._answer(seen, repeat=True)
+                return self._answer(seen, attempt, repeat=True)
             task = self._fenced(txn, attempt)
             current = TaskState(task["state"])
             if not worker_may_transition(current, TaskState.PARKED):
@@ -1770,6 +1802,16 @@ class AttemptState:
                     payload["metadata"] = metadata
                 extra = {TIME_LIMIT_CONTINUATIONS: used + (1 if refund else 0),
                          "max_continuations": TIME_LIMIT_MAX_CONTINUATIONS}
+            elif reason is ParkReason.WORKFLOW_PAUSED:
+                # Decision Q1: refunded within the server's bound, on its own
+                # counter (never another reason's); past it the park counts.
+                used = _count(metadata.get(PAUSE_REFUNDS))
+                refund = used < PAUSE_MAX_REFUNDS and attempt_count > 0
+                if refund:
+                    metadata[PAUSE_REFUNDS] = used + 1
+                    payload["metadata"] = metadata
+                extra = {PAUSE_REFUNDS: used + (1 if refund else 0),
+                         "max_refunds": PAUSE_MAX_REFUNDS}
         if refund:
             payload["attempt_count"] = attempt_count - 1
         kind = EventType.PARKED
@@ -1777,7 +1819,8 @@ class AttemptState:
             "reason": reason.value, "next_eligible_at": payload["next_eligible_at"],
             **({"attempt_refunded": refund} if release_wait or time_limit or reason in (
                 ParkReason.CHILDREN_INCOMPLETE, ParkReason.CI_PENDING,
-                ParkReason.HUMAN_REQUIRED, ParkReason.PROVIDER_QUOTA_EXHAUSTED) else {}),
+                ParkReason.HUMAN_REQUIRED, ParkReason.PROVIDER_QUOTA_EXHAUSTED,
+                ParkReason.WORKFLOW_PAUSED) else {}),
             **extra, **detail}
         release_reason = f"parked:{reason.value}"
         if reason is ParkReason.HUMAN_REQUIRED:
@@ -1836,7 +1879,7 @@ class AttemptState:
         def _apply(txn: Any) -> dict[str, Any]:
             seen = self._seen(txn, attempt, event_id)
             if seen is not None:
-                return self._answer(seen, repeat=True)
+                return self._answer(seen, attempt, repeat=True)
             task = self._fenced(txn, attempt)
             current = TaskState(task["state"])
             if not worker_may_transition(current, to):
@@ -1893,7 +1936,7 @@ class AttemptState:
         def _apply(txn: Any) -> dict[str, Any]:
             seen = self._seen(txn, attempt, event_id)
             if seen is not None:
-                return self._answer(seen, repeat=True)
+                return self._answer(seen, attempt, repeat=True)
             task = self._fenced(txn, attempt)
             return self._retry_writes(
                 txn, attempt, task, error=body.error, cause=body.cause, end_cause=cause,
@@ -2047,7 +2090,7 @@ class AttemptState:
         def _apply(txn: Any) -> dict[str, Any]:
             seen = self._seen(txn, attempt, event_id)
             if seen is not None:
-                return self._answer(seen, repeat=True)
+                return self._answer(seen, attempt, repeat=True)
             task = self._fenced(txn, attempt)
             contract = cr.signed_contract(self._settings, task, attempt.task_id)
             if isinstance(contract, str):
@@ -2191,10 +2234,11 @@ class AttemptState:
             if not _PROVIDER.fullmatch(provider):
                 raise ValidationFailed("provider must be a provider name")
             quota = self._read(self._ref(QUOTA, f"{provider}:{attempt.tenant_id}"))
+        fenced = fence_reason(task, lease, attempt)
         return {
             "ok": True,
-            "task": fence_view(task),
-            "fenced": fence_reason(task, lease, attempt),
+            "task": fence_view(task, attempt, fenced=fenced is not None),
+            "fenced": fenced,
             "lease": None if lease is None else {
                 "released": lease.get("released_at") is not None,
                 "expires_at": jsonable(lease.get("expires_at")),
