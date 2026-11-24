@@ -19,7 +19,10 @@ import {
   loadTaskDigests,
   loadWorkflowUsage,
   loadOlderWorkflows,
+  pauseWorkflow,
+  resumeWorkflow,
   type CancelWorkflowResult,
+  type PauseWorkflowResult,
   type ResourceClasses,
   type StepUsage,
   type WorkflowBoard,
@@ -27,6 +30,7 @@ import {
   loadAttempts as loadAttemptRows,
 } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
+import { useRoleGate } from './roleGate'
 import { AwaitInputCard } from './AwaitInputCard'
 import { AWAIT_INPUT_PROFILE, WAITING_WORD, expiresAtOf, expiresWords, isWaitingForMember, waitingTitle } from './awaitInput'
 import {
@@ -6939,6 +6943,7 @@ function WorkflowHead({
         </span>
         <PullRequestWaitTag workflow={workflow} />
         {cancelPending(workflow) && <span className="tag wait">{CANCEL_PENDING_WORD}</span>}
+        <PausedTag workflow={workflow} />
       </p>
       {/* Positioned, so the parked count's tooltip hangs from this line (ParkedCount). */}
       <p className="wfp-tally" aria-label="Steps by state" style={{ position: 'relative' }}>
@@ -7265,6 +7270,7 @@ function WorkflowOverview({
       </details>
       <div className="wfp-actions">
         <CancelWorkflow workflow={workflow} taskById={taskById} onDone={reload} sent={sent} onSent={onSent} />
+        <PauseWorkflow workflow={workflow} onDone={reload} stopSent={sent !== null} />
         <CopyLink />
         <CopyId id={workflow.workflow_id} />
       </div>
@@ -7577,6 +7583,111 @@ export function CancelWorkflow({
         </Button>
       </span>
     </div>
+  )
+}
+
+/**
+ * PAUSE AND RESUME, BESIDE STOP WORKFLOW (docs/design/workflow-pause.md §3,
+ * §9). One button at a time: Pause while the workflow runs unpaused, Resume
+ * while it is paused, and neither once it has finished or a stop was asked
+ * for -- the API refuses both then (409 `workflow_terminal`,
+ * `workflow_cancel_requested`), and cancel wins over a pause. One click sends:
+ * a pause is undone by a resume and loses no work (a running step checkpoints
+ * and parks), so there is no confirm and no consequence prose. A viewer sees
+ * the button disabled with the role sentence in its tooltip and a visually
+ * hidden description, never drawn on the page; the API still decides (`role_member_required`). A
+ * refusal is said in the API's own message, as Stop workflow says its own.
+ */
+export function PauseWorkflow({
+  workflow,
+  onDone,
+  stopSent = false,
+  pause = pauseWorkflow,
+  resume = resumeWorkflow,
+}: Readonly<{
+  workflow: Workflow
+  onDone: () => void
+  /** A stop this page recorded that the read does not carry yet: nothing is left to pause. */
+  stopSent?: boolean
+  /** Injectable for the tests; the API's otherwise. */
+  pause?: (id: string) => Promise<Result<PauseWorkflowResult>>
+  resume?: (id: string) => Promise<Result<PauseWorkflowResult>>
+}>) {
+  // Every hook before the early returns below.
+  const roleGate = useRoleGate('member', 'pause or resume')
+  const gateId = useId()
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  // THE ANSWER HOLDS UNTIL THE READ CATCHES UP: a recorded pause shows Resume
+  // at once rather than offering the same Pause again; the next read that
+  // carries `paused` is the record again.
+  const served = workflow.paused === true
+  const [answered, setAnswered] = useState<boolean | null>(null)
+  useEffect(() => setAnswered(null), [served])
+  const derived = derivedStateOf(workflow)
+  if (derived !== null && TERMINAL_STATES.has(derived)) return null
+  if (workflow.cancel_requested || stopSent) return null
+  const paused = answered ?? served
+  const verb = paused ? 'resume' : 'pause'
+  const busyWord = paused ? 'Resuming…' : 'Pausing…'
+
+  const send = async () => {
+    setBusy(true)
+    setError(null)
+    const r = await (paused ? resume : pause)(workflow.workflow_id)
+    setBusy(false)
+    if (r.status === 'ok' || r.status === 'empty') {
+      setAnswered(!paused)
+      onDone()
+      return
+    }
+    setError(r.status === 'error' || r.status === 'stale' ? r.error.message : `The ${verb} request did not complete.`)
+  }
+
+  // THE ROLE SENTENCE IS A HIDDEN SIBLING, NEVER A WRAPPER: the button
+  // keeps its element when the role read lands.
+  return (
+    <>
+      <Button
+        kind="secondary"
+        busy={busy ? busyWord : false}
+        disabled={roleGate !== null}
+        aria-describedby={roleGate === null ? undefined : gateId}
+        title={roleGate ?? undefined}
+        onClick={() => {
+          if (roleGate === null) void send()
+        }}
+      >
+        {paused ? 'Resume workflow' : 'Pause workflow'}
+      </Button>
+      {roleGate !== null && (
+        <span className="sk-vh" id={gateId} data-role-gate="member">
+          {roleGate}
+        </span>
+      )}
+      {error !== null && (
+        <p className="wfp-confirm-err" role="alert">
+          The {verb} was not recorded: {error}
+        </p>
+      )}
+    </>
+  )
+}
+
+/**
+ * THE PAUSED MARK IN THE PAGE'S HEAD: one word, and who paused the workflow
+ * and when behind its tooltip, as the API serves them (`paused_by`,
+ * `paused_at`); nothing is drawn while it is not paused.
+ */
+function PausedTag({ workflow }: Readonly<{ workflow: Workflow }>) {
+  if (workflow.paused !== true) return null
+  const tip = ['Paused', workflow.paused_by ? `by ${workflow.paused_by}` : null, workflow.paused_at ? `at ${workflow.paused_at}` : null]
+    .filter(Boolean)
+    .join(' ')
+  return (
+    <span className="tag paused" title={tip}>
+      paused
+    </span>
   )
 }
 
