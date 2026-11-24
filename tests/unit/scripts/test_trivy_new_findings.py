@@ -760,4 +760,9 @@ def test_the_scans_after_the_download_use_its_db_and_findings_still_fail_the_job
     # A finding still fails the job: no step is allowed to fail quietly, and
     # the gate step is the script's exit status, unchanged.
     assert all(not s.get("continue-on-error") for s in steps), names
-    assert str(steps[gate]["run"]).rstrip().endswith('scripts/trivy-new-findings.sh gate --base "${base}"')
+    tail = [line.strip() for line in str(steps[gate]["run"]).rstrip().splitlines()[-5:]]
+    assert tail == ['if [ -n "${against}" ]; then',
+                    'scripts/trivy-new-findings.sh gate --merge-base "${against}"',
+                    'else',
+                    'scripts/trivy-new-findings.sh gate --base ""',
+                    'fi'], tail
