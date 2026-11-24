@@ -23,7 +23,7 @@ import type { AccountsBoard } from '../api'
 import type { PoolAccount } from '../accountsPool'
 import type { Result } from '../fetch'
 import type { Account, AccountsPage } from '../types'
-import { helpIn, longRuns, shownIn } from './proseruns'
+import { allIn, around, helpIn, longRuns, oneIn, shownIn } from './proseruns'
 import { repo, serve } from './repofixture'
 
 const api = vi.hoisted(() => ({
@@ -122,7 +122,7 @@ async function qaPage(view = 'page=qa-targets'): Promise<HTMLElement> {
   const { RepositoriesScreen } = await import('../Repositories')
   render(<RepositoriesScreen view={view} go={vi.fn()} />)
   return waitFor(() => {
-    const el = document.querySelector<HTMLElement>('.qa-page')
+    const el = oneIn<HTMLElement>(document, '.qa-page')
     expect(el).not.toBeNull()
     return el!
   }, WAIT)
@@ -130,14 +130,14 @@ async function qaPage(view = 'page=qa-targets'): Promise<HTMLElement> {
 
 async function button(root: ParentNode, label: string): Promise<HTMLButtonElement> {
   return waitFor(() => {
-    const b = [...root.querySelectorAll<HTMLButtonElement>('button')].find((x) => shownIn(x) === label)
+    const b = allIn<HTMLButtonElement>(root, 'button').find((x) => shownIn(x) === label)
     expect(b, `no button ${label}`).toBeDefined()
     return b!
   }, WAIT)
 }
 
-const card = (id: string) => document.querySelector<HTMLElement>(`.qa-target[data-target-id="${id}"]`)!
-const formOf = () => document.querySelector<HTMLElement>('.ur-form')!
+const card = (id: string) => oneIn<HTMLElement>(document, `.qa-target[data-target-id="${id}"]`)!
+const formOf = () => oneIn<HTMLElement>(document, '.ur-form')!
 
 const QA_INTRO =
   'Web applications this workspace’s visual-QA runs test, each filing its findings in one of the workspace’s registered repositories. A new or changed host waits for a platform admin’s approval before any run.'
@@ -161,7 +161,7 @@ describe('QA targets: each state is one short line', () => {
     qaServe([target(SHOP, 'shop')])
     await qaPage('page=qa-targets&repository=example-org/example-api')
     const line = await waitFor(() => {
-      const el = document.querySelector('[data-qa-filter]')
+      const el = oneIn(document, '[data-qa-filter]')
       expect(el).not.toBeNull()
       return el!
     }, WAIT)
@@ -170,7 +170,7 @@ describe('QA targets: each state is one short line', () => {
     qaServe([target(SHOP, 'shop')])
     const page = await qaPage('page=qa-targets&repository=example-org/other')
     await screen.findByText('No QA target files in example-org/other', undefined, WAIT)
-    holds(page.querySelector('.state') ?? page, {
+    holds(oneIn(page, '.state') ?? page, {
       lines: ['It files in another repository.'],
       moved: ['The workspace’s one QA target files in other repositories.'],
     })
@@ -180,7 +180,7 @@ describe('QA targets: each state is one short line', () => {
     qaServe([target(SHOP, 'shop')])
     await qaPage()
     const lead = () => waitFor(() => {
-      const el = document.querySelector('[data-qa-lead]')
+      const el = oneIn(document, '[data-qa-lead]')
       expect(el).not.toBeNull()
       return el!
     }, WAIT)
@@ -192,7 +192,7 @@ describe('QA targets: each state is one short line', () => {
       lines: ['portal has no test credential', 'Cannot run until a workspace admin sets it'],
       moved: ['Its leg cannot run until a workspace admin sets it.'],
     })
-    const off = card(PORTAL).querySelector('[data-cannot-run]')!
+    const off = oneIn(card(PORTAL), '[data-cannot-run]')!
     holds(off, {
       lines: ['Cannot run: no test credential is set'],
       moved: ['It signs in with its own login and no test credential is set; a workspace admin sets it.'],
@@ -202,13 +202,13 @@ describe('QA targets: each state is one short line', () => {
     await qaPage()
     const pending = 'blog.example.test is waiting for a platform admin to approve it; no run starts against a host until then.'
     holds(await lead(), { lines: ['blog cannot run', 'Its host waits for a platform admin’s approval'], moved: [pending] })
-    holds(card(BLOG).querySelector('[data-cannot-run]')!, { lines: ['Cannot run: its host is not approved yet'], moved: [pending] })
+    holds(oneIn(card(BLOG), '[data-cannot-run]')!, { lines: ['Cannot run: its host is not approved yet'], moved: [pending] })
     cleanup()
     qaServe([target(BLOG, 'blog', { host_state: 'revoked' })])
     await qaPage()
     const revoked = "blog.example.test's approval was revoked; a platform admin approves it again before a run."
     holds(await lead(), { lines: ['blog’s host approval was revoked', 'A platform admin approves it again'], moved: [revoked] })
-    holds(card(BLOG).querySelector('[data-cannot-run]')!, { lines: ['Cannot run: its host approval was revoked'], moved: [revoked] })
+    holds(oneIn(card(BLOG), '[data-cannot-run]')!, { lines: ['Cannot run: its host approval was revoked'], moved: [revoked] })
   })
 
   it('delete: the warning is one sentence on the surface', async () => {
@@ -228,7 +228,7 @@ describe('QA targets: each state is one short line', () => {
     })], { write: (m, path) => (m === 'POST' && path.endsWith(':approve-host') ? { status: 200, body: {} } : null) })
     await qaPage()
     fireEvent.click(await button(await waitFor(() => { expect(card(BLOG)).not.toBeNull(); return card(BLOG) }, WAIT), 'Approve host'))
-    const form = document.querySelector<HTMLElement>('form.qa-approve')!
+    const form = oneIn<HTMLElement>(document, 'form.qa-approve')!
     holds(form, {
       lines: ['Approving lets QA runs open blog.example.test.', 'The gate lets exactly this POST through.'],
       moved: [
@@ -236,7 +236,7 @@ describe('QA targets: each state is one short line', () => {
         'The gate lets exactly a POST to https://id.example.test at this path through, after its own sign-in, so the app can refresh its token. Every other write there stays refused.',
       ],
     })
-    holds(form.querySelector('[data-writes-notice]')!, {
+    holds(oneIn(form, '[data-writes-notice]')!, {
       lines: ['Flows here may write to each ticked host.'],
       moved: ['Flows on this environment may write, and their writes reach each ticked host as well as blog.example.test, a shared API among them.'],
     })
@@ -248,18 +248,18 @@ describe('QA targets: each state is one short line', () => {
     })
     window.history.replaceState(null, '', `/qa-targets/${PORTAL}/credential?t=${made('lnk')}`)
     await qaPage()
-    await waitFor(() => expect(document.querySelector('form.qa-cred')).not.toBeNull(), WAIT)
+    await waitFor(() => expect(oneIn(document, 'form.qa-cred')).not.toBeNull(), WAIT)
     holds(formOf(), {
       lines: ['Use a test account; the link works once.'],
       moved: [
         'Type the test account’s username and password. They go from this page to the workspace’s secret store and nowhere else: Claude, the plugin and this page’s address never see them, and the live browser types them into the app’s login without the agent holding them. Use a test account with no MFA or CAPTCHA. The link works once.',
       ],
     })
-    const form = document.querySelector<HTMLFormElement>('form.qa-cred')!
+    const form = oneIn<HTMLFormElement>(document, 'form.qa-cred')!
     fireEvent.submit(form)
     await waitFor(() => expect(shownIn(formOf())).toContain('Type both; nothing was sent.'), WAIT)
     holds(formOf(), { moved: ['Type both the username and the password; nothing was sent.'] })
-    const [user, pass] = [...form.querySelectorAll('input')] as [HTMLInputElement, HTMLInputElement]
+    const [user, pass] = allIn(form, 'input') as [HTMLInputElement, HTMLInputElement]
     fireEvent.change(user, { target: { value: 'qa-user' } })
     fireEvent.change(pass, { target: { value: made('pw') } })
     fireEvent.submit(form)
@@ -272,7 +272,7 @@ describe('QA targets: each state is one short line', () => {
     window.history.replaceState(null, '', `/qa-targets/${PORTAL}/credential`)
     await qaPage()
     const form = await waitFor(() => {
-      const el = document.querySelector<HTMLFormElement>('form.qa-cred')
+      const el = oneIn<HTMLFormElement>(document, 'form.qa-cred')
       expect(el).not.toBeNull()
       return el!
     }, WAIT)
@@ -285,7 +285,7 @@ describe('QA targets: each state is one short line', () => {
     qaServe([target(SHOP, 'shop', { challenge_bypass: { kind: 'header', name: 'X-QA-Bypass' } })])
     window.history.replaceState(null, '', `/qa-targets/${SHOP}/challenge-bypass?t=${made('lnk')}`)
     await qaPage()
-    await waitFor(() => expect(document.querySelector('form.qa-cred')).not.toBeNull(), WAIT)
+    await waitFor(() => expect(oneIn(document, 'form.qa-cred')).not.toBeNull(), WAIT)
     holds(formOf(), {
       lines: ['Type the value; the link works once.'],
       moved: [
@@ -299,8 +299,8 @@ describe('QA targets: each state is one short line', () => {
     const page = await qaPage()
     fireEvent.click(await button(page, 'Register QA target'))
     const form = formOf()
-    fireEvent.change(form.querySelector('select[name="bypass_kind"]')!, { target: { value: 'header' } })
-    fireEvent.change(form.querySelector('select[name="kind"]')!, { target: { value: 'own_login' } })
+    fireEvent.change(oneIn(form, 'select[name="bypass_kind"]')!, { target: { value: 'header' } })
+    fireEvent.change(oneIn(form, 'select[name="kind"]')!, { target: { value: 'own_login' } })
     holds(form, {
       lines: ['Plain key=value pairs; never a token or password.', 'Only for an app your workspace owns.'],
       moved: [
@@ -310,8 +310,8 @@ describe('QA targets: each state is one short line', () => {
         'What the gate clicks, in order, before the form (a chooser, or a “Sign in” button before the identity provider). Text is the control’s exact visible text; CSS, optional, narrows the candidates (for example button).',
       ],
     })
-    fireEvent.change(form.querySelector('textarea[name="more"]')!, { target: { value: '{' } })
-    fireEvent.submit(form.querySelector('form')!)
+    fireEvent.change(oneIn(form, 'textarea[name="more"]')!, { target: { value: '{' } })
+    fireEvent.submit(oneIn(form, 'form')!)
     await waitFor(() => expect(shownIn(formOf())).toContain('More settings is not JSON.'), WAIT)
     holds(formOf(), { moved: ['More settings is not JSON: write one object, for example {"widths": ["desktop"]}.'] })
   })
@@ -340,15 +340,15 @@ describe('QA targets: each state is one short line', () => {
     window.history.replaceState(null, '', `/qa-targets/${PORTAL}/credential?t=${made('lnk')}`)
     await qaPage()
     const form = await waitFor(() => {
-      const el = document.querySelector<HTMLFormElement>('form.qa-cred')
+      const el = oneIn<HTMLFormElement>(document, 'form.qa-cred')
       expect(el).not.toBeNull()
       return el!
     }, WAIT)
-    const [user, pass] = [...form.querySelectorAll('input')] as [HTMLInputElement, HTMLInputElement]
+    const [user, pass] = allIn(form, 'input') as [HTMLInputElement, HTMLInputElement]
     fireEvent.change(user, { target: { value: 'qa-user' } })
     fireEvent.change(pass, { target: { value: made('pw') } })
     fireEvent.submit(form)
-    const said = (await screen.findByText('Credential saved', undefined, WAIT)).closest('.c-banner')!
+    const said = around(await screen.findByText('Credential saved', undefined, WAIT), '.c-banner')!
     holds(said, { lines: ['Never shown again.'], moved: ['The test credential for portal is set. No page, route or log can show it again.'] })
     cleanup()
     window.history.replaceState(null, '', '/')
@@ -357,9 +357,9 @@ describe('QA targets: each state is one short line', () => {
     })
     await qaPage()
     fireEvent.click(await button(await waitFor(() => { expect(card(SHOP)).not.toBeNull(); return card(SHOP) }, WAIT), 'Edit'))
-    fireEvent.change(formOf().querySelector('input[name="name"]')!, { target: { value: 'shop two' } })
-    fireEvent.submit(formOf().querySelector('form')!)
-    const changed = (await screen.findByText('Changed shop', undefined, WAIT)).closest('.c-banner')!
+    fireEvent.change(oneIn(formOf(), 'input[name="name"]')!, { target: { value: 'shop two' } })
+    fireEvent.submit(oneIn(formOf(), 'form')!)
+    const changed = around(await screen.findByText('Changed shop', undefined, WAIT), '.c-banner')!
     holds(changed, {
       lines: ['Its host waits for a platform admin’s approval.'],
       moved: ["Its host shop.example.test waits for a platform admin's approval before any run."],
@@ -422,7 +422,7 @@ async function actions(opts: { list?: () => Reply; write?: (m: string) => Reply;
   const { SecretsActions } = await import('../SecretsActions')
   render(<SecretsActions repoId={ACTIONS_REPO} repository={REPOSITORY} {...(opts.link === undefined ? {} : { link: opts.link as never })} />)
   return waitFor(() => {
-    const el = document.querySelector<HTMLElement>('.sa-pane')
+    const el = oneIn<HTMLElement>(document, '.sa-pane')
     expect(el).not.toBeNull()
     return el!
   }, WAIT)
@@ -454,7 +454,7 @@ describe('Secrets › GitHub Actions: each state is one short line', () => {
         ]],
     ] as [string, string[], string[]][]) {
       const pane = await actions({ list: () => refusedWith(reason) })
-      await waitFor(() => expect(pane.querySelector('.c-banner.is-warn')).not.toBeNull(), WAIT)
+      await waitFor(() => expect(oneIn(pane, '.c-banner.is-warn')).not.toBeNull(), WAIT)
       holds(pane, { lines, moved })
       cleanup()
     }
@@ -513,7 +513,7 @@ describe('Secrets › GitHub Actions: each state is one short line', () => {
       fireEvent.change(within(form()).getByRole('combobox'), { target: { value: env } })
       await act(async () => { fireEvent.submit(form()) })
     }
-    const box = () => pane.querySelector('.sa-check')!
+    const box = () => oneIn(pane, '.sa-check')!
     await check('repo-secrets')
     await waitFor(() => expect(shownIn(box())).toContain('Only main deploys to it.'), WAIT)
     holds(box(), { moved: ['Only main deploys to it: a secret written there reaches workflows on main alone.'] })
@@ -577,7 +577,7 @@ describe('Secrets › GitHub Actions: each state is one short line', () => {
     }
     const pane = await set()
     const said = await waitFor(() => {
-      const el = pane.querySelector('.pk-saved')
+      const el = oneIn(pane, '.pk-saved')
       expect(el).not.toBeNull()
       return el!
     }, WAIT)
@@ -588,7 +588,7 @@ describe('Secrets › GitHub Actions: each state is one short line', () => {
     cleanup()
     await set((m) => (m === 'PUT' ? { status: 403, body: { code: 'SECRET_LINK_INVALID', message: 'unknown' } } : null))
     const bad = await waitFor(() => {
-      const el = dialog().querySelector('.c-banner.is-bad')
+      const el = oneIn(dialog(), '.c-banner.is-bad')
       expect(el).not.toBeNull()
       return el!
     }, WAIT)
@@ -601,7 +601,7 @@ describe('Secrets › GitHub Actions: each state is one short line', () => {
   it('a pasted link’s form says the link works once', async () => {
     window.history.replaceState(null, '', `/config/secrets?scope=repository&repo=${ACTIONS_REPO}&dest=actions&t=${made('lnk')}`)
     await actions({ link: { name: 'DEPLOY_KEY', environment: 'repo-secrets' } })
-    const banner = (await screen.findByText('Opened from a one-time link', undefined, WAIT)).closest('.c-banner')!
+    const banner = around(await screen.findByText('Opened from a one-time link', undefined, WAIT), '.c-banner')!
     holds(banner, {
       lines: ['The link works once, for ten minutes.'],
       moved: ['Paste the value into the form below: the /sc command and this page’s address never see it. The link works once, for ten minutes.'],
@@ -685,12 +685,12 @@ describe('Secrets: the workspace store’s confirmations and forms are one short
         lines: ['A new version of brave-key.'],
         moved: ['the previous one stays enabled for 24 hours, for attempts already running.'],
       })
-      fireEvent.change(form.querySelector('input[type="password"]')!, { target: { value: made('val') } })
+      fireEvent.change(oneIn(form, 'input[type="password"]')!, { target: { value: made('val') } })
       await act(async () => { fireEvent.submit(form) })
     }
     await rotated({ status: 200, body: { secret: { ...RECORD, current_version: '2' } } })
     const said = await waitFor(() => {
-      const el = document.querySelector('.pk-saved')
+      const el = oneIn(document, '.pk-saved')
       expect(el).not.toBeNull()
       return el!
     }, WAIT)
@@ -701,7 +701,7 @@ describe('Secrets: the workspace store’s confirmations and forms are one short
     cleanup()
     await rotated({ status: 403, body: { code: 'SECRET_LINK_INVALID', message: 'unknown' } })
     const bad = await waitFor(() => {
-      const el = document.querySelector('.c-banner.is-bad')
+      const el = oneIn(document, '.c-banner.is-bad')
       expect(el).not.toBeNull()
       return el!
     }, WAIT)
@@ -715,12 +715,12 @@ describe('Secrets: the workspace store’s confirmations and forms are one short
     await secrets('scope=workspace&runner_key=anthropic', [], (m, u) => (m === 'POST' && u === '/v1/tenants/me/credentials'
       ? { status: 403, body: { code: 'KEY_LINK_INVALID', message: 'unknown' } } : null))
     const form = await screen.findByRole('form', { name: /set the anthropic runner key/i }, WAIT)
-    const where = screen.getByText('Where').closest('dl')!
+    const where = around(screen.getByText('Where'), 'dl')!
     holds(where, { lines: ['the workspace: profiles that call anthropic'], moved: ['the workspace: the runner profiles that call anthropic read it'] })
-    fireEvent.change(form.querySelector('input')!, { target: { value: made('val') } })
+    fireEvent.change(oneIn(form, 'input')!, { target: { value: made('val') } })
     await act(async () => { fireEvent.submit(form) })
     const bad = await waitFor(() => {
-      const el = document.querySelector('.c-banner.is-bad')
+      const el = oneIn(document, '.c-banner.is-bad')
       expect(el).not.toBeNull()
       return el!
     }, WAIT)
@@ -745,7 +745,7 @@ describe('MCP servers: the register form', () => {
     render(<McpServersScreen />)
     fireEvent.click((await screen.findAllByRole('button', { name: /register an mcp server/i }, WAIT))[0]!)
     const form = await waitFor(() => {
-      const el = document.querySelector<HTMLElement>('form')
+      const el = oneIn<HTMLElement>(document, 'form')
       expect(el).not.toBeNull()
       return el!
     }, WAIT)
@@ -861,11 +861,11 @@ describe('the account sheet: the no-reading states are one short line', () => {
   it('health: re-auth needed, for its owner and for a borrower', async () => {
     const reauth = ok(record({ status: 'reauth_needed' }))
     const moved = ['The provider refused its credential. The broker assigns it nothing until someone signs in again; work that would have used it waits for another account.']
-    holds((await health(reauth)).querySelector('.acct-hs-callout')!, {
+    holds(oneIn(await health(reauth), '.acct-hs-callout')!, {
       lines: ['Nothing is assigned until someone signs in.', 'Sign in again is below'], moved,
     })
     cleanup()
-    holds((await health(reauth, false)).querySelector('.acct-hs-callout')!, {
+    holds(oneIn(await health(reauth, false), '.acct-hs-callout')!, {
       lines: ['Nothing is assigned until someone signs in.', 'Its owner, eng, signs in again.'], moved,
     })
   })
@@ -944,7 +944,7 @@ describe('the account sheet: the no-reading states are one short line', () => {
     holds(c, { lines: ['At most 6 agents at once.', 'Change the cap'] })
     fireEvent.click(await button(c, 'Change the cap'))
     holds(c, { lines: ['Lowering it moves no agent already on it.'], moved: ['Lowering it moves no agent already on it; the pool applies it at the next hand-out.'] })
-    fireEvent.change(c.querySelector('input')!, { target: { value: '0' } })
+    fireEvent.change(oneIn(c, 'input')!, { target: { value: '0' } })
     holds(c, { lines: ['A whole number from 1 to 50.'], moved: ['To stop it taking agents, pause it.'] })
   })
 })
@@ -954,8 +954,7 @@ describe('the accounts pool: its empty, unread and withheld states are one short
     const { Verdict } = await import('../AccountsVerdict')
     const draw = (accounts: PoolAccount[], shortfall = 0) => {
       cleanup()
-      return render(<Verdict accounts={accounts} scope="eng" shortfall={shortfall} now={Date.now()} waiting={{ status: 'loading' } as never} />).container
-        .querySelector('.acct-verdict-say')!
+      return oneIn(render(<Verdict accounts={accounts} scope="eng" shortfall={shortfall} now={Date.now()} waiting={{ status: 'loading' } as never} />).container, '.acct-verdict-say')!
     }
     holds(draw([]), {
       lines: ['No account is registered.'],
@@ -1016,10 +1015,10 @@ describe('the accounts pool: its empty, unread and withheld states are one short
     api.loadAccountsBoard.mockResolvedValue(page)
     const { AccountsScreen } = await import('../Accounts')
     render(<AccountsScreen />)
-    await waitFor(() => expect(document.querySelector('button.acct-open')).not.toBeNull(), WAIT)
-    fireEvent.click(document.querySelector<HTMLButtonElement>('button.acct-open')!)
+    await waitFor(() => expect(oneIn(document, 'button.acct-open')).not.toBeNull(), WAIT)
+    fireEvent.click(oneIn<HTMLButtonElement>(document, 'button.acct-open')!)
     const remove = await waitFor(() => {
-      const el = document.querySelector('.acct-action.danger')
+      const el = oneIn(document, '.acct-action.danger')
       expect(el).not.toBeNull()
       return el!
     }, WAIT)

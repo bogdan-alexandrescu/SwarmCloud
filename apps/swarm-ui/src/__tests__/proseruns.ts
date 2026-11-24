@@ -111,3 +111,12 @@ export function shownIn(root: Element | null | undefined): string {
   for (const el of [...clone.querySelectorAll('[data-help-description]')]) el.remove()
   return (clone.textContent ?? '').replace(/\s+/g, ' ').trim()
 }
+
+/** The first element under `root` matching `selector`, or null. */
+export const oneIn = <T extends Element = HTMLElement>(root: ParentNode, selector: string): T | null => root.querySelector<T>(selector)
+
+/** Every element under `root` matching `selector`. */
+export const allIn = <T extends Element = HTMLElement>(root: ParentNode, selector: string): T[] => [...root.querySelectorAll<T>(selector)]
+
+/** The nearest element around `el` matching `selector`, or null. */
+export const around = <T extends Element = HTMLElement>(el: Element, selector: string): T | null => el.closest<T>(selector)
