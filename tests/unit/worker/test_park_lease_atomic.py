@@ -713,17 +713,22 @@ def test_a_commit_aborted_on_every_run_stops_at_the_bound_and_says_so():
         _park(control)
 
     runs = control_mod.TRANSACTION_ABORTED_RUNS
-    # MUTATION: retry the commit-exhausted error without a bound.
-    assert db.rpcs.names().count("begin") == runs * _library_attempts()
+    rounds = control_mod.PARK_CONTENTION_ROUNDS
+    # MUTATION: retry the commit-exhausted error without a bound. A park runs
+    # the runner's runs once per round (issue 313).
+    assert db.rpcs.names().count("begin") == rounds * runs * _library_attempts()
     message = str(raised.value)
+    assert f"{rounds} rounds" in message, message
     # MUTATION: raise the library's bare "Failed to commit transaction in 5
     # attempts." when the runs are spent: the task's error names no contention.
     assert f"on each of {runs} runs" in message, message
     assert "contention" in message, message
     assert "nothing was committed" in message, message
     assert " s" in message and "over " in message, message
-    # The library's last error is kept in the chain.
-    assert isinstance(raised.value.__cause__, ValueError)
+    # The library's last error is kept in the chain: the last round's
+    # runner error, and the library's ValueError behind it.
+    assert isinstance(raised.value.__cause__, core.Aborted)
+    assert isinstance(raised.value.__cause__.__cause__, ValueError)
     # Nothing landed.
     assert db.doc("tasks/task_1")["state"] == TaskState.RUNNING.value
     assert db.doc("leases/lease_1")["released_at"] is None
@@ -1033,7 +1038,7 @@ def test_a_park_whose_rounds_are_spent_raises_an_error_naming_them(monkeypatch):
     # MUTATION: raise the last round's runner error as it is: no rounds named.
     assert f"{rounds} rounds" in message, message
     assert "12.0 s" in message, message
-    assert "provider_quota_exhausted" in message, message
+    assert ParkReason.PROVIDER_QUOTA_EXHAUSTED.value in message, message
     # MUTATION: drop the cause.
     assert raised.value.__cause__ is aborts[rounds - 1]
     assert [w["round"] for w in _round_warnings(stream)] == [1, 2, 3]
