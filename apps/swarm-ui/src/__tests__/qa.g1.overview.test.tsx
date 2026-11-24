@@ -123,8 +123,10 @@ describe('G1-04: a FAILED task is terminal, whatever attempts it had left', () =
     } as unknown as CheckInputs
     const check = deriveChecks(c, NOW).find((x) => x.label === 'Failures')!
     expect(check.status).toBe('found')
+    why = check.status === 'found' ? check.problems[0]!.why ?? '' : ''
     return check.status === 'found' ? check.problems[0]!.detail : ''
   }
+  let why = ''
 
   // MUTATION: put back "All still have attempts left and may retry".
   it('never says "may retry" of a failed task with attempts left', () => {
@@ -134,7 +136,9 @@ describe('G1-04: a FAILED task is terminal, whatever attempts it had left', () =
     ])
     expect(d).not.toMatch(/may retry/)
     expect(d).toMatch(/^Terminal/)
-    expect(d).toContain('2 had attempts left but the cause is not retryable')
+    // ISSUE 81: the detail is facts; the sentence is the card's why, word for word.
+    expect(d).toContain('2 had attempts left, not retryable')
+    expect(why).toBe('Terminal: nothing will retry them. 2 had attempts left but the cause is not retryable.')
   })
 
   // MUTATION: drop the exhausted clause.
@@ -145,7 +149,8 @@ describe('G1-04: a FAILED task is terminal, whatever attempts it had left', () =
     ])
     expect(d).not.toMatch(/may retry/)
     expect(d).toContain('1 used every attempt')
-    expect(d).toContain('1 had attempts left but the cause is not retryable')
+    expect(d).toContain('1 had attempts left, not retryable')
+    expect(why).toBe('Terminal: nothing will retry them. 1 used every attempt; 1 had attempts left but the cause is not retryable.')
   })
 })
 

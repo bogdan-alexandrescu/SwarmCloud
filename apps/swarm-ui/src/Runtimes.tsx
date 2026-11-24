@@ -558,7 +558,8 @@ function distinguishing(r: Runtime, all: Runtime[]): Distinction[] {
     // `takes any one of its secrets` read as a runtime taking secrets; what
     // it means is that ANY ONE of the credentials it names will do. The key
     // is `credential`, spelled out, as the card's row above it now is.
-    facts.push({ key: 'credential', value: 'the only runtime that accepts any one of its credentials' })
+    // ISSUE 81: a fact value, not a sentence: under nine words with its key.
+    facts.push({ key: 'credential', value: 'sole runtime accepting any one of its credentials' })
   }
 
   // THE CLASSES NOTHING ELSE OFFERS (capacity-006). A step names a class, so a
@@ -572,8 +573,8 @@ function distinguishing(r: Runtime, all: Runtime[]): Distinction[] {
   // noun the names are instances of, so the class IDs read as products the
   // runtime sells. It says which kind of thing they are, singular for one.
   if (own.length > 0) {
-    const noun = own.length === 1 ? 'the model class' : 'the model classes'
-    facts.push({ key: 'model classes', value: `the only runtime with ${noun} ${own.join(', ')}` })
+    const noun = own.length === 1 ? 'class' : 'classes'
+    facts.push({ key: 'model classes', value: `sole runtime with ${noun} ${own.join(', ')}` })
   }
 
   const timeouts = all.map((x) => x.timeout_seconds)

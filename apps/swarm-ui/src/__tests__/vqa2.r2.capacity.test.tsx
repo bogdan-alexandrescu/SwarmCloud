@@ -402,7 +402,7 @@ describe('V182: a finished sign-in shows its receipt, not the form', () => {
     const paste = await screen.findByRole('textbox', { name: 'The code the Claude callback page displayed' }, WAIT)
     fireEvent.change(paste, { target: { value: 'code-from-the-page' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add this account' }))
-    const receipt = await screen.findByText(/Signed in — u-owner:work-laptop/, undefined, WAIT)
+    const receipt = await screen.findByText(/Signed in · u-owner:work-laptop/, undefined, WAIT)
     const panel = document.querySelector('.acct-add-panel')!
     expect(panel.contains(receipt)).toBe(true)
     // No empty form beside the receipt, Start disabled under it.

@@ -26,6 +26,7 @@
 //
 // Fixtures only; no network. Fake values are built at runtime.
 
+import { helpIn, shownIn } from './proseruns'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { leakedValue, serve, tokenShapedIn, visible } from './repofixture'
@@ -199,15 +200,22 @@ describe('the page states what SwarmCloud may do as you', () => {
     await policyDrawn()
     // Config › GitHub access since CONFIG-NAV (part of archived issue 2157).
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('GitHub access')
-    const d9 = visible(document.querySelector('[data-rule="D9"]'))
+    const [d9el, d8el, d6el] = ['D9', 'D8', 'D6'].map((r) => document.querySelector(`[data-rule="${r}"]`))
+    const d9 = visible(d9el ?? null)
     // That SwarmCloud enforces it is the card's (i) since the owner's no-prose rule (2026-11-05).
     expect(visible(document.querySelector('.ac-policy [role="tooltip"]'))).toContain('SwarmCloud enforces it')
     expect(d9).toContain('held by SwarmCloud, not by GitHub')
     expect(d9).toContain('GitHub itself would let the push through')
-    const d8 = visible(document.querySelector('[data-rule="D8"]'))
+    const d8 = visible(d8el ?? null)
     expect(d8).toContain('does not ask for workflows write')
     expect(d8).toContain('.github/workflows/')
-    expect(visible(document.querySelector('[data-rule="D6"]'))).toContain('Nothing is written to GitHub')
+    expect(visible(d6el ?? null)).toContain('Nothing is written to GitHub')
+    // Issue 81: each body is behind its rule's fold, marked as help copy; the head stays on the surface.
+    expect(helpIn(d9el)).toContain('held by SwarmCloud, not by GitHub')
+    expect(helpIn(d8el)).toContain('does not ask for workflows write')
+    expect(helpIn(d6el)).toContain('Nothing is written to GitHub')
+    expect(shownIn(d9el)).toContain('Read means read.')
+    expect(shownIn(d9el)).not.toContain('GitHub itself would let the push through')
   })
 })
 
@@ -664,7 +672,7 @@ describe('members (Access B, on People and roles)', () => {
     // MUTATION: put back `what="The tenant's members"` in WorkspacePeople.tsx.
     api((m, url) => (m === 'GET' && url === '/v1/access/members' ? { status: 501, body: { detail: 'Not Implemented' } } : null))
     await mountMembers()
-    await waitFor(() => expect(visible(document.querySelector('.ac-members'))).toContain("The workspace's members are not served by this API yet"))
+    await waitFor(() => expect(helpIn(document.querySelector('.ac-members'))).toContain("The workspace's members are not served by this API yet"))
   })
 
   it('tells a non-admin the view is for admins', async () => {

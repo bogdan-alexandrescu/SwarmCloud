@@ -12,6 +12,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
+import { helpIn } from './proseruns'
 import { adminGroups, adminPagesFor } from '../Spine'
 import { screenLoaded } from './screenLoaded'
 
@@ -170,10 +171,13 @@ describe('status only', () => {
       : null))
     const { AdminPlatformSecretsScreen } = await load()
     render(<AdminPlatformSecretsScreen />)
-    const lead = visible(await screen.findByRole('region', { name: /needs a look/i }))
+    const region = await screen.findByRole('region', { name: /needs a look/i })
+    const lead = visible(region)
     // MUTATION: put back `${id} is ${STATUS_WORDS[status]}` -> "is not declared" and this fails.
     expect(lead).toMatch(/swarm-live-key has no secret yet/)
-    expect(lead).toMatch(/It is in the catalogue but nothing was stored\./)
+    // Issue 81: a short fact on the surface, the sentence behind the lead's (i).
+    expect(lead).toMatch(/in the catalogue, nothing stored/)
+    expect(helpIn(region)).toMatch(/It is in the catalogue but nothing was stored\./)
     expect(lead).not.toMatch(/not declared|no secret exists/)
     const table = screen.getByRole('table', { name: /platform secrets/i })
     const pill = within(table).getByRole('row', { name: /swarm-live-key/ }).querySelector('td[data-label="Set"] .sec-chip')!

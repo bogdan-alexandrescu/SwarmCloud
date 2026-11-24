@@ -14,6 +14,7 @@
 //
 // Fixtures only; no network.
 
+import { helpIn } from './proseruns'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { render, waitFor } from '@testing-library/react'
 import { repo, serve, visible } from './repofixture'
@@ -101,7 +102,8 @@ describe('config-16: one add action, named for what it does', () => {
     expect(links()).not.toContain('Add new repository')
     expect(links().filter((t) => t === 'Choose more on GitHub')).toHaveLength(1)
     // The lead's sentence names the button by its new words.
-    expect(visible(lead())).toContain('Choose more on GitHub opens GitHub access › Choose repositories.')
+    // Issue 81: the sentence is behind the lead's (i), word for word.
+    expect(helpIn(lead())).toContain('Choose more on GitHub opens GitHub access › Choose repositories.')
     expect(visible(lead())).not.toContain('Add new repository')
   })
 

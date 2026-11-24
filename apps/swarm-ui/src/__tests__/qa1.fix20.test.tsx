@@ -10,6 +10,7 @@
 //
 // Fixtures only; no network.
 
+import { helpIn, shownIn } from './proseruns'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -134,7 +135,9 @@ describe('config-19: the reach table\'s footnote is set in the body face', () =>
   it('paints the foot in --font, not --mono', () => {
     render(<ReachableRepositories grants={GRANTS as never} onChange={vi.fn()} />)
     const foot = document.querySelector('.ac-grants > .c-card-foot')!
-    expect(foot.textContent).toContain('An agent for a repository not on this list is refused at submission.')
+    // Issue 81: one short must-stay line on the surface, the full sentence behind its (i).
+    expect(shownIn(foot)).toContain('Unlisted repositories are refused at submission.')
+    expect(helpIn(foot)).toBe('An agent for a repository not on this list is refused at submission.')
     // MUTATION: drop the `.c-card.ac-grants > .c-card-foot` rule
     // (styles/reachable-repositories.css) -- components.css's mono `font`
     // shorthand wins.

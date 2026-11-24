@@ -160,7 +160,7 @@ describe('one subscription twice: the head, its tooltip, and the must-stay line'
     const shared = acct('shared', { owner_tenant: 'other', possible_duplicate: { of: 'x:hidden', reason: 'read identically' } } as Partial<PoolAccount>)
     const { container } = render(<DuplicateBanner accounts={[shared]} scope="eng" onOpen={() => {}} />)
     const box = container.querySelector('.acct-dup') as HTMLElement
-    expect(surface(box)).toContain('shared is lent to you; other can fix it.')
+    expect(surface(box)).toContain('shared is lent to you · other can fix it')
     expect(surface(box)).not.toContain('read identically')
     const tip = tipOf(
       within(box).getByRole('button', { name: 'About shared may be a subscription another workspace registered' }),

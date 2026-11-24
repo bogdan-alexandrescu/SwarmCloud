@@ -18,6 +18,9 @@
 // page's prose.
 // And a second number: the links whose visible text carries an arrow (→ or ›),
 // an action drawn as a text link where the rule wants a button.
+// And a third: the long runs (proseruns.ts), each element's visible run of
+// text with RUN_WORDS words or RUN_SENTENCES sentences or more, which is what
+// a paragraph of explanation looks like; a fact list is judged fact by fact.
 //
 // WHAT IT IS COMPARED WITH (the owner's pick, 2026-11-06, part of archived issue 2688): the same
 // page on the change's base, rendered in the same test from a copy of the
@@ -42,6 +45,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render } from '@testing-library/react'
 
 import { App, SECTIONS } from '../App'
+import { longRuns, RUN_SENTENCES, RUN_WORDS } from './proseruns'
 import { chooseBase, ensureCommit, extractApp, type BaseTree, type ProseBase } from './prosebase'
 import { screenLoaded } from './screenLoaded'
 
@@ -108,6 +112,8 @@ export interface Measure {
   tokens: string[]
   /** The visible text of each arrow link. */
   arrowLinks: string[]
+  /** The long runs (proseruns.ts) in document order. */
+  runs: string[]
 }
 
 const ARROW = /[→›]/
@@ -129,7 +135,7 @@ export function measure(root: HTMLElement): Measure {
   const arrowLinks = [...clone.querySelectorAll('a, [role="link"]')]
     .map((a) => (a.textContent ?? '').replace(/\s+/g, ' ').trim())
     .filter((t) => ARROW.test(t))
-  return { words: tokens.length, arrows: arrowLinks.length, tokens, arrowLinks }
+  return { words: tokens.length, arrows: arrowLinks.length, tokens, arrowLinks, runs: longRuns(root) }
 }
 
 /**
@@ -175,6 +181,14 @@ export function proseDelta(key: string, base: Measure | null, head: Measure): st
     out.push(
       `${key} draws ${head.arrows} text links with an arrow, ${base.arrows} on the base. ` +
         `Make each new one a button: ${extra.map((t) => JSON.stringify(t)).join(', ')}`,
+    )
+  }
+  if (head.runs.length > base.runs.length) {
+    const extra = newWords(head.runs, base.runs)
+    out.push(
+      `${key} shows ${head.runs.length} long runs, ${base.runs.length} on the base. ` +
+        `New (${extra.length}): ${extra.map((t) => JSON.stringify(t)).join(', ')}. ` +
+        `A visible run of ${RUN_WORDS}+ words or ${RUN_SENTENCES}+ sentences is prose: put it behind an (i) or in the help topic, or cut it to one short line.`,
     )
   }
   return out
@@ -304,13 +318,15 @@ export function proseGroup(group: string): void {
     })
 
     for (const page of pages) {
-      it(`${page.key} shows no more words or arrow links than on the base`, async () => {
+      it(`${page.key} shows no more words, arrow links or long runs than on the base`, async () => {
         const was = baseHas(page, base.sections) ? await renderPage(await load(base.src), page) : null
         const now = await renderPage(await load(null), page)
         console.log(
-          `PROSE ${page.key}: ${was === null ? 'new page' : `${was.words} words, ${was.arrows} arrows`} on ${chosen.sha.slice(0, 12)}; ` +
-            `${now.words} words, ${now.arrows} arrows now`,
+          `PROSE ${page.key}: ${was === null ? 'new page' : `${was.words} words, ${was.arrows} arrows, ${was.runs.length} long runs`} on ${chosen.sha.slice(0, 12)}; ` +
+            `${now.words} words, ${now.arrows} arrows, ${now.runs.length} long runs now`,
         )
+        // What is left to move on this page, one run per line, for the lane that moves it.
+        console.log([`PROSE RUNS ${page.key}: ${now.runs.length}`, ...now.runs].join('\n'))
 
         // A page that drew nothing would pass any comparison: every page draws
         // over this without the rail (the fewest, voice/telemetry, 25 on

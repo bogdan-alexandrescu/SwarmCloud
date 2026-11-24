@@ -14,6 +14,7 @@
 // in the duplicate banner, or put "available" back in the head -- a case below
 // turns red.
 
+import { helpIn, oneIn, shownIn } from './proseruns'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -198,8 +199,11 @@ describe('the verdict', () => {
     render(<AccountsScreen />)
     const verdict = await screen.findByRole('region', { name: 'Can the pool take a new agent' }, WAIT)
     expect(verdict.querySelector('.acct-verdict-big')?.textContent).toBe('0 of 2')
-    expect(verdict.textContent).toContain('No account can take a new agent. Next: ai-eng-2 at')
-    expect(verdict.textContent).toContain('2 of the 2 are under the floor on their 7-day window.')
+    // Facts on the surface; the sentences are the verdict's (i) (issue 81).
+    expect(shownIn(verdict)).toContain('No account can take a new agent · next ai-eng-2 at')
+    expect(shownIn(verdict)).toContain('2 of 2 under the 7-day floor')
+    expect(helpIn(verdict)).toContain('No account can take a new agent. Next: ai-eng-2 at')
+    expect(helpIn(verdict)).toContain('2 of the 2 are under the floor on their 7-day window.')
     await waitFor(() => expect(verdict.querySelector('.acct-verdict-wn')?.textContent).toBe('2'), WAIT)
     expect(verdict.textContent).toContain('and 1 later step waits on them')
     expect(verdict.querySelector('a')?.getAttribute('href')).toBe('#work/running/waiting')
@@ -223,7 +227,8 @@ describe('the verdict', () => {
     api.loadAccountsBoard.mockResolvedValue(board([]))
     render(<AccountsScreen />)
     const verdict = await screen.findByRole('region', { name: 'Can the pool take a new agent' }, WAIT)
-    expect(verdict.textContent).toContain('No account is registered, so no agent that needs the pool can start.')
+    expect(shownIn(verdict)).toContain('No account is registered.')
+    expect(helpIn(verdict)).toContain('No account is registered, so no agent that needs the pool can start.')
     expect(verdict.querySelector('.acct-verdict-big')?.textContent).toBe('0 accounts')
   })
 
@@ -249,9 +254,11 @@ describe('the verdict', () => {
     const verdict = await screen.findByRole('region', { name: 'Can the pool take a new agent' }, WAIT)
     expect(verdict.textContent).not.toContain('No account is registered')
     expect(verdict.querySelector('.acct-verdict-big')?.textContent).toBe('0 of at least 1')
-    expect(verdict.querySelector('.acct-verdict-head')?.textContent).toBe(
-      'No account here could be read, so no agent that needs the pool can start.',
-    )
+    // One short line; the sentences are its (i) (issue 81).
+    const head = oneIn(verdict, '.acct-verdict-head')
+    expect(shownIn(head)).toContain('No account here could be read.')
+    expect(shownIn(head)).not.toContain('so no agent that needs the pool can start')
+    expect(helpIn(head)).toContain('No account here could be read, so no agent that needs the pool can start.')
     // The empty panel under it says the same, never the zero's "No accounts registered".
     const panel = document.querySelector('.acct-empty') as HTMLElement
     // The heading carries its `?` card after the words.
@@ -294,7 +301,7 @@ describe('the table', () => {
     })
     const { clearsOf, whyOf } = tableModule
     const why = render(<p>{whyOf(a, 'eng', now)}</p>).container.textContent
-    expect(why).toBe('An aged reading: 7-day 9% left, read 52m ago, counts at half (4.5%), under its 5% floor')
+    expect(why).toBe('An aged reading: 7-day 9% left · read 52m ago · counts at half (4.5%), under its 5% floor')
     expect(clearsOf(a, 'eng', now).head).toBe('at the next reading')
   })
 })
@@ -330,8 +337,10 @@ describe('one subscription twice', () => {
     })
     const names = new Map([['eng:home-personal', 'home-personal']])
     const { container } = render(<>{tableModule.whyOf(extra, 'eng', Date.now(), names)}</>)
-    expect(container.textContent).toBe(
-      'One subscription twice: registered on the same organisation and seat as home-personal ' +
+    // Issue 81: the block's name on the surface, the rest word for word behind its (i).
+    expect(shownIn(container)).toBe('One subscription twice')
+    expect(helpIn(container)).toBe(
+      'registered on the same organisation and seat as home-personal ' +
         '(matched on the provider’s organisation and seat). The pool hands out only the other',
     )
     // An older broker's block, with no `matched_on`, still reads as it did.
@@ -340,8 +349,9 @@ describe('one subscription twice', () => {
       blocked_by: [{ duplicate_of: 'eng:home-personal', reason: 'registered on the same organisation as eng:home-personal' }],
     })
     const { container: was } = render(<>{tableModule.whyOf(old, 'eng', Date.now(), names)}</>)
-    expect(was.textContent).toBe(
-      'One subscription twice: registered on the same organisation as home-personal. The pool hands out only the other',
+    expect(shownIn(was)).toBe('One subscription twice')
+    expect(helpIn(was)).toBe(
+      'registered on the same organisation as home-personal. The pool hands out only the other',
     )
   })
 

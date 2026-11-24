@@ -8,6 +8,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
 import { Banner, Button, ButtonLink, Dash, EmptyState, LoadingState, routedClick, type ButtonKind, type ButtonSize } from './components'
 import { MarkGlyph } from './marks'
+import { InfoTip } from './InfoTip'
 import { AGED_AFTER_MS, FailedPanel, RefreshControl, useClaimPageAge } from './Shell'
 import type { ApiError, Result } from './fetch'
 import { addressToPath } from './paths'
@@ -110,8 +111,14 @@ function sentenceCase(what: string): string {
 export function UrNotServed({ route, what, plural = false }: { route: string; what: string; plural?: boolean }) {
   return (
     <div className="ur-notserved" data-notserved={route} title={`Not served: ${route}`}>
+      {/* ISSUE 81: the could-not-check reason stays as one short line; the
+          two sentences it was are behind the (i), word for word. */}
       <EmptyState kind="partial" heading="Not served yet">
-        {sentenceCase(what)} {plural ? 'are' : 'is'} not served by this API yet. Nothing here is a zero: it has not been read.
+        Not read, so not a zero.{' '}
+        <InfoTip
+          about="what is not served"
+          tip={`${sentenceCase(what)} ${plural ? 'are' : 'is'} not served by this API yet. Nothing here is a zero: it has not been read.`}
+        />
       </EmptyState>
     </div>
   )

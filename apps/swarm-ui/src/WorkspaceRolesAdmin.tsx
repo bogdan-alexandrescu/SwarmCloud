@@ -10,6 +10,7 @@ import {
   type Result,
 } from './api'
 import { Button, Card, Dash } from './components'
+import { InfoTip } from './InfoTip'
 import { UrRefresh, useUrRead, type UrRead } from './RepositoriesParts'
 import { DEFAULT_ROLES } from './roles'
 import {
@@ -80,9 +81,13 @@ export function WorkspaceRolesCard() {
   const next = (token: string) => setMore((was) => (was.includes(token) ? was : [...was, token]))
   return (
     <Card className="wra-card" title="Workspace roles" action={<UrRefresh reads={[first]} />}>
+      {/* A SHORT LABEL, THE SENTENCES BEHIND ITS (i) (issue 81). */}
       <p className="ur-hint">
-        Each group workspace&rsquo;s default role, its admins and the people with a role of their own. A group workspace has no named admin until
-        one is named here, though every platform admin holds admin in it; a personal workspace&rsquo;s only admin is its person.
+        Roles in each group workspace{' '}
+        <InfoTip
+          about="Workspace roles"
+          tip="Each group workspace’s default role, its admins and the people with a role of their own. A group workspace has no named admin until one is named here, though every platform admin holds admin in it; a personal workspace’s only admin is its person."
+        />
       </p>
       <ListPage read={first} last={more.length === 0} onMore={next} />
       {more.map((token, i) => (

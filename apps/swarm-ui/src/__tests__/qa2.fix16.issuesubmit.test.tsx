@@ -158,7 +158,8 @@ describe('runs2-35: open runs by state and age, linked', () => {
       expect(el).not.toBeNull()
       return el as HTMLElement
     }, WAIT)
-    expect(visible(open)).toBe('Open runs for this issue: Planned 10d ago, Running 3d ago. Planning it again starts another run.')
+    // ISSUE 81: one line of facts, the warning a fact of its own after a middot.
+    expect(visible(open)).toBe('Open runs: Planned 10d ago, Running 3d ago · planning it again starts another run')
     const links = [...open.querySelectorAll('a')]
     expect(links.map((a) => a.textContent)).toEqual(['Planned 10d ago', 'Running 3d ago'])
     expect(links[0]!.getAttribute('title')).toBe('run_4c1e09d2')

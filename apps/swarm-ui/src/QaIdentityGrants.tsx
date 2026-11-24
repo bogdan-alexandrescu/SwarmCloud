@@ -41,6 +41,7 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react'
 
 import { grantQaIdentity, loadQaIdentities, loadQaIdentityMine, revokeQaIdentity } from './api'
 import { Button } from './components'
+import { InfoTip } from './InfoTip'
 import type { ApiError, Result } from './fetch'
 import { formatDateTime } from './timezone'
 import type { QaIdentityAdminEntry, QaIdentityGrant, QaIdentityList, RunnerProfile } from './types'
@@ -317,14 +318,23 @@ export function QaIdentityGrants({ tenants }: { tenants: readonly string[] }) {
   return (
     <section className="section" data-testid="qa-identity" aria-labelledby="ten-qa-identity">
       <h2 id="ten-qa-identity">QA identity</h2>
+      {/* ONE SHORT LINE EACH, THE REST BEHIND ITS (i) (issue 81): what a
+          grant lets a workspace do, and that the grants could not be read,
+          are disclosures and stay on the surface. */}
       <p className="ur-hint">
-        A workspace granted here may ask for a browser agent signed in to this console as the QA account. Grant it only with a
-        reason; a revoke takes effect at the agent’s next credential renewal.
+        Granted workspaces’ agents may sign in as QA.{' '}
+        <InfoTip
+          about="QA identity grants"
+          tip="A workspace granted here may ask for a browser agent signed in to this console as the QA account. Grant it only with a reason; a revoke takes effect at the agent’s next credential renewal."
+        />
       </p>
       {notServed && (
         <p className="ur-hint">
-          QA identity grants cannot be read from this deployment: its swarm-api is a release from before the QA identity, and
-          has none of its routes. Deploy the current release of swarm-api to grant it; until then no workspace can name it.
+          QA identity grants could not be read here.{' '}
+          <InfoTip
+            about="why QA identity grants could not be read"
+            tip="QA identity grants cannot be read from this deployment: its swarm-api is a release from before the QA identity, and has none of its routes. Deploy the current release of swarm-api to grant it; until then no workspace can name it."
+          />
         </p>
       )}
       {unread !== null && !notServed && <SaidLine said={{ ok: false, error: unread }} />}

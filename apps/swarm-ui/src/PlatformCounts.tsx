@@ -3,6 +3,7 @@ import { loadMe, loadStats, loadTenants } from './api'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import type { TopicId } from './help'
 import { HelpCard, HelpLinks } from './HelpCard'
+import { InfoTip } from './InfoTip'
 import { PlatformOverTime, type OverTimePrice } from './PlatformOverTime'
 import { Mark } from './primitives'
 import { FrameAge, PageHead, timeAgo, useClaimPageAge } from './Shell'
@@ -76,20 +77,22 @@ export function forgetLastRun(): void {
  * platform itself is doing, so they came here rather than onto a page whose
  * switch says "Mine | All tenants".
  */
-export const PLATFORM_TICKS: readonly { name: string; job: string; does: string }[] = [
-  { name: 'safety_tick', job: 'scheduler-tick', does: 'A one-minute safety tick for the scheduler’s drain loop.' },
-  { name: 'reconciler', job: 'reconciler-tick', does: 'Reclaims expired leases and garbage-collects unused Job resources.' },
-  { name: 'quota_refresh', job: 'quota-refresh', does: 'Recomputes provider quota state and adaptive pool targets.' },
-  { name: 'workflow_rollup', job: 'workflow-rollup-<tenant>', does: 'Converges the stored state of each tenant’s workflows nobody reads, and seals each tenant’s ended outcome days (yesterday and the two before) so the counts over time read sealed days.' },
-  { name: 'issue_run_advance', job: 'issue-run-advance-<tenant>', does: 'Advances each tenant’s issue runs nobody is reading.' },
-  { name: 'stranded_pr_sweep', job: 'stranded-pr-sweep-<tenant>', does: 'Finds each tenant’s SwarmCloud pull requests nothing is going to merge, and logs them.' },
-  { name: 'repo_index_poll', job: 'repo-index-poll-<tenant>', does: 'Reads each tenant’s registered repositories’ heads and queues their index runs.' },
-  { name: 'merge_wake', job: 'merge-wake-<tenant>', does: 'Every minute, marks each tenant’s CI-waiting merge steps whose checks have settled.' },
-  { name: 'forge_refresh', job: 'forge-refresh', does: 'Refreshes GitHub user access tokens before they expire.' },
-  { name: 'schedule_tick', job: 'schedule-tick', does: 'Fires every tenant’s due schedules, one firing per slot (its last hour is on Automate › Schedules, All tenants).' },
-  { name: 'workspace_sweep', job: 'workspace-sweep', does: 'Re-dispatches approved personal workspaces nobody built, and logs each one still waiting.' },
-  { name: 'secrets_rotation_sweep', job: 'workspace-secrets-rotation-sweep', does: 'Hourly, disables each rotated-out workspace secret version once its day of grace has passed; never destroys one.' },
-  { name: 'mcp_credentials_sweep', job: 'mcp-credentials-sweep', does: 'Every ten minutes, deletes per-run MCP credentials whose agent ended or expired.' },
+// `title`: a few words drawn in the row; `does`: the sentence behind the
+// row's (i) (issue 81: nine sentences of 9 to 30 words read as paragraphs).
+export const PLATFORM_TICKS: readonly { name: string; job: string; title: string; does: string }[] = [
+  { name: 'safety_tick', title: 'Scheduler drain safety tick', job: 'scheduler-tick', does: 'A one-minute safety tick for the scheduler’s drain loop.' },
+  { name: 'reconciler', title: 'Reclaims leases, collects Jobs', job: 'reconciler-tick', does: 'Reclaims expired leases and garbage-collects unused Job resources.' },
+  { name: 'quota_refresh', title: 'Recomputes quota and pool targets', job: 'quota-refresh', does: 'Recomputes provider quota state and adaptive pool targets.' },
+  { name: 'workflow_rollup', title: 'Converges workflows, seals outcome days', job: 'workflow-rollup-<tenant>', does: 'Converges the stored state of each tenant’s workflows nobody reads, and seals each tenant’s ended outcome days (yesterday and the two before) so the counts over time read sealed days.' },
+  { name: 'issue_run_advance', title: 'Advances unread issue runs', job: 'issue-run-advance-<tenant>', does: 'Advances each tenant’s issue runs nobody is reading.' },
+  { name: 'stranded_pr_sweep', title: 'Logs unmergeable pull requests', job: 'stranded-pr-sweep-<tenant>', does: 'Finds each tenant’s SwarmCloud pull requests nothing is going to merge, and logs them.' },
+  { name: 'repo_index_poll', title: 'Queues repository index runs', job: 'repo-index-poll-<tenant>', does: 'Reads each tenant’s registered repositories’ heads and queues their index runs.' },
+  { name: 'merge_wake', title: 'Marks settled CI merge steps', job: 'merge-wake-<tenant>', does: 'Every minute, marks each tenant’s CI-waiting merge steps whose checks have settled.' },
+  { name: 'forge_refresh', title: 'Refreshes GitHub user tokens', job: 'forge-refresh', does: 'Refreshes GitHub user access tokens before they expire.' },
+  { name: 'schedule_tick', title: 'Fires due tenant schedules', job: 'schedule-tick', does: 'Fires every tenant’s due schedules, one firing per slot (its last hour is on Automate › Schedules, All tenants).' },
+  { name: 'workspace_sweep', title: 'Re-dispatches unbuilt personal workspaces', job: 'workspace-sweep', does: 'Re-dispatches approved personal workspaces nobody built, and logs each one still waiting.' },
+  { name: 'secrets_rotation_sweep', title: 'Disables rotated-out secret versions', job: 'workspace-secrets-rotation-sweep', does: 'Hourly, disables each rotated-out workspace secret version once its day of grace has passed; never destroys one.' },
+  { name: 'mcp_credentials_sweep', title: 'Deletes ended runs’ MCP credentials', job: 'mcp-credentials-sweep', does: 'Every ten minutes, deletes per-run MCP credentials whose agent ended or expired.' },
 ]
 
 function PlatformTicks() {
@@ -108,7 +111,9 @@ function PlatformTicks() {
             <tr key={t.name} className="sc-row" data-tick={t.name}>
               <td data-label="Tick"><span className="mono">{t.name}</span></td>
               <td data-label="Cloud Scheduler job"><span className="mono">{t.job}</span></td>
-              <td data-label="What it does">{t.does}</td>
+              <td data-label="What it does">
+                {t.title} <InfoTip about={t.name} tip={t.does} />
+              </td>
             </tr>
           ))}
         </tbody>
@@ -309,7 +314,9 @@ export function PlatformCountsScreen() {
           above rather than part of it. */}
       <section className="counts-now" aria-labelledby="counts-now-title">
         <h2 className="sc-h2" id="counts-now-title">Right now: agents in each state</h2>
-        <p className="sb-note">A snapshot, read by the same Run{runParts(admin, overPrice)}.</p>
+        {/* SHORT ON THE SURFACE, WHAT THE RUN ADDS UP TO BEHIND ITS (i)
+            (issue 81); the Run button carries the total. */}
+        <SnapshotNote parts={runParts(admin, overPrice)} />
         {/* BOTH CARDS BEFORE THE FIRST RUN (archived issue 135), each with `not run` in its
             figure slot: the page has its shape before the press, and an empty
             page is not mistaken for a platform with nothing on it. They stay
@@ -360,7 +367,13 @@ export function PlatformCountsScreen() {
           read, so it is drawn whether or not the count has run. */}
       <section className="counts-ticks">
         <h2 className="sc-h2">Platform ticks</h2>
-        <p className="sb-note">The platform’s own machinery. No tenant manages these; they are set in Terraform, and listed here so every recurring thing is in one place.</p>
+        <p className="sb-note">
+          The platform’s own machinery{' '}
+          <InfoTip
+            about="Platform ticks"
+            tip="The platform’s own machinery. No tenant manages these; they are set in Terraform, and listed here so every recurring thing is in one place."
+          />
+        </p>
         <PlatformTicks />
       </section>
       {/* THE FOOTER EVERY SIBLING PAGE HAS (QA G5-23): what a run returns,
@@ -418,6 +431,16 @@ function runParts(admin: boolean | null, over: OverTimePrice | null): string {
   return `: ${snapshots} reads, which with Over time’s ~${over.total} make ${admin === null ? 'an admin’s' : 'its'} ~${STATE_COUNT * 2 + over.total}`
 }
 
+/** Right now's note: short on the surface, what the Run adds up to behind its (i) (issue 81). */
+function SnapshotNote({ parts }: Readonly<{ parts: string }>) {
+  if (parts === '') return <p className="sb-note">A snapshot, read by the same Run.</p>
+  return (
+    <p className="sb-note">
+      A snapshot, read by the same Run <InfoTip about="what the Run reads" tip={`A snapshot, read by the same Run${parts}.`} />
+    </p>
+  )
+}
+
 /**
  * How many `count()` queries one run costs, for one scope.
  *
@@ -462,10 +485,11 @@ function NotRun({ title, queries, counting }: { title: string; queries: number |
         )}
         <span className="counts-notrun-words">
           {queries === null
-            ? 'not run yet. Only an admin’s run counts every tenant.'
+            ? 'not run yet · Only an admin’s run counts every tenant.'
             : counting
-              ? `counting now. One exact count per state, ${queries} reads.`
-              : `not run yet. One exact count per state, ${queries} reads.`}
+              ? // A FACT LIST (issue 81): the read cost is a must-stay line of its own.
+                `counting now · One exact count per state, ${queries} reads.`
+              : `not run yet · One exact count per state, ${queries} reads.`}
         </span>
       </div>
     </section>

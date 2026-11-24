@@ -1,4 +1,5 @@
 import { useEffect, useId, useState, type FormEvent } from 'react'
+import { InfoTip } from './InfoTip'
 import {
   askToJoin, loadMyJoinRequests, lookupJoinCode, withdrawJoinRequest,
   type ApiError, type Result,
@@ -75,13 +76,13 @@ export function JoinWorkspaceScreen({ code }: { code: string | null }) {
 function NoCode() {
   return (
     <Card title="Ask with a join link">
+      {/* ISSUE 81: one short line; the three sentences it was are behind the (i), word for word. */}
       <p className="pk-lead">
-        To ask to join a team&rsquo;s workspace, open the join link one of its admins shared with you: it ends
-        in <code>/join#</code> and a code.
-      </p>
-      <p className="ur-small">
-        The code is read once, when the link is opened, and is not kept in the address: open the link again to ask
-        again. An admin who has not shared one turns it on in Settings &rsaquo; People and roles.
+        Open the join link an admin shared.{' '}
+        <InfoTip
+          about="join links"
+          tip="To ask to join a team’s workspace, open the join link one of its admins shared with you: it ends in /join# and a code. The code is read once, when the link is opened, and is not kept in the address: open the link again to ask again. An admin who has not shared one turns it on in Settings › People and roles."
+        />
       </p>
     </Card>
   )
@@ -165,12 +166,15 @@ function AskForm({ code, name, onSent }: { code: string; name: string; onSent: (
   return (
     <Card title={`Ask to join ${name}`}>
       <form className="pk-form" autoComplete="off" aria-labelledby={`${id}-h`} onSubmit={(e) => void ask(e)}>
+        {/* ISSUE 81: who sees the request stays as one short line; the rest is behind the (i), word for word. */}
         <p id={`${id}-h`} className="pk-lead">
-          This link is {name}&rsquo;s. Ask to join it, and one of its admins approves or denies your request.
+          This link is {name}&rsquo;s.{' '}
+          <InfoTip
+            about="asking to join"
+            tip={`Ask to join it, and one of its admins approves or denies your request. They see your email and the note below. Until one approves it you cannot see anything in ${name}.`}
+          />
         </p>
-        <p className="ur-small">
-          They see your email and the note below. Until one approves it you cannot see anything in {name}.
-        </p>
+        <p className="ur-small">Its admins see your email and note.</p>
         <label htmlFor={`${id}-note`}>A note for its admins (optional)</label>
         <textarea id={`${id}-note`} className="c-inp" rows={2} maxLength={MESSAGE_MAX} value={message}
           onChange={(e) => setMessage(e.target.value)} />
