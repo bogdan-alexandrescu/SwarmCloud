@@ -126,6 +126,11 @@ def _cost_hold_and_readiness_prepass_off(monkeypatch):
     monkeypatch.setenv("SWARM_READINESS_PREPASS", "off")
 
 
+@pytest.fixture
+def plan_diagrams_on():
+    """The shipped reading of the plan-diagram setting in plans (§6.4)."""
+
+
 @pytest.fixture(autouse=True)
 def _rendered_deny_list(monkeypatch):
     monkeypatch.setenv("SWARM_SHARED_DENY_LIST", json.dumps(list(RENDERED_DENY_LIST)))
