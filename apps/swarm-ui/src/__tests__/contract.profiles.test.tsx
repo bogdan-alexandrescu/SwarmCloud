@@ -256,6 +256,20 @@ describe('a dispatch refusal is attributed to the field it is about', () => {
   })
 })
 
+describe('the fixture build serves the catalogue', () => {
+  // Each fixture contract's own content is held by its own test; this holds the names.
+  it("serves only catalogue profiles, each with an input contract, contract request 67's among them", async () => {
+    const actual = await vi.importActual<typeof import('../api')>('../api')
+    expect(actual.USE_FIXTURES).toBe(true)
+    const capacity = await actual.loadCapacity()
+    expect(capacity.status).toBe('ok')
+    const served = capacity.status === 'ok' ? capacity.data.runner_profiles : {}
+    expect(Object.keys(served).filter((name) => !(name in PROFILES))).toEqual([])
+    for (const [name, profile] of Object.entries(served)) expect(profile.input_contract, name).toBeDefined()
+    expect(served['claude-code-browser']).toBeDefined()
+  })
+})
+
 describe('the fixture build serves dispatch blocks the API could have sent', () => {
   it('carries accepted strategies and carriers, the default and integrate among them', async () => {
     const actual = await vi.importActual<typeof import('../api')>('../api')
