@@ -99,8 +99,8 @@ def test_workflow_submission_goes_through_submit() -> None:
     import inspect
 
     source = inspect.getsource(workflows.submit)
-    assert 'with submit_guard("/v1/workflows")' in source
-    assert 'client.request("POST", "/v1/workflows", payload=body, timeout=SUBMIT_TIMEOUT_SECONDS)' in source
+    assert 'send_submission("/v1/workflows", body,' in source
+    assert '"POST", "/v1/workflows", payload=keyed, timeout=SUBMIT_TIMEOUT_SECONDS)' in source
 
 
 def test_a_refusal_is_not_called_a_timeout(wire):
@@ -110,3 +110,46 @@ def test_a_refusal_is_not_called_a_timeout(wire):
     with pytest.raises(SwarmError) as caught:
         SwarmClient(base_url="http://api.invalid").dispatch_batch([{"prompt": "x"}])
     assert "may have been accepted" not in str(caught.value)
+
+
+def test_a_replay_incomplete_409_is_re_sent_with_the_same_key(monkeypatch) -> None:
+    """swarm-api answers 409 idempotency_replay_incomplete while the first
+    send's workflow document is still being written; the caller cannot re-send
+    (the key never leaves the bridge), so the bridge does, with the same body."""
+    monkeypatch.setattr(mcp_client.time, "sleep", lambda _s: None)
+    bodies: list[dict] = []
+
+    def post(body):
+        bodies.append(body)
+        if len(bodies) < 3:
+            raise SwarmError("still being written", status=409, code="idempotency_replay_incomplete")
+        return {"ok": True}
+
+    assert mcp_client.send_submission("/v1/workflows", {"a": 1}, post) == {"ok": True}
+    assert len(bodies) == 3
+    assert len({b["idempotency_key"] for b in bodies}) == 1
+
+
+def test_a_replay_incomplete_409_that_persists_is_raised(monkeypatch) -> None:
+    monkeypatch.setattr(mcp_client.time, "sleep", lambda _s: None)
+    calls: list[int] = []
+
+    def post(body):
+        calls.append(1)
+        raise SwarmError("still being written", status=409, code="idempotency_replay_incomplete")
+
+    with pytest.raises(SwarmError):
+        mcp_client.send_submission("/v1/workflows", {}, post)
+    assert len(calls) == mcp_client.SUBMIT_INCOMPLETE_RETRIES + 1
+
+
+def test_another_409_is_not_re_sent() -> None:
+    calls: list[int] = []
+
+    def post(body):
+        calls.append(1)
+        raise SwarmError("conflict", status=409, code="idempotency_key_reused")
+
+    with pytest.raises(SwarmError):
+        mcp_client.send_submission("/v1/workflows", {}, post)
+    assert len(calls) == 1

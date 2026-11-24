@@ -354,7 +354,9 @@ def test_the_api_wraps_a_task_and_names_its_id_id(api):
         headers=AUTH,
     )
     assert created.status_code == 201
-    assert set(created.json()) == {"task", "scheduler_woken"}
+    # `idempotent_replay`: whether this answers an earlier send's idempotency key.
+    assert set(created.json()) == {"task", "scheduler_woken", "idempotent_replay"}
+    assert created.json()["idempotent_replay"] is False
     assert "id" in created.json()["task"]
     assert "task_id" not in created.json()["task"]
 
