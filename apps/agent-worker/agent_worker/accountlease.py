@@ -769,7 +769,7 @@ class ReadingForwarder:
             self._sent_at[name] = tick
         try:
             self._send(due)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._log.warning(
                 "could not forward the account's rate-limit readings; the broker's "
                 "own usage poll still reads it, and the attempt carries on",

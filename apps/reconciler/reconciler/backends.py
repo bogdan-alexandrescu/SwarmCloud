@@ -758,7 +758,7 @@ class CloudRunBackend:
                     self._reported_unattributed.add(view.name)
                     try:
                         self._log_unattributed(execution, view, job_name)
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001
                         if self._log is not None:
                             self._log.warning(
                                 "could not describe an unattributed cloud run execution",
@@ -854,11 +854,11 @@ class CloudRunBackend:
             execution = self._executions_client().get_execution(name=name)
         except gapi_exceptions.NotFound:
             return Probe(ProbeOutcome.ABSENT, detail=f"{name}: not found")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             return Probe(ProbeOutcome.UNREADABLE, detail=f"{name}: {_describe(exc)}")
         try:
             job = self._jobs_client().get_job(name=job_name)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             return Probe(ProbeOutcome.UNREADABLE, detail=f"{job_name}: {_describe(exc)}")
         if not self._is_managed(job):
             return Probe(ProbeOutcome.UNREADABLE, detail=f"{job_name}: not a platform-managed job")
@@ -1066,7 +1066,7 @@ class CloudRunBackend:
                     confirmed=True,
                 )
             return True
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # Cannot see it, so cannot claim it stopped. Same rule as an
             # unreadable backend in `repair._is_actionable`.
             if self._log:
@@ -1681,7 +1681,7 @@ class GkeBackend:
                 jobs = self._batch.list_namespaced_job(
                     namespace=namespace, label_selector=self.label_selector
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 unreadable[namespace] = _describe(exc)
                 continue
             readable.add(namespace)
@@ -1741,7 +1741,7 @@ class GkeBackend:
         try:
             self._configure()
             job = self._batch.read_namespaced_job(name=name, namespace=namespace)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             if _api_status(exc) == 404:
                 return Probe(ProbeOutcome.ABSENT, detail=f"{namespace}/{name}: 404")
             return Probe(ProbeOutcome.UNREADABLE, detail=f"{namespace}/{name}: {_describe(exc)}")

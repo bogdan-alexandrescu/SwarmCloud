@@ -379,7 +379,7 @@ class LeaseFence:
             return False
         try:
             held = bool(self._lease.renew(self._holder))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.error(
                 "could not renew the sweep lease; stopping the credential sweep here",
                 extra={"error": type(exc).__name__, "detail": str(exc)[:200]},
@@ -407,7 +407,7 @@ class LeaseFence:
             if outcome:
                 return bool(self._lease.release(self._holder, outcome))
             return bool(self._lease.release(self._holder))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # Not fatal: an unreleased lease expires on its own within DEFAULT_TTL.
             log.warning(
                 "could not release the sweep lease; it expires on its own",

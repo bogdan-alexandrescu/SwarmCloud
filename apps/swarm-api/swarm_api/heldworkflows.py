@@ -370,7 +370,7 @@ class _Tick:
             if not self._token:
                 try:
                     self._token = self.ctx.forge_tokens.token_for(self.tenant)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     self._token_error = exc.code if isinstance(exc, ApiError) else type(exc).__name__
                     return _WAIT, self._token_error
             try:
@@ -381,7 +381,7 @@ class _Tick:
                 # Not read as closed: a token that lost the repository answers
                 # 404 too, and blocking every row on a rotated token is worse.
                 return _WAIT, "pull_request_not_found"
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 if isinstance(exc, ForgeRateLimited):
                     self.halted = exc.reset or self.now + forge_limits.DEFAULT_HOLD
                     forge_limits.QUOTAS.hold(self._sweep, self.halted)
@@ -447,7 +447,7 @@ class _Tick:
                 id=row_id, tenant_id=self.tenant_id, created_by=str(row.get("submitted_by") or "")))
             spec = WorkflowCreate.model_validate(row.get("spec") or {})
             submission = self.ctx.submissions.submit_workflow(owner, spec)
-        except Exception as exc:  # one row's failure is that row's
+        except Exception as exc:  # one row's failure is that row's  # noqa: BLE001
             code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
             log.warning("held workflow %s tenant=%s not released (%s)", row_id, self.tenant_id, code)
             self._settle(row_id, STARTING, FAILED, code)

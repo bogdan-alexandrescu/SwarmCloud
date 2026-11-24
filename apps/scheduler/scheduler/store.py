@@ -2137,7 +2137,7 @@ class SchedulerStore:
             if self.admission_observer is not None:
                 try:
                     self.admission_observer(outcome, runs, latency_ms)
-                except Exception:  # noqa: BLE001 -- a metric never decides admission
+                except Exception:  # a metric never decides admission
                     log.exception("admission observer failed")
             if outcome == "aborted":
                 level = logging.WARNING
@@ -2277,7 +2277,7 @@ class SchedulerStore:
             if self.admission_observer is not None:
                 try:
                     self.admission_observer(outcome, runs, latency_ms)
-                except Exception:  # noqa: BLE001 -- a metric never decides admission
+                except Exception:  # a metric never decides admission
                     log.exception("admission observer failed")
             if outcome == "aborted":
                 level = logging.WARNING

@@ -1336,7 +1336,7 @@ def _json(forge: GitHubIssues, url: str, token: str, what: str) -> Any:
         raise IssueReadFailed(f"GitHub's answer for {what} is larger than this read holds")
     try:
         return json.loads(raw.decode("utf-8"))
-    except Exception:
+    except Exception:  # noqa: BLE001
         raise IssueReadFailed(f"GitHub's answer for {what} is not JSON") from None
 
 
