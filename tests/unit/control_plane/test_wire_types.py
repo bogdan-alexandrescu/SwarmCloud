@@ -30,14 +30,24 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from types import UnionType
+from typing import Any, Union, get_args, get_origin
 
 import pytest
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, TypeAdapter
 
 from swarm_api import wire_types
-from swarm_api.routes import admin, leases, platform, tasks, tenants, workflows
+from swarm_api.routes import (
+    accounts,
+    admin,
+    leases,
+    outcomes,
+    platform,
+    tasks,
+    tenants,
+    workflows,
+)
 from swarm_api.codec import (
     SUMMARY_DROPPED_KEYS,
     attempt_from_dict,
@@ -431,6 +441,9 @@ DOCUMENTED: dict[tuple[Any, str, str], type[BaseModel]] = {
     (platform, "GET", "/v1/providers"): wire_types.ProvidersPage,
     (tenants, "GET", "/v1/tenants/me"): wire_types.Me,
     (workflows, "GET", "/v1/workflows/{workflow_id}"): wire_types.WorkflowEnvelope,
+    (outcomes, "GET", "/v1/outcomes"): wire_types.Outcomes,
+    (platform, "GET", "/v1/runtimes"): wire_types.RuntimesPage,
+    (accounts, "GET", "/v1/accounts"): wire_types.AccountsPage,
 }
 
 
@@ -494,3 +507,283 @@ def test_the_codec_built_rows_are_served_unchanged(seeded, shapes):
         built = _json(tenant_to_api(tenant_from_dict(db.docs[f"tenants/{tenant['tenant_id']}"])))
         assert {k: tenant[k] for k in built} == built, where
         assert set(tenant) - set(built) <= {"workspace_kind", "workspace_id"}, where
+
+
+# --------------------------------------------------------------------------
+# The outcome ledger, the runtimes catalogue and the account listing
+# (part of #72). These replace the readings of `outcomes.ts` and `types.ts`
+# that test_outcomes_ui_field_contract.py, test_runtimes_screen.py and
+# test_account_listing_is_honest.py made: each payload is walked against its
+# model at EVERY depth, both directions, and every nested model must have
+# been reached with a value at least once, so no part of a shape is checked
+# only against `null` or `[]`.
+# --------------------------------------------------------------------------
+
+
+def _members(annotation: Any) -> list[Any]:
+    """The non-None members of a union, or the annotation itself."""
+    if get_origin(annotation) in (Union, UnionType):
+        return [a for a in get_args(annotation) if a is not type(None)]
+    return [annotation]
+
+
+def _walk_value(annotation: Any, value: Any, where: str, seen: set[str]) -> list[str]:
+    if value is None:
+        return []
+    members = _members(annotation)
+    if len(members) > 1:
+        tried = []
+        for member in members:
+            trial: set[str] = set()
+            problems = _walk_value(member, value, where, trial)
+            if not problems:
+                seen |= trial
+                return []
+            tried.append(problems)
+        models = [m for m in members if isinstance(m, type) and issubclass(m, BaseModel)]
+        return min(tried, key=len) if models else []
+    (annotation,) = members
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        if not isinstance(value, dict):
+            return [f"{where}: {value!r:.60} is not an object"]
+        return walk(annotation, value, where, seen)
+    origin, args = get_origin(annotation), get_args(annotation)
+    if origin is list and args and isinstance(value, list):
+        return [p for i, item in enumerate(value)
+                for p in _walk_value(args[0], item, f"{where}[{i}]", seen)]
+    if origin is dict and len(args) == 2 and isinstance(value, dict):
+        return [p for key, item in value.items()
+                for p in _walk_value(args[1], item, f"{where}.{key}", seen)]
+    return []
+
+
+def walk(model: type[BaseModel], payload: dict[str, Any], where: str,
+         seen: set[str]) -> list[str]:
+    """Every key the payload carries is declared, every required field is
+    carried, at every depth the model describes. `seen` collects every model
+    reached with a value."""
+    seen.add(model.__name__)
+    problems = [f"{where}.{key}: served and not declared by wire_types.{model.__name__}"
+                for key in undeclared_keys(model, payload)]
+    problems += [f"{where}.{key}: required by wire_types.{model.__name__} and not served"
+                 for key in missing_required(model, payload)]
+    for name, field in model.model_fields.items():
+        if name in payload:
+            problems += _walk_value(field.annotation, payload[name], f"{where}.{name}", seen)
+    return problems
+
+
+def nested_models(model: type[BaseModel], out: set[str] | None = None) -> set[str]:
+    """Every model `model` reaches through its fields, itself included."""
+    out = set() if out is None else out
+    if model.__name__ in out:
+        return out
+    out.add(model.__name__)
+
+    def visit(annotation: Any) -> None:
+        for member in _members(annotation):
+            if isinstance(member, type) and issubclass(member, BaseModel):
+                nested_models(member, out)
+            for arg in get_args(member):
+                visit(arg)
+
+    for field in model.model_fields.values():
+        visit(field.annotation)
+    return out
+
+
+def test_the_walk_fails_on_drift_at_depth():
+    """Both directions, one level down: a nested extra key and a nested
+    missing field are each reported with their path."""
+    bucket = {"start": "a", "end": "b", "state": "sealed", "in_progress": False,
+              "unread_reason": None, "submitted": 1, "ended": 1, "succeeded": 1,
+              "failed": 0, "dead_lettered": 0, "cancelled": None, "rate": None,
+              "failure_classes": None, "cost": {"sum_usd": None, "attempts": 1}}
+    problems = walk(wire_types.OutcomeBucket, bucket, "b", set())
+    assert problems == ["b.cost.reporting: required by wire_types.CostCell and not served"]
+    bucket["cost"] = {"sum_usd": None, "attempts": 1, "reporting": 0, "extra": 1}
+    problems = walk(wire_types.OutcomeBucket, bucket, "b", set())
+    assert problems == ["b.cost.extra: served and not declared by wire_types.CostCell"]
+
+
+@pytest.fixture
+def outcome_payloads(db, tokens, group_map) -> dict[str, dict[str, Any]]:
+    """The outcome ledger as the Timeline asks for it: the fixture week of
+    test_outcomes_route, through the real route, every way the page reads it
+    (moved here from test_outcomes_ui_field_contract.py)."""
+    from fastapi.testclient import TestClient
+
+    from swarm_api import outcomes as module
+    from swarm_api.groups import StaticGroups
+    from swarm_api.main import create_app
+
+    from . import test_outcomes_route as route_tests
+
+    clock = route_tests.Clock()
+    route_tests.seed_week(db)
+    ctx = route_tests._context(db, tokens, StaticGroups(group_map), clock)
+    api = TestClient(create_app(ctx), raise_server_exceptions=False)
+    week = dict(route_tests.WEEK)
+    out = {
+        "tenant": route_tests.ok(api, "alice", compare="previous", group="submitted_by", **week),
+        "filtered": route_tests.ok(
+            api, "alice", profile=["mock", "claude-code"], submitted_by="alice@example.com",
+            kind="all", bucket="day", **week,
+        ),
+        "platform_excluding": route_tests.ok(
+            api, "root", exclude_tenant="research", group="tenant_id", compare="previous", **week,
+        ),
+        "platform_including": route_tests.ok(api, "root", tenant=["research", "eng"], **week),
+        "range": route_tests.ok(api, "alice", tz="UTC", since="2026-09-20", until="2026-09-24"),
+        # kind=standalone: `workflows_failed` does not apply, and its counts are null.
+        "standalone": route_tests.ok(api, "alice", kind="standalone", **week),
+    }
+    fresh = type(db)()
+    route_tests.seed_week(fresh)
+    starved = route_tests._context(fresh, tokens, StaticGroups(group_map), clock)
+    starved.outcomes = module.Outcomes(
+        store=starved.store, rollups=starved.rollups, metrics=starved.metrics, now=clock,
+        derive_read_budget=1,
+    )
+    out["unread"] = route_tests.ok(
+        TestClient(create_app(starved), raise_server_exceptions=False), "alice", **week,
+    )
+    assert out["unread"]["totals"]["complete"] is False, "the budget did not leave a bucket unread"
+    return out
+
+
+def test_every_outcomes_payload_is_exactly_the_model_at_every_depth(outcome_payloads):
+    seen: set[str] = set()
+    problems = [f"[{name}] {p}" for name, body in outcome_payloads.items()
+                for p in walk(wire_types.Outcomes, body, "Outcomes", seen)]
+    assert not problems, (
+        "GET /v1/outcomes and wire_types.Outcomes disagree:\n  " + "\n  ".join(problems[:40])
+    )
+    unreached = sorted(nested_models(wire_types.Outcomes) - seen)
+    assert not unreached, (
+        f"these models were never reached with a value, so their shape is unproven: {unreached}"
+    )
+    for name, body in outcome_payloads.items():
+        wire_types.Outcomes.model_validate(body)
+
+
+def test_the_outcomes_unions_are_exactly_the_routes_values(outcome_payloads):
+    """A value the route sends and the generated union lacks is drawn as
+    nothing; one it never sends is dead code (the unions outcomes.ts
+    switched on, now generated from these)."""
+    from swarm_api import outcomes as module
+
+    def values(enum: Any) -> set[str]:
+        return {m.value for m in enum}
+
+    assert values(wire_types.FailureClassKey) == set(module.FAILURE_KEYS)
+    assert values(wire_types.CancelCauseKey) == set(module.CANCEL_KEYS)
+    assert values(wire_types.LedgerBucketSize) == set(module.BUCKETS)
+    assert values(wire_types.GroupBy) == set(module.GROUPS)
+    assert values(wire_types.UnreadReason) == set(module._REASON_ORDER)
+    assert values(wire_types.BucketState) == {"sealed", "open", "unread"}
+    states = {b["state"] for body in outcome_payloads.values() for b in body["buckets"]}
+    assert states <= values(wire_types.BucketState)
+
+
+def test_the_outcomes_route_declares_every_parameter_the_timeline_sends(client):
+    """The query `outcomesQuery` builds (contract.shapes.test.ts asserts the
+    console sends exactly these) is one the route declares, in the OpenAPI
+    document, with `tz` among them and no default the page relies on."""
+    document = client.app.openapi()
+    parameters = {p["name"]: p for p in document["paths"]["/v1/outcomes"]["get"]["parameters"]
+                  if p["in"] == "query"}
+    sent = {"tz", "span", "since", "until", "bucket", "scope", "tenant", "exclude_tenant",
+            "profile", "submitted_by", "kind", "group", "compare", "section"}
+    assert sent <= set(parameters), sorted(sent - set(parameters))
+    # None of them is required by FastAPI: `tz` is refused by the route's own
+    # validation (one 422 shape), so the page must always send it.
+    assert not any(p.get("required") for p in parameters.values())
+
+
+def test_a_missing_tz_is_refused(client):
+    """Why the page always sends `tz`: the route requires it."""
+    response = client.get("/v1/outcomes?span=7d", headers=auth_header("alice"))
+    assert response.status_code == 422, response.text
+
+
+@pytest.fixture
+def runtimes_payload(client) -> dict[str, Any]:
+    response = client.get("/v1/runtimes", headers=auth_header("alice"))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["runtimes"], "the route served no runtimes; the comparison would be vacuous"
+    return body
+
+
+def test_the_runtimes_payload_is_exactly_the_model_at_every_depth(runtimes_payload):
+    seen: set[str] = set()
+    problems = walk(wire_types.RuntimesPage, runtimes_payload, "/v1/runtimes", seen)
+    assert not problems, problems
+    assert nested_models(wire_types.RuntimesPage) <= seen, sorted(
+        nested_models(wire_types.RuntimesPage) - seen)
+    wire_types.RuntimesPage.model_validate(runtimes_payload)
+
+
+class _ListingPool:
+    """The broker's real listing, as swarm-api's proxy reads it."""
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self._payload = payload
+
+    def list_accounts(self, tenant_id: str, include_reserved: bool = False) -> dict[str, Any]:
+        return dict(self._payload)
+
+    def holds(self, account_id: str) -> dict[str, Any]:
+        return {"holds": []}
+
+
+@pytest.fixture
+def account_listing(api_context, broker) -> dict[str, Any]:
+    """`GET /v1/accounts` as swarm-api serves it, rebuilt from what the real
+    broker serves for a tenant with an account it reported unreadable, one
+    lent account, and a document the store cannot parse."""
+    from fastapi.testclient import TestClient
+
+    from quota_broker.accountstore import AccountStore
+    from quota_broker.main import create_app as create_broker
+    from swarm_api.main import create_app as create_api
+
+    class _Identity:
+        def resolve(self, authorization):  # noqa: ANN001 - the broker's duck type
+            return "eng", False
+
+    store = AccountStore(broker.db)
+    store.register("eng", "mine")
+    store.register("research", "lent", lend_to=["eng"])
+    now = datetime.now(timezone.utc)
+    broker.db.document("accounts/eng:mine").update({
+        "unreadable_by": {"eng": now - timedelta(minutes=5)},
+        "windows": {"five_hour": {"utilization": 0.4, "resets_at": now + timedelta(hours=2)}},
+        "observed_at": now,
+    })
+    broker.db.document("accounts/eng:half-written").set(
+        {"account_id": "eng:half-written", "owner_tenant": "eng"})
+    served = TestClient(create_broker(broker, identity=_Identity(), account_store=store),
+                        raise_server_exceptions=False).get("/v1/accounts")
+    assert served.status_code == 200, served.text
+
+    app = create_api(api_context)
+    app.state.account_pool = _ListingPool(served.json())
+    response = TestClient(app, raise_server_exceptions=False).get(
+        "/v1/accounts", headers=auth_header("alice"))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert len(body["accounts"]) == 2, body
+    return body
+
+
+def test_the_account_listing_is_exactly_the_model_at_every_depth(account_listing):
+    seen: set[str] = set()
+    problems = walk(wire_types.AccountsPage, account_listing, "/v1/accounts", seen)
+    assert not problems, problems
+    assert {"AccountsPage", "Account", "AccountWindow", "RefreshSweep"} <= seen
+    wire_types.AccountsPage.model_validate(account_listing)
+    assert any(a["unreadable_now"] for a in account_listing["accounts"]), (
+        "no account carried a live unreadable report; `unreadable_now` is checked only empty")
+    assert account_listing["unreadable_document_count"] == 1
