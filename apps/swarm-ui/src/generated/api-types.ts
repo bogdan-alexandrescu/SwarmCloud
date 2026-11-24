@@ -261,6 +261,58 @@ export interface AskBody {
   message?: string | null
 }
 
+/** `GET /v1/tasks/{task_id}/attempts`. */
+export interface AttemptPage {
+  task_id: string
+  read_at: string
+  attempts: AttemptRow[]
+  /** The subscription account each attempt ran on, keyed by attempt id. */
+  accounts_by_attempt: { [key: string]: unknown }
+}
+
+/** `attempt_to_api` in codec.py: one attempt, with its five spend fields. */
+export interface AttemptRow {
+  attempt_id: string
+  task_id: string
+  tenant_id: string
+  generation: number
+  lease_id: string
+  backend: string
+  execution_name: string | null
+  created_at: string
+  started_at: string | null
+  completed_at: string | null
+  exit_code: number | null
+  error: string | null
+  error_redaction_count?: number | null
+  peak_rss_bytes: number | null
+  peak_disk_bytes: number | null
+  oom_near_miss: boolean
+  checkpoints: string[]
+  input_tokens: number | null
+  output_tokens: number | null
+  cache_read_input_tokens: number | null
+  cache_creation_input_tokens: number | null
+  cost_usd: number | null
+  cpu_seconds?: number | null
+  peak_cpu_cores?: number | null
+  mean_cpu_cores?: number | null
+  cpu_limit_cores?: number | null
+  cpu_measured_at?: string | null
+  cpu_limit_source?: string | null
+  cpu_reading_age_seconds?: number | null
+  model?: string | null
+  size_version?: number | null
+  sized_cpu_request?: number | null
+  sized_cpu_limit?: number | null
+  sized_memory_gib?: number | null
+  sized_disk_gib?: number | null
+  sized_live_split?: unknown
+  account_id?: string | null
+  credential_source?: string | null
+  credential_tier?: string | null
+}
+
 export interface AuthBody {
   mode: 'none' | 'dispatch' | 'workspace_secret'
   header?: string | null
@@ -300,6 +352,19 @@ export interface BypassWrite {
   link_token?: string | null
 }
 
+/**
+ * `GET /v1/capacity`: the caller's pools and what each runner profile can
+ * admit.
+ */
+export interface Capacity {
+  pools: Pool[]
+  runner_profiles: { [key: string]: RunnerProfile }
+  tenant_id?: string | null
+  pools_complete?: boolean | null
+  blocked_reason_groups?: { [key: string]: string[] } | null
+  generated_at: string
+}
+
 export interface CeilingRequest {
   max_active: number
 }
@@ -327,6 +392,19 @@ export interface ContractReviewPut {
 export interface Conversion {
   code: string
   state: string
+}
+
+/**
+ * What one relaxed ceiling would buy a runner profile
+ * (`ProfileAdmission.counterfactual`).
+ */
+export interface Counterfactual {
+  pool: string
+  action: string
+  headroom_after: number | null
+  basis_after: string
+  delta: number | null
+  next_binding: string[]
 }
 
 export interface CredentialWrite {
@@ -360,6 +438,18 @@ export interface DenyRequest {
 
 export interface DismissBody {
   dismissed?: boolean
+}
+
+/** `GET /v1/admin/dispatch`: the platform dispatch switch. */
+export interface DispatchControl {
+  dispatch_paused: boolean
+  updated_at: string | null
+  updated_by: string | null
+  reason: string | null
+  /** running, paused or unknown (U26). */
+  dispatch_state?: string | null
+  /** present or missing (U26). */
+  control_document?: string | null
 }
 
 export interface DrainRequest {
@@ -529,6 +619,88 @@ export interface JevTokenRatesRequest {
 
 export interface JudgmentBackendWrite {
   judgment_backend: string
+}
+
+/**
+ * One row of `GET /v1/leases`: a live lease's heartbeat, for a tenant's
+ * member.
+ */
+export interface LeaseHeartbeat {
+  task_id: string
+  lease_id: string
+  attempt_id: string
+  generation: number
+  task_state: TaskState
+  dispatch_state: string
+  created_at: string
+  dispatch_deadline: string
+  expires_at: string
+  heartbeat_at: string | null
+  silent_seconds: number | null
+  silent: boolean
+  expired: boolean
+  dispatch_overdue: boolean
+}
+
+/** `GET /v1/leases`. */
+export interface LeaseHeartbeatPage {
+  tenant_id: string
+  read_at: string
+  thresholds: LeaseThresholds
+  heartbeats: LeaseHeartbeat[]
+}
+
+/** `GET /v1/admin/leases`. */
+export interface LeasePage {
+  leases: LeaseRow[]
+  next_page_token?: string | null
+  thresholds: LeaseThresholds
+  evaluated_at: string
+  active_only: boolean
+  tenant_id: string | null
+  units_held: number
+  units_held_by_pool?: { [key: string]: number } | null
+  active_beyond_window: number
+  truncated: boolean
+  examined: number
+}
+
+/**
+ * `lease_to_api` in codec.py. The lease's own state is `dispatch_state`, never
+ * `state`: nothing writes STARTING or RUNNING to a lease, so it is not the
+ * task's state.
+ */
+export interface LeaseRow {
+  lease_id: string
+  task_id: string
+  attempt_id: string
+  tenant_id: string
+  generation: number
+  pools: string[]
+  units: number
+  pool_units?: { [key: string]: number } | null
+  dispatch_state: string
+  created_at: string
+  dispatch_deadline: string
+  expires_at: string
+  heartbeat_at: string | null
+  released_at: string | null
+  release_reason: string | null
+  released: boolean
+  expired: boolean
+  dispatch_overdue: boolean
+  silent_seconds: number
+  heartbeat_ever: boolean
+  last_error: string | null
+}
+
+/**
+ * The reconciler's own thresholds, served with the leases so no client
+ * restates them.
+ */
+export interface LeaseThresholds {
+  heartbeat_grace_seconds: number
+  lease_timeout_seconds: number
 }
 
 /**
@@ -792,6 +964,21 @@ export interface McpCredentialRestore {
   mcp_credentials?: { [key: string]: McpCredentialCreate } | null
 }
 
+/** `GET /v1/tenants/me`: the caller and the workspace they are in. */
+export interface Me {
+  tenant: unknown
+  principal: unknown
+  environment: string
+  environment_declared: boolean
+  /** The caller's role in the selected workspace, {name, source}. */
+  role?: unknown
+  /**
+   * caller_mcp/await_input/service_answer, each true, false or "unknown"
+   * (FEATURES-READ).
+   */
+  features?: unknown
+}
+
 export interface MemberRemoval {
   email: string
   reason?: string | null
@@ -977,6 +1164,21 @@ export interface Pointer {
   anchor?: { [key: string]: unknown } | null
 }
 
+/** `pool_to_api` in codec.py: one capacity pool's ceiling and use. */
+export interface Pool {
+  name: string
+  hard_limit: number | null
+  adaptive_target: number | null
+  quota_derived_limit: number | null
+  effective_limit: number | null
+  active: number
+  available: number | null
+  enabled: boolean
+  updated_at: string
+  /** What lowered `effective_limit` below `hard_limit`, one entry per cause. */
+  lowered_by?: unknown[] | null
+}
+
 /**
  * The whole preference set; every field but `time_zone` is required, so a save
  * replaces rather than merges and a missing field is a 422, not a silent
@@ -990,14 +1192,57 @@ export interface PreferencesWrite {
   time_zone?: string | null
 }
 
+/** How many more agents of one runner profile fit now, and what binds it. */
+export interface ProfileAdmission {
+  units: number
+  headroom: number | null
+  basis: string
+  blockers: ProfileBlocker[]
+  binding: string[]
+  counterfactual: Counterfactual[]
+  complete: boolean
+  unread: string[]
+  uncapped: string[]
+}
+
+/**
+ * One pool that refuses a runner profile's next agent
+ * (`ProfileAdmission.blockers`).
+ */
+export interface ProfileBlocker {
+  pool: string
+  reason: string
+  limit: number | null
+  active: number
+  group: string | null
+}
+
 export interface ProviderEnableRequest {
   enabled: boolean
   reason?: string | null
 }
 
+/** One provider of `GET /v1/providers`. */
+export interface ProviderEntry {
+  provider: string
+  credential_registered: boolean
+  credential_source?: string | null
+  runnable_profiles?: string[] | null
+  runner_profiles: string[]
+  quota: QuotaState | null
+}
+
 export interface ProviderKeyWrite {
   api_key: string
   link_token?: string | null
+}
+
+/** `GET /v1/providers`. */
+export interface ProvidersPage {
+  tenant_id: string
+  providers: ProviderEntry[]
+  account_pool?: string | null
+  generated_at: string
 }
 
 /** One setting or both; a body with neither is refused 422. */
@@ -1008,6 +1253,36 @@ export interface QaSettingsPut {
 
 export interface QualityGatesPut {
   jev: boolean | 'on_request'
+}
+
+/** `GET /v1/admin/quota`. */
+export interface QuotaPage {
+  tenant_id: string | null
+  quota: QuotaState[]
+  truncated: boolean
+  generated_at: string
+}
+
+/** `quota_to_api` in codec.py: one provider's quota reading for one tenant. */
+export interface QuotaState {
+  provider: string
+  tenant_id: string
+  state: string
+  updated_at: string
+  configured_hard_max: number
+  adaptive_target: number | null
+  quota_derived_limit: number | null
+  requests_remaining: number | null
+  tokens_remaining: number | null
+  reset_at: string | null
+  cooldown_until: string | null
+  last_429_at: string | null
+  retry_after_seconds: number | null
+  success_count: number
+  rate_limit_count: number
+  effective_limit: number
+  /** The pool this reading lowers, if any. */
+  feeds_pool?: Pool | null
 }
 
 export interface ReadRequest {
@@ -1170,6 +1445,25 @@ export interface RunnerKeyWrite {
   link_token?: string | null
 }
 
+/**
+ * One entry of `GET /v1/capacity`'s `runner_profiles`, keyed by the profile's
+ * name.
+ */
+export interface RunnerProfile {
+  resource_class: string
+  backend: string
+  provider: string | null
+  units: number
+  pools: string[]
+  /** Contract request 129: the units this profile takes from each of its pools. */
+  pool_units?: { [key: string]: number } | null
+  available?: boolean | null
+  disabled_reason?: string | null
+  admission?: ProfileAdmission | null
+  /** What the profile's input must carry. */
+  input_contract?: unknown
+}
+
 /** `POST /v1/admin/runner-sizes:preview`: the PUT's classes; nothing written. */
 export interface RunnerSizesPreviewRequest {
   classes?: { [key: string]: { [key: string]: unknown } }
@@ -1285,6 +1579,24 @@ export interface StartSession {
   offer_sdp?: string | null
   project_id?: string | null
   session_id?: string | null
+}
+
+/**
+ * `GET /v1/stats`. `platform_tasks_by_state` is ABSENT, not empty, for a non-
+ * admin: an absent key is not a count of nothing.
+ */
+export interface Stats {
+  tenant_id: string
+  tasks_by_state: { [key: string]: number }
+  dispatch_paused: boolean
+  limits: { [key: string]: number }
+  generated_at: string
+  /** Served only to an admin who asks for `scope=platform`; absent otherwise. */
+  platform_tasks_by_state?: { [key: string]: number } | null
+  /** running, paused or unknown (U26). */
+  dispatch_state?: string | null
+  /** present or missing (U26). */
+  control_document?: string | null
 }
 
 /**
@@ -1701,6 +2013,26 @@ export interface TaskEnvelope {
   task: Task
 }
 
+/** `event_to_api` in codec.py: one entry of a task's event log. */
+export interface TaskEvent {
+  event_id: string
+  task_id: string
+  type: string
+  at: string
+  attempt_id: string | null
+  lease_id: string | null
+  generation: number | null
+  detail: { [key: string]: unknown } | null
+  detail_redaction_count?: number | null
+}
+
+/** `GET /v1/tasks/{task_id}/events`. */
+export interface TaskEventPage {
+  task_id: string
+  events: TaskEvent[]
+  next_page_token: string | null
+}
+
 /** `links` on a task: its console page, for surfaces OUTSIDE the console. */
 export interface TaskLinks {
   /**
@@ -1710,6 +2042,17 @@ export interface TaskLinks {
   console: string | null
 }
 
+/** `GET /v1/tasks`: one page of tasks. The paging key is `next_page_token`. */
+export interface TaskPage {
+  tasks: Task[]
+  /**
+   * Pass back as `page_token` for the next page; null on the last. This API has
+   * never sent `next_cursor`.
+   */
+  next_page_token?: string | null
+  tenant_id?: string | null
+}
+
 export type TaskState = 'SUBMITTED' | 'QUEUED' | 'PARKED' | 'READY' | 'LEASED' | 'DISPATCHED' | 'STARTING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | 'DEAD_LETTERED'
 
 export interface TeamCreate {
@@ -1717,6 +2060,27 @@ export interface TeamCreate {
   display_name?: string | null
   first_admin?: string | null
   invites?: string[]
+}
+
+/** `tenant_to_api` in codec.py. */
+export interface Tenant {
+  tenant_id: string
+  kind: string
+  principal: string
+  display_name: string | null
+  created_at: string
+  max_active: number
+  capacity_units: number
+  monthly_budget_usd: number | null
+  enabled: boolean
+  credentials: string[]
+  service_account: string | null
+  gcs_prefix: string | null
+  namespace: string | null
+  /** The workspace record's kind; null for a Terraform tenant (WK-ADMIN-LIST). */
+  workspace_kind?: string | null
+  /** The workspace record's w- id; null for a Terraform tenant (WK-ADMIN-LIST). */
+  workspace_id?: string | null
 }
 
 /**
@@ -1736,6 +2100,16 @@ export interface TenantLimitsRequest {
   capacity_units?: number | null
   enabled?: boolean | null
   monthly_budget_usd?: number | null
+}
+
+/** `GET /v1/admin/tenants`. */
+export interface TenantPage {
+  tenants: Tenant[]
+  /**
+   * Whether the workspace records could not be read, so `workspace_kind` and
+   * `workspace_id` read null for every row.
+   */
+  workspaces_unread: boolean
 }
 
 export interface TerritoryRequest {
@@ -1827,6 +2201,52 @@ export interface WorkReport {
   budget?: true | null
 }
 
+/**
+ * `GET /v1/workflows/{workflow_id}`: the workflow, its steps and its derived
+ * state.
+ */
+export interface Workflow {
+  workflow_id: string
+  state: string
+  tenant_id: string
+  stored_state: string
+  state_source: string
+  rollup?: unknown
+  drift?: unknown
+  created_at: string
+  updated_at: string
+  submitted_by: string | null
+  submitted_by_name?: string | null
+  priority: number
+  on_step_failure: string
+  cancel_requested: boolean
+  steps: unknown[]
+  pull_request?: unknown
+  /**
+   * The Claude Code session that submitted it (SC-SESSION-SCOPE); read by the sc
+   * plugin.
+   */
+  claude_session?: unknown
+  /**
+   * The console link, for surfaces OUTSIDE the console (MCP, sc, plugin, PR
+   * bodies).
+   */
+  links?: unknown
+  /** The workflow's repository, masked as a task's. */
+  repository_url?: string | null
+  title?: string | null
+  /** The submitter's plain-text description. */
+  description?: string | null
+  /** Who wrote the description. */
+  description_source?: string | null
+  /** {purpose, goals, output}: the description in three parts. */
+  about?: unknown
+  /** {title, url?} of the feature it builds. */
+  feature?: unknown
+  /** schedule, quality_check, issue_run, claude_code or console. */
+  started_from?: string | null
+}
+
 export interface WorkflowCreate {
   steps: WorkflowStepCreate[]
   idempotency_key?: string | null
@@ -1845,6 +2265,16 @@ export interface WorkflowCreate {
   after?: AfterPullRequest[] | null
   mcp_credentials?: { [key: string]: McpCredentialCreate } | null
   additional_repositories?: AdditionalRepositoryCreate[] | null
+}
+
+/**
+ * `GET /v1/workflows/{workflow_id}`: the workflow, its step tasks and its
+ * dispatch.
+ */
+export interface WorkflowEnvelope {
+  workflow: Workflow
+  tasks: Task[]
+  dispatch: unknown
 }
 
 export interface WorkflowStepCreate {

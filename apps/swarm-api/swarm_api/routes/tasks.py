@@ -75,7 +75,7 @@ from ..utilisation import utilisation_of
 from ..waiting import waiting_for_page
 from ..waiting_detail import build_waiting, read_inputs, waiting_row
 from ..waker import TASK_FINISHED, ring
-from ..wire_types import TaskEnvelope
+from ..wire_types import AttemptPage, TaskEnvelope, TaskEventPage, TaskPage
 
 log = logging.getLogger(__name__)
 
@@ -239,7 +239,7 @@ def _owner_filter(requested: str | None, auth: AuthContext, forced: str | None) 
     return value
 
 
-@router.get("")
+@router.get("", responses={200: {"model": TaskPage}})
 @route_scope.reachable_by(route_scope.CONTINUATION)
 def list_tasks(
     state: list[str] | None = Query(
@@ -1046,7 +1046,7 @@ def human_ready(
     return {"task": task_to_api(task, console_url=ctx.settings.console_url)}
 
 
-@router.get("/{task_id}/events")
+@router.get("/{task_id}/events", responses={200: {"model": TaskEventPage}})
 @route_scope.reachable_by(route_scope.CONTINUATION)
 def list_events(
     task_id: str,
@@ -1134,7 +1134,7 @@ def read_utilisation(
     return utilisation_of(ctx.db, task, attempts, read_at=ctx.now())
 
 
-@router.get("/{task_id}/attempts")
+@router.get("/{task_id}/attempts", responses={200: {"model": AttemptPage}})
 @route_scope.reachable_by(route_scope.CONTINUATION)
 def list_attempts(
     task_id: str,
