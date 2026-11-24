@@ -496,3 +496,21 @@ def test_with_its_switch_off_a_rejected_runs_comment_is_kept_and_the_refusal_log
     assert response.status_code == 201, response.text
     assert "refusal report-only code=plan_thread_closed" in caplog.text
     assert _thread(client, run["id"])["state"] == "REJECTED"
+
+
+def test_with_its_switch_off_a_token_shaped_ref_is_stored_served_and_logged_masked(
+        client, db, objects, monkeypatch, caplog):
+    monkeypatch.setenv(refusals.env_name("anchor_unknown"), "off")
+    run = _planned(client, db, objects)
+    credential = "ghp_" + secrets.token_hex(18)
+    response = _comment(client, run["id"], _body(run, ref=f"step {credential}"))
+    assert response.status_code == 201, response.text
+    assert credential not in response.text
+    assert credential not in caplog.text
+    (doc,) = _stored(db, run["id"]).values()
+    assert credential not in json.dumps(doc["anchor"])
+    # A document written around the API is masked again on the way out.
+    doc["anchor"] = {"part": "step", "ref": f"raw {credential}"}
+    read = _run(client, run["id"])
+    assert read.status_code == 200
+    assert credential not in read.text

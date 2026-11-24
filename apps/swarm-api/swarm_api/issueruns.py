@@ -5014,11 +5014,14 @@ def thread_anchor(part: Any, ref: Any, plan: Mapping[str, Any]) -> dict[str, Any
     (REFUSAL_ANCHOR_UNKNOWN): switched off, the comment is kept with the
     anchor as sent -- a remark pinned to nothing, which decides nothing --
     and the log names the refusal it would have made."""
-    kept = {"part": str(part)[:32], "ref": ref if isinstance(ref, str) else None}
+    # `part` and `ref` are caller text: masked like `text` before they are kept,
+    # served or put in a refusal message (a pasted token is never stored in clear).
+    safe_ref = redact_detail(ref, limit=300) if isinstance(ref, str) else None
+    kept = {"part": redact_detail(str(part), limit=32), "ref": safe_ref}
     if part not in THREAD_ANCHOR_PARTS:
         refusals.refuse(AnchorUnknown(
             f"a comment is anchored to one of {list(THREAD_ANCHOR_PARTS)}",
-            detail={"part": str(part)[:32]},
+            detail={"part": kept["part"]},
         ))
         return kept
     if part == "plan":
@@ -5039,9 +5042,10 @@ def thread_anchor(part: Any, ref: Any, plan: Mapping[str, Any]) -> dict[str, Any
         known = [str(item.get("diagram_id")) for item in plan.get("diagrams") or ()
                  if isinstance(item, Mapping) and item.get("diagram_id")]
     if not isinstance(ref, str) or ref not in known:
+        shown = safe_ref[:200] if safe_ref is not None else None
         refusals.refuse(AnchorUnknown(
-            f"the plan revision this comment was written on has no {part} {str(ref)[:200]!r}",
-            detail={"part": part, "ref": str(ref)[:200] if ref is not None else None},
+            f"the plan revision this comment was written on has no {part} {shown!r}",
+            detail={"part": part, "ref": shown},
         ))
     return kept
 
@@ -5070,7 +5074,11 @@ def served_thread_entry(document: Mapping[str, Any]) -> dict[str, Any]:
     text = row.get("text")
     row["text"] = redact_detail(text, limit=MAX_THREAD_TEXT_CHARS) if isinstance(text, str) else ""
     anchor = row.get("anchor") if isinstance(row.get("anchor"), Mapping) else {}
-    row["anchor"] = {"part": anchor.get("part"), "ref": anchor.get("ref")}
+    part, ref = anchor.get("part"), anchor.get("ref")
+    row["anchor"] = {
+        "part": redact_detail(part, limit=32) if isinstance(part, str) else part,
+        "ref": redact_detail(ref, limit=300) if isinstance(ref, str) else ref,
+    }
     row["resolved"] = row.get("resolved") is True
     row["at"] = _iso(row["at"])
     return row
