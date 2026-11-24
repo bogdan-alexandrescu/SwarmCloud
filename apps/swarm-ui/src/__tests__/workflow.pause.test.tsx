@@ -34,7 +34,7 @@ const { PauseWorkflow, WorkflowsScreen } = await import('../Workflows')
 
 const T0 = Date.parse('2026-11-24T12:00:00.000Z')
 const iso = (offsetSeconds: number) => new Date(T0 + offsetSeconds * 1000).toISOString()
-const VIEWER = 'Your role in eng is viewer; members pause here.'
+const VIEWER = 'Your role in eng is viewer; members pause or resume here.'
 
 function step(step_id: string, depends_on: string[], over: Partial<WorkflowStep> = {}): WorkflowStep {
   return { step_id, runner_profile: 'claude-code', resource_class: 'standard', depends_on, input_from: {}, task_id: null, ...over }
@@ -188,7 +188,7 @@ describe('a viewer', () => {
     ['Pause', {}, 'Pause workflow'],
     ['Resume', PAUSED, 'Resume workflow'],
   ] as const) {
-    it(`sees ${what} disabled with the role sentence beside it, and sends nothing`, () => {
+    it(`sees ${what} disabled with the role sentence in its tooltip, not on the page, and sends nothing`, () => {
       gate.sentence = VIEWER
       render(<PauseWorkflow workflow={workflow('RUNNING', over)} onDone={vi.fn()} />)
       const button = screen.getByRole<HTMLButtonElement>('button', { name })
@@ -196,6 +196,8 @@ describe('a viewer', () => {
       const note = screen.getByText(VIEWER)
       expect(note.getAttribute('data-role-gate')).toBe('member')
       expect(button.getAttribute('aria-describedby')).toBe(note.id)
+      expect(button.getAttribute('title')).toBe(VIEWER)
+      expect(note.className).toBe('sk-vh')
       fireEvent.click(button)
       expect(api.pauseWorkflow).not.toHaveBeenCalled()
       expect(api.resumeWorkflow).not.toHaveBeenCalled()

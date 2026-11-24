@@ -30,7 +30,6 @@ import {
   loadAttempts as loadAttemptRows,
 } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
-import { WarnGlyph } from './components/glyphs'
 import { useRoleGate } from './roleGate'
 import { AwaitInputCard } from './AwaitInputCard'
 import { AWAIT_INPUT_PROFILE, WAITING_WORD, expiresAtOf, expiresWords, isWaitingForMember, waitingTitle } from './awaitInput'
@@ -7595,8 +7594,8 @@ export function CancelWorkflow({
  * `workflow_cancel_requested`), and cancel wins over a pause. One click sends:
  * a pause is undone by a resume and loses no work (a running step checkpoints
  * and parks), so there is no confirm and no consequence prose. A viewer sees
- * the button disabled with the role sentence beside it, as Stop on an agent
- * does (StopRun.tsx); the API still decides (`role_member_required`). A
+ * the button disabled with the role sentence in its tooltip and a visually
+ * hidden description, never drawn on the page; the API still decides (`role_member_required`). A
  * refusal is said in the API's own message, as Stop workflow says its own.
  */
 export function PauseWorkflow({
@@ -7615,7 +7614,7 @@ export function PauseWorkflow({
   resume?: (id: string) => Promise<Result<PauseWorkflowResult>>
 }>) {
   // Every hook before the early returns below.
-  const roleGate = useRoleGate('member', 'pause')
+  const roleGate = useRoleGate('member', 'pause or resume')
   const gateId = useId()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -7645,7 +7644,7 @@ export function PauseWorkflow({
     setError(r.status === 'error' || r.status === 'stale' ? r.error.message : `The ${verb} request did not complete.`)
   }
 
-  // THE ROLE SENTENCE IS A SIBLING, NEVER A WRAPPER (StopRun.tsx): the button
+  // THE ROLE SENTENCE IS A HIDDEN SIBLING, NEVER A WRAPPER: the button
   // keeps its element when the role read lands.
   return (
     <>
@@ -7654,6 +7653,7 @@ export function PauseWorkflow({
         busy={busy ? busyWord : false}
         disabled={roleGate !== null}
         aria-describedby={roleGate === null ? undefined : gateId}
+        title={roleGate ?? undefined}
         onClick={() => {
           if (roleGate === null) void send()
         }}
@@ -7661,8 +7661,7 @@ export function PauseWorkflow({
         {paused ? 'Resume workflow' : 'Pause workflow'}
       </Button>
       {roleGate !== null && (
-        <span className="c-why" id={gateId} data-role-gate="member">
-          <WarnGlyph />
+        <span className="sk-vh" id={gateId} data-role-gate="member">
           {roleGate}
         </span>
       )}

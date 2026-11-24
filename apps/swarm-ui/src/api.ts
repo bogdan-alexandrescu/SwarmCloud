@@ -2549,6 +2549,7 @@ export async function resumeWorkflow(workflowId: string): Promise<Result<PauseWo
 async function pauseOrResume(target: ApiRoute, workflowId: string): Promise<Result<PauseWorkflowResult>> {
   if (USE_FIXTURES) {
     await new Promise((r) => setTimeout(r, 60))
+    fixturePaused.set(workflowId, target.template.endsWith('/pause'))
     // The same `route()` as the live path, so the fixture lands in the same
     // registry record a live write would (CH-18). It claims no step it signalled.
     noteFixtureProbe(target, 60, true)
@@ -7109,7 +7110,12 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
   // wf_audit_01's were typed as one succeeded beside two step tasks the
   // Timeline drew as succeeded. Counted here as `rollup.py` counts them: each
   // step's task state, `unstarted` for a step with no task yet.
-  return [...fixtureWorkflowsMade, ...workflows].map((w) => {
+  return [...fixtureWorkflowsMade, ...workflows].map((made) => {
+    // THE PAUSE THE FIXTURE HOLDS: one queued workflow starts paused so Resume
+    // and the paused mark can be looked at, and a fixture pause or resume flips it.
+    const flip = fixturePaused.get(made.workflow_id)
+    const w: Workflow =
+      flip === undefined ? made : flip ? { ...made, paused: true, paused_by: 'alice@example.com', paused_at: FIXTURE_PAUSED_AT } : { ...made, paused: false }
     if (w.rollup === undefined || w.rollup === null) return w
     const counts: Record<string, number> = {}
     for (const st of w.steps) {
@@ -7127,6 +7133,10 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
  * derives a workflow none of whose steps has started (`steps_not_started`).
  */
 const fixtureWorkflowsMade: Workflow[] = []
+
+const FIXTURE_PAUSED_AT = '2026-11-24T08:00:00Z'
+/** Workflow id -> whether the fixture holds it paused; `wf_bcdc9180e4fb4a209f31` starts paused. */
+const fixturePaused = new Map<string, boolean>([['wf_bcdc9180e4fb4a209f31', true]])
 
 type FixtureStepAsked = { step_id: string; depends_on: string[]; runner_profile: string; resource_class?: string; input_from?: Record<string, string> }
 
