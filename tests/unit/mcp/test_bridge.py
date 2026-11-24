@@ -560,6 +560,8 @@ def test_the_workflow_tools_are_advertised_and_take_no_backend_parameters():
         "swarm_workflow_status",
         "swarm_workflow_result",
         "swarm_workflow_cancel",
+        "swarm_workflow_pause",
+        "swarm_workflow_resume",
     } <= names
     schema = next(t for t in server.TOOLS if t["name"] == "swarm_workflow")["inputSchema"]
     step = schema["properties"]["steps"]["items"]
@@ -620,7 +622,9 @@ def test_the_cli_exposes_every_operation_the_mcp_server_does():
     # The workflow tools have terminal equivalents for the same reason, and
     # because a workflow is the thing most worth following live -- which only a
     # terminal command can do.
-    assert {"workflow", "workflow-status", "workflow-cancel"} <= commands
+    assert {
+        "workflow", "workflow-status", "workflow-cancel", "workflow-pause", "workflow-resume",
+    } <= commands
 
 
 def test_the_workflow_command_reads_a_spec_file_or_stdin():

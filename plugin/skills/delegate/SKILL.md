@@ -8,6 +8,8 @@ allowed-tools:
   - mcp__swarmcloud__swarm_workflow_status
   - mcp__swarmcloud__swarm_workflow_result
   - mcp__swarmcloud__swarm_workflow_cancel
+  - mcp__swarmcloud__swarm_workflow_pause
+  - mcp__swarmcloud__swarm_workflow_resume
   - mcp__swarmcloud__swarm_suite_gate
   - mcp__swarmcloud__swarm_follow
   - mcp__swarmcloud__swarm_status
@@ -32,6 +34,8 @@ allowed-tools:
   - mcp__plugin_sc_swarmcloud__swarm_workflow_status
   - mcp__plugin_sc_swarmcloud__swarm_workflow_result
   - mcp__plugin_sc_swarmcloud__swarm_workflow_cancel
+  - mcp__plugin_sc_swarmcloud__swarm_workflow_pause
+  - mcp__plugin_sc_swarmcloud__swarm_workflow_resume
   - mcp__plugin_sc_swarmcloud__swarm_suite_gate
   - mcp__plugin_sc_swarmcloud__swarm_follow
   - mcp__plugin_sc_swarmcloud__swarm_status
@@ -278,6 +282,19 @@ Per-step state comes from `swarm_workflow_status`, which reports the **derived**
 rollup and never a stored `state` field. That distinction is not theoretical: on
 2026-09-22 a stored field read `QUEUED` for a workflow whose six steps had ALL
 succeeded.
+
+**Pausing a workflow is the developer's call, never yours.**
+`swarm_workflow_pause` (an optional `reason`) parks every unfinished step —
+a READY one at admission, a running one at its next checkpoint — and a parked
+step holds no capacity; `swarm_workflow_resume` lets them run again from their
+checkpoints. Both write, so call either only on the developer's word, as for
+`swarm_workflow_cancel`. A refusal is the API's, quoted as it came: 409 for a
+finished workflow or one being cancelled, 404 for one outside the tenant. A 503
+`pause_contended` means the workflow is already paused or resumed but the
+steps in `steps_contended` were not reached: say so, and call again only when
+the developer agrees; a repeat moves nothing. The terminal spelling is
+`swarm workflow-pause <workflow_id> [--reason ...]` and
+`swarm workflow-resume <workflow_id>`.
 
 
 | What you want | Call |
