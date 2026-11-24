@@ -71,6 +71,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from typing import Callable, Mapping
 
 from fastapi import APIRouter, Depends, Query, Response, status
@@ -391,6 +392,9 @@ def hard_stops_at_plan(ctx: AppContext, tenant_id: str, run: IssueRun, plan: dic
 
 def _from_planner(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
     runs = _runs(ctx)
+    if issueruns_module.readiness_pending(run):
+        # The readiness pre-pass runs, or decided on a planner not yet linked.
+        return _from_readiness(ctx, tenant_id, run)
     if issueruns_module.replan_pending(run):
         # A re-plan claimed by a request that never linked its task.
         return _resume_replan(ctx, tenant_id, run)
@@ -461,6 +465,18 @@ def _from_planner(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
             return _plan_refused(ctx, tenant_id, run, task, findings, plan)
         patch = {"plan": plan, "plan_digest": plan_digest(plan), "plan_revision": 1,
                  "approval_hold": hard_stops_at_plan(ctx, tenant_id, run, plan)}
+        held = (issueruns_module.cost_hold_finding(plan)
+                if run.plan_approval == "auto" else None)
+        if held is not None:
+            # The cost hold (owner, 2026-11-24): an automatic approval never
+            # starts a plan whose expected cost is above the threshold. The
+            # run waits PLANNED for a person as the plan lint's hold leaves
+            # it, the finding naming the cost and the threshold; never FAILED,
+            # and holding nothing (invariant 1).
+            log.info("issue run %s tenant=%s: the plan's expected cost is above the "
+                     "cost hold; the auto-approval waits for a person", run.id, tenant_id)
+            patch["plan_approval"] = "required"
+            patch["plan_lint"] = {**(run.plan_lint or {}), "findings": [held], "held": True}
         advisory = read_plan_advisory(ctx, tenant_id, task.id)
         if jev_holds_for_human(run, advisory):
             log.info(
@@ -492,6 +508,191 @@ def _from_planner(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
 
 
 _PLANNING_ONLY = frozenset({RunState.PLANNING})
+
+
+# -- the readiness pre-pass (owner, 2026-11-24) --------------------------------
+
+#: The pre-pass task states after which its answer is read.
+_PREPASS_ENDED = frozenset({TaskState.SUCCEEDED, TaskState.FAILED, TaskState.DEAD_LETTERED,
+                            TaskState.CANCELLED})
+
+
+def _read_readiness_answer(ctx: AppContext, tenant_id: str, task_id: str, *,
+                           lane_refs: Mapping[str, str] | None = None) -> tuple[str, dict]:
+    """`readiness.json` out of the pre-pass's artifacts, through the API's own
+    masked reader, as `issueruns.parse_readiness` reads it. InvalidPlan for
+    anything that is not a valid answer: the caller starts the planner."""
+    name = issueruns_module.READINESS_FILE
+    try:
+        window = ctx.inspection.read_artifact(
+            tenant_id, task_id, submitted_by=None, name=name,
+            limit_bytes=issueruns_module.MAX_READINESS_BYTES,
+        )
+    except NotFound:
+        raise InvalidPlan(f"the readiness pre-pass task {task_id} wrote no {name}") from None
+    except Gone:
+        raise InvalidPlan(f"the readiness pre-pass's {name} is no longer in the bucket") from None
+    if window.get("status") != "ok":
+        raise InvalidPlan(f"the readiness pre-pass's {name} is not text")
+    if window.get("truncated"):
+        raise InvalidPlan(f"the readiness pre-pass's {name} is larger than "
+                          f"{issueruns_module.MAX_READINESS_BYTES} bytes")
+    return issueruns_module.parse_readiness(window.get("content") or "", lane_refs=lane_refs)
+
+
+def _task_cost(ctx: AppContext, tenant_id: str, task_id: str) -> float | None:
+    """What a task's attempts cost, or None when none reported a cost or the
+    attempts could not be read: the cost is recorded, it decides nothing."""
+    from ..attempt_totals import PER_TASK_CAP, attempt_totals
+
+    try:
+        rows = ctx.store.list_attempts(tenant_id, task_id, limit=PER_TASK_CAP)
+    except Exception as exc:  # noqa: BLE001 -- a record, never a reason to stop the run
+        log.warning("the attempts of task %s could not be read for its cost (%s)",
+                    task_id, type(exc).__name__)
+        return None
+    return attempt_totals(rows)["cost_usd_total"]
+
+
+def _from_readiness(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
+    """A run whose planner is not linked yet: its pre-pass is read, or the
+    planner it decided on is submitted (again, past an overdue claim).
+
+    The pre-pass can save a planner, never block one: only a valid not-ready
+    answer ends the run (NOT_READY, holding nothing, invariant 1); a ready
+    answer, one that cannot be read or does not match its schema, and a
+    pre-pass task that failed all start the full planner, which may still
+    answer not ready itself."""
+    record = run.readiness or {}
+    if record.get("outcome") is None:
+        return _read_readiness(ctx, tenant_id, run)
+    claimed = record.get("planner_claimed_at")
+    if isinstance(claimed, datetime) and (ctx.now() - claimed).total_seconds() <= (
+            issueruns_module.REPLAN_CLAIM_BOUND_SECONDS):
+        return run  # another request is submitting the planner
+
+    def renew(current: IssueRun) -> dict:
+        rec = current.readiness or {}
+        if current.planner_task_id or rec.get("planner_claimed_at") != claimed:
+            raise Conflict(f"run {current.id}'s planner was claimed by another request")
+        return {"readiness": {**rec, "planner_claimed_at": ctx.now()}}
+
+    run = _runs(ctx).transition(tenant_id, run.id, RunState.PLANNING, by=SYSTEM,
+                                from_states=_PLANNING_ONLY, patch=renew)
+    return _submit_planner(ctx, tenant_id, run)
+
+
+def _read_readiness(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
+    runs = _runs(ctx)
+    record = run.readiness or {}
+    task_id = str(record.get("task_id") or "")
+    try:
+        task = ctx.store.get_task(tenant_id, task_id, submitted_by=None)
+    except NotFound:
+        task = None
+    if task is not None and task.state not in _PREPASS_ENDED:
+        return run
+    if task is not None and task.state == TaskState.CANCELLED:
+        return runs.transition(
+            tenant_id, run.id, RunState.CANCELLED, by=SYSTEM, from_states=_PLANNING_ONLY,
+            patch={"error": f"the readiness pre-pass task {task.id} was cancelled"},
+        )
+    verdict = None
+    if task is None:
+        outcome = issueruns_module.READINESS_UNREADABLE
+        reason = f"the readiness pre-pass task {task_id} no longer exists"
+    elif task.state == TaskState.SUCCEEDED:
+        try:
+            kind, answer = _read_readiness_answer(ctx, tenant_id, task.id,
+                                                  lane_refs=_lane_refs(run))
+        except InvalidPlan as bad:
+            outcome, reason = issueruns_module.READINESS_UNREADABLE, failure_text(bad.message)
+        except UpstreamUnavailable:
+            log.warning("issue run %s: the pre-pass's %s could not be read yet", run.id,
+                        issueruns_module.READINESS_FILE)
+            return run
+        else:
+            reason = answer["reason"]
+            if kind == "not_ready":
+                outcome, verdict = issueruns_module.READINESS_NOT_READY, answer
+            else:
+                outcome = issueruns_module.READINESS_READY
+    else:
+        why = f"the readiness pre-pass task {task.id} ended {task.state.value}"
+        if task.last_error:
+            why += f": {task.last_error}"
+        outcome, reason = issueruns_module.READINESS_UNREADABLE, failure_text(why)
+    decided = {**record, "outcome": outcome, "reason": reason,
+               "cost_usd": _task_cost(ctx, tenant_id, task_id) if task is not None else None}
+
+    def decide(extra: dict) -> Callable[[IssueRun], dict]:
+        def patch(current: IssueRun) -> dict:
+            if current.planner_task_id or (current.readiness or {}).get("outcome") is not None:
+                raise Conflict(f"run {current.id}'s pre-pass was read by another request")
+            return {**extra, "readiness": decided}
+        return patch
+
+    if verdict is not None:
+        # As the planner's own not-ready ends a run: no plan, nothing to
+        # approve, no planner paid for, and the status comment carries the
+        # reason and the needs (`sync_issue`).
+        log.info("issue run %s tenant=%s: the readiness pre-pass found %s not ready (%s)",
+                 run.id, tenant_id, run.issue.short, verdict.get("kind") or "unspecified")
+        return runs.transition(tenant_id, run.id, RunState.NOT_READY, by=SYSTEM,
+                               from_states=_PLANNING_ONLY, patch=decide({"not_ready": verdict}))
+    if outcome == issueruns_module.READINESS_UNREADABLE:
+        log.info("issue run %s: the readiness pre-pass gave no answer (%s); the planner runs",
+                 run.id, reason)
+    decided["planner_claimed_at"] = ctx.now()
+    run = runs.transition(tenant_id, run.id, RunState.PLANNING, by=SYSTEM,
+                          from_states=_PLANNING_ONLY, patch=decide({}))
+    return _submit_planner(ctx, tenant_id, run)
+
+
+def _submit_planner(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
+    """The full planner, submitted as the run's creator (`run_owner_auth`)
+    with exactly the prompt `start_run` builds, then linked once."""
+    record = run.readiness or {}
+    named = record.get("planner_model_class")
+    try:
+        owner = run_owner_auth(ctx, run)
+        context = read_plan_context(ctx, tenant_id, run.issue, run_id=run.id,
+                                    issue=run.issue_read, open_work=run.open_work)
+        earlier = [r for r in _runs(ctx).for_issue(tenant_id, run.issue,
+                                                   limit=planhistory.EARLIER_RUNS_READ)
+                   if r.id != run.id]
+        spec = planner_task(run.issue, run.id, run.open_work, context=context.section,
+                            claude_session=run.claude_session,
+                            model_class=named if isinstance(named, str) else None,
+                            class_models=stepclass.class_models_of(ctx),
+                            earlier_runs=earlier, tenant_id=tenant_id)
+        with issueruns_module.submitting(spec):
+            submission = ctx.submissions.submit_tasks(owner, [spec])
+    except (RunOwnerNotMember, RunOwnerUnverified) as gone:
+        return _runs(ctx).transition(
+            tenant_id, run.id, RunState.FAILED, by=SYSTEM, from_states=_PLANNING_ONLY,
+            patch={"error": failure_text(gone.message)},
+        )
+    except UpstreamUnavailable:
+        # The claim stays; a visit past the bound submits it.
+        log.warning("issue run %s: the planner could not be submitted yet", run.id)
+        return run
+    except ApiError as refused:
+        return _runs(ctx).transition(
+            tenant_id, run.id, RunState.FAILED, by=SYSTEM, from_states=_PLANNING_ONLY,
+            patch={"error": failure_text(f"the planner could not be submitted: {refused.message}")},
+        )
+    task_id = submission.tasks[0].id
+
+    def link(current: IssueRun) -> dict:
+        if current.planner_task_id:
+            raise Conflict(f"run {current.id}'s planner is linked already")
+        return {"planner_task_id": task_id, "index_sha": context.index_sha,
+                "index_digest": context.index_digest, "index_context": context.record,
+                "readiness": {**(current.readiness or {}), "planner_claimed_at": None}}
+
+    return _runs(ctx).transition(tenant_id, run.id, RunState.PLANNING, by=SYSTEM,
+                                 from_states=_PLANNING_ONLY, patch=link)
 
 
 def _plan_refused(ctx: AppContext, tenant_id: str, run: IssueRun, task, findings: list[dict],
@@ -801,6 +1002,13 @@ def _approve(
                 f"run {current.id}'s plan fails the plan lint: an automatic approval never "
                 "approves it; a person reads it",
                 detail={"findings": planlint.lint(current.plan or {})},
+            )
+        if by == AUTO_APPROVER and issueruns_module.cost_hold_finding(current.plan) is not None:
+            # The cost hold (owner, 2026-11-24): a person approves it.
+            raise InvalidPlan(
+                f"run {current.id}'s plan is above the cost hold: an automatic approval "
+                "never approves it; a person reads it",
+                detail={"findings": [issueruns_module.cost_hold_finding(current.plan)]},
             )
         if current.approval_hold != run.approval_hold:
             approvals.check_hold(ctx, current, email=by, is_owner=is_owner, confirm=confirm)
@@ -1230,6 +1438,12 @@ def _advance_state(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
                 log.info("issue run %s: auto-approval refused, the plan fails the plan lint",
                          run.id)
                 return run
+            if issueruns_module.cost_hold_finding(run.plan) is not None:
+                # A plan above the cost hold (stored before it, or edited
+                # round it) waits for a person, holding nothing.
+                log.info("issue run %s: auto-approval refused, the plan's expected cost is "
+                         "above the cost hold", run.id)
+                return run
             try:
                 run = _approve(
                     ctx, run_owner_auth(ctx, run), tenant_id, run,
@@ -1545,6 +1759,25 @@ def start_run(
     )
     draft.owner_signature = sign_owner(ctx.submissions.signer, draft)
     issue_read, issue_read_error = _read_issue(ctx, auth, tenant_id, ref)
+    if issueruns_module.readiness_prepass_enabled():
+        # The readiness pre-pass (owner, 2026-11-24): a short task on the
+        # cheaper class reads the issue and this same open work and answers
+        # ready or not ready; only then is the full planner submitted
+        # (`_from_readiness`), with the index sections read at that moment.
+        # The planner's class as its caller named it waits on the record.
+        prepass_spec = issueruns_module.readiness_task(
+            ref, run_id, open_work, claude_session=claude_session,
+            class_models=stepclass.class_models_of(ctx))
+        with issueruns_module.submitting(prepass_spec):
+            prepass = ctx.submissions.submit_tasks(auth, [prepass_spec]).tasks[0]
+        now = ctx.now()
+        run = _runs(ctx).create(replace(
+            draft, tenant_id=prepass.tenant_id, created_at=now, updated_at=now,
+            planner_task_id="", open_work=open_work, issue_read=issue_read,
+            issue_read_error=issue_read_error,
+            readiness=issueruns_module.readiness_record(prepass.id, model_class),
+        ))
+        return sync_issue(ctx, run)
     context = read_plan_context(ctx, tenant_id, ref, run_id=run_id, issue=issue_read,
                                 open_work=open_work)
     # The planner next, carrying the run's id: a planner without its run is
