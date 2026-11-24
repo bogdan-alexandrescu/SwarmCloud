@@ -3,9 +3,10 @@
 
 WHY THIS IS A TEST. A unit test that opens docs prose, CI YAML, a root *.md
 or the Makefile turns red on an edit to a tree it does not test.
-scripts/check_test_reads.py lists every such read; while issue 71's steps
-delete them, the baselines under scripts/guards/test-reads/ name the files
-still to clean, and a baseline only shrinks. The whole-tree run below sits in
+scripts/check_test_reads.py lists every such read. Issue 71's steps deleted
+them, emptying and deleting each baseline under scripts/guards/test-reads/
+(step 7 deleted the last), so the whole tree now passes with no baseline.
+The --baseline-dir option is still tested on planted trees. The whole-tree run below sits in
 changed-guards.sh's GUARD_TESTS: a new read lands in a file no diff names, so
 only a whole-tree guard reaches it. The planted cases run in scratch trees.
 """
@@ -217,23 +218,19 @@ def test_a_bad_option_exits_2():
     assert result.returncode == 2
 
 
-def test_the_baselines_are_sorted_and_disjoint():
-    names = sorted(p.name for p in BASELINES.glob("*.txt"))
-    assert names == ["unit-b.txt"]
-    seen: set[str] = set()
-    for path in BASELINES.glob("*.txt"):
-        entries = [line for line in path.read_text().splitlines() if line.strip()]
-        assert entries == sorted(entries), path.name
-        assert not seen & set(entries), path.name
-        seen.update(entries)
+def test_no_baseline_is_left():
+    # Step 7 deleted the last baseline: a read anywhere under tests/ is red.
+    # MUTATION: add any scripts/guards/test-reads/*.txt.
+    assert not sorted(BASELINES.glob("*.txt"))
 
 
 #: The baselines a step of issue 71 has emptied and deleted. scripts-ci.txt
 #: listed the 73 CI-YAML readers under tests/unit/scripts/ (steps 3 and 4);
 #: scripts-docs.txt listed its docs-prose, root *.md and Makefile readers
 #: (step 5); unit-a.txt listed the readers under tests/unit/common, worker
-#: and mcp (step 6).
-FINISHED_BASELINES = ("scripts-ci.txt", "scripts-docs.txt", "unit-a.txt")
+#: and mcp (step 6); unit-b.txt listed the rest -- tests/unit/control_plane,
+#: install and docs, tests/integration (step 7).
+FINISHED_BASELINES = ("scripts-ci.txt", "scripts-docs.txt", "unit-a.txt", "unit-b.txt")
 
 
 @pytest.mark.parametrize("name", FINISHED_BASELINES)
@@ -287,10 +284,11 @@ def test_a_cleaned_file_is_not_read_back_into_a_baseline(tmp_path, capsys):
     assert helper in capsys.readouterr().out
 
 
-def test_the_tree_holds_no_read_outside_the_baselines(capsys):
-    # The whole tree: a new read anywhere under tests/ is red here, and so is
-    # a baselined file that no longer reads out of its tree (shrink the list).
-    code = ctr.main(["--root", str(ROOT), "--baseline-dir", str(BASELINES)])
+def test_the_tree_holds_no_read_with_no_baseline(capsys):
+    # The whole tree, with no baseline: a read of docs prose, CI YAML, a root
+    # *.md or the Makefile anywhere under tests/ is red here.
+    # MUTATION: open docs/schedules.md in tests/unit/control_plane.
+    code = ctr.main(["--root", str(ROOT)])
     assert code == 0, capsys.readouterr().out
 
 

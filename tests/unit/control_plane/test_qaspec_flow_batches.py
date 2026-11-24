@@ -278,8 +278,3 @@ def test_the_cap_is_stated_once() -> None:
     text = path.read_text()
     # MUTATION: restate MAX_FLOWS in swarm_qa.py without a parity test and this fails.
     assert "MAX_FLOWS" not in text
-    doc = (REPO / "docs" / "design" / "visual-qa-any-app.md").read_text()
-    row = next(line for line in doc.splitlines() if line.startswith("| `flows` |"))
-    assert f"at most {qaspec.MAX_FLOWS}" in row
-    assert f"{qaspec.MIN_FLOWS_PER_STEP}-{qaspec.MAX_FLOWS_PER_STEP}" in row
-    assert f"default {qaspec.FLOWS_PER_STEP_DEFAULT}" in row

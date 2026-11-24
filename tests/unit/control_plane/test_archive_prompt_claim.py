@@ -25,7 +25,6 @@ ROOT = Path(__file__).resolve().parents[3]
 TASK_INPUT = ROOT / "apps/swarm-api/swarm_api/task_input.py"
 CHECKPOINT_CONTENT = ROOT / "apps/swarm-api/swarm_api/checkpoint_content.py"
 WORKER_CHECKPOINT = ROOT / "apps/agent-worker/agent_worker/checkpoint.py"
-AGENT_OUTPUT_DOC = ROOT / "docs/agent-output.md"
 
 #: What each description must name: both CLIs' transcript locations and the
 #: date of the owner's decision that keeps them in the archive.
@@ -49,7 +48,6 @@ def _create_skip_comment() -> str:
 
 DESCRIPTIONS = {
     "task_input.py module docstring": lambda: _module_docstring(TASK_INPUT),
-    "docs/agent-output.md": lambda: AGENT_OUTPUT_DOC.read_text(encoding="utf-8"),
     "checkpoint_content.py module docstring": lambda: _module_docstring(
         CHECKPOINT_CONTENT
     ),

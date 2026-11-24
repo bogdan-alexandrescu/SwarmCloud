@@ -11,9 +11,7 @@ lane ADDON-1):
   * a secret goes in only through the console's one-time link or the hidden
     prompt: no flag takes a value and nothing reads stdin;
   * lesson 6: the CI add-on's builds run as their own account, never a
-    default one; the CI add-on turns the acceptance fixture on;
-  * lesson 45: every `with:` key of an `actions/create-github-app-token` step
-    is an input of the pinned action, or a GitHub permission key.
+    default one; the CI add-on turns the acceptance fixture on.
 
 No credentials, no emulator, no cluster: Google, swarm-api, Terraform, the
 cluster, gh and the clock are fakes.
@@ -596,70 +594,6 @@ def test_ci_addon_refuses_the_deploying_repository_as_sandbox_and_open_prod() ->
     the_flow, _ = flow(OpenProd())
     with pytest.raises(addons.AddonError, match="lesson 25"):
         the_flow.enable("ci", given=CI_CHOICES)
-
-
-#: actions/create-github-app-token@v2's inputs (its action.yml, read
-#: 2026-10-30), without the `permission-*` ones: those are checked against
-#: GitHub's own permission keys below, which is what lesson 45 was about.
-_APP_TOKEN_V2_INPUTS = {"app-id", "private-key", "owner", "repositories", "skip-token-revoke", "github-api-url"}
-#: Keyed by the ref a step pins: `v2`, or the commit .github/ pins since the
-#: action-pinning audit (2026-11-21), v2.2.2, which `v2` resolved to that day.
-APP_TOKEN_INPUTS = {"v2": _APP_TOKEN_V2_INPUTS,
-                    "fee1f7d63c2ff003460e3d139729b119787bc349": _APP_TOKEN_V2_INPUTS}
-#: GitHub App permission keys (the REST API's app-permissions object, plus
-#: `actions_variables`, the key archived issue 2220 established on 2026-10-27).
-GITHUB_PERMISSIONS = {
-    "actions", "actions_variables", "administration", "checks", "codespaces", "contents", "dependabot_secrets",
-    "deployments", "email_addresses", "environments", "followers", "git_ssh_keys", "gpg_keys",
-    "interaction_limits", "issues", "members", "metadata", "organization_administration",
-    "organization_announcement_banners", "organization_copilot_seat_management", "organization_custom_org_roles",
-    "organization_custom_properties", "organization_custom_roles", "organization_events", "organization_hooks",
-    "organization_packages", "organization_personal_access_token_requests", "organization_personal_access_tokens",
-    "organization_plan", "organization_projects", "organization_secrets", "organization_self_hosted_runners",
-    "organization_user_blocking", "packages", "pages", "profile", "pull_requests",
-    "repository_custom_properties", "repository_hooks", "repository_projects", "secret_scanning_alerts",
-    "secrets", "security_events", "single_file", "starring", "statuses", "team_discussions",
-    "vulnerability_alerts", "workflows",
-}
-
-
-def app_token_problems(documents: Mapping[str, Any]) -> list[str]:
-    """Every `with:` key of an app-token step that the pinned action does not read."""
-    problems: list[str] = []
-    for where, doc in documents.items():
-        jobs = (doc or {}).get("jobs") or {}
-        step_lists = [job.get("steps") or [] for job in jobs.values() if isinstance(job, Mapping)]
-        step_lists.append(((doc or {}).get("runs") or {}).get("steps") or [])
-        for steps in step_lists:
-            for step in steps:
-                uses = str((step or {}).get("uses") or "")
-                if not uses.startswith("actions/create-github-app-token@"):
-                    continue
-                pin = uses.split("@", 1)[1]
-                if pin not in APP_TOKEN_INPUTS:
-                    problems.append(f"{where}: {uses} is pinned to a version whose inputs this test does not hold")
-                    continue
-                for key in (step.get("with") or {}):
-                    if key.startswith("permission-"):
-                        if key[len("permission-"):].replace("-", "_") not in GITHUB_PERMISSIONS:
-                            problems.append(f"{where}: {key} is not a GitHub permission key (lesson 45)")
-                    elif key not in APP_TOKEN_INPUTS[pin]:
-                        problems.append(f"{where}: {key} is not an input of {uses}")
-    return problems
-
-
-def test_ci_addon_app_token_inputs_declared_by_action() -> None:
-    files = sorted((ROOT / ".github" / "workflows").glob("*.yml")) + sorted(
-        (ROOT / ".github" / "actions").glob("*/action.yml"))
-    documents = {str(p.relative_to(ROOT)): yaml.safe_load(p.read_text()) for p in files}
-    steps = [s for d in documents.values() for j in ((d or {}).get("jobs") or {}).values()
-             for s in (j.get("steps") or []) if "create-github-app-token" in str((s or {}).get("uses"))]
-    assert steps, "no app-token step found: the test read nothing"
-    assert app_token_problems(documents) == []
-    # Lesson 45's own defect is caught.
-    bad = {"w.yml": {"jobs": {"j": {"steps": [{"uses": "actions/create-github-app-token@v2",
-                                               "with": {"app-id": "1", "permission-variables": "write"}}]}}}}
-    assert app_token_problems(bad) == ["w.yml: permission-variables is not a GitHub permission key (lesson 45)"]
 
 
 # ---------------------------------------------------------------------------

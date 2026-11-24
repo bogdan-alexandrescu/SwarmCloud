@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -49,7 +48,96 @@ from .test_git_tools_api import (  # noqa: F401  (app, client, origin, slots, wo
 )
 
 OWN = f"{OWNER}/{REPO}"
-TEMPLATES = Path(__file__).resolve().parents[3] / ".github" / "ISSUE_TEMPLATE"
+#: The issue forms the fake forge serves under .github/ISSUE_TEMPLATE/: a
+#: small inline bug report shaped like GitHub's form schema (a markdown block,
+#: textareas, single and multiple dropdowns, required and optional fields), a
+#: feature request, and the config.yml that is not a form. Written here, not
+#: read from this repository's own forms, so editing those cannot turn these
+#: code tests red (issue 71).
+FORMS = {
+    "bug_report.yml": """\
+name: Bug report
+description: Something is broken.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Fill in what you know.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - "S1 — blocked: I cannot do the thing at all"
+        - "S2 — wrong data on screen or in the API"
+        - "S3 — broken, but I found a workaround"
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where you saw it
+      multiple: true
+      options:
+        - "Web UI · Work › Agents (/agents)"
+        - "API — /v1 (apps/swarm-api)"
+        - "Not sure"
+    validations:
+      required: true
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Environment
+      options:
+        - "dev — the deployment's console"
+        - "local — make dev (Firestore emulator)"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Screenshots, errors, logs
+    validations:
+      required: false
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+""",
+    "feature_request.yml": """\
+name: Feature request
+description: Something it should do.
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+    validations:
+      required: true
+""",
+    "config.yml": "blank_issues_enabled: false\n",
+}
 MARKER_LINE = re.compile(r"^=== GITHUB DATA [0-9a-f]{16} ===$")
 
 
@@ -117,13 +205,12 @@ class ToolsForge(Forge):
             self.job_logs[job_id] = log.encode("utf-8")
 
     def form(self, name: str) -> None:
-        """Put one of THIS repository's real issue forms on the default branch."""
-        text = (TEMPLATES / name).read_text(encoding="utf-8")
-        self.files[(OWN, self.default_branch, f".github/ISSUE_TEMPLATE/{name}")] = text
+        """Put one of the inline FORMS on the default branch."""
+        self.files[(OWN, self.default_branch, f".github/ISSUE_TEMPLATE/{name}")] = FORMS[name]
 
     def all_forms(self) -> None:
-        for path in sorted(TEMPLATES.glob("*.yml")):
-            self.form(path.name)
+        for name in sorted(FORMS):
+            self.form(name)
 
     def posted_issues(self) -> list[tuple[str, str]]:
         return [(m, p) for m, p in self.writes() if p.endswith("/issues")]

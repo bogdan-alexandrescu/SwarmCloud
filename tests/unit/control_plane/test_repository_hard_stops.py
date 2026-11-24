@@ -17,7 +17,7 @@ What is held here:
     naming it, on create and on PATCH, and nothing is written;
   * both fields round-trip through create, PATCH and read, and a registration
     stored before them reads as `platform: false` with the defaults;
-  * the four defaults are exactly the list §4.4 names.
+  * the four defaults are exactly the four paths the design names.
 
 No credentials, no network: the secret reader is a fake and GitHub is a fake
 transport under the real client.
@@ -25,8 +25,6 @@ transport under the real client.
 
 from __future__ import annotations
 
-import re
-from pathlib import Path
 
 import pytest
 
@@ -38,8 +36,6 @@ from .repo_fakes import GitHubRepos, TenantTokens, make_client, repo_entry
 
 WIDGETS = repo_entry("example-org/widgets", default_branch="develop", private=True)
 DEFAULTS = [".github/workflows/**", "terraform/bootstrap/**", "**/iam*.tf", "CODEOWNERS"]
-SCHEDULES_DOC = Path(__file__).resolve().parents[3] / "docs" / "schedules.md"
-
 # root is a platform admin and a member of eng (conftest.group_map); alice is
 # a member of eng and nothing more.
 ADMIN = "root"
@@ -96,15 +92,10 @@ def _repo_paths(db) -> list[str]:
 
 
 # --------------------------------------------------------------------------
-# the defaults are §4.4's
+# the four defaults
 # --------------------------------------------------------------------------
 
-def test_the_four_defaults_are_the_list_the_design_names():
-    text = SCHEDULES_DOC.read_text(encoding="utf-8")
-    found = re.search(r"`hard_stop_paths`, a field lane S11 adds, default `\[(.*?)\]`", text)
-    assert found is not None, "§4.4 no longer names the hard_stop_paths default"
-    named = re.findall(r'"([^"]+)"', found.group(1))
-    assert named == DEFAULTS
+def test_the_four_defaults_are_the_list():
     assert list(HARD_STOP_PATHS_DEFAULT) == DEFAULTS
     assert len(HARD_STOP_PATHS_DEFAULT) == 4
 

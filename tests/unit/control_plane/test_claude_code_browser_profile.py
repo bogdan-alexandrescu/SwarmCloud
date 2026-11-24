@@ -19,7 +19,6 @@ Autopilot, named by callers like any other. These hold that:
   * every restatement of the catalogue carries it: the Terraform mirror and
     model table, both agent-stream tables, the Submit form and the UI's
     fixtures, which scripts/lib/check-contract-parity.sh reads;
-  * request 67 records the owner's acceptance and the rollback.
 
 MUTATION: set its resource_class to "standard" in profiles.py and
 `test_the_profile_is_claude_code_on_the_browser_image` and the pod test fail;
@@ -59,7 +58,6 @@ from .test_dispatch_manifests import NOW, FakeBatchApi, make_lease, make_task
 REPO = Path(__file__).resolve().parents[3]
 PROFILE = "claude-code-browser"
 LOCALS = REPO / "terraform/infra/locals.tf"
-REQUESTS = REPO / "docs/contract-change-requests.md"
 SUBMIT = REPO / "apps/swarm-ui/src/Submit.tsx"
 UI_API = REPO / "apps/swarm-ui/src/api.ts"
 DOCKERFILE = REPO / "images/agent-runtime-browser/Dockerfile"
@@ -476,15 +474,3 @@ def test_the_parity_checked_ui_tables_carry_it():
         literal = re.search(declaration + r"\b[^=]*=\s*(\{.*?\n\})", ui, re.S)
         assert literal, declaration
         assert PROFILE in json.loads(literal.group(1)), declaration
-
-
-def test_request_67_records_the_owners_acceptance_and_the_rollback():
-    text = REQUESTS.read_text(encoding="utf-8")
-    start = text.index("## 67. ")
-    end = text.find("\n## 68. ", start)
-    section = text[start:end if end != -1 else len(text)]
-    # scripts/lib/check-frozen-contract.sh passes a diff under
-    # apps/common/swarm_common/ only beside an added line holding this phrase.
-    assert "accepted by the owner" in section.lower()
-    assert "**Status:** open" not in section
-    assert "### Rollback" in section and "Delete the entry" in section

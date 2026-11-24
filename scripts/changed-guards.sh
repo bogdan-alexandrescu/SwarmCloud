@@ -144,9 +144,9 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # refuses a comment under apps/ that names a test -- a new one names no test,
 # so only a whole-tree run reaches it (part of issue 69). After it,
 # test_check_test_reads (about 8 s): no test under tests/ opens docs prose,
-# CI YAML, a root *.md or the Makefile outside scripts/guards/test-reads/'s
-# shrinking baselines -- a new read lands in a file no diff names, so only a
-# whole-tree run reaches it (part of issue 71). Then the inventory
+# CI YAML, a root *.md or the Makefile, with no baseline left -- a new read
+# lands in a file no diff names, so only a whole-tree run reaches it (part of
+# issue 71). Then the inventory
 # walker the merge train ejected for (owner's improvement plan, 2026-11-23)
 # -- test_plugin_agents_ignore_chat (every plugin/agents/*.md is a known kind;
 # 1.0 s). A new agent breaks it and names it not, so no diff selects it.

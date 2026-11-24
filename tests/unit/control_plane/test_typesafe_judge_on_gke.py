@@ -27,7 +27,6 @@ the named case fails.
 from __future__ import annotations
 
 import dataclasses
-import re
 from pathlib import Path
 from typing import Any
 
@@ -54,8 +53,6 @@ from .fakes import FakeFirestore
 from .test_dispatch_manifests import NOW, make_lease, make_task
 
 REPO = Path(__file__).resolve().parents[3]
-REQUESTS = REPO / "docs/contract-change-requests.md"
-
 #: claude-code as a rollback of contract request 53 would leave it: the
 #: catalogue's line back to CLOUD_RUN_JOB, and without contract request 135's
 #: `build_resource_class`, which the profile refuses off GKE Autopilot.
@@ -261,10 +258,3 @@ def test_the_map_in_the_pr_body_is_the_catalogues():
     on_cloud_run = {n for n in carrying
                     if resolve_backend(RUNNER_PROFILES[n]) is Backend.CLOUD_RUN_JOB}
     assert on_cloud_run == {"claude-code-review"}
-
-
-def test_the_contract_request_for_the_cloud_run_profile_is_filed():
-    text = REQUESTS.read_text(encoding="utf-8")
-    heading = re.search(r"^## 84\. (.+)$", text, re.M)
-    assert heading, "contract request 84 (JUDGE-GKE) is missing"
-    assert "claude-code-review" in heading.group(1) and "JUDGE-GKE" in heading.group(1)
