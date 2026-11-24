@@ -14,14 +14,12 @@
 //
 // No network: fetch is stubbed per test. Every value is a placeholder.
 
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { visible } from './repofixture'
 import { INTAKE_REFUSALS } from '../AdminPluginInstall'
+import server from '../generated/constants/server.json'
 
-const REPO = join(__dirname, '..', '..', '..', '..')
 const BASE = '/v1/admin/plugin-catalogue'
 const REPOSITORY = 'example-org/example-repo'
 const ADMIN = 'admin@example.com'
@@ -341,16 +339,9 @@ describe('the overlay and the live preview', () => {
 describe('intake progress and refusals', () => {
   it('the console\'s refusal table is swarm-api\'s and the intake job\'s, word for word', async () => {
     const { add } = await load()
-    const table = (path: string) => {
-      const text = readFileSync(join(REPO, path), 'utf8')
-      const block = text.slice(text.indexOf('REFUSALS: dict[str, str] = {'))
-      const body = block.slice(0, block.indexOf('\n}'))
-      const out: Record<string, string> = {}
-      for (const m of body.matchAll(/^\s+"([a-z_]+)":\s+("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'),?$/gm)) out[m[1]!] = m[2]!.slice(1, -1)
-      return out
-    }
-    const api = table('apps/swarm-api/swarm_api/pluginstore.py')
-    const job = table('apps/plugin-intake/plugin_intake/refusals.py')
+    // swarm_api/pluginstore.py's and plugin_intake/refusals.py's REFUSALS, as the generated server.json holds them.
+    const api: Record<string, string> = server.plugin_refusals.api
+    const job: Record<string, string> = server.plugin_refusals.intake
     expect(Object.keys(api).length).toBeGreaterThan(30)
     expect(Object.keys(job).length).toBeGreaterThan(40)
     // MUTATION: drop a code from INTAKE_REFUSALS, or reword one -> fails.
