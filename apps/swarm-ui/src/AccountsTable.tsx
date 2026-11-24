@@ -389,8 +389,13 @@ function Tags({ a, names }: { a: PoolAccount; names: ReadonlyMap<string, string>
       ) : null}
       {possible && !dup && (
         <span className="acct-tag is-dup">
-          may be the same subscription as{' '}
-          {possibleOf === null ? 'another workspace’s account' : <span className="acct-nm">{possibleOf}</span>}
+          {possibleOf === null ? (
+            'may be the same as another workspace’s account'
+          ) : (
+            <>
+              may be the same subscription as <span className="acct-nm">{possibleOf}</span>
+            </>
+          )}
         </span>
       )}
       {extra.length > 0 && (

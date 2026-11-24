@@ -994,7 +994,7 @@ describe('the accounts pool: its empty, unread and withheld states are one short
       lines: ['Draining: it takes no new agent'],
       moved: ['it serves the agents it holds and takes no new one'],
     })
-    holds(draw(account({ can_take_new_agent: false, blocked_by: [{ max_before_reading: 1, assigned: 1 }] as never })), {
+    holds(draw(account({ can_take_new_agent: false, blocked_by: [{ first_reading: 'pending', max_before_reading: 1, assigned: 1 }] })), {
       lines: ['Waiting for its first reading'],
       moved: ['a new account takes 1 agent until it is measured, and it holds 1'],
     })

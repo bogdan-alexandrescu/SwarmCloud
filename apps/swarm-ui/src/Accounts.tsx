@@ -21,7 +21,7 @@ import { errorHeading, read, route, write, type ApiError, type Result } from './
 import type { TopicId } from './help'
 import { ACCOUNTS_POLL_MS, capacityPoll, paneHref, useLinkedParam, usePhoneTables } from './capacityPoll'
 import { HelpCard } from './HelpCard'
-import { InfoTip } from './InfoTip'
+import { InfoTip, type Said } from './InfoTip'
 import { Mark } from './primitives'
 import { Button, CIcon, Chip, Dialog, Table, ToneMark, WarnMark } from './components'
 import './styles/capacity.css'
@@ -467,7 +467,9 @@ function Body({
           phone -- which shows the list, not the pane -- reads it too. */}
       {linked !== null && !accounts.some((a) => a.account_id === linked) && (
         <p className="warn-text acct-missing" role="status">
-          No account <code>{linked}</code> is in this read.{' '}
+          <span>
+            No account <code>{linked}</code> is in this read.
+          </span>{' '}
           <button type="button" className="ctl-link" onClick={() => choose(null)}>
             Clear the link
           </button>
@@ -657,7 +659,7 @@ function Broken({
         {lent.length > 0 && (
           <p>
             <b>{names(lent)}</b> need{lent.length === 1 ? 's' : ''} a sign-in by{' '}
-            {owners.length === 1 ? owners[0] : 'their owners'}; lent to you.{' '}
+            {owners.length === 1 ? owners[0] : 'their owners'} &middot; lent to you{' '}
             <InfoTip about="lent accounts" tip="Lent to you, so nothing here can do it." />
           </p>
         )}
@@ -2700,7 +2702,10 @@ function Lending({
           )}
           {error && (
             <p className="c-hint" role="alert">
-              {errorHeading(error)} &mdash; {error.message} The lending list was not changed.
+              <span>
+                {errorHeading(error)} &mdash; {error.message}
+              </span>{' '}
+              <span>The lending list was not changed.</span>
             </p>
           )}
         </Dialog>
@@ -2858,7 +2863,10 @@ function ModelClasses({ account, reload }: { account: Account; reload: () => voi
       <p className="muted small">All four or none saves as every class.</p>
       {error && (
         <p className="c-hint" role="alert">
-          {errorHeading(error)} &mdash; {error.message} The class list was not changed.
+          <span>
+            {errorHeading(error)} &mdash; {error.message}
+          </span>{' '}
+          <span>The class list was not changed.</span>
         </p>
       )}
     </div>
@@ -3364,8 +3372,8 @@ function StateControls({ account, reload }: { account: Account; reload: () => vo
 
   const targets: { to: AccountStateName; why: string }[] = [
     { to: 'AVAILABLE', why: 'assignable to new agents' },
-    { to: 'PAUSED', why: 'no new agents; the ones on it keep running' },
-    { to: 'DRAINING', why: 'no new agents, and the ones on it are moved off' },
+    { to: 'PAUSED', why: 'no new agents · the ones on it keep running' },
+    { to: 'DRAINING', why: 'no new agents · the ones on it are moved off' },
   ]
   const asked = targets.find((t) => t.to === asking) ?? null
   const needsReason = asking !== null && stateNeedsReason(asking)
@@ -3436,7 +3444,7 @@ function StateControls({ account, reload }: { account: Account; reload: () => vo
             <p className="warn-text">
               {asked.to === 'DRAINING'
                 ? `${agents} on it now will be moved off.`
-                : `${agents} on it keep running; no new ones start.`}{' '}
+                : `${agents} on it keep running · no new ones start.`}{' '}
               <InfoTip
                 about="who loses it"
                 tip={`Every agent in ${account.owner_tenant}${account.lend_to.length > 0 ? ' and the tenants it is lent to' : ''} loses it for new work.`}
@@ -3545,7 +3553,7 @@ function failureOf(res: Result<unknown>): ApiError {
     kind: 'server_error',
     httpStatus: null,
     code: null,
-    message: 'The request did not complete, and the platform did not say why.',
+    message: 'The request did not complete; no reason given.',
   }
 }
 
@@ -4394,7 +4402,7 @@ function SignInSteps({
                  is over a message saying the platform accepted the sign-in. */
               heading={
                 refusal === 'accepted_unnamed'
-                  ? 'The platform accepted this sign-in without naming the account'
+                  ? 'Signed in, but no account was named'
                   : undefined
               }
               tone={refusal === 'accepted_unnamed' ? 'partial' : 'failed'}
@@ -4477,17 +4485,18 @@ const LABEL_MAX = 40
  * has no lowercase spelling. An empty label is not a fault: Start is simply
  * disabled, as it always was.
  */
-function labelFault(label: string): string | null {
+/** Why the broker would refuse `label`: a short line, and the sentence in full where the line is not one (issue 81). */
+function labelFault(label: string): Said | null {
   if (label === '') return null
   const bad = [...label].find((c) => !/[a-z0-9-]/.test(c))
   if (bad !== undefined) {
     return /\s/.test(bad)
-      ? 'a space is not allowed: use a dash'
-      : `"${bad}" is not allowed: use a-z, 0-9 and dashes`
+      ? { line: 'a space is not allowed: use a dash' }
+      : { line: `"${bad}" is not allowed: use a-z, 0-9 and dashes` }
   }
-  if (label.startsWith('-')) return 'it must start with a letter or a digit, not a dash.'
-  if (label.endsWith('-')) return 'it must end with a letter or a digit, not a dash.'
-  if (label.length > LABEL_MAX) return `it is ${label.length} characters; at most ${LABEL_MAX}.`
+  if (label.startsWith('-')) return { line: 'must start with a letter or a digit', tip: 'it must start with a letter or a digit, not a dash.' }
+  if (label.endsWith('-')) return { line: 'must end with a letter or a digit', tip: 'it must end with a letter or a digit, not a dash.' }
+  if (label.length > LABEL_MAX) return { line: `it is ${label.length} characters; at most ${LABEL_MAX}.` }
   return null
 }
 
@@ -4795,8 +4804,11 @@ function AddAccount({
               would refuse. */}
           {fault !== null && (
             <p className="warn-text acct-label-fault" role="alert">
-              <strong>This label would be refused:</strong> {fault}{' '}
-              <InfoTip about="the label rule" tip="Only lowercase letters, digits and dashes." />
+              <strong>This label would be refused:</strong> <span>{fault.line}</span>{' '}
+              <InfoTip
+                about="the label rule"
+                tip={[fault.tip, 'Only lowercase letters, digits and dashes.'].filter(Boolean).join(' ')}
+              />
             </p>
           )}
           {/* A DESTRUCTIVE OUTCOME, NAMED BEFORE IT HAPPENS (§6). */}
@@ -4855,8 +4867,8 @@ function AddAccount({
               naming the field to change; nothing was created. */}
           {state.kind === 'start_failed' && state.error.kind === 'invalid' && (
             <p className="warn-text acct-refused" role="alert">
-              <strong>The platform refused this sign-in:</strong> {asSentence(state.error.message)}{' '}
-              Nothing was created.{' '}
+              <strong>The platform refused this sign-in:</strong> <span>{asSentence(state.error.message)}</span>{' '}
+              <span>Nothing was created.</span>{' '}
               <InfoTip
                 about="the refusal"
                 tip="Nothing was created. Correct what it names above and press Start the sign-in."
@@ -4920,16 +4932,18 @@ function SignInDone({
     <div className={`state ${partial ? 'partial' : 'acct-ok'}`} role="status">
       <h3>
         {partial ? 'Signed in, but the state was not put back' : 'Signed in'}{' '}
-        &mdash; {state.account.account_id}
+        &middot; {state.account.account_id}
       </h3>
       {/* AN EXPIRY, OR THE ABSENCE OF ONE, NEVER A GUESS. The figure and the
           phrase are different shapes on purpose: "expires in 8h" and "no
           expiry was reported" are different facts and must not read alike. */}
       <p>
-        Two secrets were written.{' '}
+        <span>Two secrets were written.</span>{' '}
         {state.expiresAt ? (
           <>
-            Mounted token expires in <strong>{clearsIn(state.expiresAt, Date.now())}</strong>{' '}
+            <span>
+              Mounted token expires in <strong>{clearsIn(state.expiresAt, Date.now())}</strong>
+            </span>{' '}
             <InfoTip about="the expiry" tip="The mounted token’s expiry is not a deadline for you." />
           </>
         ) : (
@@ -4979,7 +4993,7 @@ function SignInDone({
       ) : (
         <p className="checked-at">
           Readings kept: the last arrived {timeAgo(state.account.observed_at)}
-          {state.account.stale ? ', so the table above marks its figures ~' : ''}.
+          {state.account.stale ? ' · so the table marks its figures ~' : ''}
         </p>
       )}
       {/* NOT AVAILABLE, AND NOTHING PUT IT BACK. `restore === null` means there
@@ -5319,6 +5333,20 @@ function Remove({ account, reload }: { account: Account; reload: () => void }) {
           between a reversible tidy-up and pulling an account out from under
           running work -- and the remedy (move it to DRAINING first) is the
           `?`, which is where a procedure belongs. */}
+      {/* ISSUE 81: the warning is one sentence on the surface; the remedy and
+          what is kept are its (i). */}
+      <p className="warn-text">
+        <span>Removing it takes it out of the pool.</span>{' '}
+        <InfoTip
+          about="removal"
+          tip={
+            'Removal takes the account out of the pool. The credential in the secret store is retained rather than deleted, so this is reversible by signing in again under the same label.' +
+            (account.assigned > 0
+              ? ` ${account.assigned} agent${account.assigned === 1 ? '' : 's'} currently hold${account.assigned === 1 ? 's' : ''} this account. Move it to DRAINING first if you want them off it before it goes.`
+              : '')
+          }
+        />
+      </p>
       <ul className="ctl-facts">
         <li className="ctl-fact">
           <b>credential</b>
@@ -5380,8 +5408,10 @@ function Remove({ account, reload }: { account: Account; reload: () => void }) {
       </span>
       {error && (
         <p className="warn-text">
-          {errorHeading(error)} &mdash; {error.message} The account was not
-          removed.
+          <span>
+            {errorHeading(error)} &mdash; {error.message}
+          </span>{' '}
+          <span>The account was not removed.</span>
         </p>
       )}
     </div>

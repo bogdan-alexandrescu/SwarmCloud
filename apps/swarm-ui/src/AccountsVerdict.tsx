@@ -107,11 +107,11 @@ export function Info({ about, tip }: { about: string; tip: string }) {
       >
         i
       </button>
-      <span id={id} hidden>
+      <span id={id} hidden data-help-description="">
         {tip}
       </span>
       {open && (
-        <span role="tooltip" className="c-tip" aria-hidden="true">
+        <span role="tooltip" className="c-tip" aria-hidden="true" data-help-description="">
           {tip}
         </span>
       )}
@@ -380,7 +380,7 @@ export function Verdict({
           {(tip.length > 0 || v.m > 0) && (
             <>
               {' '}
-              <InfoTip
+              <Info
                 about="which accounts can take a new agent"
                 tip={[...tip, ...(v.m > 0 ? [ruleOf(accounts)] : [])].join(' ')}
               />
