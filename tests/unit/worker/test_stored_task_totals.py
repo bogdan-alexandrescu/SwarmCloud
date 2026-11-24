@@ -171,7 +171,7 @@ def test_an_attempt_start_counts_the_running_attempt(path):
 
 def test_spend_recorded_after_the_end_corrects_the_stored_totals(path):
     """The worker's teardown records spend after the end's commit
-    (`lifecycle._record_spend` runs from `_cleanup`): the stored copy follows."""
+    (`spend.SpendMixin._record_spend` runs from `_cleanup`): the stored copy follows."""
     path.control.record_attempt_start(backend="cloud_run_job", execution_name=None)
     path.control.finish(state=TaskState.FAILED, exit_code=1, error="boom")
     assert path.task()["attempt_totals"]["cost_incomplete"] is True

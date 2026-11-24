@@ -165,7 +165,7 @@ What exists, and what does not:
 
 * **Per-attempt cost IS recorded.** The worker's `record_spend`
   (`apps/agent-worker/agent_worker/control.py::ControlPlane.record_spend`), called from every exit by
-  `_record_spend` (`apps/agent-worker/agent_worker/lifecycle.py::Worker._record_spend`), writes
+  `_record_spend` (`apps/agent-worker/agent_worker/spend.py::SpendMixin._record_spend`), writes
   the runner's token counts and `cost_usd` onto the attempt
   (`apps/common/swarm_common/models.py::Attempt.cost_usd`). It is the provider cost the runner
   reports — `total_cost_usd` from the CLI's result — not the cloud bill, and a
