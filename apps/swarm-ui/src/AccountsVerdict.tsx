@@ -376,7 +376,7 @@ export function Verdict({
       </div>
       <div className="acct-verdict-say">
         <p className="acct-verdict-head">
-          {head}
+          <span>{head}</span>
           {(tip.length > 0 || v.m > 0) && (
             <>
               {' '}
