@@ -3330,7 +3330,7 @@ lost, from the per-tenant merge-wake tick (`fixloop.sweep_tenant`).
 | a re-review says NOT_YET, no round left | parks for a person, `fix_loop_exhausted` |
 | a fix pushed nothing, or the same head | parks for a person, `fix_changed_nothing` |
 | a round did not succeed | parks for a person, `round_failed` |
-| a verdict did not read, or a re-review recorded no head | parks for a person, `review_unreadable` |
+| a verdict did not read, or a re-review recorded no head | parks for a person, `review_unreadable`, naming the decline's `code`, the `keys` that refused the file and the head that was judged. Keys the loop does not read (`minors`, `checks`, `needs_owner`, `open_questions`) never refuse it, even when the redaction masked text in them: they cannot change the verdict |
 | a round could not be submitted (the submitter left the tenant, no pull request) | parks for a person, `round_refused` |
 | the pull request was merged outside the loop | ends SUCCEEDED, `merged_outside` |
 | the pull request was closed | ends CANCELLED, `closed_outside` |
@@ -3352,7 +3352,12 @@ its tenant may take either, as any member may cancel the workflow:
 * **add a round**: `POST /v1/workflows/{workflow_id}/fix-loop/rounds`,
   `{"rounds": 1, "note": "..."}` (`fixloop.add_rounds`). The note, at most 4
   KiB, is guidance for the next fix. The next action is a fix, or a
-  re-review of the same head after `review_unreadable`. A loop never runs
+  re-review of the same head after `review_unreadable`. At round 0 that
+  head is the root's pushed head, so the added round is `re-review:1`.
+  When no head is recorded for a round to start from, the route refuses
+  409 with `detail.reason: "no_head"` and changes nothing. The reply's
+  `report` lists each failure of its drive as `failures`, task id and
+  code, beside the count. A loop never runs
   more than 10 rounds in all, rounds a person added counted; past that the
   route refuses 409. Why a ceiling: a person adding rounds one at a time
   should still meet a bound on cost.
