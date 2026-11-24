@@ -199,14 +199,38 @@ fix red trains. `scripts/merge-train.sh` (`red_rules`) applies three rules in
 order, and every comment and step-summary line names the rule that acted:
 
 1. **Retry once.** The first time a train head is red, the train re-runs only
-   the failed jobs of its failing Actions runs (`rerun-failed-jobs`), once,
-   and stays open. It records `retry=<epoch>:<head>` in its state block, and
-   its 90-minute age limit counts from the retry. A green after the retry
-   lands every member, just as a first green would. GitHub re-runs failed
-   jobs only of a finished run. So while any run at the head is still queued
-   or running, a red reading of the head waits and does not bisect. This
-   covers a shard that fails while the rest of its run is still going, and a
-   re-run that is still in progress.
+   the failed jobs of its failing Actions runs, once, and stays open. It
+   records `retry=<epoch>:<head>` in its state block, and its 90-minute age
+   limit counts from the retry. A green after the retry lands every member,
+   just as a first green would.
+   **It does not wait for unrelated jobs (issue 387).** On 2026-11-24 two
+   trains each had one test job fail within five minutes and then waited about
+   forty minutes for `build changed images without pushing`, a job of the same
+   run, before the retry began. Now, while other runs at the head still run,
+   the train re-runs every failed job at once (`retry_early`): a failed job of
+   a run still in progress on its own (`POST actions/jobs/<id>/rerun`, which
+   re-runs the job and its dependents, `ci-gate` among them), and a failed run
+   that has finished through `rerun-failed-jobs`. The repository holds no
+   proof that GitHub accepts a single job's re-run while its run is still in
+   progress (`rerun-failed-jobs` needs the run finished). If GitHub refuses
+   it, the train waits for every run at the head as before, says why on its
+   one `waiting for them before re-running the failed jobs (...; the retry is
+   not spent)` line, and records no retry: once every run has finished it
+   re-runs the failed jobs of each failed run (`rerun-failed-jobs`), exactly
+   as before. A refused re-run is never the one retry. The retry is recorded
+   only after GitHub accepts it; if GitHub accepts one job and refuses the next,
+   the retry is spent and the refused one is named in the comment and the log.
+   A job that fails after an early retry has started is not re-run: the train
+   has had its one retry, and red again goes on to rule 2.
+   **The wait is measured.** Each retry's log line says
+   `<N> seconds from the first failed job's end (<time>) to this retry`, from
+   the failing check runs' `completed_at`.
+   **A retry started early never lands anything early.** The verdict is
+   unchanged: a train is green only when every required check at its head
+   finished green. A re-run job still running, or any other required check still
+   running, is pending; any other failure is red. While a re-run at the head
+   still runs, a red reading waits (`its re-run at <head> is still running`)
+   and does not bisect.
    A failing check that is **not an Actions job** -- a check run another app
    made, such as code scanning's `Trivy` (app `github-advanced-security`), or
    a commit status -- is one no re-run changes. When no failing check is a
