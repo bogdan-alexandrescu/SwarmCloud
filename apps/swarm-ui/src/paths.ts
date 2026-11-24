@@ -22,6 +22,13 @@ import { AGENT_TABS, RECENT_STATES, agentList, agentListQuery, listFlags, parseA
 import { HELP, HELP_GROUPS, HELP_ROUTE, type TopicId } from './help'
 
 /** The non-section addresses this file knows by name. */
+/**
+ * The keys one approval's address keeps beside its id: the inbox's kind
+ * filter (AUT-15), and `from=pipeline` with the Pipeline board's filters
+ * when the item was opened from the board (plans-pipeline §2.1).
+ */
+const APPROVAL_PATH_KEYS: readonly string[] = ['kind', 'from', 'source', 'state', 'waits']
+
 export const SUBMIT_ADDRESS = 'submit'
 /**
  * API READS' OLD ADDRESS (NAV-FOOT, archived issue 1672): the page is Capacity's last tab,
@@ -268,6 +275,9 @@ export const FIXED: Readonly<Record<string, string>> = {
   // `/automate/approvals/<id>`, below; the old `/approvals` and
   // `/approvals/<id>` land on them (`pathToAddress`).
   'automate/approvals': '/automate/approvals',
+  // plans-pipeline §2.1: the Pipeline board, between Schedules and Approvals.
+  // Its filters ride on its query (`?source=&state=&waits=person`).
+  'automate/pipeline': '/automate/pipeline',
   submit: '/submit',
   'capacity/pools': '/capacity/pools',
   'capacity/profiles': '/capacity/pools/profiles',
@@ -722,9 +732,15 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
     const q = new URLSearchParams(query)
     const id = q.get('approval')
     if (id !== null && id !== '') {
-      const kind = q.get('kind')
       const base = `/automate/approvals/${encodeURIComponent(id)}`
-      return kind === null || kind === '' ? base : `${base}?${new URLSearchParams({ kind }).toString()}`
+      // The kind filter, and the board it was opened from with the board's
+      // filters (plans-pipeline §2.1), so Back returns to the board as it was.
+      const kept = new URLSearchParams()
+      for (const k of APPROVAL_PATH_KEYS) {
+        const v = q.get(k)
+        if (v !== null && v !== '') kept.set(k, v)
+      }
+      return kept.toString() === '' ? base : `${base}?${kept.toString()}`
     }
   }
   // Config › Repositories (repositories.html): the page rides on the tab's query.
@@ -895,8 +911,11 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
   const approvalId = seg[0] === 'automate' && seg[1] === 'approvals' && seg.length === 3 ? seg[2] : seg[0] === 'approvals' && seg.length === 2 ? seg[1] : undefined
   if (approvalId !== undefined && approvalId !== '') {
     const q = new URLSearchParams({ approval: decodeURIComponent(approvalId) })
-    const kind = new URLSearchParams(query).get('kind')
-    if (kind !== null && kind !== '') q.set('kind', kind)
+    const from = new URLSearchParams(query)
+    for (const k of APPROVAL_PATH_KEYS) {
+      const v = from.get(k)
+      if (v !== null && v !== '') q.set(k, v)
+    }
     return plain(`automate/approvals?${q.toString()}`)
   }
 
