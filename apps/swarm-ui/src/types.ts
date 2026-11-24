@@ -3011,10 +3011,10 @@ export type ParkReason =
   | 'SCHEDULED_RETRY' | 'DEPENDENCY_INCOMPLETE' | 'MANUAL_PAUSE'
   | 'BUDGET_EXHAUSTED' | 'CREDENTIAL_MISSING' | 'CHILDREN_INCOMPLETE'
   | 'CI_PENDING' | 'HUMAN_REQUIRED' | 'AWAITING_INPUT'
-  | 'FIX_ROUNDS_RUNNING' | 'PLATFORM_REFUSED'
+  | 'FIX_ROUNDS_RUNNING' | 'PLATFORM_REFUSED' | 'WORKFLOW_PAUSED'
 
 /**
- * The same fourteen as a value, so a test can compare the list against
+ * The same fifteen as a value, so a test can compare the list against
  * `swarm_common.states.ParkReason` and the three sets below can be checked for
  * covering it. A union type erases at build time and can be checked against
  * nothing.
@@ -3040,6 +3040,7 @@ export const PARK_REASONS = [
   'AWAITING_INPUT',
   'FIX_ROUNDS_RUNNING',
   'PLATFORM_REFUSED',
+  'WORKFLOW_PAUSED',
 ] as const
 
 /**
@@ -3065,6 +3066,8 @@ export const PARK_NEEDS_A_PERSON: ReadonlySet<string> = new Set<ParkReason>([
   'CREDENTIAL_MISSING',
   'BUDGET_EXHAUSTED',
   'MANUAL_PAUSE',
+  // A step of a paused workflow: only a resume by a person lifts it.
+  'WORKFLOW_PAUSED',
   // A live-browser hand-off nobody answered within the hold (contract request
   // 68). Only a person promotes it, from the console, when they are ready to
   // sign in; no sweep or timer does, and past a day it is dead-lettered.
@@ -3165,6 +3168,7 @@ export const REASON_COPY: Readonly<Record<string, string>> = {
   AWAITING_INPUT: 'A workflow step waits for a member of its workspace to answer. Holds no capacity; it ends on the first answer or at its declared expiry.',
   FIX_ROUNDS_RUNNING: 'A fix loop waits while its review and fix rounds run as steps of their own. Holds no capacity.',
   PLATFORM_REFUSED: 'The cluster refused to start it (its job quota is full, or a policy said no). Holds no capacity; retried automatically, at most ten minutes apart.',
+  WORKFLOW_PAUSED: 'The workflow is paused. This step waits, holding no capacity, until a person resumes the workflow.',
   POOL_LIMIT_UNSET: 'This pool has no limit set, so it admits nothing. Nobody set it to 0: somebody has to set a limit.',
 }
 
