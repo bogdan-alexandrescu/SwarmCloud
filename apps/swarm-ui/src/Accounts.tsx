@@ -4931,7 +4931,7 @@ function SignInDone({
   return (
     <div className={`state ${partial ? 'partial' : 'acct-ok'}`} role="status">
       <h3>
-        {partial ? 'Signed in, but the state was not put back' : 'Signed in'}{' '}
+        {partial ? 'Signed in; its state was not put back' : 'Signed in'}{' '}
         &middot; {state.account.account_id}
       </h3>
       {/* AN EXPIRY, OR THE ABSENCE OF ONE, NEVER A GUESS. The figure and the
@@ -4973,7 +4973,7 @@ function SignInDone({
             <strong>STILL in REAUTH_REQUIRED: nothing will be assigned.</strong>{' '}
             <InfoTip
               about="the state"
-              tip={`This account is STILL in REAUTH_REQUIRED, so nothing will be assigned to it. The credential is good; the second call failed: ${restore.error?.message ?? 'the request did not complete.'} Use ${moveLabel('AVAILABLE')} in the row above.`}
+              tip={`Signed in, but the state was not put back. This account is STILL in REAUTH_REQUIRED, so nothing will be assigned to it. The credential is good; the second call failed: ${restore.error?.message ?? 'the request did not complete.'} Use ${moveLabel('AVAILABLE')} in the row above.`}
             />
           </p>
         ))}
