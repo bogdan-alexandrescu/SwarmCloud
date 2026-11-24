@@ -184,10 +184,10 @@
       "count": 1
     },
     "sonarjs/no-nested-conditional": {
-      "count": 11
+      "count": 8
     },
     "sonarjs/no-nested-template-literals": {
-      "count": 3
+      "count": 1
     },
     "sonarjs/prefer-read-only-props": {
       "count": 1
@@ -1885,10 +1885,10 @@
       "count": 3
     },
     "sonarjs/no-nested-conditional": {
-      "count": 8
+      "count": 7
     },
     "sonarjs/no-nested-template-literals": {
-      "count": 4
+      "count": 3
     },
     "sonarjs/prefer-read-only-props": {
       "count": 10

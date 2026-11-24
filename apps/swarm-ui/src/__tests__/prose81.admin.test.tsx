@@ -18,10 +18,9 @@
 // BREAK IT: put any listed sentence back on the surface, or drop it from its
 // tip -- the case for its page turns red.
 
-import { act, render } from '@testing-library/react'
+import { act, render, screen, within } from '@testing-library/react'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
-import { HELP } from '../help'
 import { PLATFORM_TICKS } from '../PlatformCounts'
 import { AdminRoleRefusal } from '../WorkspaceRefusal'
 import { helpIn, longRuns, shownIn } from './proseruns'
@@ -167,11 +166,14 @@ describe('issue 81: the admin and voice pages, on the fixture build, as the plat
       'The platform’s own machinery. No tenant manages these; they are set in Terraform, and listed here so every recurring thing is in one place.',
     )
     stays('The platform’s own machinery')
-    const rows = [...document.querySelectorAll<HTMLElement>('[data-testid="as-platform-ticks"] tbody tr[data-tick]')]
+    const rows = within(screen.getByTestId('as-platform-ticks'))
+      .getAllByRole('row')
+      .filter((r) => r.dataset.tick !== undefined)
     expect(rows.map((r) => r.dataset.tick)).toEqual(PLATFORM_TICKS.map((t) => t.name))
     for (const t of PLATFORM_TICKS) {
       const row = rows.find((r) => r.dataset.tick === t.name)!
-      const cell = row.querySelector('td[data-label="What it does"]')
+      // The third cell: What it does.
+      const cell = within(row).getAllByRole('cell')[2]
       // MUTATION: draw `t.does` in the cell again and the row has a long run.
       expect(longRuns(row), `${t.name} draws a long run`).toEqual([])
       expect(collapse(shownIn(cell)), `${t.name} draws no short name`).toBe(t.title)
@@ -184,12 +186,9 @@ describe('issue 81: the admin and voice pages, on the fixture build, as the plat
     await page('admin/platform-secrets')
     moved('It is in the catalogue but nothing was stored.')
     moved('One other is mid-rotation, which is expected for 24 h.')
-    // Into the page's help topic, not an (i): the banner it sat in is dark,
-    // and an (i)'s border there is under the spacing sweep's floor.
-    const said = 'Read from Secret Manager metadata. No value, length or version content is read, and nothing on this page can set one.'
-    noLongRun('Read from Secret Manager')
-    expect(surface()).not.toContain(said)
-    expect(HELP['platform-secrets'].long).toContain(said)
+    // Behind the disclosure's own tooltip, not an (i): the banner it sits in
+    // is dark, and an (i)'s border there is under the spacing sweep's floor.
+    moved('Read from Secret Manager metadata. No value, length or version content is read, and nothing on this page can set one.')
     stays('No value is read.')
     expect(ownLongRuns()).toEqual([])
   }, 60_000)

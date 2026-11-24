@@ -330,7 +330,7 @@ describe('Tenants says there is no budget in the reader’s words (AH-21)', () =
     // stays linked from the panel's help footer.
     expect(note!.querySelector('a'), 'the note draws an arrowed Why link again').toBeNull()
     expect(note!.querySelector('button[aria-label="About the budget column"]')).toBeTruthy()
-    expect(helpIn(note!)).toContain('Tenants have no budget column: no budget can be set here.')
+    expect(helpIn(note)).toContain('Tenants have no budget column: no budget can be set here.')
     const words = visible(note!).trim()
     // A SENTENCE, IN THE BODY FONT (visual QA pass 1, admin-shell-18): the
     // mono `no budget column · no budget can be set` read as debug output.

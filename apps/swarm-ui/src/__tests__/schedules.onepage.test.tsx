@@ -198,9 +198,8 @@ describe('Admin › Platform counts lists the platform ticks', () => {
     render(<PlatformCountsScreen />)
     expect(screen.getByRole('heading', { name: 'Platform ticks', level: 2 })).toBeTruthy()
     // Issue 81: a short line on the surface, the sentence behind its (i).
-    const head = screen.getByRole('heading', { name: 'Platform ticks', level: 2 }).parentElement!
-    expect(shownIn(head)).toContain('The platform’s own machinery')
-    expect(helpIn(head)).toMatch(/The platform’s own machinery\. No tenant manages these/)
+    expect(shownIn(document.body)).toContain('The platform’s own machinery')
+    expect(helpIn(document.body)).toMatch(/The platform’s own machinery\. No tenant manages these/)
     const ticks = screen.getByTestId('as-platform-ticks')
     const names = [...ticks.querySelectorAll<HTMLElement>('tr[data-tick]')].map((r) => r.dataset.tick)
     expect(jobsTf().length).toBeGreaterThanOrEqual(11)

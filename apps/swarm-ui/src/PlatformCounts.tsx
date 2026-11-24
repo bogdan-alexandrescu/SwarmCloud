@@ -316,15 +316,7 @@ export function PlatformCountsScreen() {
         <h2 className="sc-h2" id="counts-now-title">Right now: agents in each state</h2>
         {/* SHORT ON THE SURFACE, WHAT THE RUN ADDS UP TO BEHIND ITS (i)
             (issue 81); the Run button carries the total. */}
-        <p className="sb-note">
-          A snapshot, read by the same Run
-          {runParts(admin, overPrice) === '' ? '.' : (
-            <>
-              {' '}
-              <InfoTip about="what the Run reads" tip={`A snapshot, read by the same Run${runParts(admin, overPrice)}.`} />
-            </>
-          )}
-        </p>
+        <SnapshotNote parts={runParts(admin, overPrice)} />
         {/* BOTH CARDS BEFORE THE FIRST RUN (archived issue 135), each with `not run` in its
             figure slot: the page has its shape before the press, and an empty
             page is not mistaken for a platform with nothing on it. They stay
@@ -437,6 +429,16 @@ function runParts(admin: boolean | null, over: OverTimePrice | null): string {
   const snapshots = `2 × ${STATE_COUNT}`
   if (over.total === null) return `: ${snapshots} of its reads, the rest Over time’s ~${over.perWorkspace} a workspace`
   return `: ${snapshots} reads, which with Over time’s ~${over.total} make ${admin === null ? 'an admin’s' : 'its'} ~${STATE_COUNT * 2 + over.total}`
+}
+
+/** Right now's note: short on the surface, what the Run adds up to behind its (i) (issue 81). */
+function SnapshotNote({ parts }: Readonly<{ parts: string }>) {
+  if (parts === '') return <p className="sb-note">A snapshot, read by the same Run.</p>
+  return (
+    <p className="sb-note">
+      A snapshot, read by the same Run <InfoTip about="what the Run reads" tip={`A snapshot, read by the same Run${parts}.`} />
+    </p>
+  )
 }
 
 /**
