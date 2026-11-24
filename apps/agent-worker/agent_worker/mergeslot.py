@@ -735,7 +735,7 @@ class SlotUse:
         assert not isinstance(self.slots, RemoteMergeSlots)
         try:
             woken = self.slots.wake(task_id)
-        except Exception as exc:  # noqa: BLE001 - the fallback instant wakes it anyway
+        except Exception as exc:  # the fallback instant wakes it anyway
             if _is_fence(exc):
                 raise
             woken = False

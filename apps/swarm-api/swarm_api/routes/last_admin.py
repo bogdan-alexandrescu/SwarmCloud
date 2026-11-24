@@ -289,7 +289,7 @@ def run(ctx: AppContext, apply: Callable[[Any], Any], *, tenant_id: str, subject
     except WorkspaceLeaveLastAdmin:
         audit_refusal(ctx, tenant_id=tenant_id, subject=subject, by=by, detail=detail)
         raise
-    except Exception as exc:  # noqa: BLE001 - only contention is re-raised as a retry
+    except Exception as exc:  # only contention is re-raised as a retry
         if not contended(exc):
             raise
         log.warning("last-admin guard contended tenant=%s", tenant_id)

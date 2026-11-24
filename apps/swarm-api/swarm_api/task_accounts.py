@@ -248,7 +248,7 @@ def read_account_events(
         )
         try:
             return [snap.to_dict() or {} for snap in query.stream()]
-        except Exception as exc:  # the tasks were read; only this reading failed
+        except Exception as exc:  # the tasks were read; only this reading failed  # noqa: BLE001
             return exc
 
     # The chunks are read AT ONCE (archived issue 2688, LOAD-SPEED): a 200-row page is seven

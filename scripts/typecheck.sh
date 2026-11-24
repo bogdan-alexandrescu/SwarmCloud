@@ -18,8 +18,8 @@
 # reportArgumentType and reportOptionalMemberAccess. Fixing them all first
 # would conflict with every open lane, so the baseline records today's errors
 # per (file, rule) and only an error beyond a file's count for that rule fails
-# -- the same per-file shape as ruff's BLE001 baseline in pyproject.toml. A
-# file the baseline does not name must be clean. scripts/lib/pyright_baseline.py
+# (ruff's BLE001 baseline had this per-file shape until issue 185 moved it to
+# an inline marker per site). A file the baseline does not name must be clean. scripts/lib/pyright_baseline.py
 # does the comparison and says why the identity is (file, rule), not the line.
 #
 # The configuration is [tool.pyright] in the root pyproject.toml (one place).

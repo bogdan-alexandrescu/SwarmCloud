@@ -121,7 +121,7 @@ def service_account_email(credentials: Any) -> str | None:
         email = getattr(credentials, "service_account_email", None)
         if _usable(email):
             return email
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         # Logged, never swallowed. A silent None here is indistinguishable from
         # "not running on GCP", and telling those apart is the whole diagnosis.
         log.warning("could not refresh credentials to learn their identity: %s", exc)
@@ -137,7 +137,7 @@ def service_account_email(credentials: Any) -> str | None:
         with urllib.request.urlopen(request, timeout=5) as response:
             value = response.read().decode().strip()
         return value if _usable(value) else None
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         log.warning("the metadata server did not name this identity: %s", exc)
         return None
 
@@ -256,7 +256,7 @@ class DelegatedCredentials(google.auth.credentials.Credentials):
 def _body(response: Any) -> str:
     try:
         return str(response.text)[:300]
-    except Exception:  # pragma: no cover - defensive
+    except Exception:  # pragma: no cover - defensive  # noqa: BLE001
         return "<unreadable>"
 
 
@@ -301,7 +301,7 @@ def delegate(
             import google.auth
 
             signer, _ = google.auth.default(scopes=[CLOUD_PLATFORM])
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.warning("could not obtain cloud-platform credentials to sign with: %s", exc)
             signer = credentials
 

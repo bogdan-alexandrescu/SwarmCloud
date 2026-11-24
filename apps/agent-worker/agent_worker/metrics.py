@@ -846,7 +846,7 @@ class ResourceSampler:
             meter = self._meter()
             self.usage.cpu_source = meter.source
             reading = meter.cumulative()
-        except Exception:
+        except Exception:  # noqa: BLE001
             reading = None
         if reading is None:
             return
@@ -885,7 +885,7 @@ class ResourceSampler:
     def _finish_cpu(self) -> None:
         try:
             consumed = self._meter().consumed()
-        except Exception:
+        except Exception:  # noqa: BLE001
             consumed = None
         if consumed is not None:
             self.usage.cpu_seconds = consumed
@@ -938,7 +938,7 @@ class ResourceSampler:
             self._origin = now
         try:
             cpu = self._meter().cumulative()
-        except Exception:
+        except Exception:  # noqa: BLE001
             cpu = None
         throttling = cgroup_cpu_throttling()
         memory = self._memory_now()
@@ -1059,7 +1059,7 @@ class ResourceSampler:
                         "memory_max_bytes": limit,
                     }
                 )
-        except Exception:
+        except Exception:  # noqa: BLE001
             return
 
     def drain_guard_kills(self) -> list[dict[str, Any]]:
@@ -1183,7 +1183,7 @@ def call_with_timeout(fn: Callable[[], Any], timeout_seconds: float, *, name: st
     def target() -> None:
         try:
             box["value"] = fn()
-        except BaseException as exc:  # handed to the caller below
+        except BaseException as exc:  # handed to the caller below  # noqa: BLE001
             box["error"] = exc
 
     thread = threading.Thread(target=target, daemon=True, name=name)
@@ -1294,7 +1294,7 @@ class CloudMonitoringExporter:
     def export(self, usage: ResourceUsage, labels: dict[str, str]) -> None:
         try:
             self._export(usage, labels)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._warn_once(exc, "build")
 
     def _export(self, usage: ResourceUsage, labels: dict[str, str]) -> None:
@@ -1303,7 +1303,7 @@ class CloudMonitoringExporter:
         # import of the same modules here.
         try:
             client = self._get_client()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._warn_once(exc, "client")
             return
 
@@ -1372,7 +1372,7 @@ class CloudMonitoringExporter:
                     self.timeout_seconds,
                     name=f"swarm-metrics-{write}",
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self._warn_once(exc, write)
                 if _timed_out(exc):
                     return
@@ -1387,7 +1387,7 @@ class CompositeExporter:
         for exporter in self._exporters:
             try:
                 exporter.export(usage, labels)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 # Never let telemetry failure change the attempt's outcome.
                 self._log.warning(
                     "metrics export failed",

@@ -109,7 +109,7 @@ def test_a_merge_that_resolves_a_workflow_file_its_own_way_is_still_a_workflow_p
     _git(origin["work"], "push", "-q", str(origin["remote"]), f"{lane}:refs/heads/side")
     try:
         _merge(origin["work"], main)
-    except Exception:  # noqa: BLE001 -- the conflict is the point
+    except Exception:  # noqa: BLE001, S110 -- the conflict is the point
         pass
     _write(origin["work"], WORKFLOW, "on: [push, pull_request]  # resolved")
     _git(origin["work"], "commit", "-q", "--no-edit")

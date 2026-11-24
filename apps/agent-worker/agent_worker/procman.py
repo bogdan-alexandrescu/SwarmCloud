@@ -184,7 +184,7 @@ class StreamCapture:
                     if self.on_chunk is not None:
                         try:
                             self.on_chunk(chunk)
-                        except Exception:
+                        except Exception:  # noqa: BLE001
                             self.on_chunk = None
                     room = head_limit - self.written
                     if room > 0:
@@ -214,7 +214,7 @@ class StreamCapture:
                                      tail_room=tail_room)
         try:
             source.close()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
 
     def _close_tail(
@@ -557,7 +557,7 @@ class ChildProcess:
             try:
                 if stream is not None and not stream.closed:
                     stream.close()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass
 
     def finish(self) -> ChildResult:
