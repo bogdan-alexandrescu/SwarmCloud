@@ -178,7 +178,7 @@ function Name({ a }: { a: PoolAccount }) {
 }
 
 /** Facts in a row, each its own: joined by ` · `. */
-function Facts({ of }: { of: readonly ReactNode[] }) {
+function Facts({ of }: { readonly of: readonly ReactNode[] }) {
   return (
     <>
       {of.map((f, i) => (

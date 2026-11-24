@@ -137,11 +137,12 @@ export function whyOf(
   }
   if (a.state === 'PAUSED') return <><span><b>Paused</b>{a.reason ? `: ${a.reason}` : ''}.</span> <span>Its owner resumes it</span></>
   if (a.state === 'DRAINING') {
+    const reason = a.reason ? ` (${a.reason})` : ''
     return (
       <>
         <b>Draining</b>: it takes no new agent
         {a.reason ? ` · ${a.reason}` : ''}{' '}
-        <InfoTip about="a draining account" tip={`Draining${a.reason ? ` (${a.reason})` : ''}: it serves the agents it holds and takes no new one`} />
+        <InfoTip about="a draining account" tip={`Draining${reason}: it serves the agents it holds and takes no new one`} />
       </>
     )
   }

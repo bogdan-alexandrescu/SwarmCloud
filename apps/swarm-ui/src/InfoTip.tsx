@@ -49,10 +49,10 @@ export function InfoTip({ about, tip, end = false }: { about: string; tip: strin
 /** What an action did or refused, as a page draws it: one short line, and the sentence in full behind its (i) (issue 81). */
 export interface Said {
   line: string
-  tip?: string | undefined
+  tip?: string
 }
 
-export function SaidLine({ said, about }: { said: Said; about: string }) {
+export function SaidLine({ said, about }: { readonly said: Said; readonly about: string }) {
   return (
     <>
       {said.line}

@@ -1158,7 +1158,8 @@ export function SheetHealth({ a, owned }: { a: PoolAccount; owned: boolean }) {
   const bands = limitedBands(h.events, h.limited_until, now)
   const until = h.status === 'limited' && h.limited_until !== null ? h.limited_until : null
   const lastBand = bands.filter((b) => b.window !== null).slice(-1)[0]
-  const extra = until === null ? undefined : `${lastBand ? `${windowWord(lastBand.window)} ` : ''}until ${utcAt(until, now)}`
+  const lastWord = lastBand ? `${windowWord(lastBand.window)} ` : ''
+  const extra = until === null ? undefined : `${lastWord}until ${utcAt(until, now)}`
   const readAt = h.observed_at ?? new Date(res.fetchedAt).toISOString()
   const why = h.status === 'reauth_needed' ? null : healthWhy(h, bands, now)
   const nothing = h.events.length === 0 && h.counts.last_7d !== null && sumOf(h.counts.last_7d) === 0

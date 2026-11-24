@@ -173,7 +173,7 @@ class Refusal {
   ) {}
 }
 
-function RefusalLine({ refusal }: { refusal: Refusal }) {
+function RefusalLine({ refusal }: { readonly refusal: Refusal }) {
   return (
     <p className="ur-small ur-bad" role="alert">
       {refusal.why !== null && (
@@ -378,7 +378,11 @@ export function QaTargetsScreen({
                 {all.length === 1 ? 'It files in another repository.' : 'They file in other repositories.'}{' '}
                 <InfoTip
                   about="where its QA targets file"
-                  tip={`${all.length === 1 ? 'The workspace’s one QA target files' : `The workspace’s ${all.length} QA targets file`} in other repositories.`}
+                  tip={
+                    all.length === 1
+                      ? 'The workspace’s one QA target files in other repositories.'
+                      : `The workspace’s ${all.length} QA targets file in other repositories.`
+                  }
                 />
               </EmptyState>
             )
@@ -521,11 +525,9 @@ export function needsOf(targets: QaTarget[]): QaNeed[] {
         : leg.host_state === 'pending' ? 'Its host waits for a platform admin’s approval.'
         : leg.host_state === 'revoked' ? 'A platform admin approves it again.'
         : why
-      const tip =
-        credential ? 'Its leg cannot run until a workspace admin sets it.'
-        : leg.host_state === 'pending' ? `${who} waits for a platform admin to approve its host. ${why}`
-        : why === body ? null
-        : why
+      let tip = why === body ? null : why
+      if (leg.host_state === 'pending') tip = `${who} waits for a platform admin to approve its host. ${why}`
+      if (credential) tip = 'Its leg cannot run until a workspace admin sets it.'
       out.push({ t, leg, title, body, tip, rest, credential })
     }
   }
@@ -1268,12 +1270,11 @@ function CredentialForm({
       // saved"). `qa_credential_link_invalid`'s message already ends "ask for
       // a new one", so that refusal is not told to ask twice.
       const why = asSentence(writeFailure(r.error))
+      const again = r.error.code === QA_LINK_INVALID ? null : 'The link is used; ask for a new one to try again.'
       setFailed(
-        !linkSpent(r)
-          ? new Refusal('Nothing was saved; the link still works.', 'Nothing was saved; the link still works, fix the field and save again.', why)
-          : r.error.code === QA_LINK_INVALID
-            ? new Refusal('The link is used.', null, why)
-            : new Refusal('The link is used.', 'The link is used; ask for a new one to try again.', why),
+        linkSpent(r)
+          ? new Refusal('The link is used.', again, why)
+          : new Refusal('Nothing was saved; the link still works.', 'Nothing was saved; the link still works, fix the field and save again.', why),
       )
       return
     }

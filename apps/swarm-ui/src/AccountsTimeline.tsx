@@ -363,8 +363,7 @@ function statusOf(a: PoolAccount, scope: string | null, names: ReadonlyMap<strin
       tone: 'bad',
       text: (
         <>
-          Skipped here: its secret could not be read{' '}
-          <InfoTip about="why it is skipped" tip="Skipped here: this workspace could not read its secret" />
+          Skipped here: its secret could not be read <InfoTip about="why it is skipped" tip="Skipped here: this workspace could not read its secret" />
         </>
       ),
     }
@@ -579,8 +578,7 @@ function Lane({
         <FreeLine x={freeX} />
         {a.observed_at === null ? (
           <span className="acct-tl-chip">
-            5-hour and 7-day: <b>first reading pending</b>{' '}
-            <InfoTip
+            5-hour and 7-day: <b>first reading pending</b> <InfoTip
               about="the first reading"
               tip="5-hour and 7-day: first reading pending. No bands until the broker reads its windows; it takes one agent until then"
             />
@@ -909,8 +907,7 @@ export function AccountsTimeline({
                       <span className="acct-dash">—</span>{' '}
                       {forecast.unmeasured.length > 0 ? (
                         <>
-                          not forecast: {forecast.unmeasured.map(accountName).join(', ')}{' '}
-                          <InfoTip
+                          not forecast: {forecast.unmeasured.map(accountName).join(', ')} <InfoTip
                             about="why it is not forecast"
                             tip={`not forecast: ${forecast.unmeasured.map(accountName).join(', ')} ${forecast.unmeasured.length === 1 ? 'has' : 'have'} no 7-day reading to take a pace from`}
                           />

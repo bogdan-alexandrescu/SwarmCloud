@@ -11,10 +11,11 @@ import {
   type ActionsSecretList,
   type ActionsSecretName,
 } from './api'
-import { Banner, Button, ButtonLink, Card, Chip, Dialog, TypedConfirm } from './components'
+import { Banner, Button, ButtonLink, Card, Dialog, TypedConfirm } from './components'
 import type { ApiError } from './fetch'
 import { InfoTip, SaidLine, type Said } from './InfoTip'
 import { UrRegion, useUrRead } from './RepositoriesParts'
+import { leadHelp, NAME_HELP, NoCreateNote, openRule, othersLine, readersOf, RuleChip, ruleWords } from './SecretsActionsWords'
 import { timeAgo } from './types'
 import './styles/keys.css'
 import './styles/secrets-actions.css'
@@ -89,60 +90,6 @@ function dropLinkToken(): void {
   window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
 }
 
-/** An environment's rule in the reader's words, short (a chip). */
-export function ruleWords(r: ActionsEnvironmentRule | null): string {
-  if (r === null) return 'rule not read'
-  if (!r.exists) return 'not on GitHub'
-  if (r.rule === 'main_only') return `${r.branch} only`
-  if (r.rule === 'protected_branches') return 'protected branches'
-  if (r.rule === 'custom_branches') return r.branches.length === 0 ? 'selected branches' : `branches: ${r.branches.map((b) => b.name).join(', ')}`
-  return 'any branch'
-}
-
-function RuleChip({ rule }: { rule: ActionsEnvironmentRule | null }) {
-  const tone = rule === null ? undefined : !rule.exists ? 'bad' : rule.main_only ? 'live' : 'park'
-  return <Chip tone={tone}>{ruleWords(rule)}</Chip>
-}
-
-/** What a name may be, behind the field's (i). */
-export const NAME_HELP = 'Letters, digits and _; not starting with a digit or GITHUB_. Never the value.'
-
-/** What the pane writes and reads, behind the lead's (i). */
-const leadHelp = (repository: string) =>
-  `Written into ${repository} on GitHub. SwarmCloud reads names and update times, never values, and keeps only the name, who set it and when.`
-
-/** SwarmCloud creates no environment: one short line, its sentence behind the (i). */
-function NoCreateNote() {
-  return (
-    <p className="sa-note">
-      Create environments on GitHub, then Check rule.{' '}
-      <InfoTip
-        about="creating an environment"
-        tip="SwarmCloud does not create environments yet: create one on GitHub, then Check rule reads its branch rule."
-      />
-    </p>
-  )
-}
-
-/** Who can read a secret written there, in one line. */
-export function readersOf(environment: string | null, rule: ActionsEnvironmentRule | null, repository: string): ReactNode {
-  if (environment === null) return <>Read by every workflow in {repository}.</>
-  const mainOnly = rule !== null && rule.main_only
-  const anyBranch = ruleWords(rule) === 'any branch'
-  return (
-    <>
-      Read by workflows in <b>{environment}</b>, {mainOnly ? `on ${rule.branch} only` : anyBranch ? 'from any branch' : 'by its rule'}.{' '}
-      <InfoTip
-        about="who reads it"
-        tip={
-          mainOnly
-            ? `Read by workflows that run in ${environment}, on ${rule.branch} only. SwarmCloud grants nothing further.`
-            : `Read by workflows that run in ${environment}, which ${anyBranch ? 'any branch' : `its rule (${ruleWords(rule)})`} can deploy to.`
-        }
-      />
-    </>
-  )
-}
 
 /** The API's reason as a sentence: capitalised, with its full stop. */
 function sentence(text: string): string {
@@ -495,11 +442,7 @@ function EnvironmentBlock({
           {open && (
             <>
               <span>
-                {env.rule.rule === 'any_branch'
-                  ? 'A workflow on any branch can read it.'
-                  : env.rule.rule === 'protected_branches'
-                    ? `Not ${env.rule.branch} alone: protected branches can deploy.`
-                    : `Not ${env.rule.branch} alone: selected branches can deploy.`}
+                {othersLine(env.rule)}
               </span>{' '}
               <InfoTip
                 about={`who reads ${env.environment}`}
@@ -882,10 +825,10 @@ function OneTimeForm({
       setFailedTip(spent ? `${name} was not set: the one-time link is used, expired or not yours. Open a new one-time form.` : null)
       return
     }
-    const created = r.status === 'ok' && r.data.created
+    const replaced = r.status === 'ok' && r.data.created ? '' : ', replacing its value'
     onDone({
-      line: `${name} was set${created ? '' : ', replacing its value'} · the value is not shown again`,
-      tip: `${name} was set in ${where}${created ? '' : ', replacing its value'}. The link is used up; the value is not shown again, here or anywhere.`,
+      line: `${name} was set${replaced} · the value is not shown again`,
+      tip: `${name} was set in ${where}${replaced}. The link is used up; the value is not shown again, here or anywhere.`,
     })
   }
 
@@ -950,15 +893,11 @@ function OneTimeForm({
               <input id={`${id}-confirm`} className="ur-search pk-input" value={typed} autoComplete="off" spellCheck={false}
                 autoCapitalize="off" autoCorrect="off" aria-describedby={`${id}-confirm-why`} onChange={(e) => setTyped(e.target.value)} />
               <span id={`${id}-confirm-why`} className="jb-note">
-                {rule === null
-                  ? 'Rule not read: treated as open.'
-                  : ruleWords(rule) === 'any branch' ? 'A workflow on any branch can read it.' : `Not ${rule.branch} alone: its rule lets others deploy.`}
+                {openRule(rule, environment).line}
               </span>
               <InfoTip
                 about={`who reads ${environment}`}
-                tip={rule === null
-                  ? `${environment}'s branch rule was not read, so it is treated as open to any branch.`
-                  : `${environment} lets ${ruleWords(rule) === 'any branch' ? 'any branch' : ruleWords(rule)} deploy: a workflow there can read this secret.`}
+                tip={openRule(rule, environment).tip}
               />
             </>
           )}
