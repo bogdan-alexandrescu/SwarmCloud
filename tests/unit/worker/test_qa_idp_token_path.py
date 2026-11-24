@@ -59,6 +59,7 @@ def _args(**over: Any) -> dict[str, Any]:
         "credential": {"username": "qa-" + secrets.token_hex(4) + "@example.com",
                        "password": "pw-" + secrets.token_hex(12)},
         "idp_token_path": TOKEN_PATH,
+        "idp_token_origin": IDP,
     }
     args.update(over)
     return args
@@ -198,7 +199,7 @@ def test_a_top_frame_post_to_the_token_path_still_leaves_the_target():
 
 
 def test_a_target_with_no_token_path_is_unchanged():
-    target = _signed_in(idp_token_path=None)
+    target = _signed_in(idp_token_path=None, idp_token_origin=None)
     # MUTATION: let any POST to the extra origin through after sign-in and this continues.
     assert _post(target, TOKEN_URL).action == "refuse"
     assert _post(target, f"{ORIGIN}/graphql").action == "continue"
@@ -337,9 +338,11 @@ def _answer(**over: Any) -> dict[str, Any]:
 
 
 def test_the_worker_carries_the_token_path_to_the_gate():
-    args = worker_qt.handoff_args(_answer(idp_token_path=TOKEN_PATH))
+    args = worker_qt.handoff_args(_answer(idp_token_path=TOKEN_PATH, idp_token_origin=IDP))
     # MUTATION: leave `idp_token_path` out of `handoff_args` and the gate never learns it.
     assert args["idp_token_path"] == TOKEN_PATH
+    # MUTATION: leave `idp_token_origin` out of `handoff_args` and the gate refuses the path.
+    assert args["idp_token_origin"] == IDP
     # And the gate takes what the worker hands it.
     target = gate_qt.QaTarget(lambda e, f: None)
     target.handle(args)
@@ -348,4 +351,57 @@ def test_the_worker_carries_the_token_path_to_the_gate():
 
 def test_the_worker_adds_no_token_path_swarm_api_did_not_serve():
     # MUTATION: default the field to "/" or "" and the gate refuses every hand-off, or allows one.
-    assert "idp_token_path" not in worker_qt.handoff_args(_answer())
+    args = worker_qt.handoff_args(_answer())
+    assert "idp_token_path" not in args
+    assert "idp_token_origin" not in args
+
+
+# --------------------------------------------------------------------------
+# The origin the path is on, served by name (epic 21)
+# --------------------------------------------------------------------------
+
+
+def test_the_gate_binds_the_token_url_to_the_named_origin_when_it_is_not_first():
+    target = _target(origins=[ORIGIN, ELSEWHERE, IDP])
+    # MUTATION: bind to the first origin after the base and the path lands on the other extra origin.
+    assert target.idp_token_url == TOKEN_URL
+    target.signing_in = True
+    target.finished(gate_qt.STATE_SIGNED_IN)
+    assert target.judge("POST", TOKEN_URL, top_document=False).action == "continue"
+    assert target.judge("POST", f"{ELSEWHERE}{TOKEN_PATH}", top_document=False).action == "refuse"
+
+
+@pytest.mark.parametrize("named", [
+    ORIGIN,                       # the base origin
+    ELSEWHERE,                    # not one of the served origins
+    "http://sso.example.net",     # not https
+    "https://sso.example.net/x",  # not an origin
+    7,
+    None,                         # served without the origin: an older swarm-api is not trusted to order
+])
+def test_the_gate_refuses_a_token_path_whose_named_origin_is_not_a_served_extra_origin(named):
+    args = _args(origins=[ORIGIN, IDP], idp_token_origin=named)
+    if named is None:
+        args.pop("idp_token_origin")
+    target = gate_qt.QaTarget(lambda e, f: None)
+    # MUTATION: fall back to `extra[0]` (or accept the named origin unchecked) and this is taken.
+    with pytest.raises(gate_qt.QaTargetRefused) as caught:
+        target.handle(args)
+    assert caught.value.code == "idp_token_path"
+    assert not target.armed
+
+
+def test_the_gate_refuses_a_named_origin_served_without_a_path():
+    target = gate_qt.QaTarget(lambda e, f: None)
+    args = _args(idp_token_origin=IDP)
+    args.pop("idp_token_path")
+    # MUTATION: accept the origin alone and a hand-off carries a field nothing bounds.
+    with pytest.raises(gate_qt.QaTargetRefused) as caught:
+        target.handle(args)
+    assert caught.value.code == "idp_token_path"
+
+
+def test_a_named_origin_written_with_443_binds_the_bare_url():
+    target = _target(origins=[ORIGIN, IDP + ":443"], idp_token_origin=IDP + ":443")
+    # MUTATION: keep `:443` and the URL never equals what the browser sends.
+    assert target.idp_token_url == TOKEN_URL

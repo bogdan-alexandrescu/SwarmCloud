@@ -87,7 +87,8 @@ by `QaTarget.judge`:
 * ONE EXCEPTION, the IdP token refresh (QA-IDP-POST; the owner decided
   2026-10-23, part of archived issue 2067): a target whose platform admin approved an
   `idp_token_path` with its `extra_origin` has exactly `POST
-  <extra_origin><idp_token_path>` continued, compared as the whole URL
+  <extra_origin><idp_token_path>` continued (the origin as swarm-api names
+  it, `idp_token_origin`, never a position in `origins`: epic 21), compared as the whole URL
   (`idp_token_url`: no query, no fragment, no other port, case or encoding),
   from the moment the gate's own sign-in begins (`sign_in_begun`) until the
   wipe, WHATEVER THAT SIGN-IN'S VERDICT: never before it begins, never after
@@ -388,7 +389,10 @@ class QaTargetRefused(ValueError):
 
 
 def origin_of(url: Any) -> str | None:
-    """`scheme://host[:port]`, lower case, or None for a URL with no network origin."""
+    """`scheme://host[:port]`, lower case, or None for a URL with no network
+    origin. https's own port written out (`:443`) is dropped: a browser never
+    writes it, so a served origin stored with it (a target registered before
+    swarm-api normalised it, epic 21) is read as the bare origin it is."""
     if not isinstance(url, str):
         return None
     try:
@@ -402,7 +406,7 @@ def origin_of(url: Any) -> str | None:
         port = parts.port
     except ValueError:
         return None
-    if port is not None:
+    if port is not None and not (parts.scheme == "https" and port == 443):
         netloc = f"{netloc}:{port}"
     return f"{parts.scheme}://{netloc}"
 
@@ -1013,6 +1017,8 @@ def _parse(args: Mapping[str, Any]) -> dict[str, Any]:
     if (not isinstance(origins, list) or not 1 <= len(origins) <= MAX_ORIGINS
             or not all(isinstance(o, str) and _ORIGIN.fullmatch(o) for o in origins)):
         raise QaTargetRefused("origins")
+    # Each read as `origin_of` reads a request's (`:443` dropped), once each.
+    origins = list(dict.fromkeys(origin_of(o) for o in origins))
     base_url = args.get("base_url")
     if not isinstance(base_url, str) or origin_of(base_url) not in origins \
             or not base_url.startswith("https://"):
@@ -1040,8 +1046,8 @@ def _parse(args: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(mutating, bool):
         raise QaTargetRefused("mutating")
     sign_in = _parse_sign_in(args.get("sign_in"), origins)
-    token_path, token_url = _parse_idp_token_path(args.get("idp_token_path"), origins,
-                                                  origin_of(base_url), sign_in["kind"])
+    token_path, token_url = _parse_idp_token_path(args.get("idp_token_path"), args.get("idp_token_origin"),
+                                                  origins, origin_of(base_url), sign_in["kind"])
     credential = None
     if sign_in["kind"] == "own_login":
         raw = args.get("credential")
@@ -1061,25 +1067,31 @@ def _parse(args: Mapping[str, Any]) -> dict[str, Any]:
             "challenge_bypass": _parse_bypass(args.get("challenge_bypass"))}
 
 
-def _parse_idp_token_path(raw: Any, origins: list[str], base_origin: str | None,
+def _parse_idp_token_path(raw: Any, named: Any, origins: list[str], base_origin: str | None,
                           sign_in_kind: str) -> tuple[str | None, str | None]:
     """(path, the one URL it allows), checked again (QA-IDP-POST): swarm-api
     took it only from a platform admin's approval with the extra origin, and
-    the hand-off crossed the worker. The extra origin is the first approved
-    origin that is not the base's: swarm-api serves the login's
-    `extra_origin` there, before any other approved `extra_origins`, and
-    serves the path only while that origin is approved. With none, or a
-    target that never signs in, there is nothing to bound it, and it is
-    refused."""
+    the hand-off crossed the worker. The path is put on the origin swarm-api
+    names beside it, `idp_token_origin` (the login's `extra_origin`, served
+    only while it is approved), never on a position in `origins` (epic 21:
+    binding it to the first origin after the base trusted the list's order).
+    That origin must be https, one of the served `origins` and not the base
+    one; anything else, a path served without it, an origin served without a
+    path, or a target that never signs in has nothing to bound it, and is
+    refused. A path with no named origin is refused, not read the old way:
+    the worker and swarm-api ship from one release, so a swarm-api that
+    serves the path serves its origin too."""
     if raw is None:
+        if named is not None:
+            raise QaTargetRefused("idp_token_path")
         return None, None
     if (not isinstance(raw, str) or len(raw) > MAX_IDP_TOKEN_PATH or not _IDP_TOKEN_PATH.fullmatch(raw)
             or any(segment in (".", "..") for segment in raw.split("/"))):
         raise QaTargetRefused("idp_token_path")
-    extra = [o for o in origins if o != base_origin]
-    if sign_in_kind != "own_login" or not extra:
+    origin = origin_of(named) if isinstance(named, str) and _ORIGIN.fullmatch(named) else None
+    if sign_in_kind != "own_login" or origin is None or origin == base_origin or origin not in origins:
         raise QaTargetRefused("idp_token_path")
-    return raw, f"{extra[0]}{raw}"
+    return raw, f"{origin}{raw}"
 
 
 def _parse_bypass(raw: Any) -> tuple[str, str, str] | None:

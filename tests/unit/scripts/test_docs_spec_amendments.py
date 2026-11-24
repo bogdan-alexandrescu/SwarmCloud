@@ -206,15 +206,15 @@ def test_the_runtime_image_runs_as_a_single_non_root_user():
 
 
 def test_lease_account_assigns_through_the_account_broker():
-    """Worker._lease_account leases by calling self._account_broker.assign(...)."""
-    lifecycle = "apps/agent-worker/agent_worker/lifecycle.py"
-    assert "self._account_broker.assign(" in _cited_symbol(lifecycle, "Worker._lease_account")
+    """AccountPoolMixin._lease_account leases by calling self._account_broker.assign(...)."""
+    accountpool = "apps/agent-worker/agent_worker/accountpool.py"
+    assert "self._account_broker.assign(" in _cited_symbol(accountpool, "AccountPoolMixin._lease_account")
 
 
 def test_account_credential_env_builds_env_from_the_account():
-    """Worker._account_credential_env derives the child's env via credential_env_from_account."""
-    lifecycle = "apps/agent-worker/agent_worker/lifecycle.py"
-    assert "credential_env_from_account(" in _cited_symbol(lifecycle, "Worker._account_credential_env")
+    """AccountPoolMixin._account_credential_env derives the child's env via credential_env_from_account."""
+    accountpool = "apps/agent-worker/agent_worker/accountpool.py"
+    assert "credential_env_from_account(" in _cited_symbol(accountpool, "AccountPoolMixin._account_credential_env")
 
 
 def test_the_supervised_run_loop_checkpoints_periodically():

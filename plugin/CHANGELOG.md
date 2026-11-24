@@ -6,6 +6,17 @@ tags the swarm-mcp bridge `sc-v<version>` only when that version moves
 so a change to the plugin or its bridge reaches a session only with an entry
 here.
 
+## 0.5.91 (2026-11-24)
+
+The setup command tells a plugin-only teammate how to get `sc` before
+`sc login`.
+
+* `/sc:setup` tells the person to run the sign-in command exactly as the
+  tool's `sign-in required` answer spells it, and, where that is a bare
+  `sc login`, that `sc` comes from the release's `install.sh`: the plugin
+  alone puts nothing on PATH, so a bare `sc` is not found (K9 of the
+  proof-install runbook's known disagreements). The bridge is unchanged.
+
 ## 0.5.90 (2026-11-24)
 
 Opt-in brief templates for the three common lanes.
