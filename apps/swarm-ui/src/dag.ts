@@ -192,8 +192,8 @@ export function shapeOf(steps: readonly WorkflowStep[]): DagShape {
 //
 //   * A WIDE FAN-OUT NOW PUSHES THE CANVAS SIDEWAYS. Five parallel steps at
 //     NODE_W each is wider than any card on this page, and `.wf-canvas-wrap`
-//     scrolls for exactly that (and is pinned to, by
-//     test_the_dag_fills_the_width_it_is_given). Scaling a fan down to fit
+//     scrolls for exactly that (and a test pins the DAG to fill the width it
+//     is given). Scaling a fan down to fit
 //     turns the step names into texture, which is the one thing a node may not
 //     become. Width is the axis that gives.
 //   * A CHAIN NOW FITS A PHONE. The commonest shape in this product is a chain,
@@ -435,7 +435,7 @@ export function stripSavingAt(tier: ZoomTier): number {
 // SO THE NODE SHEDS FIELDS INSTEAD OF SHRINKING. The ux plan's option 1 (§1.1)
 // is "the canvas scales to the column and nodes shed fields as they shrink",
 // and the first half of that sentence is the half this implementation refuses:
-// scaling shrinks type, `typescale.test.ts` holds a floor under the type, and
+// scaling shrinks type, the type-scale test holds a floor under the type, and
 // the owner has twice said this console is hard to read. A node scaled to fit
 // is texture. A node that has stopped saying which runner profile it used is
 // still a node.
@@ -2065,7 +2065,7 @@ function byBarycentre(level: readonly WorkflowStep[], neighbours: (s: WorkflowSt
  * its children's), `sweeps` times, and keep the best order seen -- which is the
  * listed order whenever no sweep beats it. Deterministic, and O(sweeps × steps ×
  * levels) plus the crossing count; at the server's 50-step cap it is about a
- * millisecond (held under 5 ms by `workflow.gr1.test.tsx`).
+ * millisecond (held under 5 ms by a workflow layout test).
  */
 export function orderLevels(levels: readonly (readonly WorkflowStep[])[], sweeps = 4): WorkflowStep[][] {
   let best = levels.map((lv) => [...lv])

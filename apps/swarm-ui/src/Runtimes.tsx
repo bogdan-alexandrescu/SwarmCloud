@@ -660,7 +660,7 @@ function RuntimeCard({
             off over a credential its provider refused, which is a failure and
             not a choice. (No profile is named here: this file may hold no
             name from the frozen catalogue, comments included --
-            test_runtimes_screen.py reads it whole.) */}
+            the runtimes screen test reads it whole.) */}
         {/* THE SLOT HOLDS ONLY THE CHIP (archived issue 126). An available runtime printed
             its resolved backend here, a second copy of the card's own `runs on`
             row a few lines down, so the head said one fact twice and the
@@ -1008,7 +1008,7 @@ export function Credential({ runtime }: { runtime: Runtime }) {
        (`demo-` / `vendor`) and the flag broke mid-phrase (`any` on one line,
        `of` alone on the next, with `one` squeezed out of view). Both were
        visible on the shipped Runtimes screen at 1440x900 and neither was a
-       gate failure -- `spacing.test.tsx` is jsdom and has no layout engine
+       gate failure -- the spacing test is jsdom and has no layout engine
        (§0.3), so nothing in the repository could see it.
 
        The wrapper makes the whole credential ONE flex item whose contents lay
@@ -1124,7 +1124,7 @@ function Sizing({
                     count, so two agents of different classes can cost the same
                     and two of the same class can cost double one of another.
                     NO CLASS IS NAMED IN THIS COMMENT, and that is not style:
-                    `tests/unit/control_plane/test_runtimes_screen.py` greps this
+                    the runtimes screen test greps this
                     file for the frozen catalogue's entries and fails on one,
                     because every value on this screen has to come from the
                     response or a resized class renders its old figure forever.

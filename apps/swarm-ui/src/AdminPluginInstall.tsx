@@ -24,7 +24,7 @@
  * fixed code: the sentence drawn is this console's own for that code, never
  * text from the archive. `INTAKE_REFUSALS` holds both tables, swarm-api's
  * (`pluginstore.REFUSALS`) and the job's (`plugin_intake.refusals`), and
- * adminPlugins.test.tsx holds it equal to them.
+ * a plugins test holds it equal to them.
  *
  * Once pinned, the preview is the stored version itself (`GET
  * .../installs/{id}/versions`): what the intake read, not what was typed.
@@ -61,7 +61,7 @@ export const INTAKE_POLL_MS = 2000
 /**
  * Every refusal, by its fixed code: swarm-api's `pluginstore.REFUSALS` and
  * the intake job's `plugin_intake.refusals.REFUSALS`, word for word (the two
- * agree where they share a code). adminPlugins.test.tsx reads both Python
+ * agree where they share a code). A plugins test reads both Python
  * tables and fails when this one differs.
  */
 export const INTAKE_REFUSALS: Readonly<Record<string, string>> = {

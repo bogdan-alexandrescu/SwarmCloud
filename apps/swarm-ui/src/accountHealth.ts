@@ -155,7 +155,7 @@ export function limitedBands(
 // ---------------------------------------------------------------------------
 //
 // THE RULE, written down because it is the console's (mock-up D, "What it
-// reads"), and tested in accountHealth.test.ts:
+// reads"), and held by a test:
 //
 //   1. Events are taken oldest first, from the record's last 50.
 //   2. A refusal at assignment with NO window is the broker withholding an

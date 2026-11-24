@@ -11,7 +11,7 @@
  * part that can be chosen, so it is the part that is cut: it shrinks and ends
  * in an ellipsis while the email keeps its full width. A name is at most 64
  * characters (`display_names.check`), and a 64-character name in a narrow box
- * still leaves the email whole -- the case `person.name.test.tsx` renders.
+ * still leaves the email whole -- the case a test renders.
  *
  * The styles are inline so the rule travels with the component into every
  * page that prints a person, whatever stylesheet that page loads. The value is

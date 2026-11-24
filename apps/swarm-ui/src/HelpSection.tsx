@@ -30,7 +30,7 @@ export { helpPageOf } from './helpPage'
  * curated subset -- the same record the cards read, walked in order. That is
  * the property the brief asked for: a topic cannot exist in a card and be
  * missing from this page, because there is only one list. A `#help/<id>` link
- * from a card is therefore never dead, and `tests/help.test.ts` asserts it for
+ * from a card is therefore never dead, and a help test asserts it for
  * every card in the tree.
  *
  * Every figure and every enum member on this page is READ from the module that

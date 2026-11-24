@@ -21,7 +21,7 @@ import type { TaskEvent } from './types'
  * carries none is proof the page ends before the run did.
  *
  * `cancel_requested` is deliberately absent: a request is not an ending.
- * tests/unit/control_plane/test_cancel_request_is_not_a_cancel.py asserts
+ * A guard test asserts
  * this set against the frozen terminal states.
  */
 export const TERMINAL_EVENTS: ReadonlySet<string> = new Set([

@@ -7,8 +7,8 @@
 //
 //   uv run python scripts/gen_api_types.py
 //
-// tests/unit/scripts/test_api_types_drift.py fails while this file differs
-// from what that command writes.
+// An offline drift test fails while this file differs from what that
+// command writes.
 
 /**
  * Register a Claude subscription or a ChatGPT plan into the CALLER's pool.

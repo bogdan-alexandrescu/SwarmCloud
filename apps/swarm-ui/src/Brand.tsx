@@ -337,7 +337,7 @@ export function classifyEnvironment(
  * sentence case like every other label -- `Dev`, `Local`. The PRODUCTION
  * banner and ENVIRONMENT UNKNOWN keep their capitals, because on those two the
  * capitals are a safety signal, not typography: they are the same two kinds
- * that draw the bar, and `brand.test.tsx` holds the two channels together.
+ * that draw the bar, and the brand tests hold the two channels together.
  */
 export interface EnvTreatment {
   /** Modifier class on the badge. */
@@ -428,7 +428,7 @@ export function envTreatment(env: Environment): EnvTreatment {
  *
  * NOT RENDERED BY THE FRAME SINCE THE REBRAND: the Sky spine draws its own
  * pill from the same `envTreatment`. The badge and its `.brand-env` rules stay
- * while tests/unit/control_plane/test_ui_contrast.py measures
+ * while the UI contrast test measures
  * `.brand-env.is-unknown > span` by name; re-pointing that gate at the spine's
  * pill is what lets both go.
  */

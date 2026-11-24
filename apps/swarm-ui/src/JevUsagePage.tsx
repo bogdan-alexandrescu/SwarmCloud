@@ -15,7 +15,7 @@
 //
 // BREAK IT: print $0.00 without a rate, drop a skip's reason, or sum the
 // table's rows from a different field than the total -- a case in
-// jevusage.page.test.tsx turns red.
+// the page test turns red.
 
 import { Card, Dash, Table, UsageBar, type Column } from './components'
 import type { TopicId } from './help'

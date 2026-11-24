@@ -74,8 +74,8 @@ HEADER = f"""\
 //
 //   {REGENERATE}
 //
-// tests/unit/scripts/test_api_types_drift.py fails while this file differs
-// from what that command writes.
+// An offline drift test fails while this file differs from what that
+// command writes.
 """
 
 IDENTIFIER = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")

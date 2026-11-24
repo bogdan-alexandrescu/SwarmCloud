@@ -699,7 +699,7 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
       return rest.toString() === '' ? path : `${path}?${rest.toString()}`
     }
     // The run's page: the worker's issue comment links here (swarm_api
-    // `run_console_url`, held to this line by test_issue_writeback.py).
+    // `run_console_url`, held to this line by the issue write-back test).
     if (run !== null && run !== '') return `/runs/${encodeURIComponent(run)}`
   }
   // One schedule rides on the list's query as `schedule=<id>`: `/automate/schedules/<id>`.

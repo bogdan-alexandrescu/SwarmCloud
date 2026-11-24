@@ -71,7 +71,7 @@ function ApiKeysPage({ nav }: { nav: ReactNode }) {
 }
 
 export function LlmProvidersScreen({ sub }: { sub: LlmSubPage }) {
-  // HEADED WITH THE TAB'S OWN WORDS (test_nav_headings_agree.py), the strip
+  // HEADED WITH THE TAB'S OWN WORDS (a nav-headings guard test holds it), the strip
   // under the head as the picked direction and Pools draw it. ONE HEAD A PAGE
   // (qa.head Q2/Q10): on Plans the table's `Screen` head is the page's,
   // titled "LLM Providers", with its refresh and its age. `Screen` draws the

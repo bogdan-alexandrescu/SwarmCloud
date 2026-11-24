@@ -134,7 +134,7 @@ export function CapSeg({ view }: { view: 'ceilings' | 'profiles' }) {
         label="Pools views"
         value={view}
         options={[
-          // JSX labels: test_nav_headings_agree.py reads `>By runner profile<`
+          // JSX labels: the nav-headings test reads `>By runner profile<`
           // out of this file as the in-page strip's text.
           { key: 'ceilings', label: <>Ceilings</>, href: '#capacity/pools' },
           { key: 'profiles', label: <>By runner profile</>, href: '#capacity/profiles' },
