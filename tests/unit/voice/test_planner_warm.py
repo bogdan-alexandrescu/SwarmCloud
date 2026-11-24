@@ -146,12 +146,17 @@ class Warm(World):
         self.warm_kw = warm
         self.brief_reply: httpx.Response | None = None
         self._n = 0
+        #: Called once, at the turn's next call to swarm-api.
+        self.on_api = None
 
     def another(self) -> SessionGrant:
         self.grants.append(_grant())
         return self.grants[-1]
 
     def swarm_api(self, request: httpx.Request) -> httpx.Response:
+        if self.on_api is not None:
+            told, self.on_api = self.on_api, None
+            told()
         if self.brief_reply is not None and request.url.path.endswith("/brief"):
             return self.brief_reply
         session = (request.headers.get(SESSION_HEADER) or "/").split("/")[-1]
@@ -353,6 +358,22 @@ def test_a_turn_running_when_the_session_ends_or_pauses_finishes_then_releases(w
 
     _run(world, scenario)
     _released(world)
+
+
+@pytest.mark.parametrize("how", ["end", "pause"])
+def test_a_session_that_ends_or_pauses_before_its_turn_has_leased_keeps_nothing(world, how):
+    async def scenario(planner):  # noqa: ANN001, ANN202
+        session = world.grants[0].session_id
+        world.on_api = ((lambda: planner.forget(session)) if how == "end"
+                        else (lambda: planner.cool(session, "paused")))
+        assert (await _ask(planner, world)).spoken.startswith("Warm answer.")
+        await _until(lambda: world.count(RELEASE) == 1)
+        _released(world)
+        # The turn after a wake is kept warm again.
+        await _ask(planner, world)
+        assert world.launcher.children[-1].alive and world.count(RELEASE) == 1
+
+    _run(world, scenario)
 
 
 def test_a_turn_out_of_time_says_so_as_today_and_holds_nothing(world):
