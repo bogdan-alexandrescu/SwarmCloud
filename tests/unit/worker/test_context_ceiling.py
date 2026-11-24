@@ -562,8 +562,9 @@ def test_a_ceiling_stop_remembers_the_session_it_ended(ctx, monkeypatch):
     private = ctx.work_dir.parent / "private"
     private.mkdir()
     monkeypatch.setenv(SESSION_FILE_ENV, str(private / "session.json"))
-    _plan(ctx, {"contexts": [50_000, 210_000, 220_000], "pause": 0.5}, SMALL)
-    run_cli_agent(ctx, _spec())
+    _plan(ctx, {"contexts": [50_000, 210_000, 220_000, 230_000], "pause": 0.5}, SMALL)
+    out = run_cli_agent(ctx, _spec())
+    assert len(out["context_ceiling"]["stops"]) == 1
 
     state = json.loads((private / ceiling.STATE_NAME).read_text())
     assert state["handed_off_sessions"] == ["sess-0000-abcdef"]
