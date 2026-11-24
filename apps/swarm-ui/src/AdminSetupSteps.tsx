@@ -1954,7 +1954,7 @@ export function SendToTeam({ state }: { state: SetupState }) {
         <Facts
           items={[
             { state: 'done', name: 'Console', text: `https://${hostname}` },
-            { state: 'done', name: 'Then', text: 'sc login, then /sc:submit in Claude Code' },
+            { state: 'done', name: 'Then', text: 'sc login, then /sc run --issue owner/repo#N' },
             { state: 'done', name: 'Day two', text: 'Admin › Setup › Health' },
           ]}
         />
