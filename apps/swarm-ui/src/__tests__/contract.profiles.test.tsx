@@ -277,7 +277,7 @@ describe('the fixture build serves dispatch blocks the API could have sent', () 
     const page = await actual.loadTasks()
     expect(page.status).toBe('ok')
     const tasks = page.status === 'ok' ? page.data.tasks : []
-    const blocks = tasks.map((t) => t.dispatch).filter((d): d is Record<string, unknown> => typeof d === 'object' && d !== null)
+    const blocks = tasks.map((t): unknown => t.dispatch).filter((d): d is Record<string, unknown> => typeof d === 'object' && d !== null)
     expect(blocks.length).toBeGreaterThan(0)
     for (const d of blocks) {
       expect(sorted(Object.keys(d))).toEqual(sorted(DISPATCH.task_dispatch_keys))
