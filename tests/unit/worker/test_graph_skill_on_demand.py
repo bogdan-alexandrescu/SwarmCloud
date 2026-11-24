@@ -227,7 +227,8 @@ def test_a_graph_on_step_gets_the_skill_not_the_ten_tools(monkeypatch, tmp_path,
     # The skill's moment, then the standing paragraphs the step has (the
     # saved-output note), in the one flag (2026-11-23).
     assert system == "\n\n".join([claude_code.GRAPH_SKILL_SYSTEM_NOTE,
-                                   claude_code.SAVED_OUTPUT_NOTE])
+                                   claude_code.SAVED_OUTPUT_NOTE,
+                                   claude_code.SUBAGENT_NOTE])
     assert len(_hint_hooks(_settings(seen))) == 1
 
 
@@ -241,6 +242,7 @@ def test_the_tools_shape_is_batch_two_exactly(monkeypatch, tmp_path):
     assert claude_code.GRAPH_FIRST_NOTE not in seen["prompt"]
     assert _system(seen) == "\n\n".join([claude_code.GRAPH_SYSTEM_NOTE,
                                           claude_code.SAVED_OUTPUT_NOTE,
+                                          claude_code.SUBAGENT_NOTE,
                                           claude_code.GRAPH_FIRST_NOTE])
     assert not _skill(tmp_path).exists()
     assert _hint_hooks(_settings(seen)) == []
@@ -255,7 +257,8 @@ def test_a_graph_off_step_gets_no_skill_and_no_hint_and_clears_an_old_one(monkey
     assert _hint_hooks(_settings(seen)) == []
     # No graph moment: the system prompt holds only the standing paragraphs
     # (2026-11-23), none of them about the graph.
-    assert _system(seen) == claude_code.SAVED_OUTPUT_NOTE
+    assert _system(seen) == "\n\n".join([claude_code.SAVED_OUTPUT_NOTE,
+                                          claude_code.SUBAGENT_NOTE])
 
 
 def test_the_skill_costs_a_fraction_of_the_loaded_tools_every_turn():

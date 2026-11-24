@@ -454,6 +454,21 @@ EXPLORATION_CHILDREN_CLAUSE = (
     "\"haiku\" rather than reading the tree yourself"
 )
 
+#: When a sub-agent (the CLI's Agent tool) is worth starting (the owner's
+#: "Shorter sessions" plan, wave 3): a read of 30 days of task records on
+#: 2026-11-23 put sub-agent spend at about 15% of recorded cost. A standing
+#: paragraph, so it rides the system prompt once per session. It steers and
+#: caps nothing: a cap is decided on the scorecard's measure
+#: (scripts/lib/scorecard.py `subagent_share_by_role`).
+SUBAGENT_NOTE = (
+    "Sub-agents: start one for a broad search across many files or for "
+    "independent work whose full output you do not need, only its conclusion. "
+    "Do it yourself instead for a lookup of a known target, a handful of tool "
+    "calls or a check you could run yourself: there a sub-agent costs more than "
+    "it saves. When you start one, brief it with the goal and what you have "
+    "already ruled out."
+)
+
 #: AGENTS-USE-TOOLS (owner's choice, 2026-11-02; part of archived issue 2688). The first
 #: experiment batch offered `swarm-graph` in all 42 steps with code
 #: intelligence on and no agent called it: its tools sat behind the CLI's
@@ -2188,6 +2203,10 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     # scratch note.
     if ctx.repo_dir is not None:
         standing.append(SAVED_OUTPUT_NOTE)
+    # When a sub-agent is worth starting: every repository step, after the
+    # saved-output note (SUBAGENT_NOTE).
+    if ctx.repo_dir is not None:
+        standing.append(SUBAGENT_NOTE)
     # The graph, loaded up front, and what to ask it first (AGENTS-USE-TOOLS):
     # only when it is registered below.
     if (graph_snapshot or graph_served) and shape == GRAPH_SHAPE_TOOLS:
