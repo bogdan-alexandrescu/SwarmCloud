@@ -2713,7 +2713,11 @@ class Store:
             state = str(data.get("state") or "")
             if state in {s.value for s in TERMINAL_STATES}:
                 return False
-            if as_datetime(data.get("pause_requested_at")) == paused_at:
+            try:
+                mirror = as_datetime(data.get("pause_requested_at"))
+            except (TypeError, ValueError):
+                mirror = None   # unreadable: rewritten with this pause's time
+            if mirror == paused_at:
                 return True
             now = self._now()
             txn.update(ref, {"pause_requested_at": paused_at})
