@@ -61,6 +61,16 @@ And one about a cancel nobody honoured, on either backend:
                        task CANCELLED in one transaction (archived issue 627;
                        `detect_cancel_overdue`)
 
+And its twin, about a workflow pause nobody honoured:
+
+    pause overdue      the step's workflow was paused (or its lease, if
+                       newer, created) longer ago than
+                       `pause_enforce_after_seconds` and its current
+                       attempt's execution is still active -> terminate it
+                       through the backend, then fence, release and write
+                       READY in one transaction, where the scheduler parks
+                       it WORKFLOW_PAUSED (issue 7; `detect_pause_overdue`)
+
 And one about a worker that ended its task and not its attempt:
 
     lost after finish  the task is terminal at the attempt's generation, the
@@ -167,6 +177,10 @@ class FindingKind(str, Enum):
     #: ago and whose current attempt's execution is still active: see
     #: `detect_cancel_overdue` (archived issue 627).
     CANCEL_OVERDUE = "cancel_overdue"
+    #: A step of a paused workflow whose current attempt's execution is still
+    #: active more than `pause_enforce_after_seconds` after the pause (or after
+    #: its lease, if newer): see `detect_pause_overdue` (issue 7).
+    PAUSE_OVERDUE = "pause_overdue"
     #: The current attempt's GKE pod was EVICTED by kubelet: see
     #: `detect_evicted` (archived issue 893).
     WORKER_EVICTED = "worker_evicted"
@@ -201,6 +215,7 @@ class Finding:
             FindingKind.STUCK_NO_PROGRESS,
             FindingKind.LEFT_RUNNING,
             FindingKind.CANCEL_OVERDUE,
+            FindingKind.PAUSE_OVERDUE,
         ) or (self.execution is not None and self.execution.is_active)
 
 
@@ -1365,6 +1380,112 @@ def detect_cancel_overdue(
     return findings
 
 
+def detect_pause_overdue(
+    snapshot: ControlSnapshot,
+    executions_by_attempt: dict[str, ExecutionView],
+    config: ReconcilerConfig,
+    now: datetime | None = None,
+) -> list[Finding]:
+    """Steps of a paused workflow still running past the bound (issue 7).
+
+    WHY A RULE IS NEEDED. A paused workflow's running worker parks only at its
+    next control poll (docs/design/workflow-pause.md section 5), as a cancel
+    is honoured. A worker that never polls -- stuck in a long tool call, or
+    wedged -- keeps its lease heartbeating and its pool units counted, and no
+    absence rule ever fires on it.
+
+    The same precise case as `detect_cancel_overdue`, so no other rule is
+    second-guessed (section 6.1): an active execution whose task is in
+    `snapshot.tasks`, holds capacity, has NO `cancel_requested` (a cancel is
+    `detect_cancel_overdue`'s, and one attempt gets one finding), names a
+    workflow in `snapshot.paused_workflows` OF THE SAME TENANT (invariant 9),
+    and is on its CURRENT generation and CURRENT unreleased lease.
+
+    THE REFERENCE is `max(paused_at, lease.created_at)`: a step leased after
+    the pause -- the admission race of section 8.1 -- gets the whole bound
+    from its own lease, not from a pause it never saw. A pause with no
+    `paused_at` says nothing about when, and is left to the worker.
+
+    A worker that parked in time has released its lease and left the
+    concurrency states, so it has nothing here to select. The repair is the
+    ordinary one (`Reconciler._repair`): terminate first, then fence, release
+    and write READY in one transaction, which the scheduler's admission gate
+    parks WORKFLOW_PAUSED.
+    """
+    now = now or utcnow()
+    bound = config.pause_enforce_after_seconds
+    findings: list[Finding] = []
+    if not snapshot.paused_workflows:
+        return findings
+    for attempt_id, execution in executions_by_attempt.items():
+        if not execution.is_active or execution.claim_refused or not execution.task_id:
+            continue
+        task = snapshot.tasks.get(execution.task_id)
+        if task is None or task.cancel_requested or not task.holds_capacity:
+            continue
+        if not task.workflow_id:
+            continue
+        pause = snapshot.paused_workflows.get(task.workflow_id)
+        if pause is None:
+            continue
+        workflow_tenant, paused_at = pause
+        if not task.tenant_id or workflow_tenant != task.tenant_id:
+            continue  # a pause never reaches across tenants
+        if paused_at is None:
+            continue
+        lease = next(
+            (
+                candidate
+                for candidate in snapshot.leases.values()
+                if candidate.attempt_id == attempt_id and not candidate.is_released
+            ),
+            None,
+        )
+        if lease is None or lease.task_id != task.task_id:
+            continue
+        if lease.generation != task.generation:
+            continue
+        if execution.generation is not None and execution.generation != lease.generation:
+            continue
+        if task.lease_id not in (None, lease.lease_id):
+            continue
+        paused = _as_utc(paused_at)
+        reference, measured_from = paused, "paused_at"
+        if lease.created_at is not None and _as_utc(lease.created_at) > paused:
+            reference, measured_from = _as_utc(lease.created_at), "lease_created_at"
+        waited = (now - reference).total_seconds()
+        if waited < bound:
+            continue  # the worker's own pause path is still in time
+        age = (now - paused).total_seconds()
+        overdue = waited - bound
+        findings.append(
+            Finding(
+                kind=FindingKind.PAUSE_OVERDUE,
+                reason=(
+                    f"workflow {task.workflow_id} paused {age:.0f}s ago and execution "
+                    f"{execution.name} is still active, {overdue:.0f}s past the bound "
+                    f"({bound}s)"
+                ),
+                task_id=task.task_id,
+                lease_id=lease.lease_id,
+                attempt_id=attempt_id,
+                tenant_id=task.tenant_id,
+                generation=lease.generation,
+                execution=execution,
+                detail={
+                    "workflow_id": task.workflow_id,
+                    "task_state": task.state.value,
+                    "paused_at": paused.isoformat(),
+                    "pause_age_seconds": round(age, 1),
+                    "overdue_by_seconds": round(overdue, 1),
+                    "measured_from": measured_from,
+                    "namespace": execution.namespace,
+                },
+            )
+        )
+    return findings
+
+
 @dataclass(frozen=True)
 class CannotStartSubject:
     """A finished execution whose attempt still holds its task's current lease."""
@@ -2322,6 +2443,15 @@ def detect_all(
     findings.extend(
         f
         for f in detect_cancel_overdue(snapshot, by_attempt, config, now)
+        if f.lease_id not in covered and f.attempt_id not in deferred
+    )
+    # The pause bound, beside it and on the same terms (issue 7): it only
+    # adds, never on a lease another rule already terminates, and never on a
+    # cancelled step, which the rule itself leaves to the cancel bound.
+    covered = {f.lease_id for f in findings if f.lease_id}
+    findings.extend(
+        f
+        for f in detect_pause_overdue(snapshot, by_attempt, config, now)
         if f.lease_id not in covered and f.attempt_id not in deferred
     )
     # The stuck rule only ever adds. A lease another rule already acts on --

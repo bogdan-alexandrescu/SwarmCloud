@@ -84,6 +84,7 @@ from .detect import (
     stuck_candidates,
 )
 from .model import (
+    PAUSE_REFUND_LIMIT,
     AttemptView,
     ControlSnapshot,
     ExecutionView,
@@ -647,6 +648,10 @@ class Reconciler:
         report = ReconcileReport(started_at=utcnow(), dry_run=self._config.dry_run)
         snapshot = self._snapshot(report)
         report.sweep = "full" if snapshot.full else "incremental"
+        if snapshot.paused_workflows_error:
+            # The pause-overdue rule stands down for this pass; every other
+            # rule runs (issue 7). Said here, so it never reads as "no pause".
+            report.errors.append(f"paused_workflows: {snapshot.paused_workflows_error}")
         report.tasks_examined = len(snapshot.tasks)
         report.leases_examined = len(snapshot.leases)
 
@@ -2152,11 +2157,16 @@ class Reconciler:
         # for a task that has left them since the snapshot (archived issue 198). Passed only
         # for that rule, so every other repair calls the store as it did.
         leaseless = finding.kind is FindingKind.LEASELESS_TASK
+        # A pause-overdue repair is refused, fence and requeue alike, for a
+        # step that has left the concurrency states since the snapshot: a
+        # worker that parked itself for the pause in the meantime has decided
+        # how it resumes, and READY would overrule it (issue 7, section 6.3).
+        pause_overdue = finding.kind is FindingKind.PAUSE_OVERDUE
         guard: dict[str, Any] = (
             {"only_from": ENDED_AT_STARTUP_STATES}
             if ended_at_startup
             else {"only_from": _LEASELESS_STATES}
-            if leaseless
+            if leaseless or pause_overdue
             else {}
         )
         # An orphan-lease finding may rest on a snapshot that missed its task
@@ -2337,6 +2347,11 @@ class Reconciler:
             backoff_after = (
                 task.never_started_requeues + 1 if never_started else task.attempt_count
             )
+            # The pause-overdue requeue (issue 7): no backoff, since a pause is
+            # not a failure, and the attempt refunded up to PAUSE_REFUND_LIMIT
+            # (owner decision Q1), decided against this transaction's own
+            # fence. The admission gate parks the READY step WORKFLOW_PAUSED.
+            pausing = pause_overdue and to_state is TaskState.READY
             plan = RepairPlan(
                 to_state=to_state,
                 # Only the task this finding is actually about. A snapshot is
@@ -2351,7 +2366,7 @@ class Reconciler:
                 # every attempt back to back (archived issue 1822). The wait creates no
                 # demand: a READY task holds nothing (invariant 1).
                 next_eligible_at=None
-                if cannot_start or out_of_memory is not None
+                if cannot_start or out_of_memory is not None or pausing
                 else utcnow() + timedelta(seconds=requeue_backoff_seconds(backoff_after)),
                 # Why it ends if it ends FAILED: the worker could not start,
                 # or (spent attempts on a requeue) its worker was lost.
@@ -2360,6 +2375,10 @@ class Reconciler:
                 disk_eviction=disk_eviction,
                 never_started_requeue_limit=(
                     self._config.never_started_requeue_limit if never_started else None
+                ),
+                pause_refund_limit=PAUSE_REFUND_LIMIT if pausing else None,
+                pause_workflow_id=(
+                    str(finding.detail.get("workflow_id") or "") or None if pausing else None
                 ),
             )
         fence_guard: dict[str, Any] = dict(guard)
@@ -2470,6 +2489,19 @@ class Reconciler:
                 outcome.actions.append(
                     f"never started: {done.never_started_requeues}/"
                     f"{self._config.never_started_requeue_limit} re-queue(s)"
+                )
+            if pause_overdue:
+                # What the scheduler's park and the console read: the finding,
+                # the pause it enforced, whether a resume landed between the
+                # kill and this repair (it changes nothing written above), and
+                # the pause refunds the step now holds.
+                detail.update(
+                    finding=finding.kind.value,
+                    paused_at=finding.detail.get("paused_at"),
+                    workflow_id=finding.detail.get("workflow_id"),
+                    pause_lifted=bool(done.pause_lifted),
+                    pause_refunds=done.pause_refunds,
+                    pause_refund_limit=PAUSE_REFUND_LIMIT,
                 )
             if repaired is TaskState.CANCELLED:
                 # The API's flag-only cancel wrote `cancel_requested`
