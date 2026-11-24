@@ -428,6 +428,12 @@ def test_the_size_caps():
     assert check_diagram_source("flow", head + "%% note\n" * 148 + "A --> B") is None
 
 
+def test_a_tag_encoded_past_the_decode_rounds_is_refused():
+    deep = "&" + "amp;" * 5 + "lt;b&gt;"
+    assert check_diagram_source("flow", f'flowchart TD\n  A["{deep}"] --> B') is not None
+    assert check_diagram_source("flow", 'flowchart TD\n  A["a &amp; b"] --> B') is None
+
+
 def test_the_node_and_edge_caps_overestimate_rather_than_under():
     nodes = "\n".join(f"  N{i} --> N{i + 1}" for i in range(0, 130, 2))
     assert "60 nodes" in check_diagram_source("flow", "flowchart LR\n" + nodes)
@@ -440,6 +446,20 @@ def test_the_node_and_edge_caps_overestimate_rather_than_under():
     assert "60 nodes" in check_diagram_source("state", "stateDiagram-v2\n" + moves)
     tables = "\n".join(f"  T{i} ||--o{{ T{i + 1} : has" for i in range(61))
     assert "60 nodes" in check_diagram_source("data", "erDiagram\n" + tables)
+    # Statements on the header's own line, after a `;`, are counted too.
+    chain = "; ".join(f"n{i}-->n{i + 1}" for i in range(150))
+    assert check_diagram_source("flow", "flowchart TD; " + chain) is not None
+    assert check_diagram_source("flow", "graph LR; " + "; ".join(
+        f"n{i}-->n{i + 1}" for i in range(120))) is not None
+    assert "100 edges" in check_diagram_source(
+        "sequence", "sequenceDiagram; " + "; ".join("A->>B: x" for _ in range(120)))
+    assert check_diagram_source("state", "stateDiagram-v2; " + "; ".join(
+        f"S{i} --> S{i + 1}" for i in range(80))) is not None
+    assert check_diagram_source("data", "erDiagram; " + "; ".join(
+        f"T{i} ||--o{{ T{i + 1} : has" for i in range(80))) is not None
+    assert check_diagram_source("flow", "flowchart TD; " + " & ".join(
+        f"n{i}" for i in range(80))) is not None
+    assert check_diagram_source("flow", "flowchart TD; A-->B") is None
     for op in ("---", "-.->", "==>", "--x", "--o", "~~~", "-- two words -->"):
         small = "\n".join(f"  N{i} {op} N{i + 1}" for i in range(40))
         assert check_diagram_source("flow", "flowchart LR\n" + small) is None, op
@@ -581,7 +601,15 @@ def test_the_run_read_serves_the_rule_beside_the_plan_outside_the_digest(client,
 # 5. the planner's prompt
 # --------------------------------------------------------------------------
 
+#: sha256 of `planner_prompt(REF, run_id="run_1")` as main produced it before
+#: the diagrams lane.
+_TODAYS_PROMPT_SHA256 = "a5af2a88630c033707771c58b6f4a2a0ea2fbecaa92f06eba77dc1977c20e095"
+
+
 def test_with_diagrams_off_the_prompt_is_byte_for_byte_todays():
+    import hashlib
+    assert hashlib.sha256(planner_prompt(REF, run_id="run_1", diagrams=False)
+                          .encode()).hexdigest() == _TODAYS_PROMPT_SHA256
     for kwargs in ({}, {"open_work": {"issues": [], "pull_requests": []}}):
         off = planner_prompt(REF, run_id="run_1", diagrams=False, **kwargs)
         on = planner_prompt(REF, run_id="run_1", diagrams=True, **kwargs)

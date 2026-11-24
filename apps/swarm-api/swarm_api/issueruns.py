@@ -789,18 +789,32 @@ _ER_EDGE = re.compile(r"\s(?:\S{0,2}(?:--|\.\.)\S{0,2})\s|\s(?:optionally\s+)?to
 _WORDS = re.compile(r"[^\s,;&\[\](){}|<>\"]+")
 
 
+def _decode_once(line: str) -> str:
+    return html.unescape(_DIAGRAM_ENTITY.sub(lambda m: (
+        f"&#{m.group(1)};" if m.group(1)[0].isdigit()
+        or re.fullmatch(r"x[0-9a-f]+", m.group(1), re.IGNORECASE)
+        else f"&{m.group(1)};"), line))
+
+
+_DECODE_ROUNDS = 4
+
+
 def _decoded(line: str) -> str:
     """`line` with Mermaid's and HTML's entities decoded, to what a renderer
-    would read; decoded until it stops changing, so a doubled one is too."""
-    for _ in range(4):
-        read = html.unescape(_DIAGRAM_ENTITY.sub(lambda m: (
-            f"&#{m.group(1)};" if m.group(1)[0].isdigit()
-            or re.fullmatch(r"x[0-9a-f]+", m.group(1), re.IGNORECASE)
-            else f"&{m.group(1)};"), line))
+    would read; decoded until it stops changing, so a doubled one is too, up
+    to `_DECODE_ROUNDS` rounds (`_over_encoded` refuses what is deeper)."""
+    for _ in range(_DECODE_ROUNDS):
+        read = _decode_once(line)
         if read == line:
             break
         line = read
     return line
+
+
+def _over_encoded(line: str) -> bool:
+    """Whether `line` is still changing after the last decode round."""
+    read = _decoded(line)
+    return _decode_once(read) != read
 
 
 def _diagram_refused_token(kind: str, line: str) -> str | None:
@@ -889,6 +903,8 @@ def check_diagram_source(kind: Any, source: Any) -> str | None:
     if len(lines) > MAX_DIAGRAM_SOURCE_LINES:
         return f"the source is over {MAX_DIAGRAM_SOURCE_LINES} lines"
     for number, line in enumerate(lines, start=1):
+        if _over_encoded(line):
+            return f"line {number} is encoded more than {_DECODE_ROUNDS} times over"
         for text in (line, _decoded(line)):
             if any(unicodedata.category(ch) in ("Cc", "Cf", "Cs", "Zl", "Zp")
                    and ch != "\t" for ch in text):
@@ -904,7 +920,10 @@ def check_diagram_source(kind: Any, source: Any) -> str | None:
         if statement.rstrip(";").split(None, 1)[0].rstrip(";") not in allowed:
             return (f"line {number}: the first statement of a {kind} diagram is one of "
                     f"{list(allowed)}")
-        nodes, edges = _diagram_counts(kind, lines[number:])
+        # The header's own line may carry statements after a `;`.
+        words = statement.split(None, 1)
+        rest = words[1] if len(words) > 1 else ""
+        nodes, edges = _diagram_counts(kind, [rest, *lines[number:]])
         if nodes > MAX_DIAGRAM_NODES:
             return f"the source draws about {nodes} nodes, over the cap of {MAX_DIAGRAM_NODES} nodes"
         if edges > MAX_DIAGRAM_EDGES:
