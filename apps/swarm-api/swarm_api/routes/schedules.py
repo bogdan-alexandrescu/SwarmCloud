@@ -992,8 +992,12 @@ def _run_targets(ctx: AppContext, tenant_id: str, run_id: str) -> list[tuple[str
         return []
     if run.state in TERMINAL_RUN_STATES:
         return []
-    if run.state == RunState.PLANNING and run.planner_task_id:
-        return [("task", run.planner_task_id)]
+    if run.state == RunState.PLANNING:
+        # Its planner, or before one is linked its readiness pre-pass
+        # (owner, 2026-11-24), whose cancellation ends the run CANCELLED.
+        live = run.planner_task_id or str((run.readiness or {}).get("task_id") or "")
+        if live:
+            return [("task", live)]
     if run.state == RunState.FIXING and run.ci_fix_workflows:
         return [("workflow", run.ci_fix_workflows[-1])]
     if run.workflow_id and run.state in (RunState.APPROVED, RunState.RUNNING, RunState.FIXING):
@@ -1278,6 +1282,8 @@ def _item_tasks(ctx: AppContext, tenant_id: str, item: Mapping[str, Any]) -> tup
         except NotFound:
             return [], {"unread": "its issue run was not found"}
         out: list[tuple[str, str | None]] = []
+        if (run.readiness or {}).get("task_id"):
+            out.append((str(run.readiness["task_id"]), "readiness"))
         if run.planner_task_id:
             out.append((run.planner_task_id, "plan"))
         wf_ids = ([run.workflow_id] if run.workflow_id else []) + list(run.ci_fix_workflows)

@@ -26,7 +26,7 @@ PLANNING ─► PLANNED ─► APPROVED ─► RUNNING ─► CHECKING ─► DO
    │          │  ▲ edit                │        │   ▲
    │          │  └─┘                   │        ▼   │ one continues_task per round
    │          ├─► REJECTED             │      FIXING ┘
-   ├─► NOT_READY (the planner's verdict: no plan, a reason, what it needs)
+   ├─► NOT_READY (the readiness pre-pass's or the planner's verdict: no plan, a reason, what it needs)
    ▼          ▼                        ▼        ▼
  FAILED / CANCELLED  ◄─────────────────┴────────┘   (FAILED at the cap, with the excerpt)
 ```
@@ -521,7 +521,8 @@ anything else is 409 `invalid_run_transition` (a `PLANNED` plan is turned down w
 > (Schedules S9, second change; [below](#removed-2026-10-12-the-job-the-route-and-the-switch)).
 
 Owner decisions, 2026-10-08: readiness is decided by the **planner**, not by a
-label; the sweeper runs **inside the platform on a schedule**; at most **8 live
+label (**changed 2026-11-24 by the owner**: a short readiness pre-pass on the
+cheaper class answers first, and the planner still may -- [below](#why-the-planner-decides-readiness)); the sweeper runs **inside the platform on a schedule**; at most **8 live
 issue runs per tenant**; plans **auto-approve** and pull requests
 **auto-merge** through the merge step. The schedule keeps the first three and
 asks before it merges unless the audited switch says otherwise.
@@ -581,6 +582,27 @@ someone touches it. (The schedule's `cooldown_hours` lets an unchanged
 
 ### Why the planner decides readiness
 
+> **Changed 2026-11-24 (owner decision): readiness is no longer the planner's
+> call alone.** Before the full planner, a short **readiness pre-pass** task
+> on the cheaper model class (`sonnet`, `stepclass.ROLE_READINESS`) reads the
+> issue -- as data, never as instructions -- and the same open-work snapshot
+> the planner gets, and writes `readiness.json`: `{"ready": true, "reason"}`
+> or the planner's not-ready verdict below. Only a ready issue gets the full
+> planner; a valid not-ready answer ends the run `NOT_READY` with the
+> pre-pass's reason and **no planner task**, exactly as the planner's own
+> verdict does. An answer that cannot be read or does not match its schema,
+> or a pre-pass task that failed, **starts the planner**: the pre-pass can
+> save a planner, never block one. The planner may still answer not ready
+> itself. Its outcome, reason and cost are on the run (`readiness`). It is on
+> by default behind `SWARM_READINESS_PREPASS` (`off` restores the run that
+> starts its planner at once); every path that starts a planner -- `POST
+> /v1/runs`, the `issue-sweep`, `issue-plan-only` and `failure-review`
+> schedules, a child's run -- goes through `routes.runs.start_run`, which
+> reads it, and the planner keeps the class its caller or schedule named.
+> **Why:** most planner spend on an issue that is not ready is the planner
+> reading the repository to find that out; a short cheap read answers the
+> common cases (blocked, already done, an epic, an owner decision).
+
 A `ready` label is a second thing to keep true by hand, and an issue nobody
 labelled reads the same as one somebody judged not ready. The planner already
 reads the issue, the repository and the open work, so it answers instead of a
@@ -601,6 +623,22 @@ new state rather than `REJECTED` with `rejected_by: planner` because `RunState`
 is this service's, not the frozen contract's (`apps/common/swarm_common` does
 not define it), and a rejection is a person turning down a plan -- here there
 is no plan.
+
+### The cost hold
+
+Owner decision, 2026-11-24. When a run's plan approval is **automatic** and
+the plan's expected cost (`expected_cost_usd`, the HIGH end of its range,
+[plans-pipeline §3.8](design/plans-pipeline.md)) is above
+`SWARM_PLAN_COST_HOLD_USD`, the run does not start: it stops `PLANNED` with
+`plan_approval: required` and `plan_lint.held`, the plan lint's hold, with an
+`EXPECTED_COST_OVER_THRESHOLD` finding naming the expected cost and the
+threshold. A person approves it as any plan; it is never a failed run and
+holds nothing (invariant 1). The default is **30 dollars**: the owner chose
+about twice the ninetieth-percentile cost of a build-review-fix workflow
+(about 16 dollars over the 30 days to 2026-11-23, `plan_costs.json`). `off`
+switches the hold off. A plan with no expected cost (an estimate in words) is
+not held by this rule, and its `plan_warnings` carry `EXPECTED_COST_UNKNOWN`
+saying so.
 
 ### The territory guard
 
