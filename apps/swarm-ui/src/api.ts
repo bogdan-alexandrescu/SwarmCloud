@@ -13897,6 +13897,54 @@ export interface PipelineFilters {
 }
 
 /**
+ * THE FIXTURE BOARD: one card per stage, drawn from the fixture clock, and
+ * behind the example plans' switch the three example plans as waiting plan
+ * cards in Found, so the development build draws every stage, filter and
+ * waiting card. Filtered as the route filters (`source`, `state`, `waits`).
+ */
+function fixturePipeline(filters: PipelineFilters): Result<PipelineBoard> {
+  const ago = (minutes: number) => new Date(FIXTURE_NOW - minutes * 60_000).toISOString()
+  const base = (card_id: string, stage: PipelineStage, source: string, state: string, title: string, issue: string, minutes: number): PipelineCard => ({
+    card_id, stage, source: { kind: source }, subject: { run_id: card_id, issue, title }, state,
+    waits_on_person: false, approval_kind: null, expires_at: null, since: ago(minutes),
+  })
+  const cards: PipelineCard[] = [
+    base('fx_found', 'found', 'sweep', 'found', 'A retry loop never backs off after a 429', 'example-org/example-api#31', 20),
+    base('fx_planned', 'planned', 'failure_review', 'decided', 'A failed export leaves a half-written file', 'example-org/example-api#27', 45),
+    base('fx_running', 'running', 'hand', 'running', 'Page size ignored on the second page', 'example-org/example-api#19', 15),
+    base('fx_pr', 'pr_ci', 'observer', 'running', 'Slow health check marks a ready pod unready', 'example-org/example-api#12', 8),
+    base('fx_ended', 'ended', 'sweep', 'ended', 'Typo in the export column header', 'example-org/example-api#5', 180),
+  ]
+  for (const r of fixtureExampleRuns()) {
+    const plan = r.plan_approval === 'required' && r.state === 'PLANNED'
+    if (!plan) continue
+    cards.push({
+      card_id: r.id, stage: 'found', source: { kind: 'plan_only' }, subject: { run_id: r.id, issue: r.issue.ref, title: r.issue_read?.title ?? r.issue.ref, approval_id: `${FIXTURE_RUN_APPROVAL}${r.id}` },
+      state: 'waiting', waits_on_person: true, approval_kind: 'plan', expires_at: new Date(FIXTURE_NOW + 20 * 3_600_000).toISOString(), since: r.created_at,
+    })
+  }
+  const stagesOf: Record<string, readonly PipelineStage[]> = { waiting: ['found', 'planned'], running: ['running', 'pr_ci'], decided: ['planned', 'running'], ended: ['ended'] }
+  const kept = cards.filter(
+    (c) =>
+      (!filters.source || c.source.kind === filters.source) &&
+      (filters.waits !== 'person' || c.waits_on_person) &&
+      (!filters.state || (stagesOf[filters.state] ?? PIPELINE_STAGES).includes(c.stage)) &&
+      (filters.state !== 'waiting' || c.waits_on_person),
+  )
+  const by_stage = {} as Record<PipelineStage, PipelineColumn>
+  for (const stage of PIPELINE_STAGES) {
+    const here = kept.filter((c) => c.stage === stage)
+    const all = cards.filter((c) => c.stage === stage)
+    const times = here.map((c) => c.since).filter((t): t is string => t !== null).sort()
+    by_stage[stage] = { count: here.length, hidden: all.length - here.length, oldest_at: times[0] ?? null }
+  }
+  return {
+    status: 'ok', fetchedAt: Date.now(),
+    data: { cards: kept, by_stage, waits_on_person: cards.filter((c) => c.waits_on_person).length, partial: [], window_days: 14 },
+  }
+}
+
+/**
  * `GET /v1/pipeline`: the board, each card in its one stage. A board with
  * no card, nothing hidden and no failed read is the measured empty board
  * (`empty`); a filtered board that hides cards is not empty. A 200 without
@@ -13904,7 +13952,7 @@ export interface PipelineFilters {
  * on as the failure it is: the board's screen draws "not served" from it.
  */
 export async function loadPipeline(filters: PipelineFilters = {}): Promise<Result<PipelineBoard>> {
-  if (USE_FIXTURES) return { status: 'empty', fetchedAt: Date.now() }
+  if (USE_FIXTURES) return fixturePipeline(filters)
   const query = new URLSearchParams()
   if (filters.source) query.set('source', filters.source)
   if (filters.state) query.set('state', filters.state)

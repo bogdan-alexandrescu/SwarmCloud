@@ -147,11 +147,14 @@ function Card({ card, board, go, now }: { card: PipelineCard; board: string; go:
   const to = cardAddress(card, board)
   const source = SOURCE_WORD[card.source.kind] ?? card.source.kind
   const waits = card.waits_on_person
+  const kind = card.approval_kind === null ? null : (APPROVAL_KIND[card.approval_kind] ?? card.approval_kind)
+  // The kind is drawn only where it adds to the source's word ("Proposal" beside "Proposal" says nothing twice).
+  const showKind = waits && kind !== null && !source.toLowerCase().includes(kind.toLowerCase())
   const body = (
     <>
       <span className="pl-card-h">
         <span className="pl-src">{source}</span>
-        {waits && card.approval_kind !== null && <Tag>{APPROVAL_KIND[card.approval_kind] ?? card.approval_kind}</Tag>}
+        {showKind && <Tag>{kind}</Tag>}
       </span>
       <span className="pl-title">{card.subject.title || card.subject.issue || card.card_id}</span>
       <span className="pl-meta">
