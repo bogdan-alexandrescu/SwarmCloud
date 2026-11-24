@@ -113,6 +113,12 @@
     "CANCELLED",
     "DEAD_LETTERED"
   ],
+  "terminal_events": [
+    "cancelled",
+    "dead_lettered",
+    "failed",
+    "succeeded"
+  ],
   "terminal_states": [
     "CANCELLED",
     "DEAD_LETTERED",

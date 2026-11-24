@@ -1,0 +1,1368 @@
+{
+  "_generated": "GENERATED FILE -- DO NOT EDIT BY HAND. Regenerate: uv run python scripts/gen_api_types.py",
+  "admission_example": {
+    "pools": [
+      {
+        "active": 7,
+        "adaptive_target": null,
+        "available": 15,
+        "effective_limit": 22,
+        "enabled": true,
+        "hard_limit": 22,
+        "name": "global",
+        "quota_derived_limit": null
+      },
+      {
+        "active": 7,
+        "adaptive_target": null,
+        "available": 33,
+        "effective_limit": 40,
+        "enabled": true,
+        "hard_limit": 40,
+        "name": "tenant:u-owner",
+        "quota_derived_limit": null
+      },
+      {
+        "active": 5,
+        "adaptive_target": null,
+        "available": 5,
+        "effective_limit": 10,
+        "enabled": true,
+        "hard_limit": 10,
+        "name": "provider:anthropic",
+        "quota_derived_limit": null
+      },
+      {
+        "active": 5,
+        "adaptive_target": 6,
+        "available": 0,
+        "effective_limit": 5,
+        "enabled": true,
+        "hard_limit": 5,
+        "name": "provider:anthropic:tenant:u-owner",
+        "quota_derived_limit": 6
+      },
+      {
+        "active": 0,
+        "adaptive_target": null,
+        "available": 10,
+        "effective_limit": 10,
+        "enabled": true,
+        "hard_limit": 10,
+        "name": "provider:openai",
+        "quota_derived_limit": null
+      },
+      {
+        "active": 0,
+        "adaptive_target": null,
+        "available": 10,
+        "effective_limit": 10,
+        "enabled": true,
+        "hard_limit": 10,
+        "name": "provider:openai:tenant:u-owner",
+        "quota_derived_limit": 50
+      },
+      {
+        "active": 5,
+        "adaptive_target": null,
+        "available": 5,
+        "effective_limit": 10,
+        "enabled": true,
+        "hard_limit": 10,
+        "name": "runner:claude-code",
+        "quota_derived_limit": null
+      },
+      {
+        "active": 0,
+        "adaptive_target": null,
+        "available": 20,
+        "effective_limit": 20,
+        "enabled": true,
+        "hard_limit": 20,
+        "name": "runner:mock",
+        "quota_derived_limit": null
+      },
+      {
+        "active": 0,
+        "adaptive_target": null,
+        "available": 4,
+        "effective_limit": 4,
+        "enabled": true,
+        "hard_limit": 4,
+        "name": "runner:browser",
+        "quota_derived_limit": null
+      },
+      {
+        "active": 0,
+        "adaptive_target": null,
+        "available": 10,
+        "effective_limit": 10,
+        "enabled": true,
+        "hard_limit": 10,
+        "name": "runner:codex",
+        "quota_derived_limit": null
+      },
+      {
+        "active": 0,
+        "adaptive_target": null,
+        "available": 10,
+        "effective_limit": 10,
+        "enabled": true,
+        "hard_limit": 10,
+        "name": "runner:generic",
+        "quota_derived_limit": null
+      },
+      {
+        "active": 5,
+        "adaptive_target": null,
+        "available": 15,
+        "effective_limit": 20,
+        "enabled": true,
+        "hard_limit": 20,
+        "name": "resource:standard",
+        "quota_derived_limit": null
+      },
+      {
+        "active": 0,
+        "adaptive_target": null,
+        "available": 4,
+        "effective_limit": 4,
+        "enabled": true,
+        "hard_limit": 4,
+        "name": "resource:browser",
+        "quota_derived_limit": null
+      },
+      {
+        "active": 5,
+        "adaptive_target": null,
+        "available": 15,
+        "effective_limit": 20,
+        "enabled": true,
+        "hard_limit": 20,
+        "name": "backend:CLOUD_RUN_JOB",
+        "quota_derived_limit": null
+      },
+      {
+        "active": 0,
+        "adaptive_target": null,
+        "available": 4,
+        "effective_limit": 4,
+        "enabled": true,
+        "hard_limit": 4,
+        "name": "backend:GKE_AUTOPILOT",
+        "quota_derived_limit": null
+      }
+    ],
+    "profiles": {
+      "browser": {
+        "admission": {
+          "basis": "measured",
+          "binding": [
+            "provider:anthropic:tenant:u-owner"
+          ],
+          "blockers": [
+            {
+              "active": 5,
+              "group": "no_room",
+              "limit": 5,
+              "pool": "provider:anthropic:tenant:u-owner",
+              "reason": "PROVIDER_CONCURRENCY_LIMIT"
+            }
+          ],
+          "complete": true,
+          "counterfactual": [
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 0,
+              "next_binding": [
+                "provider:anthropic:tenant:u-owner"
+              ],
+              "pool": "global"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 0,
+              "next_binding": [
+                "provider:anthropic:tenant:u-owner"
+              ],
+              "pool": "tenant:u-owner"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 0,
+              "next_binding": [
+                "provider:anthropic:tenant:u-owner"
+              ],
+              "pool": "resource:browser"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 0,
+              "next_binding": [
+                "provider:anthropic:tenant:u-owner"
+              ],
+              "pool": "runner:browser"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 0,
+              "next_binding": [
+                "provider:anthropic:tenant:u-owner"
+              ],
+              "pool": "backend:GKE_AUTOPILOT"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 0,
+              "next_binding": [
+                "provider:anthropic:tenant:u-owner"
+              ],
+              "pool": "provider:anthropic"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 4,
+              "headroom_after": 4,
+              "next_binding": [
+                "resource:browser",
+                "runner:browser",
+                "backend:GKE_AUTOPILOT"
+              ],
+              "pool": "provider:anthropic:tenant:u-owner"
+            }
+          ],
+          "headroom": 0,
+          "uncapped": [],
+          "units": 1,
+          "unread": []
+        },
+        "pools": [
+          "global",
+          "tenant:u-owner",
+          "resource:browser",
+          "runner:browser",
+          "backend:GKE_AUTOPILOT",
+          "provider:anthropic",
+          "provider:anthropic:tenant:u-owner"
+        ],
+        "units": 1
+      },
+      "claude-code": {
+        "admission": {
+          "basis": "measured",
+          "binding": [
+            "provider:anthropic:tenant:u-owner"
+          ],
+          "blockers": [
+            {
+              "active": 5,
+              "group": "no_room",
+              "limit": 5,
+              "pool": "provider:anthropic:tenant:u-owner",
+              "reason": "PROVIDER_CONCURRENCY_LIMIT"
+            }
+          ],
+          "complete": true,
+          "counterfactual": [
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 0,
+              "next_binding": [
+                "provider:anthropic:tenant:u-owner"
+              ],
+              "pool": "global"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 0,
+              "next_binding": [
+                "provider:anthropic:tenant:u-owner"
+              ],
+              "pool": "tenant:u-owner"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 0,
+              "next_binding": [
+                "provider:anthropic:tenant:u-owner"
+              ],
+              "pool": "resource:standard"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 0,
+              "next_binding": [
+                "provider:anthropic:tenant:u-owner"
+              ],
+              "pool": "runner:claude-code"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 0,
+              "next_binding": [
+                "provider:anthropic:tenant:u-owner"
+              ],
+              "pool": "backend:CLOUD_RUN_JOB"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 0,
+              "next_binding": [
+                "provider:anthropic:tenant:u-owner"
+              ],
+              "pool": "provider:anthropic"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 5,
+              "headroom_after": 5,
+              "next_binding": [
+                "runner:claude-code",
+                "provider:anthropic"
+              ],
+              "pool": "provider:anthropic:tenant:u-owner"
+            }
+          ],
+          "headroom": 0,
+          "uncapped": [],
+          "units": 1,
+          "unread": []
+        },
+        "pools": [
+          "global",
+          "tenant:u-owner",
+          "resource:standard",
+          "runner:claude-code",
+          "backend:CLOUD_RUN_JOB",
+          "provider:anthropic",
+          "provider:anthropic:tenant:u-owner"
+        ],
+        "units": 1
+      },
+      "claude-code-browser": {
+        "admission": {
+          "basis": "measured",
+          "binding": [
+            "provider:anthropic:tenant:u-owner"
+          ],
+          "blockers": [
+            {
+              "active": 5,
+              "group": "no_room",
+              "limit": 5,
+              "pool": "provider:anthropic:tenant:u-owner",
+              "reason": "PROVIDER_CONCURRENCY_LIMIT"
+            }
+          ],
+          "complete": true,
+          "counterfactual": [
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 0,
+              "next_binding": [
+                "provider:anthropic:tenant:u-owner"
+              ],
+              "pool": "global"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 0,
+              "next_binding": [
+                "provider:anthropic:tenant:u-owner"
+              ],
+              "pool": "tenant:u-owner"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 0,
+              "next_binding": [
+                "provider:anthropic:tenant:u-owner"
+              ],
+              "pool": "resource:browser"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 0,
+              "next_binding": [
+                "provider:anthropic:tenant:u-owner"
+              ],
+              "pool": "backend:GKE_AUTOPILOT"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 0,
+              "next_binding": [
+                "provider:anthropic:tenant:u-owner"
+              ],
+              "pool": "provider:anthropic"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 4,
+              "headroom_after": 4,
+              "next_binding": [
+                "resource:browser",
+                "backend:GKE_AUTOPILOT"
+              ],
+              "pool": "provider:anthropic:tenant:u-owner"
+            }
+          ],
+          "headroom": 0,
+          "uncapped": [
+            "runner:claude-code-browser"
+          ],
+          "units": 1,
+          "unread": []
+        },
+        "pools": [
+          "global",
+          "tenant:u-owner",
+          "resource:browser",
+          "runner:claude-code-browser",
+          "backend:GKE_AUTOPILOT",
+          "provider:anthropic",
+          "provider:anthropic:tenant:u-owner"
+        ],
+        "units": 1
+      },
+      "codex": {
+        "admission": {
+          "basis": "measured",
+          "binding": [
+            "runner:codex",
+            "provider:openai",
+            "provider:openai:tenant:u-owner"
+          ],
+          "blockers": [],
+          "complete": true,
+          "counterfactual": [
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 10,
+              "next_binding": [
+                "runner:codex",
+                "provider:openai",
+                "provider:openai:tenant:u-owner"
+              ],
+              "pool": "global"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 10,
+              "next_binding": [
+                "runner:codex",
+                "provider:openai",
+                "provider:openai:tenant:u-owner"
+              ],
+              "pool": "tenant:u-owner"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 10,
+              "next_binding": [
+                "runner:codex",
+                "provider:openai",
+                "provider:openai:tenant:u-owner"
+              ],
+              "pool": "resource:standard"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 10,
+              "next_binding": [
+                "provider:openai",
+                "provider:openai:tenant:u-owner"
+              ],
+              "pool": "runner:codex"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 10,
+              "next_binding": [
+                "runner:codex",
+                "provider:openai",
+                "provider:openai:tenant:u-owner"
+              ],
+              "pool": "backend:CLOUD_RUN_JOB"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 10,
+              "next_binding": [
+                "runner:codex",
+                "provider:openai:tenant:u-owner"
+              ],
+              "pool": "provider:openai"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 10,
+              "next_binding": [
+                "runner:codex",
+                "provider:openai"
+              ],
+              "pool": "provider:openai:tenant:u-owner"
+            }
+          ],
+          "headroom": 10,
+          "uncapped": [],
+          "units": 1,
+          "unread": []
+        },
+        "pools": [
+          "global",
+          "tenant:u-owner",
+          "resource:standard",
+          "runner:codex",
+          "backend:CLOUD_RUN_JOB",
+          "provider:openai",
+          "provider:openai:tenant:u-owner"
+        ],
+        "units": 1
+      },
+      "generic": {
+        "admission": {
+          "basis": "measured",
+          "binding": [
+            "runner:generic"
+          ],
+          "blockers": [],
+          "complete": true,
+          "counterfactual": [
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 10,
+              "next_binding": [
+                "runner:generic"
+              ],
+              "pool": "global"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 10,
+              "next_binding": [
+                "runner:generic"
+              ],
+              "pool": "tenant:u-owner"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 10,
+              "next_binding": [
+                "runner:generic"
+              ],
+              "pool": "resource:standard"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 5,
+              "headroom_after": 15,
+              "next_binding": [
+                "global",
+                "resource:standard",
+                "backend:CLOUD_RUN_JOB"
+              ],
+              "pool": "runner:generic"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 10,
+              "next_binding": [
+                "runner:generic"
+              ],
+              "pool": "backend:CLOUD_RUN_JOB"
+            }
+          ],
+          "headroom": 10,
+          "uncapped": [],
+          "units": 1,
+          "unread": []
+        },
+        "pools": [
+          "global",
+          "tenant:u-owner",
+          "resource:standard",
+          "runner:generic",
+          "backend:CLOUD_RUN_JOB"
+        ],
+        "units": 1
+      },
+      "mock": {
+        "admission": {
+          "basis": "measured",
+          "binding": [
+            "global",
+            "resource:standard",
+            "backend:CLOUD_RUN_JOB"
+          ],
+          "blockers": [],
+          "complete": true,
+          "counterfactual": [
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 15,
+              "next_binding": [
+                "resource:standard",
+                "backend:CLOUD_RUN_JOB"
+              ],
+              "pool": "global"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 15,
+              "next_binding": [
+                "global",
+                "resource:standard",
+                "backend:CLOUD_RUN_JOB"
+              ],
+              "pool": "tenant:u-owner"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 15,
+              "next_binding": [
+                "global",
+                "backend:CLOUD_RUN_JOB"
+              ],
+              "pool": "resource:standard"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 15,
+              "next_binding": [
+                "global",
+                "resource:standard",
+                "backend:CLOUD_RUN_JOB"
+              ],
+              "pool": "runner:mock"
+            },
+            {
+              "action": "raise",
+              "basis_after": "measured",
+              "delta": 0,
+              "headroom_after": 15,
+              "next_binding": [
+                "global",
+                "resource:standard"
+              ],
+              "pool": "backend:CLOUD_RUN_JOB"
+            }
+          ],
+          "headroom": 15,
+          "uncapped": [],
+          "units": 1,
+          "unread": []
+        },
+        "pools": [
+          "global",
+          "tenant:u-owner",
+          "resource:standard",
+          "runner:mock",
+          "backend:CLOUD_RUN_JOB"
+        ],
+        "units": 1
+      }
+    }
+  },
+  "blocked_reason_groups": {
+    "needs_action": [
+      "BUDGET_LIMIT",
+      "DEPENDENCY",
+      "MANUAL_PAUSE",
+      "POOL_LIMIT_UNSET",
+      "QUOTA_EXHAUSTED"
+    ],
+    "no_room": [
+      "BACKEND_LIMIT",
+      "COOLDOWN",
+      "GLOBAL_CONCURRENCY_LIMIT",
+      "PROVIDER_CONCURRENCY_LIMIT",
+      "RESOURCE_CLASS_LIMIT",
+      "RUNNER_LIMIT",
+      "SCHEDULED_RETRY",
+      "TENANT_LIMIT"
+    ]
+  },
+  "dispatch_timeout_seconds": 480,
+  "outcome_page_asks": {
+    "cards": {
+      "cancels": [
+        "buckets",
+        "totals"
+      ],
+      "cost": [
+        "buckets",
+        "totals"
+      ],
+      "failures": [
+        "buckets",
+        "totals"
+      ],
+      "latency": [
+        "buckets",
+        "totals",
+        "latency"
+      ],
+      "reliability": [
+        "buckets",
+        "totals",
+        "groups"
+      ],
+      "retries": [
+        "buckets",
+        "totals",
+        "retries"
+      ],
+      "workflows": [
+        "buckets",
+        "totals",
+        "workflows_failed"
+      ]
+    },
+    "headline": [
+      "buckets",
+      "totals"
+    ],
+    "late": [
+      "coverage",
+      "previous"
+    ]
+  },
+  "outcome_sections": [
+    "buckets",
+    "totals",
+    "retries",
+    "latency",
+    "groups",
+    "workflows_failed",
+    "coverage",
+    "previous"
+  ],
+  "task_id_env": "SWARM_TASK_ID",
+  "voice": {
+    "card_contents": [
+      {
+        "content": "options",
+        "renderer": "options"
+      },
+      {
+        "content": "frames",
+        "renderer": "frames"
+      },
+      {
+        "content": "graph",
+        "renderer": "graph"
+      },
+      {
+        "content": "code",
+        "renderer": "code"
+      },
+      {
+        "content": "diff",
+        "renderer": "diff"
+      },
+      {
+        "content": "markdown",
+        "renderer": "markdown"
+      },
+      {
+        "content": "tests",
+        "renderer": "tests"
+      },
+      {
+        "content": "work",
+        "renderer": "work"
+      },
+      {
+        "content": "review",
+        "renderer": "review"
+      },
+      {
+        "content": "plan",
+        "renderer": "plan"
+      },
+      {
+        "content": "budget",
+        "renderer": "budget"
+      },
+      {
+        "content": "stop",
+        "renderer": "stop"
+      },
+      {
+        "content": "details_input",
+        "renderer": "details_input"
+      },
+      {
+        "content": "credential_input",
+        "renderer": "credential_input"
+      },
+      {
+        "content": "rescue",
+        "renderer": "rescue"
+      },
+      {
+        "content": "readback",
+        "renderer": "readback"
+      },
+      {
+        "content": "navigate",
+        "renderer": "navigate"
+      },
+      {
+        "content": "generic",
+        "renderer": "generic"
+      }
+    ],
+    "card_creators": [
+      "planner",
+      "platform",
+      "person"
+    ],
+    "card_fields": [
+      "card_id",
+      "kind",
+      "project_id",
+      "session_id",
+      "version",
+      "state",
+      "title",
+      "created_by",
+      "references",
+      "summary",
+      "at",
+      "outcome",
+      "body"
+    ],
+    "card_kinds": [
+      {
+        "actions": [
+          "open_in_work",
+          "cancel",
+          "pause",
+          "resume",
+          "hold"
+        ],
+        "content": "work",
+        "fields": [
+          "target_kind",
+          "target_id",
+          "repository",
+          "lanes",
+          "live_state"
+        ],
+        "kind": "work",
+        "label": "Work",
+        "states": [
+          "proposed",
+          "acting",
+          "waiting",
+          "done",
+          "failed",
+          "cancelled"
+        ]
+      },
+      {
+        "actions": [
+          "open_diff",
+          "ask_for_change",
+          "merge"
+        ],
+        "content": "review",
+        "fields": [
+          "change_summary",
+          "checks",
+          "verdict",
+          "merge_state",
+          "release_state"
+        ],
+        "kind": "review",
+        "label": "Review",
+        "states": [
+          "waiting",
+          "done",
+          "failed"
+        ]
+      },
+      {
+        "actions": [
+          "pick",
+          "mix",
+          "ask_again"
+        ],
+        "content": "options",
+        "fields": [
+          "question",
+          "options",
+          "recommendation"
+        ],
+        "kind": "proposal",
+        "label": "Proposal",
+        "states": [
+          "proposed",
+          "done",
+          "dismissed"
+        ]
+      },
+      {
+        "actions": [
+          "edit_by_voice",
+          "file_issue_from_node"
+        ],
+        "content": "graph",
+        "fields": [
+          "diagram_type",
+          "source",
+          "graph",
+          "blob_key",
+          "repaired"
+        ],
+        "kind": "diagram",
+        "label": "Diagram",
+        "states": [
+          "proposed",
+          "done",
+          "failed"
+        ]
+      },
+      {
+        "actions": [
+          "pick_frame",
+          "comment"
+        ],
+        "content": "frames",
+        "fields": [
+          "drawn_by",
+          "frames",
+          "viewport",
+          "height"
+        ],
+        "kind": "mockup",
+        "label": "Mock-up",
+        "states": [
+          "proposed",
+          "waiting",
+          "done"
+        ]
+      },
+      {
+        "actions": [
+          "approve",
+          "comment",
+          "ask_again"
+        ],
+        "content": "frames",
+        "fields": [
+          "frames",
+          "viewport",
+          "height",
+          "annotations"
+        ],
+        "kind": "wireframe",
+        "label": "Wireframe",
+        "states": [
+          "proposed",
+          "done",
+          "dismissed"
+        ]
+      },
+      {
+        "actions": [
+          "comment",
+          "ask_again"
+        ],
+        "content": "code",
+        "fields": [
+          "repository",
+          "path",
+          "ref",
+          "language",
+          "first_line",
+          "text"
+        ],
+        "kind": "code",
+        "label": "Code",
+        "states": [
+          "proposed",
+          "done"
+        ]
+      },
+      {
+        "actions": [
+          "approve",
+          "ask_for_change",
+          "comment"
+        ],
+        "content": "diff",
+        "fields": [
+          "repository",
+          "pull_request",
+          "files",
+          "blob_key"
+        ],
+        "kind": "diff",
+        "label": "Diff",
+        "states": [
+          "proposed",
+          "waiting",
+          "done"
+        ]
+      },
+      {
+        "actions": [
+          "approve",
+          "comment",
+          "ask_again"
+        ],
+        "content": "markdown",
+        "fields": [
+          "doc_type",
+          "markdown",
+          "headings"
+        ],
+        "kind": "document",
+        "label": "Document",
+        "states": [
+          "proposed",
+          "done"
+        ]
+      },
+      {
+        "actions": [
+          "rerun_failed",
+          "file_issue"
+        ],
+        "content": "tests",
+        "fields": [
+          "source",
+          "totals",
+          "cases"
+        ],
+        "kind": "test_results",
+        "label": "Test results",
+        "states": [
+          "waiting",
+          "done",
+          "failed"
+        ]
+      },
+      {
+        "actions": [
+          "answer"
+        ],
+        "content": "details_input",
+        "fields": [
+          "question",
+          "options",
+          "free_text",
+          "answer",
+          "task_id"
+        ],
+        "kind": "details_input",
+        "label": "Details",
+        "states": [
+          "waiting",
+          "done"
+        ]
+      },
+      {
+        "actions": [
+          "set_it"
+        ],
+        "content": "credential_input",
+        "fields": [
+          "name",
+          "provider",
+          "why",
+          "status"
+        ],
+        "kind": "credential_input",
+        "label": "Credential",
+        "states": [
+          "waiting",
+          "done"
+        ]
+      },
+      {
+        "actions": [
+          "start",
+          "change",
+          "split"
+        ],
+        "content": "plan",
+        "fields": [
+          "goal",
+          "size",
+          "waves",
+          "reserved_usd",
+          "session_cap_usd",
+          "day_cap_usd"
+        ],
+        "kind": "plan",
+        "label": "Plan",
+        "states": [
+          "proposed",
+          "acting",
+          "done"
+        ]
+      },
+      {
+        "actions": [
+          "raise"
+        ],
+        "content": "budget",
+        "fields": [
+          "lines",
+          "spent_usd",
+          "reserved_usd",
+          "session_cap_usd",
+          "day_cap_usd",
+          "not_counted",
+          "status",
+          "cap",
+          "ends_at"
+        ],
+        "kind": "budget",
+        "label": "Budget",
+        "states": [
+          "waiting",
+          "done"
+        ]
+      },
+      {
+        "actions": [
+          "open_where"
+        ],
+        "content": "stop",
+        "fields": [
+          "what",
+          "rule",
+          "where"
+        ],
+        "kind": "stop",
+        "label": "Stop",
+        "states": [
+          "waiting",
+          "done"
+        ]
+      },
+      {
+        "actions": [
+          "fix_it",
+          "explain_more"
+        ],
+        "content": "rescue",
+        "fields": [
+          "subject",
+          "failure",
+          "cause",
+          "evidence",
+          "fix"
+        ],
+        "kind": "rescue",
+        "label": "Rescue",
+        "states": [
+          "proposed",
+          "acting",
+          "done"
+        ]
+      },
+      {
+        "actions": [
+          "go",
+          "not_that"
+        ],
+        "content": "readback",
+        "fields": [
+          "readback_id",
+          "heard",
+          "action",
+          "target_name",
+          "status",
+          "expires_at"
+        ],
+        "kind": "readback",
+        "label": "Read-back",
+        "states": [
+          "waiting",
+          "acting",
+          "done",
+          "dismissed",
+          "cancelled"
+        ]
+      },
+      {
+        "actions": [
+          "comment"
+        ],
+        "content": "markdown",
+        "fields": [
+          "markdown",
+          "headings"
+        ],
+        "kind": "spec",
+        "label": "Spec",
+        "states": [
+          "proposed",
+          "done"
+        ]
+      },
+      {
+        "actions": [
+          "open"
+        ],
+        "content": "navigate",
+        "fields": [
+          "destination",
+          "object",
+          "why",
+          "accepted_by"
+        ],
+        "kind": "navigate",
+        "label": "Navigate",
+        "states": [
+          "proposed",
+          "accepted",
+          "done",
+          "dismissed"
+        ]
+      }
+    ],
+    "card_references": [
+      "agent",
+      "workflow",
+      "run",
+      "schedule",
+      "pull_request",
+      "issue"
+    ],
+    "card_states": [
+      "proposed",
+      "acting",
+      "waiting",
+      "done",
+      "failed",
+      "cancelled",
+      "dismissed",
+      "accepted"
+    ],
+    "common_actions": [
+      "open_full_size",
+      "comment",
+      "send_comments",
+      "ask_about",
+      "dismiss"
+    ],
+    "deciding_actions": [
+      "pick",
+      "mix",
+      "pick_frame",
+      "approve",
+      "dismiss"
+    ],
+    "navigate_destinations": [
+      "overview/now",
+      "work/running",
+      "work/workflows",
+      "work/timeline",
+      "work/timeline/outcomes",
+      "work/runs",
+      "automate/schedules",
+      "automate/approvals",
+      "capacity/pools",
+      "capacity/profiles",
+      "capacity/catalogue",
+      "capacity/holders",
+      "capacity/accounts",
+      "capacity/llm-providers",
+      "capacity/llm-providers/plans",
+      "capacity/llm-providers/api-keys",
+      "capacity/account-health",
+      "capacity/quota",
+      "capacity/jev-usage",
+      "capacity/api-reads",
+      "config/github",
+      "config/repositories",
+      "config/secrets",
+      "config/mcp-servers",
+      "config/plugins",
+      "config/people",
+      "config/workspace",
+      "settings/profile",
+      "voice/talk",
+      "voice/projects",
+      "voice/preferences",
+      "voice/settings",
+      "voice/telemetry",
+      "help"
+    ]
+  }
+}

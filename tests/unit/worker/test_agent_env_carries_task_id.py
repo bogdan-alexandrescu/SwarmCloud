@@ -19,27 +19,23 @@ What holds now, one test per property:
    a secret;
 3. the generic runner's command carries it when it is set, and not when it is
    not -- CI never sets it;
-4. the name the worker passes is the name `vitestWorkers.ts` gates on.
+That the name the worker passes is the one `vitestWorkers.ts` gates on is the
+console's `contract.constants.test.ts`, through the constants generated from
+`cliagent._PLAIN_PASSTHROUGH` (part of #72).
 
-MUTATIONS: drop "SWARM_TASK_ID" from `cliagent._PLAIN_PASSTHROUGH` (tests 1,
-2 and 4); move it to `_SENSITIVE_PASSTHROUGH` (test 2); drop it from
-`generic._build_env` (test 3); rename `env.SWARM_TASK_ID` in vitestWorkers.ts
-(test 4).
+MUTATIONS: drop "SWARM_TASK_ID" from `cliagent._PLAIN_PASSTHROUGH` (tests 1
+and 2); move it to `_SENSITIVE_PASSTHROUGH` (test 2); drop it from
+`generic._build_env` (test 3).
 """
 
 from __future__ import annotations
 
 import dataclasses
 import json
-import re
-from pathlib import Path
 
 from agent_worker.runners import claude_code, cliagent, generic
 
 from test_runners import make_ctx
-
-REPO = Path(__file__).resolve().parents[3]
-VITEST_WORKERS = REPO / "apps" / "swarm-ui" / "src" / "vitestWorkers.ts"
 
 #: A stand-in for `claude --print`: records the SWARM_TASK_ID it was started
 #: with, then reports a successful turn.
@@ -96,13 +92,3 @@ def test_the_generic_runner_carries_swarm_task_id(tmp_path, monkeypatch):
     # CI and a laptop have no task id, and vitest must keep its default there.
     monkeypatch.delenv("SWARM_TASK_ID")
     assert "SWARM_TASK_ID" not in generic._build_env(make_ctx(tmp_path, {}))
-
-
-def test_the_name_the_worker_passes_is_the_one_vitest_workers_reads():
-    source = VITEST_WORKERS.read_text()
-    gated = re.findall(r"if \(!env\.([A-Z_][A-Z0-9_]*)\) return undefined", source)
-    assert gated, f"{VITEST_WORKERS} no longer gates agentMaxWorkers on an env variable"
-    for name in gated:
-        assert name in cliagent._PLAIN_PASSTHROUGH, (
-            f"vitestWorkers.ts gates on {name}, which the CLI runner does not pass to the agent"
-        )
