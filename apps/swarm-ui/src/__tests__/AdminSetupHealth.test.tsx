@@ -12,7 +12,8 @@
 // WHAT EACH CASE HOLDS:
 //   * the rows here and the fixture build's rows carry exactly the keys
 //     doctor.py's Finding.to_json writes, and statuses exitcodes.py defines
-//     (read from the Python source, so a writer change turns this red);
+//     (read from the live objects into generated/constants/server.json, so a
+//     writer change fails the generator's --check until it is regenerated);
 //   * met draws passed, unmet draws failed, unknown draws not checked;
 //   * an unmet finding shows what the probe saw, the doctor's fix and its
 //     repair command; an unknown one says it could not be checked and why;
@@ -21,7 +22,7 @@
 //   * a row in the console's own shape is NOT read as a pass or a finding;
 //   * no doctor run says the hourly doctor has not run yet, never that it
 //     is off (every install turns it on: tfvars.py's SCHEDULED_DOCTOR_SHIPPED,
-//     read from the Python source), and is not drawn as healthy;
+//     from generated/constants/server.json), and is not drawn as healthy;
 //   * NO EXPLANATORY PROSE ON THE SURFACE (the owner's standing rule, 2026-11-05):
 //     why a check could not look is the tooltip of a tick beside its title,
 //     "no repair command" is the title's tooltip, and what Health is sits

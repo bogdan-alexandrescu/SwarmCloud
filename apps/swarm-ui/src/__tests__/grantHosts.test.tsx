@@ -10,7 +10,7 @@
 //   * a tick with no host, a list emptied on an enabled grant, a 17th host
 //     and a host `SLOT_HOST` refuses are each refused before any call, in the
 //     API's own words;
-//   * the form's rule is the API module's rule, read from its source.
+//   * the form's rule is the API module's rule, as generated/constants/server.json holds it.
 //
 // Fixtures only; no network.
 

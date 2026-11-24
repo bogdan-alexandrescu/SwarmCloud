@@ -6,8 +6,8 @@
 //     the group, `--project` (required there, a placeholder here, since the
 //     page does not know the project), `--display-name` and `--first-admin`;
 //     never `--name`, `--admin` or `--invite`, which that parser refuses
-//     (the flags are read from the Python source, so a parser change turns
-//     this red);
+//     (the flags are read from that parser into generated/constants/server.json,
+//     so a parser change fails the generator's --check until regenerated);
 //   * once a team with invites is asked for, the form links the group's
 //     members page in Google Admin the route answered with, where the
 //     invites are added; with no invite there is no link.
