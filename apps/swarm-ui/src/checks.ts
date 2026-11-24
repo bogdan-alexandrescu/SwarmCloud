@@ -39,7 +39,7 @@ import { accountName } from './accountName'
  * silence cannot be reviewed by reading. A check that never fires looks exactly
  * like a platform that is healthy, so this layer has to be exercised -- and it
  * can be, from `node --test`, only because nothing in here imports React, the
- * DOM, or a clock it was not handed. `apps/swarm-ui/test/checks.test.mjs` runs
+ * DOM, or a clock it was not handed. A checks test runs
  * it; `Overview.tsx` keeps `AttentionBody` and `ProblemRow`, which draw what
  * this returns.
  *
@@ -759,7 +759,7 @@ function namedWorkflows(failed: Task[]): [string, number][] {
  * 500s, and 600 was the first round number clear of all three. Contract
  * request 37 (archived pull request 404) raised the deadline to 480: 600 stayed above it and above
  * the p90 cold start individually, the two bounds
- * tests/unit/control_plane/test_overview_workflow_checks.py holds, but was no
+ * an overview workflow-checks guard test holds, but was no
  * longer above their sum (about 639s) -- a workflow could then read as
  * stalled before a lease that merely missed the 480s deadline on a slow cold
  * start could have been fenced and redispatched. archived pull request 404 left the number at 600

@@ -3,7 +3,7 @@
  *
  * WHY THIS FILE EXISTS. 588 interactive elements were exercised by click and
  * never by Tab, and the sweep that establishes otherwise
- * (`src/__tests__/keyboard.test.tsx`) has to agree with the components about
+ * (the keyboard test) has to agree with the components about
  * which elements are tab stops -- otherwise the sweep measures its own
  * definition rather than the app's. Every restatement of a rule in this
  * repository has since drifted, so the drawer's focus trap, the help card's
@@ -11,7 +11,7 @@
  *
  * THAT MAKES THE DEFINITION ITSELF UNTESTED BY THE SWEEP, which is the honest
  * cost of sharing it: a sweep that imports the thing it measures cannot notice
- * the thing breaking. `keyboard.test.tsx` therefore drives `tabStops` over a
+ * the thing breaking. The keyboard test therefore drives `tabStops` over a
  * hand-built fixture with a known answer, first, before it renders anything --
  * so a broken definition fails by name rather than quietly emptying every
  * later count.
@@ -135,7 +135,7 @@ export function isTabStop(el: Element): boolean {
  * DOCUMENT ORDER IS THE TAB ORDER **because this app declares no positive
  * `tabindex`**, and that is an assertion rather than a hope: a positive
  * tabindex hoists an element to the front of the document's sequence
- * regardless of where it sits, and `keyboard.test.tsx` fails on any element
+ * regardless of where it sits, and the keyboard test fails on any element
  * that declares one. If that assertion is ever relaxed, this function has to
  * grow the two-bucket sort the spec describes -- so the constraint is recorded
  * here, next to the code that depends on it.

@@ -1,6 +1,6 @@
 // GENERATED from docs/user-guide/*.md by `node apps/swarm-ui/guide-sync.mjs`.
-// Edit the Markdown, then run that command; src/__tests__/guide.test.tsx
-// fails while this file and the Markdown differ.
+// Edit the Markdown, then run that command; the guide test fails while
+// this file and the Markdown differ.
 
 export const GUIDE_SOURCES: Readonly<Record<string, string>> = {
   "answer-questions": "# Answer a question from your work\n\nAn agent or a workflow step can stop and ask a person. It waits, using no capacity, until someone answers.\n\n## In the console\n\n1. Open [Home](/). Questions show in the card **Needs you**.\n2. Read the question, pick or type your answer, and press **Send answer**.\n   You should see \"Answer sent to …\". The agent goes back to waiting for room, then runs on.\n3. A workflow step that waits for input shows a form on the workflow's page. Fill it in and press **Send**.\n   A review step offers **Approve** or **Request changes** instead.\n\nAny member of the workspace may answer. The first answer wins.\n\n## In Claude Code\n\n1. `/sc inputs` lists the workflow steps waiting for an answer.\n2. `/sc answer wf_… step-id` opens a form in Claude Code. You type the answer; Claude Code never writes it for you.\n3. When an agent you started asks questions, Claude Code puts them to you as a choice and sends your pick.\n",

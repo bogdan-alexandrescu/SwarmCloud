@@ -3300,8 +3300,8 @@ function CriticalPathNote({
  *     workflow's widest stage be drawn in full. A five-step fan is 1,407px of
  *     full nodes and 852px of `details` ones, so it is DRAWN rather than
  *     summarised -- and what it costs is the four run figures, which are one
- *     click away on the step itself. Nothing is scaled: `typescale.test.ts`
- *     holds a floor under the type and a node scaled to fit is texture.
+ *     click away on the step itself. Nothing is scaled: the type-scale
+ *     test holds a floor under the type and a node scaled to fit is texture.
  *  2. STAGE COLLAPSING. Thirteen nodes are 2,150px even at the smallest tier,
  *     and no tier fixes that, so a stage that still does not fit is drawn as
  *     one band that says what is in it by state (`StageBand`) and expands on
@@ -5424,7 +5424,7 @@ function NodeSource({ f, pending }: { f: StepFigures; pending: boolean }) {
  *
  * CALLED, NOT RENDERED (V203, archived issue 1427), so the table's `head` is null when it is
  * silent; it keeps its component's name because
- * test_workflow_step_measurements.py reads this function by it.
+ * the workflow step-measurements test reads this function by it.
  */
 function SampleNote(usage: WorkflowUsage, workflow: Workflow): ReactNode {
   // THIS WORKFLOW'S TASKS ONLY (QA G3-05). The read is the board's -- every

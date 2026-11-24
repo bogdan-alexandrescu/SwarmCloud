@@ -23,7 +23,7 @@ interface ImportMetaEnv {
    * the build machine's, and a release builds one bundle for every
    * deployment. images/swarm-ui/Dockerfile declares no such ARG; the running
    * container writes `/config.json` from its ENVIRONMENT variable instead, and
-   * src/__tests__/runtimeConfig.test.ts holds both ends.
+   * the runtime-config test holds both ends.
    *
    * DECLARED, NEVER INFERRED. With none of the four set, the header says
    * ENVIRONMENT UNKNOWN and treats the tab as production -- loudly -- rather

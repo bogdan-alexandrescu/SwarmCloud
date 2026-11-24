@@ -1558,7 +1558,7 @@ function AgentStdout({ v, reading, now }: { v: LogFeed; reading: ScreenReading; 
  * THE ONE PLACE A LOG IS DRAWN. The Details pane drew the runner's two streams
  * in a panel of its own with these same rows; the owner's decision of
  * 2026-09-25 (#184) put the runner (platform) log in Artifacts › Logs only.
- * EXPORTED so `runfiles.flat.test.tsx` holds the rows' encodings here, where
+ * EXPORTED so a run-files test holds the rows' encodings here, where
  * the runner's log now lives.
  */
 export function StreamsFrom({

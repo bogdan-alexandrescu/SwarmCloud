@@ -37,8 +37,8 @@ import { bytesLabel, timeAgo, type ArtifactContent } from './types'
  *
  * The loaders live HERE rather than in api.ts so this lane did not have to
  * edit a file another lane is changing in parallel. They read the one
- * `USE_FIXTURES` flag api.ts exports, and `test_checkpoint_content.py` holds
- * their path literals to the router the same way `test_runtimes_screen.py`
+ * `USE_FIXTURES` flag api.ts exports, and a checkpoint-content guard test holds
+ * their path literals to the router the same way a runtimes-screen guard test
  * holds api.ts's.
  */
 

@@ -829,7 +829,7 @@ function Pool({
                 this panel says that work submitted now parks and waits instead of
                 failing, and an operator who assumes the second will go looking
                 for an error that was never raised.
-                `honesty.prose.test.tsx` pins a `?` to this panel. */}
+                A prose test pins a `?` to this panel. */}
             {/* AN UNREADABLE DOCUMENT IS NOT A ZERO (rendered 2026-10-25): the
                 page head said "1 document unreadable, so this list is short"
                 while this panel said "No accounts registered" with the zero
@@ -1618,7 +1618,7 @@ export interface HoldHistory {
 /**
  * The two reads, here rather than in api.ts because nothing else calls them.
  * `() => false`: an account nobody holds is a real answer, rendered inside the
- * panel, not a missing response. `test_every_path_the_ui_calls_exists_on_this_api`
+ * panel, not a missing response. A guard test
  * reads this file as well as api.ts, so a path written here is held to the
  * router the same way.
  */
@@ -5410,7 +5410,7 @@ function Remove({ account, reload }: { account: Account; reload: () => void }) {
  * tilde, a row count still says how many documents it is short by, and a row
  * nothing can be assigned on still carries `.ctl-mark` beside its state chip.
  * A reader who never opens one of these links can still tell a missing figure
- * from a measured zero; `src/__tests__/honesty.prose.test.tsx` renders this
+ * from a measured zero; a prose test renders this
  * screen with every card closed and asserts it.
  *
  * B4.4 narrowed the index below to the six topics that have no `?` anchor on
@@ -5465,7 +5465,7 @@ const ACCOUNT_TOPICS: readonly TopicId[] = [
   // here: the panel that lost its `?` for it already prints "5H, 7D and CLEARS
   // above are unmeasured, not zero" in words, which is the whole claim. It is
   // also what keeps this row inside the screen's budget --
-  // `prose.budget.capacity.test.tsx` caps Accounts at 250 rendered words and
+  // a prose-budget test caps Accounts at 250 rendered words and
   // measured 227, and the two titles below are ten of the twenty-three left.
   'advisory-vs-lease', // the agent count is the broker's, not the lease's
   'never-assigned-pool', // nothing has ever been assigned, which is not idle

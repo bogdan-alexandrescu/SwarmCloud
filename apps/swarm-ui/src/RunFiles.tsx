@@ -32,9 +32,8 @@ import {
  * paging, the three-state `status` discipline, a comment explaining why no
  * empty predicate is passed -- and NOTHING HAS EVER CALLED THEM. The routes
  * behind them exist too (`GET /v1/tasks/{id}/checkpoints`,
- * `GET /v1/tasks/{id}/logs`, with `tests/unit/control_plane/
- * test_checkpoint_read_path.py` and `test_log_read_path.py` over both). Both
- * ends of the seam were built and the middle was never joined, which is the
+ * `GET /v1/tasks/{id}/logs`, with read-path tests over both). Both ends of the
+ * seam were built and the middle was never joined, which is the
  * defect class this repository keeps producing: nothing about it looks broken.
  *
  * It also retires a claim the product was making that had stopped being true.

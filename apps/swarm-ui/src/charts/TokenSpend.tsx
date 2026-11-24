@@ -40,7 +40,7 @@ export function usdText(v: number): string {
  * it is still plotted as an ABSENCE rather than as a measured zero: nothing
  * wrote `cost_usd: 0` on that document, and a client that supplies the zero is
  * re-deriving a measurement the API never made. That is the defect class
- * `test_blocker_ui_surface.py` §1 exists to catch, in a chart.
+ * the blocker UI-surface test's first section exists to catch, in a chart.
  */
 export function whyNoCost(a: AttemptRow, profile: string): string {
   const reports = profile === 'claude-code' || profile === 'codex'

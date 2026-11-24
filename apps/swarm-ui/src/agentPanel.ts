@@ -3,7 +3,7 @@ import { phoneWidth } from './HelpCard'
 // THE AGENT PANEL'S HAND-OFF TO THE LIST, apart from Agents.tsx: AgentSplit
 // calls it, and the drawer tests replace '../Agents' with a mock of
 // AgentsScreen alone, so AgentSplit must not import from Agents.tsx (as
-// agent-split/head.tsx does not, qa1fix32.head.test.tsx).
+// agent-split/head.tsx does not, and a head test holds that).
 
 /**
  * OPENING ONE AGENT READS THAT AGENT FIRST (load-speed investigation, the

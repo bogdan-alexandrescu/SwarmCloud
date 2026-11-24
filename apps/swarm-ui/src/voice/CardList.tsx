@@ -28,7 +28,7 @@
  * only its own card; a row that comes before its card is used when it comes.
  *
  * ONLY THE CATALOGUE IS DRAWN (cards.ts, held to swarm-api's schema by
- * tests/unit/control_plane/test_voice_cards.py). A card of a kind the
+ * a guard test). A card of a kind the
  * catalogue does not list is not drawn, and the console logs it once per
  * kind. A renderer is handed only the body fields its kind names and only
  * the actions its kind allows. The diagram, mock-up, proposal, credential and
