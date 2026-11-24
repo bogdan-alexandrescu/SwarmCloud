@@ -5876,7 +5876,7 @@ a bisection. So the pre-publish gate runs both, ahead of the guard script
 
 | Check | Command | Runs when the change touches | Budget |
 |---|---|---|---|
-| `api-types` | `uv run python scripts/gen_api_types.py --check` | a file the generator reads, as the generator itself prints them with `python3 scripts/gen_api_types.py --inputs` (the script, the repository packages building the document imports, `uv.lock`, the generated file) | 45 s |
+| `api-types` | `uv run python scripts/gen_api_types.py --check` | a file the generator reads, as the generator itself prints them with `python3 scripts/gen_api_types.py --inputs` (the script, the repository packages building the document imports, `uv.lock`, the generated file, and every constants group's inputs and file) | 45 s |
 | `test-pointers` | `python3 scripts/check_test_pointers.py --root .` (the whole tree, as the train runs it) | anything under `apps/` or `tests/` (a new test's name can turn a comment nobody touched into a pointer) | 15 s |
 
 **The trigger list is the generator's, not the gate's.** `INPUTS` in
@@ -5886,6 +5886,45 @@ modules that building the document actually loads, in a fresh interpreter;
 `--inputs` prints the list with the standard library only, so the trigger
 costs one interpreter start. A generator that cannot print it is checked on
 every change.
+
+**The same command writes and checks the constants files** (part of #72).
+Beside `api-types.ts`, `scripts/gen_api_types.py` writes one JSON file per
+*constants group* under `apps/swarm-ui/src/generated/constants/`: the API's
+codes and enums -- task states, park and blocked reasons, event types, end
+causes, credential tiers, resource-class units -- for the console to read
+instead of restating them. The reason is the same as for the types: a
+TypeScript list copied by hand from a Python enum compiles and passes its own
+tests after Python gains a member, and the console then shows the new state
+as unknown, or refuses it, with nothing failing. Read from the live objects,
+the copy cannot disagree without `--check` saying so. `--check` exits 1
+naming every stale or missing file and every JSON file there that no group
+writes (a removed group's leftover); a plain run writes them all and removes
+such a leftover. CI runs the same `--check` in `quick-checks` (the step
+`the console's generated API types and constants are current`, under the
+`lock / contract / format / bridge install` name-keeper, which `ci-gate`
+needs), and `tests/unit/scripts/test_api_constants.py` holds each committed
+file equal to what its group builds.
+
+**A group** is a module `scripts/api_constants/<group>.py`, discovered in
+sorted order, with two names:
+
+* `INPUTS`, a tuple of the repository paths its output is a function of (a
+  directory ends in `/`). `--inputs` prints them with the generator's own,
+  so the gate's trigger covers them; the module therefore imports only the
+  standard library at module level, and the test fails if importing a group
+  imports an application package.
+* `build()`, returning a JSON-serialisable dict. It imports application code
+  inside the function and reads live Python objects -- enum members,
+  constants, a parser's actions, a function's return value -- never source
+  text: a regex over a `.py` file is the drift this replaces.
+
+The file is written with sorted keys, sets as sorted lists, a trailing
+newline and a first key `_generated` naming the regenerate command. **To add
+a group**: write the module, run `uv run python scripts/gen_api_types.py` from
+the repository root, commit the module and the JSON it writes together, and
+add a test beside the group's code that compares the file with the objects
+it reads (the `states` group's is in `test_api_constants.py`). Never edit a
+file under `generated/` by hand.
 
 **A failure goes to the fix turn with its fix.** A stale file is handed back
 with the one command that fixes it: run `uv run python scripts/gen_api_types.py`
