@@ -1142,8 +1142,17 @@ class LiveSession:
         result = await self._planner.delegate(person=self.person, grant=self.grant,
                                               transcript=transcript, delegation_id=delegation_id,
                                               model=self.planner_model, request=request or None)
+        if self.paused:
+            # It ran on while the session paused: nothing is kept warm for it.
+            self.cool_planner("paused")
         await self._result(delegation_id, result.spoken)
         self._traced(transcript, request, result, result.spoken)
+
+    def cool_planner(self, why: str) -> None:
+        """Have the planner let this session's account and child go (planner.cool)."""
+        cool = getattr(self._planner, "cool", None)
+        if cool is not None:
+            cool(self.voice_id, why)
 
     async def _result(self, delegation_id: str, spoken: str) -> None:
         """The planner's result, through the update queue (updates.py) when one
@@ -1654,7 +1663,8 @@ class Sessions:
         """THE PAUSE (§3.12.7): say the sentence, wait for it (at most
         `pause_say_seconds`), close the Live session keeping its usage seconds,
         and tell the sink `session.state: paused`. The voice session, its grant,
-        its lease and its planner turns keep running. With a delegation in
+        its lease and its planner turns keep running; the planner's warm account
+        and child (plannerwarm.py) are let go. With a delegation in
         flight it says PAUSE_SENTENCE for it; with none, PAUSE_IDLE_SENTENCE, for
         the newest delegation if there was one. The person speaking, or the
         delegated work in flight finishing, before the close leaves the session open."""
@@ -1686,6 +1696,8 @@ class Sessions:
             if not session.paused and not session.ended:
                 session.spoken_at = session._clock()
                 session.check_quiet()
+        # The planner's account and child go back; a turn it is running finishes first.
+        session.cool_planner("paused")
         log.info("voice session %s: paused after %.0f s of silence (%s s talked)", session.voice_id,
                  session.pause_after or 0, f"{session.talk_seconds:g}")
         await session.emit({"type": SESSION_STATE, "state": PAUSED, "paused_at": session.paused_at,

@@ -13,8 +13,9 @@ ONE TURN, as §3.3 lays it out. When the live voice delegates (live.py sees
      `show_diff`, `show_log`, `show_mockup`, `approve_mockup`,
      `approved_mockups`, `add_note`, `notes_to_work`) and `speak`, whose
      `point_at` reaches the page as a `focus` (voice-it-own-speech.md §8.5);
-  3. leases ONE Claude subscription account from the quota broker for the
-     person's own workspace (plannerlease.py), released in a finally whatever
+  3. runs on the session's warm account and child (plannerwarm.py; "KEPT WARM"
+     below), or leases ONE Claude subscription account from the quota broker for
+     the person's own workspace (plannerlease.py), released in a finally whatever
      the turn does; a full pool is a spoken refusal, never a wait;
   4. runs Claude Opus 5.5 as headless Claude Code on that account
      (claudeturn.py), its only tools those of step 2 through a local MCP
@@ -50,7 +51,7 @@ recorded on the turn's result. swarm-api refuses an unknown kind again on write
 THE ACCOUNT (§3.6; the owner, 2 November 2026: "we have a pool of account for
 anthropic, lets use one of the accounts there"). The turn runs on a pool
 lease, as a worker's agent does, and counts one agent on that account while it
-runs. swarm-voice reads no Anthropic secret and holds no accessor grant: the
+runs and while it is kept warm. swarm-voice reads no Anthropic secret and holds no accessor grant: the
 broker hands the lease's token with the lease, and it goes to the Claude Code
 child's environment alone (CLAUDE_CODE_OAUTH_TOKEN), never to the Messages API
 from here. When the lease lands on an Anthropic developer key
@@ -66,6 +67,16 @@ token counts, the model and `billing: "subscription"`, and the ledger
 and the day's $300 by its estimate at Opus prices, shown as not measured --
 never as $0. A turn on a key is billed per token (`billing: "api_key"`), so the
 ledger prices its usage. `usage.tier` names the tier either way.
+
+KEPT WARM (plannerwarm.py). A session's delegated turns share one lease and one
+child while it is active: the first starts them, and the session's end
+(`forget`), a pause or a spend cap (`cool`), WARM_IDLE_SECONDS without a turn
+and the shutdown (`aclose`) release both. The turn itself is the same: its own
+message with the transcript, the request and the brief fenced, its own tools
+and result, the same TURN_SECONDS and the same `usage`. A warm child that is
+dead, silent, spent or on a lost hold leaves the turn to a lease and a child of
+its own (`_cold`), within the same TURN_SECONDS; a turn that has put something
+on screen, done an act or spoken is never run again.
 
 THE PROJECT BRIEF (the plan item "voice, better answers"). Before the model
 runs, the turn reads the project's status (tools_read `project_status`, the
@@ -96,10 +107,10 @@ from typing import Any
 
 import httpx
 
-from . import actledger, prompts, tools_act, tools_read, tools_visual
+from . import actledger, plannerwarm, prompts, tools_act, tools_read, tools_visual
 from . import updates as vupdates
 from .accountlease import TIER_PLAN, VoiceBroker, build_broker
-from .claudeturn import ClaudeCode
+from .claudeturn import ChildGone, ChildOutcome, ClaudeCode
 from .credential import CredentialError
 from .grant import SessionGrant
 from .plannerlease import NO_ACCOUNTS_REGISTERED, PlannerAccounts, PoolFull
@@ -386,8 +397,11 @@ class Planner:
     def __init__(self, http: httpx.AsyncClient, *, api_base: str, id_tokens: tools_read.IdTokens,
                  accounts: PlannerAccounts, claude: ClaudeCode | None = None,
                  max_rounds: int = MAX_ROUNDS, turn_seconds: float = TURN_SECONDS,
-                 updates: vupdates.Board | None = vupdates.BOARD) -> None:
+                 updates: vupdates.Board | None = vupdates.BOARD,
+                 warm: plannerwarm.WarmPlanners | None = None) -> None:
         self._http = http
+        #: Each session's warm account and child; None runs every turn cold.
+        self._warm = warm
         #: THE UPDATES (updates.py): told the tool each call makes (a check-in's
         #: phrase) and each card drawn (its kind and title); never its arguments.
         self._updates = updates
@@ -402,8 +416,21 @@ class Planner:
         self._acts: dict[str, actledger.ActLedger] = {}
 
     def forget(self, session_id: str) -> None:
+        """The session ended: nothing of it is kept."""
         self._locks.pop(session_id, None)
         self._acts.pop(session_id, None)
+        self.cool(session_id, "the session ended")
+
+    def cool(self, session_id: str, why: str) -> None:
+        """Let the session's warm account and child go (paused, at a spend cap):
+        now, or after the turn it is running; its next turn starts afresh."""
+        if self._warm is not None:
+            self._warm.cool(session_id, why)
+
+    async def aclose(self) -> None:
+        """The shutdown: every warm account and child is given back."""
+        if self._warm is not None:
+            await self._warm.aclose()
 
     async def write_trace(self, grant: SessionGrant | None, body: dict[str, Any]) -> bool:
         """Send one debug turn's trace to swarm-api (trace.py); never raises."""
@@ -442,6 +469,7 @@ class Planner:
             log.warning("planner refused: %s", exc)
             return TurnResult(delegation_id, SAY_NO_GRANT, error=str(exc))
         if not admitted and await self._capped(api):
+            self.cool(api.session_id, "a spend cap")
             return TurnResult(delegation_id, CAP_SENTENCES[CAPPED_REASON])
         lock = self._locks.setdefault(api.session_id, asyncio.Lock())
         async with lock:
@@ -484,6 +512,8 @@ class Planner:
         except tools_read.ApiRefused as exc:
             log.warning("voice session %s: the project brief was not written: %s",
                         api.session_id, exc)
+            if exc.status == 409 and exc.reason in CAP_SENTENCES:
+                self.cool(api.session_id, "a spend cap")
             return
         except asyncio.TimeoutError:
             log.warning("voice session %s: the project brief's write ran out of time",
@@ -546,30 +576,44 @@ class Planner:
                  *tools_act.tool_schemas(), prompts.speak_tool()]
         brief = await self._read_brief(api)
         result.brief_read = brief is not None
+        claude = self._claude.with_model(model) if model else self._claude
+        #: The account the warm child left as spent, its tier and its reason.
+        left: tuple[str, str | None, str] | None = None
+        spare: dict[str, int] = {}
         try:
-            async with self._accounts.lease(person=person, voice_session_id=api.session_id) as held:
-                claude = self._claude.with_model(model) if model else self._claude
-                while True:
-                    result.tier, result.spent, result.error = held.tier, None, None
-                    await self._run(api, result, held.bearer.reveal(), tools, kinds, transcript,
-                                    claude=claude, request=request, brief=brief)
-                    if result.spent is None:
-                        return result
-                    # The account is spent and the turn did nothing yet: the
-                    # next tier runs it again, within the same TURN_SECONDS
-                    # (§5.3). With no tier left the refusal below stands.
-                    spent_tier = held.tier
-                    try:
-                        await held.move()
-                    except PoolFull as exc:
-                        log.warning("voice session %s: the planner's %s tier is spent (%s) and no tier is "
-                                    "left: %s", api.session_id, spent_tier, result.spent, exc.reason)
-                        result.spoken = SAY_POOL_FULL
-                        result.error = f"the {spent_tier} tier is spent ({result.spent}) and no tier is left"
-                        return result
-                    log.info("voice session %s: the planner's %s tier is spent (%s); running the turn on the "
-                             "%s tier", api.session_id, spent_tier, result.spent, held.tier)
+            if self._warm is not None:
+                try:
+                    async with self._warm.turn(
+                            voice_session_id=api.session_id, person=person, claude=claude, system=prompts.SYSTEM,
+                            tools=tools, known=api.known_secrets(),
+                            key=plannerwarm.key_of(voice_session_id=api.session_id, person=person,
+                                                   project_id=api.project_id, grant=api.known_secrets(),
+                                                   model=claude.model, tools=tools)) as held:
+                        if held is not None:
+                            result.tier = held.lease.tier
+                            await self._run(api, result, held.lease.bearer.reveal(), tools, kinds, transcript,
+                                            claude=claude, request=request, brief=brief, warm=held)
+                            if result.spent is None:
+                                return result
+                            held.failed = True
+                            left = held.lease.account_id, held.lease.tier, result.spent
+                except plannerwarm.ColdAgain as exc:
+                    log.info("voice session %s: the warm planner failed; the turn runs on its own lease",
+                             api.session_id)
+                    spare = exc.usage
+                # What the attempt noted and did not do: the cold turn's own follow.
+                for noted in (result.reads, result.read_targets, result.refused, result.drawn,
+                              result.frames_dropped):
+                    noted.clear()
+            await self._cold(api, result, tools, kinds, transcript, person=person, claude=claude,
+                             request=request, brief=brief, left=left)
+            for name, value in spare.items():
+                # The failed attempt's tokens were used too: the ledger counts them.
+                result.usage[name] = result.usage.get(name, 0) + value
+            return result
         except PoolFull as exc:
+            if left is not None:
+                return self._no_tier_left(api, result, left[1], left[2], exc)
             log.warning("voice session %s: no planner account: %s", api.session_id, exc.reason)
             result.spoken = SAY_NO_POOL if exc.reason == NO_ACCOUNTS_REGISTERED else SAY_POOL_FULL
             result.error = f"the pool leased no account ({exc.reason})"
@@ -579,9 +623,46 @@ class Planner:
             result.spoken, result.error = SAY_NO_LEASE, str(exc)
             return result
 
+    async def _cold(self, api: tools_read.SwarmApi, result: TurnResult, tools: list[dict], kinds: set[str],
+                    transcript: list[tuple[str, str]], *, person: str, claude: ClaudeCode, request: str | None,
+                    brief: str | None, left: tuple[str, str | None, str] | None) -> TurnResult:
+        """Run the turn on a lease and a child of its own, both gone when it
+        ends. Raises PoolFull or CredentialError when the lease is refused."""
+        exclude: dict[str, Any] = {"exclude": (left[0],)} if left is not None else {}
+        async with self._accounts.lease(person=person, voice_session_id=api.session_id, **exclude) as held:
+            while True:
+                result.tier, result.spent, result.error = held.tier, None, None
+                await self._run(api, result, held.bearer.reveal(), tools, kinds, transcript,
+                                claude=claude, request=request, brief=brief)
+                if result.spent is None:
+                    return result
+                # The account is spent and the turn did nothing yet: the
+                # next tier runs it again, within the same TURN_SECONDS
+                # (§5.3). With no tier left the refusal below stands.
+                spent_tier = held.tier
+                try:
+                    await held.move()
+                except PoolFull as exc:
+                    return self._no_tier_left(api, result, spent_tier, result.spent, exc)
+                log.info("voice session %s: the planner's %s tier is spent (%s); running the turn on the "
+                         "%s tier", api.session_id, spent_tier, result.spent, held.tier)
+
+    @staticmethod
+    def _no_tier_left(api: tools_read.SwarmApi, result: TurnResult, tier: str | None, spent: str,
+                      exc: PoolFull) -> TurnResult:
+        log.warning("voice session %s: the planner's %s tier is spent (%s) and no tier is left: %s",
+                    api.session_id, tier, spent, exc.reason)
+        result.spoken = SAY_POOL_FULL
+        result.error = f"the {tier} tier is spent ({spent}) and no tier is left"
+        return result
+
     async def _run(self, api: tools_read.SwarmApi, result: TurnResult, token: str, tools: list[dict],
                    kinds: set[str], transcript: list[tuple[str, str]], *, claude: ClaudeCode,
-                   request: str | None = None, brief: str | None = None) -> TurnResult:
+                   request: str | None = None, brief: str | None = None,
+                   warm: plannerwarm.Held | None = None) -> TurnResult:
+        """Run the model once for `result`: on `warm`'s child when given, else on
+        a child of the turn's own. Raises ColdAgain when `warm`'s child failed
+        before the turn did anything."""
         known = (token, *api.known_secrets())
         said: list[str] = []
         done = asyncio.Event()
@@ -596,11 +677,13 @@ class Planner:
                 done.set()
             return text, is_error
 
+        prompt = prompts.turn_message(transcript, request=request, secrets_=known, brief=brief)
         try:
-            outcome = await claude.run(
-                prompt=prompts.turn_message(transcript, request=request, secrets_=known,
-                                            brief=brief), system=prompts.SYSTEM, token=token,
-                tools=tools, handler=handler, known=known, done=done)
+            if warm is not None:
+                outcome = await self._on_warm(warm, result, said, prompt, handler, done)
+            else:
+                outcome = await claude.run(prompt=prompt, system=prompts.SYSTEM, token=token,
+                                           tools=tools, handler=handler, known=known, done=done)
         except OSError as exc:
             log.warning("voice session %s: the planner could not start Claude Code (%s)", api.session_id,
                         type(exc).__name__)
@@ -627,6 +710,30 @@ class Planner:
                  api.session_id, len(result.cards), ",".join(c.get("kind", "?") for c in result.cards),
                  len(result.refused), len(result.reads))
         return result
+
+    @staticmethod
+    async def _on_warm(warm: plannerwarm.Held, result: TurnResult, said: list[str], prompt: str, handler: Any,
+                       done: asyncio.Event) -> ChildOutcome:
+        """The turn on the session's warm child, which a turn that failed on it
+        never leaves for the next."""
+        gone = False
+        try:
+            outcome = await warm.say(prompt, handler=handler, done=done)
+        except ChildGone as exc:
+            gone, outcome = True, ChildOutcome(is_error=True, usage=exc.usage)
+        if said:
+            # It answered: its own words stand, whatever the child did next.
+            warm.failed = gone
+            return outcome
+        if not outcome.is_error:
+            return outcome
+        warm.failed = True
+        untouched = not result.cards and not result.acts and not result.visuals
+        # A child just started that answered with an error is today's failure:
+        # running it again would only buy the same one.
+        if untouched and outcome.spent is None and (gone or warm.reused):
+            raise plannerwarm.ColdAgain(outcome.usage)
+        return outcome
 
     async def _tool(self, api: tools_read.SwarmApi, use: dict, kinds: set[str], known: tuple[str, ...],
                     result: TurnResult, *, transcript: list[tuple[str, str]] | None = None,
@@ -771,5 +878,6 @@ def build_planner(http: httpx.AsyncClient, *, broker: VoiceBroker | None = None)
     if not base:
         return None
     audience = os.environ.get("SWARM_API_AUDIENCE", "").strip() or base
+    accounts = PlannerAccounts(broker or build_broker(http))
     return Planner(http, api_base=base, id_tokens=tools_read.google_id_tokens(audience),
-                   accounts=PlannerAccounts(broker or build_broker(http)))
+                   accounts=accounts, warm=plannerwarm.WarmPlanners(accounts))

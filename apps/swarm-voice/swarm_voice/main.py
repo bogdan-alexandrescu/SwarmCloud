@@ -527,7 +527,8 @@ def build_sessions(http: Any) -> Sessions:
     leases = build_broker(http)
     # The planner (§3.3) reaches swarm-api at SWARM_API_URL through the session
     # grant; without that address it is None and no session offers delegation.
-    # Each planner turn leases its Claude account through the same broker client.
+    # The planner leases each session's Claude account through the same broker
+    # client and keeps it warm between its turns (plannerwarm.py).
     # A spent key's next tier reaches swarm-api the same way (ReopenSink).
     sink = build_reopen_sink(http)
     # THE PAUSE is armed only with VOICE_PAUSE=on, until the console can wake it.
@@ -589,7 +590,12 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
             if app.state.fronts is None:
                 app.state.fronts = build_fronts(app.state.sessions, http)
             if followers is None:
-                app.state.roster = build_roster(http)
+                # A pass that reads a spend cap has the planner let its warm
+                # account and child for that session go.
+                planner = getattr(app.state.sessions, "_planner", None)
+                app.state.roster = build_roster(
+                    http, on_capped=None if planner is None else lambda voice_id: planner.cool(
+                        voice_id, "a spend cap"))
                 if app.state.roster is not None:
                     app.state.followers.register(app.state.roster.start, app.state.roster.stop)
         if app.state.verify_caller is None:
@@ -606,6 +612,10 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
             if app.state.fronts is not None:
                 # Each front holds a Claude account: released, not left to the TTL.
                 await app.state.fronts.end_all()
+            aclose = getattr(getattr(app.state.sessions, "_planner", None), "aclose", None)
+            if aclose is not None:
+                # What the planner kept warm for each session: given back, not left to the TTL.
+                await aclose()
             if http is not None:
                 await http.aclose()
 
