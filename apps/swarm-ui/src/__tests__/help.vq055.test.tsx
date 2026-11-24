@@ -11,14 +11,18 @@
 //   * each Config page's `?`, and each Admin page's, says its own topic and
 //     `Help →` opens it rather than the top of Help.
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { HELP, HELP_GROUPS, TOPIC_IDS, type TopicId } from '../help'
 import { HelpScreen } from '../HelpSection'
 import { screenLoaded } from './screenLoaded'
 
+/** The fixture build's reader (api.ts `FIXTURE_PERSONA`): the member with no cookie, as it reads it. */
+const NO_PERSONA = 'swarm_qa_persona=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/'
+
 afterEach(() => {
   cleanup()
+  document.cookie = NO_PERSONA
   window.history.replaceState(null, '', '/')
 })
 
@@ -94,50 +98,71 @@ describe('VQ-055: the search finds the secret topics', () => {
   }
 })
 
-async function cardAt(path: string): Promise<HTMLElement> {
+// THE PLATFORM ADMIN PAGES ARE READ AS A PLATFORM ADMIN (issue 400). The fixture
+// reader is the member, whom the shell refuses a platform Admin page once its
+// two reads answer (150 ms each): the refusal's head has the page's title and
+// no `?`, for good. Read as the member, these cases passed only while the
+// page's lazy chunk beat those reads, and Runner sizes', loaded cold, did not.
+// The Admin item on the spine is drawn only once the identity read has named an
+// admin, so after it no refusal can still land: the page read is the settled one.
+//
+// api.ts reads the persona once, as it loads, so every case loads the app
+// afresh. An app load is seconds on a slow runner: each wait is
+// config.nav.test.tsx's 10s, not setup.ts' 2s, still a failure and not a hang,
+// and the case's own timeout leaves the waits room to run out first.
+const WAIT = { timeout: 10_000 }
+const CASE_TIMEOUT = 60_000
+
+async function cardAt(path: string, reader: 'member' | 'platform-admin'): Promise<HTMLElement> {
+  document.cookie = reader === 'member' ? NO_PERSONA : `swarm_qa_persona=${reader}; path=/`
+  vi.resetModules()
   window.history.replaceState(null, '', path)
   const { App } = await import('../App')
   render(<App />)
   await screenLoaded()
+  if (reader === 'platform-admin') {
+    // MUTATION: read these pages as the member -> no Admin item is drawn and this fails.
+    await waitFor(() => expect(document.querySelector('.sk-spine a[data-sec="admin"]'), 'no Admin on the spine').not.toBeNull(), WAIT)
+  }
   const glyph = await waitFor(() => {
     const g = document.querySelector<HTMLButtonElement>('.ctl-q .ctl-q-glyph')
-    expect(g).not.toBeNull()
+    expect(g, 'no `?` on the page').not.toBeNull()
     return g!
-  })
+  }, WAIT)
   fireEvent.click(glyph)
   return await waitFor(() => {
     const c = document.querySelector<HTMLElement>('.ctl-q-card')
-    expect(c).not.toBeNull()
+    expect(c, 'the `?` opened no card').not.toBeNull()
     return c!
-  })
+  }, WAIT)
 }
 
 describe('VQ-055: each Config and Admin page’s `?` opens its own topic', () => {
-  for (const [path, topic] of [
-    ['/config/github', 'config-github-access'],
-    ['/config/repositories', 'config-repositories'],
-    ['/config/secrets', 'secret-scopes'],
-    ['/config/mcp-servers', 'mcp-servers'],
-    ['/config/plugins', 'agent-plugins'],
+  for (const [path, topic, reader] of [
+    ['/config/github', 'config-github-access', 'member'],
+    ['/config/repositories', 'config-repositories', 'member'],
+    ['/config/secrets', 'secret-scopes', 'member'],
+    ['/config/mcp-servers', 'mcp-servers', 'member'],
+    ['/config/plugins', 'agent-plugins', 'member'],
     // People and roles and Workspace Settings are the workspace page's tabs since
     // the admin routes lane (part of archived issue 2688). The page draws its own head, which
     // reads the shell's `?`, and each tab says its own topic (App.tsx `PAGE_TOPIC`).
     // MUTATION: drop `useContext(SectionHelp)` from WorkspacePage.tsx and no glyph is found.
-    ['/admin/workspaces?tab=people', 'workspace-roles'],
-    ['/admin/workspaces?tab=roles', 'workspace-roles'],
-    ['/admin/workspaces?tab=settings', 'workspace-settings'],
-    ['/admin/workspaces?tab=setup', 'workspace-settings'],
-    ['/admin/runner-sizes', 'runner-sizes'],
-    ['/admin/platform-secrets', 'platform-secrets'],
+    ['/admin/workspaces?tab=people', 'workspace-roles', 'member'],
+    ['/admin/workspaces?tab=roles', 'workspace-roles', 'member'],
+    ['/admin/workspaces?tab=settings', 'workspace-settings', 'member'],
+    ['/admin/workspaces?tab=setup', 'workspace-settings', 'member'],
+    ['/admin/runner-sizes', 'runner-sizes', 'platform-admin'],
+    ['/admin/platform-secrets', 'platform-secrets', 'platform-admin'],
   ] as const) {
     it(`on ${path}, says the ${topic} topic and links to it`, async () => {
-      const card = await cardAt(path)
+      const card = await cardAt(path, reader)
       // MUTATION: drop the page from App.tsx `PAGE_TOPIC` and its card links #help, the first group.
       expect(card.querySelector(`[data-topic="${topic}"]`)?.textContent).toBe(HELP[topic].short)
       expect(card.querySelector('a')!.getAttribute('href')).toBe(`#${HELP[topic].anchor}`)
       // QA1 config-32: the card is titled by its tab, never the section's one title.
       // MUTATION: pass no `title` to SectionQuestion in App.tsx and it reads "Config answers".
       expect(card.querySelector('.ctl-q-title')?.textContent).not.toMatch(/^(Config|Admin) answers$/)
-    })
+    }, CASE_TIMEOUT)
   }
 })
