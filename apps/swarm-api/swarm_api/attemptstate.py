@@ -92,6 +92,7 @@ from .errors import ApiError, ValidationFailed
 from .forgeapp import GRANTS
 from .mergesettings import COLLECTION as WORKSPACE_SETTINGS
 from .provider_keys import KEYS_COLLECTION as PROVIDER_KEYS
+from .publishtopr import DISPATCH_FIELD as PUBLISH_TO_PR_FIELD
 from .repositories import parse_repository, repo_id_for
 from .repoindex import BASE_LINE, INDEXER_PROFILE, KEPT_VERSIONS, VERSIONS_COLLECTION
 from .rollup import derived_state_write
@@ -759,6 +760,33 @@ class _Walk:
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _publishes_onto(block: Mapping[str, Any], merge: Mapping[str, Any],
+                    candidate: Mapping[str, Any], root: str) -> bool:
+    """Whether `candidate` is a lane `publish_to_pr` pushed onto `root`'s branch
+    in the merge step's own repository (fr-5fdbfbf85bba, issue 283).
+
+    `block` is the candidate's `metadata.dispatch` and `merge` the merge
+    step's document, each read from a document whose spec signature the
+    caller verified, so `publish_to_pr` and `repository_url` are the ones
+    swarm-api signed at submission (`publishtopr`), never a later rewrite.
+    Held to what `publishtopr` could have written, as the worker's
+    `publishpr.target` holds it: a positive pull request number, the task
+    id the root's `swarm/<root>` branch derives from -- the same root the
+    `continues` rule compares -- and neither `continues` nor `pr_role`
+    beside it. The repository is compared as `owner/repo`, case-folded as
+    GitHub compares it; a candidate or merge with none names nothing."""
+    published = _mapping(block.get(PUBLISH_TO_PR_FIELD))
+    number = published.get("number")
+    if (published.get("task_id") != root or isinstance(number, bool)
+            or not isinstance(number, int) or number < 1
+            or block.get("continues") or block.get("pr_role")):
+        return False
+    own = owner_repo(merge.get("repository_url"))
+    theirs = owner_repo(candidate.get("repository_url"))
+    return (own is not None and theirs is not None
+            and tuple(p.lower() for p in own) == tuple(p.lower() for p in theirs))
 
 
 #: A fix loop's re-review round, as `fixloop.REVIEW_KIND` signs it in the
@@ -2374,7 +2402,11 @@ class AttemptState:
             signed `dispatch.merge_target.pull_request` and that task's own
             signed `dispatch.continues`; and any task of this tenant whose
             signed dispatch block `continues` that root -- a merge's CI-fix
-            or conflict fix round, or a PR-side fixer of the same branch.
+            or conflict fix round, or a PR-side fixer of the same branch --
+            or whose signed `publish_to_pr.task_id` is that root, in this
+            task's own signed repository (`_publishes_onto`): a person's
+            lane that fast-forwarded onto this pull request, which
+            `agent_worker.merge._person_lane` reads (fr-5fdbfbf85bba).
             Every task document is tenant-writable after signing
             (docs/design/tenant-settings-integrity.md §1.1), so each of the
             three `metadata.dispatch` fields followed is read only from a
@@ -2450,7 +2482,9 @@ class AttemptState:
         doc = self._read(self._ref(TASKS, upstream_task_id))
         if doc is None or not self._verified(attempt, doc, upstream_task_id, walk):
             return False
-        return _mapping(_mapping(doc.get("metadata")).get("dispatch")).get("continues") == root
+        block = _mapping(_mapping(doc.get("metadata")).get("dispatch"))
+        return (block.get("continues") == root
+                or _publishes_onto(block, task, doc, root))
 
     def _signed(self, attempt: AttemptTuple, doc: Mapping[str, Any], task_id: str) -> bool:
         """`doc`, read by `task_id`, is this tenant's and its spec signature verifies:
