@@ -51,6 +51,8 @@ args = sys.argv[1:]
 with open(os.environ["FAKE_KUBECTL_LOG"], "a") as log:
     log.write(json.dumps(args) + "\n")
 rest = list(args)
+if rest[:1] == ["--context"]:
+    rest = rest[2:]
 if rest[:1] == ["--namespace"]:
     rest = rest[2:]
 verb = rest[0] if rest else ""
@@ -154,7 +156,8 @@ def _run(tmp_path: Path, *args: str, typed: list[str] | None = None, **env_extra
 
 
 def _verb(call: list[str]) -> str:
-    rest = call[2:] if call[:1] == ["--namespace"] else call
+    rest = call[2:] if call[:1] == ["--context"] else call
+    rest = rest[2:] if rest[:1] == ["--namespace"] else rest
     return rest[0] if rest else ""
 
 
@@ -232,12 +235,12 @@ def _assert_delete_is_by_the_run_label(calls: list[list[str]]) -> None:
     deletes = [c for c in calls if _verb(c) == "delete"]
     assert len(deletes) == 1, deletes
     call = deletes[0]
-    assert call[:2] == ["--namespace", NAMESPACE], call
+    assert call[:4] == ["--context", "swarm-dev", "--namespace", NAMESPACE], call
     assert call[call.index("--selector") + 1] == SELECTOR, call
     for flag in ("--all", "--all-namespaces", "-A", "--field-selector", "--filename", "-f"):
         assert flag not in call, call
     # The only positional argument is the kinds; no object is named.
-    positional = [a for a in call[3:] if not a.startswith("-") and a != SELECTOR]
+    positional = [a for a in call[5:] if not a.startswith("-") and a != SELECTOR]
     assert positional == ["pod,pvc"], call
 
 
@@ -262,8 +265,19 @@ def test_a_full_run_creates_after_the_namespace_and_deletes_only_its_own(tmp_pat
     assert rc == 0, stderr[-3000:]
     creates = [c for c in _mutations(calls) if _verb(c) == "create"]
     assert len(creates) == 2, creates
-    assert all(c[:2] == ["--namespace", NAMESPACE] for c in creates), creates
+    assert all(c[:4] == ["--context", "swarm-dev", "--namespace", NAMESPACE] for c in creates), creates
     _assert_delete_is_by_the_run_label(calls)
     result = (tmp_path / "result.md").read_text()
     for check in ("1. admission (create)", "2. daemon", "3. speed", "cleanup: nothing left"):
         assert f"| {check} | PASS |" in result, result
+
+
+def test_every_cluster_call_is_pinned_to_the_asserted_context(tmp_path):
+    rc, stderr, calls = _run(tmp_path, "--namespace", NAMESPACE, "--daemon-image", IMAGE,
+                             "--storage-class", STORAGE_CLASS)
+    assert rc == 0, stderr[-2000:]
+    # `config current-context` and `version` are how the context is read.
+    cluster = [c for c in calls if c[:1] != ["config"] and c[:1] != ["version"]]
+    assert cluster, calls
+    for call in cluster:
+        assert call[:2] == ["--context", "swarm-dev"], call

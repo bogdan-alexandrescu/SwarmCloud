@@ -205,3 +205,12 @@ changed.
   and the section 8 items this run could read (the GKE Sandbox surcharge, the
   regional CPU quota headroom) with where each was read and when.
 * **The owner's decision** on contract request 159, on the issue.
+
+## What the independent review changed
+
+* **The kubectl context is pinned for the whole run.** The script checked the
+  context once, but each later `kubectl` call re-read the kubeconfig's current
+  context, so a `use-context` in another terminal during the hour-long run
+  could have sent the creates, execs and the label delete to another cluster.
+  The script now captures the asserted context once and passes `--context` on
+  every call; a unit test checks that each call carries it.

@@ -177,6 +177,10 @@ fi
 
 KUBE="$(kubectl_bin)"
 assert_kube_context
+# Pin the asserted context: every later call passes --context, so a
+# use-context in another terminal cannot redirect this run to another cluster.
+CONTEXT="$(kube_current_context)"
+[[ -n "${CONTEXT}" ]] || die "kubectl has no current context"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/recording-spike.XXXXXX")"
 CREATED=0
@@ -194,7 +198,7 @@ trap on_exit EXIT
 # k ARGS...: kubectl in NAMESPACE, stdout to WORK/out, stderr to WORK/err.
 # Returns kubectl's status. Never prints either stream itself.
 k() {
-  "${KUBE}" --namespace "${NAMESPACE}" "$@" >"${WORK}/out" 2>"${WORK}/err"
+  "${KUBE}" --context "${CONTEXT}" --namespace "${NAMESPACE}" "$@" >"${WORK}/out" 2>"${WORK}/err"
 }
 
 # A short, redacted excerpt of the last kubectl error, on one line.
@@ -397,7 +401,7 @@ exec_in() {
 # run_workload POD -> WORK/<pod>.workload; prints "<wall seconds> <rc>".
 run_workload() {
   local pod="$1" log="${WORK}/$1.workload" wall rc
-  "${KUBE}" --namespace "${NAMESPACE}" exec --stdin "${pod}" --container spike -- sh -s \
+  "${KUBE}" --context "${CONTEXT}" --namespace "${NAMESPACE}" exec --stdin "${pod}" --container spike -- sh -s \
     <"${KDIR}/workload.sh" >"${log}" 2>"${WORK}/err" || true
   wall="$(sed -n 's/^SPIKE_WALL_SECONDS=\([0-9][0-9]*\)$/\1/p' "${log}" | tail -n 1)"
   rc="$(sed -n 's/^SPIKE_WORKLOAD_RC=\([0-9][0-9]*\)$/\1/p' "${log}" | tail -n 1)"
