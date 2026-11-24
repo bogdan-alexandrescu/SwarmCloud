@@ -454,7 +454,13 @@ execution. A person may then do one of three things:
      the park, the `added` list and `max_rounds` are unchanged.
    * The reply's `report` lists what its drive could not do. Beside the
      counts, `failures` gives each one's `task_id` and `code` (for example
-     `review_missing`), so a `failed: 1` always says why.
+     `review_missing`), so a `failed: 1` always says why. A drive that raised
+     is `drive_failed` with `error`, the exception's class and text, redacted
+     and bounded to 1000 characters: before this the text was only logged,
+     which is where issue 338's failed drive lost it. The add-round reply
+     catches such a raise too (the round is already recorded, the sweep drives
+     it again) instead of answering 500, and the admin `task-finished` push
+     and the tick's `fix_loop` report serve the same `failures` list.
    * An optional `note` (at most 4 KiB, redacted) is fenced into the fix's
      prompt as the person's guidance.
 2. **Accept the last verdict.** `POST .../fix-loop/end {"outcome": "stop"}`.

@@ -56,6 +56,7 @@ import json
 import logging
 import re
 import secrets
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Callable, Mapping
@@ -167,13 +168,28 @@ class LoopReport:
     waiting: int = 0
     failures: list[dict[str, str]] = field(default_factory=list)
 
-    def fail(self, task_id: str, code: str) -> None:
-        self.failures.append({"task_id": task_id, "code": code})
+    def fail(self, task_id: str, code: str, error: str | None = None) -> None:
+        """Record what a drive could not do; `error` is the exception's text,
+        stored redacted and bounded (`issueruns.failure_text`) so it can be
+        served, never the raw message (issue 338)."""
+        failure = {"task_id": task_id, "code": code}
+        if error:
+            failure["error"] = failure_text(error)
+        self.failures.append(failure)
+
+    def fail_drive(self, task_id: str, exc: BaseException) -> None:
+        """A drive raised: `drive_failed` with the exception's class and text."""
+        text = str(exc)
+        self.fail(task_id, "drive_failed",
+                  f"{type(exc).__name__}: {text}" if text else type(exc).__name__)
 
     def to_api(self) -> dict[str, Any]:
         return {"visited": self.visited, "driven": self.driven, "submitted": self.submitted,
                 "ended": self.ended, "parked": self.parked, "waiting": self.waiting,
-                "failed": len(self.failures)}
+                "failed": len(self.failures),
+                # Each failure's task id, code and redacted error (issue 338):
+                # a failed drive's text was logged only, never served.
+                "failures": [dict(f) for f in self.failures]}
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -1377,7 +1393,7 @@ def on_task_finished(ctx: Any, task_id: str, *, tenant_id: str | None = None) ->
             _drive_doc(ctx, tenant, doc, now, report)
         except Exception:  # noqa: BLE001 -- a doorbell: the sweep drives it again
             log.exception("fix loop %s: drive failed on the end of %s", loop_id, task_id)
-            report.fail(loop_id, "drive_failed")
+            report.fail_drive(loop_id, sys.exc_info()[1] or Exception())
     return report
 
 
@@ -1432,7 +1448,7 @@ def sweep_tenant(ctx: Any, tenant_id: str, *, limit: int = SWEEP_LIMIT) -> LoopR
             _drive_doc(ctx, tenant, doc, now, report)
         except Exception:  # noqa: BLE001 -- the next tick sweeps it again
             log.exception("fix loop %s: sweep failed", snap.id)
-            report.fail(snap.id, "drive_failed")
+            report.fail_drive(snap.id, sys.exc_info()[1] or Exception())
     return report
 
 
@@ -1557,13 +1573,17 @@ def add_rounds(ctx: Any, *, tenant_id: str, workflow_id: str, by: str, rounds: i
     report = LoopReport()
     doc = _doc(db, tenant_id, loop["id"])
     if doc is not None and tenant is not None:
-        _drive_doc(ctx, tenant, doc, now, report)
+        try:
+            _drive_doc(ctx, tenant, doc, now, report)
+        except Exception as exc:  # noqa: BLE001 -- the round is recorded; the sweep drives it again
+            log.exception("fix loop %s: drive failed after add-round", loop["id"])
+            report.fail_drive(loop["id"], exc)
     after = _doc(db, tenant_id, loop["id"]) or {}
     return {"task_id": loop["id"], "max_rounds": total, "park_phase": park_phase_of(after),
             "state": after.get("state"),
-            # The codes of what the drive could not do (issue 338), beside the
-            # count the admin tick routes serve from `to_api`.
-            "report": {**report.to_api(), "failures": [dict(f) for f in report.failures]}}
+            # What the drive could not do (issue 338): each failure's task id,
+            # code and redacted error text, as the admin tick routes serve it.
+            "report": report.to_api()}
 
 
 def stop(ctx: Any, *, tenant_id: str, workflow_id: str, by: str) -> dict[str, Any]:

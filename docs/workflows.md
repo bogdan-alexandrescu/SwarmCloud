@@ -3357,7 +3357,8 @@ its tenant may take either, as any member may cancel the workflow:
   When no head is recorded for a round to start from, the route refuses
   409 with `detail.reason: "no_head"` and changes nothing. The reply's
   `report` lists each failure of its drive as `failures`, task id and
-  code, beside the count. A loop never runs
+  code, beside the count; a drive that raised adds `error`, the
+  exception's redacted text. A loop never runs
   more than 10 rounds in all, rounds a person added counted; past that the
   route refuses 409. Why a ceiling: a person adding rounds one at a time
   should still meet a bound on cost.

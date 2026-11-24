@@ -14,12 +14,19 @@ What is held here:
   3. with no head recorded anywhere, add-round is a 409 that says why and
      writes nothing;
   4. a failure the drive records reaches the reply's `report` as `failures`,
-     task id and code.
+     task id and code;
+  5. a drive that raises is served as `drive_failed` with `error`, the
+     exception's class and redacted text, by add-round (not a 500) and by
+     the `task_finished` push, where before it was only logged.
 
 No credentials, no network, no emulator.
 """
 
 from __future__ import annotations
+
+import secrets
+
+import pytest
 
 from swarm_api import fixloop
 from swarm_common.states import ParkReason
@@ -162,3 +169,50 @@ def test_a_failure_the_drive_records_is_in_the_reply(loop_client, db, objects):
     report = response.json()["fix_loop"]["report"]
     assert report["failed"] == 1
     assert report["failures"] == [{"task_id": loop.loop, "code": "review_missing"}]
+
+
+def _raising_drive(monkeypatch) -> str:
+    """Every drive raises with a token-shaped value in its text; the value."""
+    leaked = "ghp_" + secrets.token_hex(18)
+
+    def explode(*_args, **_kwargs):
+        raise RuntimeError(f"upstream refused with {leaked}")
+
+    monkeypatch.setattr(fixloop, "_drive_doc", explode)
+    return leaked
+
+
+def _drive_failed(failures, loop: Loop, leaked: str) -> None:
+    assert len(failures) == 1, failures
+    failure = failures[0]
+    assert failure["task_id"] == loop.loop and failure["code"] == "drive_failed"
+    assert failure["error"].startswith("RuntimeError: upstream refused with ")
+    assert leaked not in failure["error"]
+
+
+def test_a_drive_that_raises_serves_its_redacted_text_in_the_add_round_reply(
+        loop_client, db, objects, monkeypatch: pytest.MonkeyPatch):
+    loop = unreadable_at_round_zero(loop_client, db, objects)
+    leaked = _raising_drive(monkeypatch)
+
+    response = _rounds(loop_client, loop)
+
+    assert response.status_code == 200, response.text
+    assert leaked not in response.text
+    report = response.json()["fix_loop"]["report"]
+    assert report["failed"] == 1
+    _drive_failed(report["failures"], loop, leaked)
+
+
+def test_a_drive_that_raises_serves_its_redacted_text_on_the_push(
+        loop_client, db, objects, monkeypatch: pytest.MonkeyPatch):
+    loop = integrate_to_first_round(loop_client, db, objects)
+    rereview = round_task(loop, "re-review:1")
+    finish(db, objects, rereview, verdict="not json")
+    leaked = _raising_drive(monkeypatch)
+
+    body = push(loop_client, rereview)
+
+    assert leaked not in str(body)
+    assert body["fix_loop"]["failed"] == 1
+    _drive_failed(body["fix_loop"]["failures"], loop, leaked)
