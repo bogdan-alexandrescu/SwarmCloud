@@ -1,0 +1,84 @@
+# Scheduled test-weights refresh.
+#
+# Runs scripts/refresh-unit-weights.sh and scripts/refresh-ui-weights.sh
+# against main's latest green CI runs, and opens what they changed as one
+# pull request from the maintenance branch `maint/test-weights`
+# (scripts/refresh-weights-pr.sh says why one branch, force-pushed). It NEVER
+# pushes the default branch: the only push names refs/heads/maint/test-weights
+# in full.
+#
+# OFF THE MERGE PATH. Its triggers are the schedule and a dispatch, nothing
+# else: no pull_request, push or merge_group, so it adds nothing to a pull
+# request's checks, the merge train or a release. The pull request it opens
+# runs CI like any other.
+#
+# The App token, as merge-train.yml opens its pull request: a pull request
+# opened with the workflow's GITHUB_TOKEN starts no workflow, so its checks
+# would never run (docs/ci.md, "Why the merge uses a GitHub App token"). The
+# token is minted only when a weights file changed, and holds only
+# contents + pull-requests write. Reading the CI runs needs only the
+# workflow's own token, with actions: read.
+
+name: refresh-weights
+
+on:
+  schedule:
+    # Mondays 05:17 UTC: a week of main's runs, off the hour everyone uses.
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  refresh:
+    name: refresh the test weights
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    # The App key is readable only through this environment, which admits main.
+    environment:
+      name: repo-secrets
+      deployment: false
+    timeout-minutes: 15
+    concurrency:
+      group: refresh-weights
+      cancel-in-progress: false
+    if: github.event.repository.fork == false && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          # The push below uses the App token through a credential helper,
+          # never a token left in .git/config.
+          persist-credentials: false
+
+      - name: refresh both weights files from main's CI runs
+        id: refresh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: scripts/refresh-weights-pr.sh refresh
+
+      # !cancelled(): one refresh that could not read its run fails the step
+      # above, and the other's figures still open a pull request.
+      - name: mint the merge App's token
+        id: app-token
+        if: ${{ !cancelled() && steps.refresh.outputs.changed == 'true' }}
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ vars.MERGE_APP_ID }}
+          private-key: ${{ secrets.MERGE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          # contents: push maint/test-weights; pull-requests: open its pull
+          # request. No workflows permission: it changes no workflow file.
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: open or update the refresh pull request
+        if: ${{ !cancelled() && steps.refresh.outputs.changed == 'true' }}
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+        run: scripts/refresh-weights-pr.sh open
