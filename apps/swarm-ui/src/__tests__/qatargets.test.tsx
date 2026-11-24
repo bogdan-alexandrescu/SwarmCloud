@@ -32,6 +32,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
+import { around, helpIn, oneIn } from './proseruns'
 import { repo, serve, visible } from './repofixture'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
@@ -633,10 +634,11 @@ describe('QA targets: registration', () => {
       if (f === null) throw new Error('no registration form')
       return f
     }, WAIT)
-    const help = form.querySelector<HTMLLabelElement>('label[for$="-more"]')!
+    // Behind the (i) over the box (issue 81), its button named by the field.
+    const help = helpIn(around(oneIn(form, 'textarea[name="more"]')!, ':has(> textarea)'))
     // MUTATION: leave the field out of the More settings help and nobody finds it.
-    expect(help.textContent).toContain('file.label_rules')
-    expect(help.textContent).toContain('"paths"')
+    expect(help).toContain('file.label_rules')
+    expect(help).toContain('"paths"')
     await waitFor(() => expect(form.querySelectorAll('select[name="repository"] option').length).toBeGreaterThan(1), WAIT)
     const set = (name: string, value: string) => {
       const el = form.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(`[name="${name}"]`)!

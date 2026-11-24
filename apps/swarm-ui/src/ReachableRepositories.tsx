@@ -1,3 +1,4 @@
+import { InfoTip } from './InfoTip'
 import { useState, type ReactNode } from 'react'
 import { loadAccess, putAccessGrant, revokeAccessGrant, verifyAccessGrant } from './api'
 import { AccessRefusal, AskFirst, GitHubLink, LossAsk, takesAccessAway, type Choice } from './Access'
@@ -216,7 +217,14 @@ export function ReachableRepositories({
             </Button>
           </span>
         }
-        foot={<>Last verified {newest !== null ? timeAgo(newest) : <Dash why="No grant has been verified yet" />}. An agent for a repository not on this list is refused at submission.</>}
+        // ISSUE 81: the refusal is a must-stay line, kept short; its full sentence is behind the (i).
+        foot={
+          <>
+            Last verified {newest !== null ? timeAgo(newest) : <Dash why="No grant has been verified yet" />} · Unlisted repositories are refused at
+            submission.{' '}
+            <InfoTip about="unlisted repositories" tip="An agent for a repository not on this list is refused at submission." />
+          </>
+        }
       >
         {grants.length === 0 ? (
           <EmptyState kind="empty" heading="No repository chosen yet">

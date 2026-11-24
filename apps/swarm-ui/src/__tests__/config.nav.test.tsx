@@ -289,7 +289,7 @@ describe('Admin is drawn only for an admin (CONFIG-NAV)', () => {
     await app('/admin/limits')
     // MUTATION: keep the redirect to Overview (or drop the refusal) -> this is not found.
     expect(await screen.findByText('Pool limits is for platform admins')).toBeTruthy()
-    expect(document.querySelector('[data-refused="admin"]')?.textContent).toMatch(/You are a member of \S+\./)
+    expect(document.querySelector('[data-refused="admin"]')?.textContent).toMatch(/You are a member of \S+/)
     expect(screen.getByRole('link', { name: 'Open Overview' })).toBeTruthy()
     expect(window.location.pathname).toBe('/admin/limits')
     // A member of a group workspace reaches Admin › Workspaces (owner, 3 November), and nothing else there.
@@ -308,7 +308,7 @@ describe('Admin is drawn only for an admin (CONFIG-NAV)', () => {
     const said = document.querySelector('[data-refused="admin"]')!.textContent
     // MUTATION: name the role by `roleOf` alone -> "your role in ... was not read" and this fails.
     expect(said).not.toContain('was not read')
-    expect(said).toMatch(/You are not a platform admin\. [^.]+ is your own workspace\./)
+    expect(said).toMatch(/You are not a platform admin · \S.* is your own workspace/)
     expect(said).not.toContain('an admin of')
   })
 

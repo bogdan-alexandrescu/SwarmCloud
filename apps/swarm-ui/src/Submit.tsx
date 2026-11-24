@@ -52,6 +52,7 @@ import {
 } from './types'
 import './styles/submit.css'
 import { Button } from './components'
+import { InfoTip } from './InfoTip'
 
 /**
  * Submit one task -- and the honest constraints on doing so.
@@ -1795,7 +1796,10 @@ function Form({ capacity }: { capacity: Capacity }) {
               next and drops the figure. */}
           {waits === 'yes'
             ? <p className="sb-note sbf-wait">It is accepted and waits, holding nothing, until every pool it needs has room.</p>
-            : <p className="sb-note">Nothing runs until the scheduler admits it into every pool it needs.</p>}
+            // ONE SHORT LINE, THE SENTENCE BEHIND THE (i) (issue 81): a must-stay
+            // disclosure, so the line stays; the pools are the tip, word for word.
+            : <p className="sb-note">Nothing runs until the scheduler admits it.{' '}
+                <InfoTip about="admission" tip="Nothing runs until the scheduler admits it into every pool it needs." /></p>}
           {/* THE OUTCOME IS DRAWN BESIDE THE BUTTON THAT CAUSED IT (VQA V002,
               owner decision Q1 on archived issue 1038), as the issue form draws it. It was
               at the top of the build column, ~1,400px above the button at

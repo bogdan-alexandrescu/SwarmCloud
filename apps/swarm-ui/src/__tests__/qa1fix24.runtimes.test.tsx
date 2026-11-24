@@ -178,7 +178,7 @@ describe('capacity-23: Sets it apart says it in the reader’s words', () => {
     // MUTATION: restoring `takes any one of its secrets` (or the `cred` key)
     // fails this line, and the old phrase is found on the screen.
     await shown()
-    expect(apart('scribe')).toContain('credential: the only runtime that accepts any one of its credentials')
+    expect(apart('scribe')).toContain('credential: sole runtime accepting any one of its credentials')
     expect(document.body.textContent).not.toContain('takes any one of its secrets')
   })
 
@@ -186,8 +186,8 @@ describe('capacity-23: Sets it apart says it in the reader’s words', () => {
     // MUTATION: restoring `the only runtime offering ${...}` fails both lines;
     // dropping the singular branch makes viewport read `the model classes solo`.
     await shown()
-    expect(apart('scribe')).toContain('model classes: the only runtime with the model classes quick, later')
-    expect(apart('viewport')).toContain('model classes: the only runtime with the model class solo')
+    expect(apart('scribe')).toContain('model classes: sole runtime with classes quick, later')
+    expect(apart('viewport')).toContain('model classes: sole runtime with class solo')
     expect(document.body.textContent).not.toContain('the only runtime offering')
   })
 })

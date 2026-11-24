@@ -2592,7 +2592,10 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
               'of the 27 newest' read as two reads of one page. It is one read:
               the 27, less the agents holding capacity (`spendSample`), which
               have no ended attempt to price. The clause says so. */}
-          {s.tasksOnPage > s.tasksWithAttempts && <span>that have run (of the {s.tasksOnPage} newest read that hold no capacity)</span>}
+          {/* UNDER NINE WORDS (issue 81): "that have run (of the 20 newest
+              read that hold no capacity)" was a visible run of eleven; the
+              partial mark's tip says the same window in full. */}
+          {s.tasksOnPage > s.tasksWithAttempts && <span>of the {s.tasksOnPage} newest read, none holding capacity</span>}
           {/* 2. THE HOLES: attempts that carried no cost figure... */}
           {unmeasured > 0 && <span className="ov-warn">{unmeasured} unmeasured</span>}
           {/* 3. ...and attempt reads that failed. THE COUNT OF WHAT IS

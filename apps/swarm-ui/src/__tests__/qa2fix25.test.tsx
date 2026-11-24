@@ -35,8 +35,8 @@ describe('admin2-02: a workspace-admin page refused to someone who administers n
     // MUTATION: title every refusal "for platform admins" and this is not found.
     expect(screen.getByText('Workspaces you admin is for workspace admins')).toBeTruthy()
     // MUTATION: drop the workspace lead and this fails.
-    expect(visible(container)).toContain('This page is for admins of a group workspace; you administer none.')
-    expect(visible(container)).toContain('You are a member of Engineering.')
+    expect(visible(container)).toContain('You administer no group workspace')
+    expect(visible(container)).toContain('You are a member of Engineering')
     expect(visible(container)).not.toContain('platform admin')
   })
 
@@ -45,14 +45,14 @@ describe('admin2-02: a workspace-admin page refused to someone who administers n
       <AdminRoleRefusal page="People and roles" role="admin" workspace="Alex" audience="workspace" personal />,
     )
     // MUTATION: ignore `personal` and the line reads "You are an admin of Alex." again.
-    expect(visible(container)).toContain('Alex is your own workspace.')
+    expect(visible(container)).toContain('Alex is your own workspace')
     expect(visible(container)).not.toContain('an admin of')
   })
 
   it('keeps a platform-only page as it was', () => {
     const { container } = render(<AdminRoleRefusal page="Pool limits" role="admin" workspace="Alex" personal />)
     expect(screen.getByText('Pool limits is for platform admins')).toBeTruthy()
-    expect(visible(container)).toContain('You are not a platform admin. Alex is your own workspace.')
+    expect(visible(container)).toContain('You are not a platform admin · Alex is your own workspace')
   })
 })
 

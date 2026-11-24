@@ -1,7 +1,8 @@
+import { InfoTip } from './InfoTip'
 import { useEffect, useRef, useState } from 'react'
 import { loadAccess, loadReadableRepositories, loadRunnerProfiles, registerRepository, runRepositoryIndex, type RegisterRepositoryBody } from './api'
 import { Banner, Button, Card, EmptyState } from './components'
-import { normRepo, triggerLabel, TRIGGER_OPTIONS, WEBHOOK_NOTE, WORKFLOW_FILES_WHY, type ChangeTrigger, type Readable, type ReadableList } from './RepositoriesData'
+import { normRepo, triggerLabel, TRIGGER_OPTIONS, WEBHOOK_NOTE, WORKFLOW_FILES_LINE, WORKFLOW_FILES_WHY, type ChangeTrigger, type Readable, type ReadableList } from './RepositoriesData'
 import { LIST, UrCrumb, UrNavButton, UrRadio, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
 import { useRoleGate } from './roleGate'
 import { PageHead } from './Shell'
@@ -478,7 +479,9 @@ function ScheduleStep({
               Off. <span data-role-gate="admin">set by a workspace admin</span>
             </p>
           )}
-          <p className="ur-hint">{WORKFLOW_FILES_WHY}</p>
+          <p className="ur-hint">
+          Workflow files {WORKFLOW_FILES_LINE} <InfoTip about="workflow files" tip={WORKFLOW_FILES_WHY} />
+        </p>
         </div>
       </div>
       )}

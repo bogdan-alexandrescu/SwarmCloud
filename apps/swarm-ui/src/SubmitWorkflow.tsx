@@ -59,6 +59,7 @@ import {
 } from './types'
 import './styles/submit.css'
 import { Button, buttonClass } from './components'
+import { InfoTip } from './InfoTip'
 import { ContractRefusalPanel, REFUSAL_KEYS, contractRefusal } from './ContractJev'
 import { QA_LINK_ADDRESS, addressToPath } from './paths'
 
@@ -518,10 +519,14 @@ export function priorityProblem(typed: string): string | null {
 
 /** `on_step_failure`'s two values (schemas.WorkflowCreate), as step 2 offers
  *  them and the summary lists them. The default is the API's. */
-const ON_FAILURE: ReadonlyArray<{ value: 'fail_workflow' | 'continue'; label: string; say: string; fact: string }> = [
+// `short` is the option's line, under nine words; `say` is the sentence it
+// was, word for word, behind the option's (i) (issue 81).
+const ON_FAILURE: ReadonlyArray<{ value: 'fail_workflow' | 'continue'; label: string; short: string; say: string; fact: string }> = [
   { value: 'fail_workflow', label: 'Fail the workflow', fact: 'fail the workflow',
+    short: 'Unstarted steps cancelled; running ones finish. Default.',
     say: 'Steps not started are cancelled; running steps finish. Default.' },
   { value: 'continue', label: 'Continue', fact: 'continue',
+    short: 'Cancels only the failed step’s dependents.',
     say: "Only the failed step's dependents are cancelled; other branches keep starting." },
 ]
 
@@ -548,7 +553,7 @@ export function OnFailureChoice({ value, onChange }: {
               onChange={() => onChange(o.value)} />
             <span className="dsp-option-body">
               <span className="dsp-option-head"><b>{o.label}</b></span>
-              <span className="dsp-option-say">{o.say}</span>
+              <span className="dsp-option-say">{o.short} <InfoTip about={o.label} tip={o.say} /></span>
             </span>
           </label>
         ))}
@@ -570,9 +575,10 @@ export function VisualQaEntry() {
   return (
     <div className="sb-card" data-entry="visual-qa">
       <b>Visual QA of a registered app</b>
+      {/* ONE SHORT LINE, THE HOW-TO BEHIND THE (i) (issue 81). */}
       <p className="sb-note">
-        Runs from the app&rsquo;s QA target: tick its environments on the target&rsquo;s card, and each runs as its own
-        workflow, shown together on one run page.
+        Runs from the app&rsquo;s QA target.{' '}
+        <InfoTip about="visual QA" tip="Runs from the app’s QA target: tick its environments on the target’s card, and each runs as its own workflow, shown together on one run page." />
       </p>
       <span className="sb-row">
         <a className={buttonClass({ size: 'sm' })} href={addressToPath(QA_LINK_ADDRESS)}>
@@ -1033,9 +1039,11 @@ function Form({ sources }: { sources: FormSources }) {
               onChange={(e) => setPriority(e.target.value)} />
             <small id="wf-priority-say" className={priorityOk ? 'sb-note' : 'sb-note sbf-bad'}>
               {priorityOk
-                ? 'A whole number from −100 to 100; 0 is the default. Higher starts first among your tenant\'s own work; it never wins your tenant more turns than another.'
+                ? '−100 to 100; 0 is the default.'
                 : 'Must be a whole number from −100 to 100.'}
             </small>
+            {/* The range stays as the hint; the why is the (i)'s tip, word for word (issue 81). */}
+            <InfoTip about="priority" tip={'A whole number from −100 to 100; 0 is the default. Higher starts first among your tenant\'s own work; it never wins your tenant more turns than another.'} />
           </div>
         </Move>
 

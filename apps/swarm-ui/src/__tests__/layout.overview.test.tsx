@@ -595,8 +595,9 @@ describe('OV-4, OV-14: the spend figure is a partial sum, and its foot is a run 
       // MUTATION: append it inside the coverage clause's span again.
       // overview-agents-09 (pass 2): the window is the page less the agents
       // holding capacity, and the clause names it.
-      // MUTATION: drop 'that hold no capacity' from SpendBody's clause.
-      'that have run (of the 60 newest read that hold no capacity)',
+      // MUTATION: drop 'none holding capacity' from SpendBody's clause.
+      // ISSUE 81: under nine words; the partial mark's tip says the window in full.
+      'of the 60 newest read, none holding capacity',
       '2 unmeasured',
       '1 of 12 reads failed',
       // No age clause: the sum is fresh, and a fresh age is the head's (archived issue 98).

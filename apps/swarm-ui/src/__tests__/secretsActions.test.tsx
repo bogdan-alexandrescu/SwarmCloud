@@ -227,7 +227,7 @@ describe('§11 Q5: the value goes only to the one-time form’s route, sealed by
     await act(async () => {
       fireEvent.click(within(dialog()).getByRole('button', { name: /^set secret$/i }))
     })
-    await screen.findByText(/DEPLOY_KEY was set/i)
+    await screen.findByText(/DEPLOY_KEY was set/i, { ignore: '[data-help-description]' })
 
     const carrying = calls.filter((c) => JSON.stringify(c.body ?? null).includes(value))
     expect(carrying.map((c) => `${c.method} ${c.url}`)).toEqual([`PUT ${BASE}/secrets/DEPLOY_KEY`])
@@ -264,7 +264,7 @@ describe('§11 Q5: the value goes only to the one-time form’s route, sealed by
     await act(async () => {
       fireEvent.click(within(dialog()).getByRole('button', { name: /^set secret$/i }))
     })
-    await within(dialog()).findByText(/not set/i)
+    await within(dialog()).findByText(/not set/i, { ignore: '[data-help-description]' })
     expect(within(dialog()).queryByLabelText(/^value$/i)).toBeNull()
     expect(within(dialog()).getByRole('button', { name: /open the one-time form/i })).toBeTruthy()
     expect(calls.filter((c) => c.method === 'PUT')).toHaveLength(1)
@@ -289,7 +289,7 @@ describe('§11 Q4: an environment any branch can deploy needs its name typed', (
     await act(async () => {
       fireEvent.click(set)
     })
-    await screen.findByText(/STAGING_KEY was set/i)
+    await screen.findByText(/STAGING_KEY was set/i, { ignore: '[data-help-description]' })
     const put = calls.find((c) => c.method === 'PUT')!
     expect(put.url).toBe(`${BASE}/secrets/STAGING_KEY`)
     expect((put.body as Json).environment).toBe('staging')
@@ -306,7 +306,7 @@ describe('§11 Q4: an environment any branch can deploy needs its name typed', (
     await act(async () => {
       fireEvent.click(within(dialog()).getByRole('button', { name: /^set secret$/i }))
     })
-    await screen.findByText(/MERGE_APP_PRIVATE_KEY was set/i)
+    await screen.findByText(/MERGE_APP_PRIVATE_KEY was set/i, { ignore: '[data-help-description]' })
     const put = calls.find((c) => c.method === 'PUT')!
     expect((put.body as Json).environment).toBe('repo-secrets')
     expect('confirm_environment' in (put.body as Json)).toBe(false)
@@ -339,7 +339,7 @@ describe('the App’s missing Secrets permission', () => {
     })
     const { SecretsActions } = await load()
     render(<SecretsActions repoId={REPO_ID} repository={REPOSITORY} />)
-    await screen.findByText(/lacks Secrets permission/i)
+    await screen.findByText(/lacks Secrets permission/i, { ignore: '[data-help-description]' })
     for (const a of Array.from(document.querySelectorAll('a'))) expect(a.getAttribute('href') ?? '').not.toContain('evil.example.com')
   })
 })
@@ -412,7 +412,7 @@ describe('a link a tool minted', () => {
     await act(async () => {
       fireEvent.click(within(dialog()).getByRole('button', { name: /^set secret$/i }))
     })
-    await screen.findByText(/MERGE_APP_PRIVATE_KEY was set/i)
+    await screen.findByText(/MERGE_APP_PRIVATE_KEY was set/i, { ignore: '[data-help-description]' })
     expect(calls.some((c) => c.method === 'POST')).toBe(false)
     const put = calls.find((c) => c.method === 'PUT')!
     expect(put.body).toEqual({ value, environment: 'repo-secrets', link_token: token })
