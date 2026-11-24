@@ -5583,6 +5583,19 @@ def replan_running(run: "IssueRun") -> ReplanRunning:
     )
 
 
+def replan_active(run: "IssueRun") -> bool:
+    """Whether a person-asked re-plan of `run` is being submitted or runs:
+    it refuses a hand edit and another re-plan (§5.3)."""
+    return (run.plan_replan or {}).get("state") in REPLAN_ACTIVE_STATES
+
+
+def replan_waiting(run: "IssueRun") -> bool:
+    """Whether a read of `run` has a re-plan to look at: one that runs or is
+    cancelling (its answer may land anyway), or one whose submission has
+    not been linked to its task yet."""
+    return (run.plan_replan or {}).get("state") in REPLAN_READ_STATES | {"submitting"}
+
+
 def new_replan_id() -> str:
     return f"{REPLAN_ID_PREFIX}_{os.urandom(10).hex()}"
 

@@ -690,8 +690,14 @@ def merge_tier(schedule: Mapping[str, Any] | None) -> bool:
 
 
 def _planned_at(run: IssueRun) -> datetime:
+    """When the plan on screen was put there: the newest transition into
+    PLANNED, a revision's `PLANNED -> PLANNED` included (plans-pipeline.md
+    §5.3). A new revision -- an edit, or a re-plan's answer -- is a new
+    question, so the reviewer gets the schedule's whole `approval_ttl_hours`
+    to answer it; counting from revision 1 would let a re-plan arrive already
+    expired."""
     for entry in reversed(run.history):
-        if entry.get("to") == RunState.PLANNED.value and entry.get("from") != RunState.PLANNED.value:
+        if entry.get("to") == RunState.PLANNED.value:
             return _aware(entry.get("at")) or _aware(run.created_at)
     return _aware(run.updated_at) or _aware(run.created_at)
 

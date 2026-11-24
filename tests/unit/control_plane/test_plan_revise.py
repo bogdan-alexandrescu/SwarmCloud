@@ -44,7 +44,7 @@ from swarm_api.metrics import ApiMetrics
 from swarm_api.waker import NullWaker
 
 from . import forge_fakes
-from .conftest import api_settings, auth_header
+from .conftest import ENG_GROUP, api_settings, auth_header
 from .test_issue_runs import (  # noqa: F401 -- fixtures, used by name
     BUCKET,
     PLAN,
@@ -78,6 +78,14 @@ REVISED = {
 def thread_refusals_on(monkeypatch):
     for name in THREAD_SWITCHES:
         monkeypatch.setenv(name, "on")
+
+
+@pytest.fixture
+def group_map(group_map):
+    """conftest's people, and `dave`: a second ordinary member of eng, so a
+    `second_member` hold has a requester who is not an admin (an admin is
+    never excluded by one, the owner 2026-10-26)."""
+    return {**group_map, "dave@example.com": (ENG_GROUP,)}
 
 
 @pytest.fixture
@@ -311,19 +319,22 @@ def test_a_valid_answer_makes_revision_n_plus_one_answered_by_the_planner(client
     assert any(row.get("kind") == "answer" for row in after["plan_thread"])
 
 
-def test_the_requester_is_excluded_by_a_second_member_hold(client, db, objects, api_context):
+def test_the_requester_is_excluded_by_a_second_member_hold(client, db, objects, api_context,
+                                                           monkeypatch):
+    monkeypatch.setenv(refusals.env_name(approvals.HoldApproverRequired.code), "on")
     run = _planned(client, db, objects)
     entry = _comment(client, run)
-    replan = _asked(client, run, user="root")
+    replan = _asked(client, run, user="dave")
     _finish(db, objects, replan["task_id"], {**REVISED, "answers": {entry["entry_id"]: "Done."}})
     _read(client, run["id"])
     stored = IssueRun.from_firestore(_stored(db, run["id"]))
-    assert "root@example.com" in approvals.hold_excluded(api_context, stored)
+    assert stored.plan_edited_by == "dave@example.com"
+    assert "dave@example.com" in approvals.hold_excluded(api_context, stored)
     held = replace(stored, approval_hold={"code": "NEEDS_SECOND_MEMBER",
                                           "approvers": "second_member",
                                           "reasons": ["iam"], "matched": ["iam/policy.tf"]})
     with pytest.raises(approvals.HoldApproverRequired):
-        approvals.check_hold(api_context, held, email="root@example.com", is_owner=False)
+        approvals.check_hold(api_context, held, email="dave@example.com", is_owner=False)
 
 
 def test_an_answer_to_a_plan_that_moved_makes_no_revision_and_one_not_applied_entry(
@@ -480,7 +491,9 @@ def test_a_member_who_may_comment_but_not_edit_is_refused(client, db, objects, a
         "schedule_id": schedule_id, "tenant_id": "eng", "gate": {"approval_ttl_hours": 1},
     }
     stored = _stored(db, run["id"])
-    stored["schedule"] = {"schedule_id": schedule_id, "firing_id": "fir_1"}
+    # A run's schedule is the mark its metadata carries (`IssueRun.schedule`).
+    stored.setdefault("metadata", {})["schedule"] = {"schedule_id": schedule_id,
+                                                     "firing_id": "fir_1"}
     long_ago = datetime.now(timezone.utc) - timedelta(hours=3)
     for entry in stored["history"]:
         entry["at"] = long_ago
