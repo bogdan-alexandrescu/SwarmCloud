@@ -219,8 +219,10 @@ this order.
      Workspace or Cloud Identity admin who is installing. That account becomes
      the install's owner and the first platform admin.
    - If Google says the app is blocked, press Ctrl-C, or wait 5 minutes. The
-     installer then signs in with Cloud Platform alone, and stage 8 asks for
-     the Directory scopes later, through the deployment's own client.
+     installer then signs in with Cloud Platform alone, and stage 8 does its
+     Directory work without those scopes. It cannot ask for them again
+     through the deployment's Desktop client: that client is made only in
+     Admin › Setup's Sign-in client step, which stage 13 waits for.
 
 3. **The organisation.** If your account can see no organisation, the
    installer opens `https://workspace.google.com/signup/gcpidentity/welcome`.
@@ -488,9 +490,19 @@ which workspace still comes from Google groups.
      where the certificate's status says whether DNS or provisioning is
      behind.
 
-2. **Directory sign-in, if needed.** If stage 0's sign-in went on without the
-   Directory scopes, the first call to the Directory opens Google's consent
-   page for the deployment's Desktop client.
+2. **Directory scopes, if deferred.** If stage 0's sign-in went on without the
+   Directory scopes, stage 8 asks for no other sign-in. The deployment's
+   Desktop client, the only one that could ask for them, does not exist yet
+   on a first install: it is made in Admin › Setup's Sign-in client step,
+   which stage 13 waits for.
+   - The groups (item 3) are created with stage 0's sign-in, under the
+     organisation's customer id that Cloud Resource Manager names.
+   - The Groups Reader role (item 4) cannot be assigned without those
+     scopes. After you type `ASSIGN`, the installer opens
+     `https://admin.google.com/ac/roles` and says so. Assign the role there;
+     the installer carries on once swarm-api reads the group.
+   - Only a later run, once the Desktop client exists, opens Google's consent
+     page for that client instead.
 
 3. **The groups.** The installer asks:
 
@@ -831,7 +843,7 @@ the console watches for the result.
 
 | Where | When | Why it is a page |
 |---|---|---|
-| Google sign-in | stage 0, and stage 8 if the Directory scopes were deferred | your own sign-in |
+| Google sign-in | stage 0 (stage 8 asks for none on a first install: the Desktop client is made only in Admin › Setup's Sign-in client step, which stage 13 waits for) | your own sign-in |
 | The deployment's own sign-in (`swarm --context <context> login`) | stage 14, only if that context is not signed in yet | your own sign-in |
 | GitHub: connect your own GitHub account through the App (`swarm sc setup`) | stage 14, only if your account is not connected yet | GitHub authorizes a person's connection only in the browser |
 | Cloud Identity Free sign-up, and creating a billing account | stage 0, only without an organisation or a billing account | sign-ups and payment methods have no API |
