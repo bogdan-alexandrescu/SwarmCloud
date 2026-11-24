@@ -9,6 +9,7 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { SECTIONS } from '../App'
+import catalogue from '../generated/constants/runtimes.json'
 
 const SRC = join(__dirname, '..')
 const ROUTE = '/v1/runtimes'
@@ -209,6 +210,29 @@ describe('runtimes screen (was tests/unit/control_plane/test_runtimes_screen.py)
       'the card head still prints the resolved backend beside the name; the `runs on` row is where it is read',
     ).toBe(false)
     expect(text.includes('href="#capacity/pools"'), '`Pools` in the Backends caption is not a link').toBe(true)
+  })
+
+  // The frozen catalogue's names come from the GENERATED constants
+  // (./generated/constants/runtimes.json, read from swarm_common.profiles and
+  // drift-checked), so these two compare console source with the catalogue
+  // without reading any Python.
+  const wordIn = (text: string, name: string) =>
+    new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(text)
+
+  it('test_the_screen_restates_no_value_from_the_frozen_catalogue', () => {
+    const frozen = [...catalogue.runner_profiles, ...catalogue.resource_classes, ...catalogue.backends]
+    expect(frozen.length, 'the generated catalogue is empty; this check is vacuous').toBeGreaterThan(0)
+    const [path, text] = screenFile()
+    const named = frozen.filter((n) => wordIn(text, n)).sort()
+    expect(named, `${path} names frozen catalogue entries; every value must come from the response`).toEqual([])
+    const built = [...new Set(Array.from(text.matchAll(/\b(cpu|memory_gib|disk_gib|units)\s*:\s*[\d.]/g), (m) => m[1]))]
+    expect(built, `${path} constructs a sizing record; sizes are served, never assembled here`).toEqual([])
+  })
+
+  it('test_the_development_fixture_is_not_a_copy_of_the_frozen_catalogue', () => {
+    const block = fixtureBlock()
+    const named = [...catalogue.runner_profiles, ...catalogue.resource_classes].filter((n) => wordIn(block, n)).sort()
+    expect(named, 'the runtimes fixture names real catalogue entries, a copy of the frozen sizes in TypeScript').toEqual([])
   })
 
   it('test_the_fixture_exercises_the_branches_live_data_never_would (api.ts half)', () => {
