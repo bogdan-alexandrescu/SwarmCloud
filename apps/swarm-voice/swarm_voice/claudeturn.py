@@ -521,9 +521,9 @@ class _Ending:
         return None if self.deadline is None else max(0.0, self.deadline - asyncio.get_running_loop().time())
 
     def see(self, event: dict[str, Any]) -> None:
-        message = event.get("message") if isinstance(event.get("message"), dict) else {}
-        blocks = message.get("content") if isinstance(message.get("content"), list) else []
-        for block in (b for b in blocks if isinstance(b, dict)):
+        message = event.get("message")
+        blocks = message.get("content") if isinstance(message, dict) else None
+        for block in (b for b in (blocks if isinstance(blocks, list) else []) if isinstance(b, dict)):
             if block.get("type") == "tool_use" and block.get("name") == self.tool:
                 self._uses.add(str(block.get("id")))
             elif block.get("type") == "tool_result" and str(block.get("tool_use_id")) in self._uses:
