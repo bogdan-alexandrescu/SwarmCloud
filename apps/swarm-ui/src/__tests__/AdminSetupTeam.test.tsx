@@ -14,21 +14,17 @@
 //
 // Fixtures only; no network.
 
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve } from './repofixture'
 import { teamAddLine } from '../AdminSetupTeam'
+import server from '../generated/constants/server.json'
 
-const TEAM_VERB = join(__dirname, '..', '..', '..', 'swarm-install', 'swarm_install', 'verbs', 'team.py')
 const MEMBERS = 'https://admin.google.com/ac/groups/research%40example.com/members'
 
-/** The long flags `swarm team add` defines, read from its parser. */
+/** The long flags `swarm team add` defines, read from its parser into the generated server.json. */
 function addFlags(): Set<string> {
-  const src = readFileSync(TEAM_VERB, 'utf8')
-  const add = src.slice(src.indexOf('add = sub.add_parser("add"'), src.indexOf('repair = sub.add_parser('))
-  return new Set([...add.matchAll(/add\.add_argument\("(--[a-z-]+)"/g)].map((m) => m[1] ?? ""))
+  return new Set(server.team_add_flags)
 }
 
 afterEach(() => {

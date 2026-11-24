@@ -15,8 +15,6 @@
 //
 // Placeholders only; nothing is token-shaped.
 
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { serve, visible } from './repofixture'
@@ -25,6 +23,7 @@ import { SECTIONS, canonical, fromAddress } from '../App'
 import { addressToPath, pathToAddress } from '../paths'
 import { PANEL_PAGES } from '../Spine'
 import { holdScheduleClock, hoursFromNow } from './scheduleclock'
+import server from '../generated/constants/server.json'
 
 const WAIT = { timeout: 4000 }
 
@@ -184,8 +183,8 @@ describe('Admin no longer has a Schedules page', () => {
 
 /** `terraform/modules/scheduler/jobs.tf`'s Cloud Scheduler jobs, in file order. */
 function jobsTf(): string[] {
-  const tf = readFileSync(join(__dirname, '..', '..', '..', '..', 'terraform', 'modules', 'scheduler', 'jobs.tf'), 'utf8')
-  return [...tf.matchAll(/^resource "google_cloud_scheduler_job" "([a-z_]+)"/gm)].map((m) => m[1]!)
+  // Parsed from jobs.tf by scripts/api_constants/server.py into the generated server.json.
+  return server.scheduler_jobs.map((j) => j.resource)
 }
 
 describe('Admin › Platform counts lists the platform ticks', () => {
