@@ -67,6 +67,18 @@ TOOL_CALL_HARD_CAP = TOOL_CALL_CEILING
 #: that needs a fifth start from a handoff is looping, not progressing, and
 #: from then on the last session runs to its end inside the step's timeout.
 MAX_FRESH_SESSIONS = 4
+#: The context, in tokens, past which an ACCOUNT SWAP starts a fresh session
+#: from the hand-off note instead of resuming (wave 3, shorter sessions): half
+#: the ceiling, 100,000. A swap's `--resume` writes the session's whole prompt
+#: to the new account's cache at the cache-write price; a hand-off writes the
+#: note (a few thousand to ~20k tokens). Past half the ceiling that cold write
+#: is larger than the headroom the resume keeps, and the session would reach
+#: the ceiling -- and be handed off anyway -- inside that headroom, so the swap
+#: pays both. Under it, the resume keeps the context the session still has
+#: room to use. Applied as `swap_threshold`: never above a ceiling a profile
+#: or the step lowered. A credential reload (same account, its cache warm) is
+#: still judged on the ceiling itself.
+SWAP_HANDOFF_CONTEXT_TOKENS = CONTEXT_CEILING_TOKENS // 2
 
 #: The step's own, lower limits: `input.context_ceiling = {"tokens": N,
 #: "tool_calls": M}`, either key optional.
@@ -88,6 +100,9 @@ STATE_NAME = "context-ceiling.json"
 #: Why a session was stopped, and where.
 WHY_CONTEXT = "context_tokens"
 WHY_TOOL_CALLS = "tool_calls"
+#: A resume of a session a hand-off already ended (`HANDED_OFF_KEY`): the
+#: work went on in the fresh session, so the old one is never resumed.
+WHY_HANDED_OFF = "already_handed_off"
 AT_TURN_BOUNDARY = "turn_boundary"
 AT_RESUME = "resume"
 
@@ -127,6 +142,24 @@ SESSIONS_METRIC = "sessions"
 #: account swap, a credential reload, a resume over the ceiling) reports every
 #: session's calls, not only those of its own capture.
 EARLIER_TOOL_CALLS_KEY = "earlier_tool_calls"
+#: The state key the ids of the sessions this attempt's hand-offs ended are
+#: kept under (the state file is private, beside the channel that already
+#: holds a session id; never a log or the summary). A swap that arrives before
+#: the fresh session has named itself still names the ended one, and resuming
+#: it would re-read the very context the hand-off was for.
+HANDED_OFF_KEY = "handed_off_sessions"
+#: The most ended session ids the state keeps: one per fresh session.
+_HANDED_OFF_MAX = MAX_FRESH_SESSIONS + 1
+
+#: Which path an account swap took (wave 3, shorter sessions): its session
+#: resumed on the new account, or handed off to a fresh session. In the
+#: ceiling's summary under `swap`, and on the account channel under
+#: SWAP_PATH_KEY, which the worker copies beside its swap record (the run the
+#: swap started, `lifecycle._close_run`) for the scorecard to count.
+SWAP_RESUMED = "resumed"
+SWAP_HANDED_OFF = "handed_off"
+SWAP_PATHS = (SWAP_RESUMED, SWAP_HANDED_OFF)
+SWAP_PATH_KEY = "swap_path"
 
 #: The width, in prompt tokens, of a `prompt_buckets` row: equal to
 #: `usage._PROMPT_BUCKET_TOKENS` (a test holds the two equal).
@@ -300,6 +333,11 @@ class CeilingWatcher:
         #: it started, and each file's name, bytes and whether it was cut --
         #: never the content -- so a deployed handoff can be checked.
         self.notes_inlined: list[dict[str, Any]] = []
+        #: The sessions this attempt's hand-offs ended (`HANDED_OFF_KEY`).
+        self.handed_off: list[str] = []
+        #: The swap this runner was started for and the path it took
+        #: (`note_swap`), or None when no swap restarted it.
+        self.swap: dict[str, Any] | None = None
         self._lock = threading.Lock()
         self._fed: list[bytes] = []
         self._partial = b""
@@ -325,6 +363,22 @@ class CeilingWatcher:
             if _count(number) and number not in self.unread_sessions:
                 self.unread_sessions.append(number)
         self.earlier_tool_calls = family_counts(state.get(EARLIER_TOOL_CALLS_KEY))
+        for session in handed_off_sessions(state):
+            self.note_handed_off(session)
+
+    def note_handed_off(self, session: str | None) -> None:
+        """Remember a session a hand-off ended, so it is never resumed."""
+        if session and session not in self.handed_off:
+            self.handed_off = [*self.handed_off, session][-_HANDED_OFF_MAX:]
+
+    def note_swap(self, path: str, *, context_tokens: int) -> dict[str, Any]:
+        """Record which path the swap that restarted this runner took."""
+        self.swap = {
+            "path": path,
+            "context_tokens": context_tokens,
+            "threshold_tokens": swap_threshold(self.limits),
+        }
+        return self.swap
 
     def _reset(self) -> None:
         self.session_id: str | None = None
@@ -557,6 +611,7 @@ class CeilingWatcher:
     def record_stop(self, *, at: str, why: str, **extra: Any) -> dict[str, Any]:
         """Note a ceiling stop the runner acts on: a fresh session follows."""
         self.fresh_sessions += 1
+        self.note_handed_off(self.session_id)
         entry = {
             "at": at,
             "why": why,
@@ -581,6 +636,7 @@ class CeilingWatcher:
             "fresh_sessions": self.fresh_sessions,
             "sessions": self.sessions,
             "unread_sessions": sorted(self.unread_sessions),
+            HANDED_OFF_KEY: list(self.handed_off),
             **({EARLIER_TOOL_CALLS_KEY: dict(self.earlier_tool_calls)}
                if self.earlier_tool_calls is not None else {}),
         }
@@ -595,6 +651,7 @@ class CeilingWatcher:
             "skipped": self.skipped,
             "refusal_restarts": list(self.refusal_restarts),
             "notes_inlined": list(self.notes_inlined),
+            "swap": dict(self.swap) if self.swap is not None else None,
             **self.sessions_record(),
         }
 
@@ -673,7 +730,32 @@ def carry_tool_calls(
     return total
 
 
-def over_state(state: Mapping[str, Any] | None, session: str, limits: CeilingLimits) -> str | None:
+def swap_threshold(limits: CeilingLimits) -> int:
+    """The context past which a swap hands off: SWAP_HANDOFF_CONTEXT_TOKENS,
+    never above the resolved ceiling (a profile or the step may lower it)."""
+    return min(SWAP_HANDOFF_CONTEXT_TOKENS, limits.tokens)
+
+
+def handed_off_sessions(state: Mapping[str, Any] | None) -> list[str]:
+    """The session ids the state says this attempt's hand-offs ended."""
+    value = (state or {}).get(HANDED_OFF_KEY)
+    return [s for s in value if isinstance(s, str) and s] if isinstance(value, list) else []
+
+
+def swap_path_of(channel: Mapping[str, Any]) -> dict[str, str]:
+    """`{"swap_path": ...}` from an account channel the runner wrote, or {}:
+    what the worker puts on the run a swap started. Only a known path."""
+    path = channel.get(SWAP_PATH_KEY) if isinstance(channel, Mapping) else None
+    return {SWAP_PATH_KEY: path} if path in SWAP_PATHS else {}
+
+
+def over_state(
+    state: Mapping[str, Any] | None,
+    session: str,
+    limits: CeilingLimits,
+    *,
+    swap: bool = False,
+) -> str | None:
     """Why `session`, as an earlier runner process left it, is over the ceiling, or None.
 
     A SWAP OF A LARGE SESSION GOES FRESH (the owner's "Shorter sessions"
@@ -688,10 +770,18 @@ def over_state(state: Mapping[str, Any] | None, session: str, limits: CeilingLim
     twice was resumed twice at 230k reading as 2k), and on any turn the tool
     results it just added. A `--resume` on another account writes ALL of it to
     that account's cache, so a session whose prompt is past the ceiling starts
-    fresh from a handoff instead; under it, the resume stands."""
+    fresh from a handoff instead; under it, the resume stands.
+
+    `swap` (an account swap, not a credential reload) judges the same measure
+    against `swap_threshold` -- half the ceiling -- instead (wave 3, shorter
+    sessions; SWAP_HANDOFF_CONTEXT_TOKENS says why). A session a hand-off
+    already ended is never resumed (`WHY_HANDED_OFF`, `HANDED_OFF_KEY`)."""
+    if session in handed_off_sessions(state):
+        return WHY_HANDED_OFF
     if not state or state.get("session_id") != session:
         return None
-    if max(_count(state.get("context_tokens")), _count(state.get("prompt_tokens"))) > limits.tokens:
+    tokens = swap_threshold(limits) if swap else limits.tokens
+    if max(_count(state.get("context_tokens")), _count(state.get("prompt_tokens"))) > tokens:
         return WHY_CONTEXT
     if _count(state.get("tool_calls")) > limits.tool_calls:
         return WHY_TOOL_CALLS

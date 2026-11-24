@@ -18349,7 +18349,11 @@ class Worker(HeartbeatMixin, CheckpointMixin):
                 entry["cost_usd"] = round(
                     self._spend["total_cost_usd"] - spent_before.get("total_cost_usd", 0), 10)
             if entry.get("after_swap") and self.ws is not None:
-                entry["reread"] = _reread_of(self._read_account_channel())
+                from .runners.ceiling import swap_path_of  # beside the swap: resumed or handed off
+
+                channel = self._read_account_channel()
+                entry["reread"] = _reread_of(channel)
+                entry.update(swap_path_of(channel))
         except Exception as exc:  # pragma: no cover - defensive; teardown path
             self.log.warning("could not close the run's record", error=str(exc))
         self._runs.append(entry)

@@ -754,6 +754,16 @@ class AccountStreamWatcher:
         self._usage: dict[str, dict[str, int]] = dict(carry._usage) if carry is not None else {}
         self._anonymous = carry._anonymous if carry is not None else 0
         self.first_action: dict[str, Any] | None = carry.first_action if carry is not None else None
+        #: Which path the swap that restarted this runner took
+        #: (`ceiling.SWAP_PATHS`), or None when no swap did: on the channel
+        #: under `ceiling.SWAP_PATH_KEY`, for the worker's swap record.
+        self.swap_path: str | None = carry.swap_path if carry is not None else None
+
+    def note_swap_path(self, path: str | None) -> None:
+        """Set the swap's path; the next write puts it on the channel."""
+        if path != self.swap_path:
+            self.swap_path = path
+            self._dirty = True
 
     def poll(self) -> str | None:
         stop: str | None = None
@@ -896,6 +906,7 @@ class AccountStreamWatcher:
                 # and seconds the run has spent so far, which is the re-read
                 # cost of a run that never got to act.
                 "first_action": self.first_action,
+                ceiling_mod.SWAP_PATH_KEY: self.swap_path,
                 "spent": {
                     "seconds": round(time.monotonic() - self._origin, 3),
                     "tokens": self._tokens(),
@@ -2154,6 +2165,9 @@ def run_cli_agent(
     # whether the session it was asked to resume ended over the ceiling. One
     # that did is NOT resumed: this run starts a fresh session from a handoff.
     ceiling_watcher: ceiling_mod.CeilingWatcher | None = None
+    # An account swap restarted this runner (not a credential reload, a time
+    # limit or an answered question): its path is recorded below.
+    swapped = bool(resume) and os.environ.get(RESUME_REASON_ENV, "").strip() == RESUME_MOVED
     ceiling_state_path: Path | None = None
     ceiling_seed: dict[str, Any] | None = None
     resumed_over: str | None = None
@@ -2181,10 +2195,28 @@ def run_cli_agent(
         # NEVER FOR A PARKED QUESTION: the answered question is in that
         # session alone, and a fresh session from a handoff would drop it.
         answered = os.environ.get(RESUME_REASON_ENV, "").strip() == RESUME_ANSWERED
+        # AN ACCOUNT SWAP OF A LARGE SESSION HANDS OFF (wave 3, shorter
+        # sessions): judged against half the ceiling
+        # (`ceiling.SWAP_HANDOFF_CONTEXT_TOKENS`), a credential reload against
+        # the ceiling. The fresh session is one of the same capped fresh
+        # sessions: with none left (`armed` false) the swap resumes as before.
         if resume and ceiling_watcher.armed and not answered:
-            resumed_over = ceiling_mod.over_state(ceiling_seed, resume, ceiling_watcher.limits)
+            resumed_over = ceiling_mod.over_state(
+                ceiling_seed, resume, ceiling_watcher.limits, swap=swapped)
             if resumed_over is not None:
+                ceiling_watcher.note_handed_off(resume)
                 resume = ""
+        if swapped:
+            ceiling_watcher.note_swap(
+                ceiling_mod.SWAP_HANDED_OFF if resumed_over is not None
+                else ceiling_mod.SWAP_RESUMED,
+                context_tokens=ceiling_mod.seed_numbers(ceiling_seed)["context_tokens"],
+            )
+    # Which path the swap took, for the account channel (`ceiling.SWAP_PATHS`).
+    swap_path = (
+        (ceiling_mod.SWAP_HANDED_OFF if resumed_over is not None else ceiling_mod.SWAP_RESUMED)
+        if swapped else None
+    )
     if cwd != ctx.work_dir and not resume:
         from .. import contextpack  # lazy: most starts have nothing staged
 
@@ -2435,6 +2467,8 @@ def run_cli_agent(
         run_limits = replace(limits, timeout_seconds=timeout_seconds)
         run_watcher = _account_watcher(spec, stdout_path, last_watcher[0])
         last_watcher[0] = run_watcher
+        if run_watcher is not None and swap_path is not None:
+            run_watcher.note_swap_path(swap_path)
         if ceiling_watcher is not None:
             ceiling_watcher.begin(fresh=fresh, seed=seed)
             # The session count, for a runner restarted inside this attempt.
