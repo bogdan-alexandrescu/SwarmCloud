@@ -13852,6 +13852,80 @@ export async function loadApprovals(
   return r
 }
 
+/** The five stages of the Pipeline board, in its order (plans-pipeline §2.1, §3.2). */
+export const PIPELINE_STAGES = ['found', 'planned', 'running', 'pr_ci', 'ended'] as const
+export type PipelineStage = (typeof PIPELINE_STAGES)[number]
+
+/** One card on the board, as `GET /v1/pipeline` serves it, already in its stage. */
+export interface PipelineCard {
+  card_id: string
+  stage: PipelineStage
+  source: { kind: string; schedule_type?: string | null; schedule_id?: string | null; fingerprint?: string | null; proposal_id?: string | null }
+  subject: { run_id?: string; issue?: string; title: string; approval_id?: string | null }
+  state: string
+  waits_on_person: boolean
+  approval_kind: 'plan' | 'hold' | 'merge' | 'proposal' | null
+  expires_at: string | null
+  since: string | null
+  last_word?: { by: string; at: string; text: string } | null
+  revision?: number | null
+  plan_digest?: string | null
+  pull_request?: { number?: number | null; url?: string | null; checks?: unknown } | null
+}
+
+/** A column's figures: what it shows, what a filter or the bound left out, its oldest card's time. */
+export interface PipelineColumn {
+  count: number
+  hidden: number
+  oldest_at: string | null
+}
+
+/** `GET /v1/pipeline` (plans-pipeline §3.2). `partial` names a read that failed; the others still answer. */
+export interface PipelineBoard {
+  cards: PipelineCard[]
+  by_stage: Record<PipelineStage, PipelineColumn>
+  waits_on_person: number
+  partial: { read: string; status: number }[]
+  window_days: number | null
+}
+
+/** The board's filters, its address's own keys (`?source=&state=&waits=person`). */
+export interface PipelineFilters {
+  source?: string | null
+  state?: string | null
+  waits?: 'person' | null
+}
+
+/**
+ * `GET /v1/pipeline`: the board, each card in its one stage. A board with
+ * no card, nothing hidden and no failed read is the measured empty board
+ * (`empty`); a filtered board that hides cards is not empty. A 200 without
+ * `cards` or `by_stage` is a failure, never an empty board. A 404 is passed
+ * on as the failure it is: the board's screen draws "not served" from it.
+ */
+export async function loadPipeline(filters: PipelineFilters = {}): Promise<Result<PipelineBoard>> {
+  if (USE_FIXTURES) return { status: 'empty', fetchedAt: Date.now() }
+  const query = new URLSearchParams()
+  if (filters.source) query.set('source', filters.source)
+  if (filters.state) query.set('state', filters.state)
+  if (filters.waits === 'person') query.set('waits', 'person')
+  const r = await read<PipelineBoard>(route('/v1/pipeline', {}, query.toString() === '' ? undefined : query), (d) =>
+    Array.isArray(d.cards) &&
+    d.cards.length === 0 &&
+    (!Array.isArray(d.partial) || d.partial.length === 0) &&
+    !(typeof d.waits_on_person === 'number' && d.waits_on_person > 0) &&
+    Object.values(d.by_stage ?? {}).every((c) => !c || (!c.count && !c.hidden)),
+  )
+  if ((r.status === 'ok' || r.status === 'stale') && (!Array.isArray(r.data.cards) || typeof r.data.by_stage !== 'object' || r.data.by_stage === null)) {
+    return { status: 'error', error: { kind: 'server_error', httpStatus: 200, code: null, message: 'The pipeline answer carried no cards.' } }
+  }
+  if (r.status === 'ok' || r.status === 'stale') {
+    const d = r.data
+    return { ...r, data: { ...d, partial: Array.isArray(d.partial) ? d.partial : [], waits_on_person: typeof d.waits_on_person === 'number' ? d.waits_on_person : d.cards.filter((c) => c.waits_on_person).length, window_days: typeof d.window_days === 'number' ? d.window_days : null } }
+  }
+  return r
+}
+
 /**
  * `GET /v1/approvals/{id}`: one item, with what it is decided on -- the run
  * for a projected plan, and for a merge the head it was checked at and what

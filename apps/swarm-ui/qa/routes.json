@@ -19,6 +19,12 @@
         "ready": "main h1"
       },
       {
+        "id": "pipeline",
+        "address": "automate/pipeline",
+        "path": "/automate/pipeline",
+        "ready": "main h1"
+      },
+      {
         "id": "approvals",
         "address": "automate/approvals",
         "path": "/automate/approvals",

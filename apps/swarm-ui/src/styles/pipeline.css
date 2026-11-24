@@ -1,0 +1,56 @@
+/* AUTOMATE › PIPELINE (docs/design/plans-pipeline.md §2.1): the board.
+   Pipeline.tsx is its only reader. Every size and colour is an existing
+   token: the type floor is 12px (--t-micro), nothing is set in capitals, and
+   the one hue it adds to a card is the amber edge of what waits on a person
+   (--s-warn), the same edge a held agent row carries. */
+
+.pl-page { display: grid; gap: 12px; min-width: 0; }
+.pl-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-width: 0; }
+.pl-chips, .pl-stages { display: flex; flex-wrap: wrap; gap: 4px; margin: 0; min-width: 0; }
+.pl-chip-n { font-weight: 400; }
+.pl-waits { box-shadow: inset 3px 0 0 var(--s-warn); }
+
+/* ---- the columns ------------------------------------------------------------ */
+.pl-stages { display: none; }
+.pl-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 12px; align-items: start; min-width: 0; }
+.pl-cols.is-one { grid-template-columns: minmax(0, 1fr); }
+.pl-col {
+  display: grid; gap: 8px; align-content: start; min-width: 0; padding: 10px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+}
+/* A column holding a card over a day is edged (C:P1a). */
+.pl-col.is-old { border-color: var(--s-warn); }
+.pl-col-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; min-width: 0; }
+.pl-col-h > h2 { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; overflow-wrap: anywhere; }
+.pl-n { font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; }
+.pl-dim { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.pl-col-err { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--bad-ink); }
+.pl-col-none { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
+
+/* ---- a card ------------------------------------------------------------------ */
+.pl-cards { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; min-width: 0; }
+.pl-card { min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); }
+/* What waits on a person: amber, in whatever column it sits (§2.1). */
+.pl-card.is-waits { box-shadow: inset 3px 0 0 var(--s-warn); }
+.pl-card-a {
+  display: grid; gap: 2px; min-width: 0; min-height: 44px; padding: 8px 10px;
+  color: inherit; text-decoration: none; border-radius: 8px;
+}
+a.pl-card-a:hover { background: var(--surface); }
+a.pl-card-a:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 1px; }
+.pl-card-h { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-width: 0; }
+.pl-src { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.pl-title { font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; overflow-wrap: anywhere; }
+.pl-meta { display: flex; flex-wrap: wrap; gap: 2px 8px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); min-width: 0; }
+.pl-mono { font-family: var(--mono); overflow-wrap: anywhere; }
+.pl-due { color: var(--warn-ink); font-weight: 600; }
+
+/* ---- empty and not served: one line and its action --------------------------- */
+.pl-none { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
+
+/* C:P7a: on a phone, one stage at a time, chosen from a row of stage buttons. */
+@media (max-width: 560px) {
+  .pl-stages { display: flex; }
+  .pl-cols { grid-template-columns: minmax(0, 1fr); }
+  .pl-cols:not(.is-one) > .pl-col:not(.is-shown) { display: none; }
+}
