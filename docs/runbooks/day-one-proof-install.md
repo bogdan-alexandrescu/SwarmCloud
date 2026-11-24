@@ -12,8 +12,9 @@ docs section, it was checked against when this runbook was written
 `apps/swarm-install/swarm_install/`. A step that could not be checked says
 **not checked** and why. Where the docs and the code disagree, this runbook
 follows the code and says so; each such disagreement is listed in
-[Known disagreements to log before you start](#known-disagreements-to-log-before-you-start),
-because a person using only the product will meet them.
+[Known disagreements, fixed before the first proof install](#known-disagreements-fixed-before-the-first-proof-install),
+with where it was fixed, because a person using only the product would have
+met them.
 
 **Placeholders.** Nothing here names a real company, person or deployment.
 
@@ -239,7 +240,7 @@ proof:
 | The KMS key ring and keys | never deleted; the uninstall destroys the key versions | `SI/remains.py`; `SI/uninstall.py`, `KEEP` |
 | Custom role ids | a deleted role can be undeleted for 7 days, and its id is held for 37 days in total. **A reinstall into project 1 must start within 7 days of its uninstall, or wait until day 37.** Past day 7, bootstrap stops with "custom roles ... were deleted more than 7 days ago". | `SI/steps/bootstrap.py`, `ROLE_ID_HOLD_DAYS`, `ROLE_UNDELETE_DAYS`, `held_roles`; `SI/adopt.py`, `ROLE_UNDELETE_DAYS` |
 | The Firestore location | the region can never change for the project; a deleted database's id comes free after Google's delay | [install.md § Stage 0](../install.md#stage-0-preflight) item 5; `SI/adopt.py`, `FIRESTORE_ID` |
-| The project id | if you delete the project, Google shuts it down at once and deletes it after 30 days. The code says the id is never reusable; [install.md § Stage 1](../install.md#stage-1-foundations) says it is held 30 days. Log this disagreement either way. | `SI/uninstall.py`, the project step's prompt |
+| The project id | if you delete the project, Google shuts it down at once and deletes it after 30 days. The id is never reusable; [install.md § Stage 1](../install.md#stage-1-foundations) says so since K6 was fixed. | `SI/uninstall.py`, the project step's prompt |
 | The GitHub App | only the owning account can delete it, and App names are global | `SI/remains.py` |
 | The state bucket name `swarm-tfstate-<project>` | bucket names are global | `SI/state.py`, `state_bucket` |
 | Workspace groups, the Groups Reader assignment, a delegation | organisation-admin objects | `SI/remains.py` |
@@ -269,10 +270,10 @@ Google's list price, the same figures as `SI/steps/foundations.py`
 - **Claude subscriptions** are paid outside Google Cloud.
 - **For the whole proof**, with two deployments standing two to three days
   each: about 40 to 60 USD of floor.
-- **Budget figures disagree.** The installer proposes the budget from
-  `SI/sizing.py` (`propose`, `BUDGET_FLOOR_USD = 400`), which differs from
-  install.md's "one person: 500 USD; a team: 300 USD plus". Log the figure the
-  terminal shows. The budget only alerts; nothing in the code stops spend
+- **The proposed budget.** The installer proposes the budget from
+  `SI/sizing.py` (`propose`, `BUDGET_FLOOR_USD = 400` plus run time), which
+  install.md § What it costs states since K5 was fixed: 600 USD for one
+  person. Log the figure the terminal shows. The budget only alerts; nothing in the code stops spend
   when it is reached (not checked against a live budget).
 
 ### 2.6 How long each stage takes
@@ -403,8 +404,8 @@ below unless the step says otherwise.
 - **Why the candidate's script:** the root `install.sh` is written only by a
   final release, so it cannot install a candidate (release.md § Each release
   step 3).
-- **Disagreement:** `docs/design/day-one-plan.md` §10 shows the root
-  `install.sh` for P4. That is wrong for a candidate; log it.
+- **Fixed (K4):** `docs/design/day-one-plan.md` §10 used to show the root
+  `install.sh` for P4; it now shows `channels/rc.install.sh`.
 
 **B2. Run the dry run.**
 
@@ -560,9 +561,9 @@ each step started and ended.
   page it opened, then run `swarm install` again.
 - **Checked against:** `SI/steps/edge.py` (`DnsStep`, module docstring);
   [install.md § Stage 2](../install.md#stage-2-the-front-door) item 3.
-- **Disagreement (log it):** install.md § Stage 2 item 1 says the OAuth brand
+- **Fixed (K1):** install.md § Stage 2 item 1 used to say the OAuth brand
   and the Desktop client are made here, in the terminal, with a hidden secret
-  prompt. The code moved them to the console. `edge.brand` and
+  prompt. The code moved them to the console, and install.md now says so. `edge.brand` and
   `edge.desktop-client` are stage 13 waits, satisfied by Admin › Setup's
   **Sign-in client** step (`SI/steps/edge.py`, `BrandStep`, `DesktopClientStep`;
   [`day-one-plan.md` §5.6](../design/day-one-plan.md#56-the-sign-in-client-step-the-brand-and-the-desktop-client-move-to-the-console)).
@@ -649,8 +650,9 @@ each step started and ended.
     and stays usable. Run `swarm install` again later to pick up the wait.
 - **Checked against:** `SI/steps/handoff.py` (`HandoffStep`, `HAND_OVER`,
   `CONSOLE`); [install.md § Stage 13](../install.md#stage-13-the-hand-off-to-the-console).
-- **Disagreement (log it):** install.md quotes an older wording of this
-  message that does not name the button.
+- **Fixed (K8):** install.md used to quote an older wording of this message
+  that did not name the button; it now quotes the message as the code
+  builds it.
 
 **C9. Admin › Setup in the console.** Sign in with your organisation account.
 The page shows a checklist of eight steps beside the selected step's panel,
@@ -686,11 +688,10 @@ re-read every 5 seconds, never marked by hand
   - `apps/swarm-api/swarm_api/routes/setup.py`;
   - [install.md § Step 3](../install.md#step-3-admin--setup-in-the-console);
   - [`day-one-plan.md` §5](../design/day-one-plan.md#5-admin--setup-and-health-d26-d27).
-- **Disagreements (log them):**
-  - install.md § Step 3 says the strip shows six steps and the checklist seven
-    rows. The console draws eight lines, plus an optional ninth, **Add a
-    plugin**, which never gates.
-  - install.md has no Sign-in client row.
+- **Fixed (K1, K2):** install.md § Step 3 used to say the strip shows six
+  steps and the checklist seven rows, with no Sign-in client row. It now
+  describes the eight lines the console draws, Sign-in client included, plus
+  the optional ninth, **Add a plugin**, which never gates.
 
 **C10. Stage 14: verify.**
 
@@ -987,7 +988,9 @@ Every snag goes into the same snag log, under "Teammate".
   `sign-in required for <context>: run sc login`.
 - **Log:** whether `sc` was found on `PATH`.
 - **If it fails:**
-  - `sc: command not found` is a snag (see below). Log it, then install the
+  - `sc: command not found` means the command line is not installed: install.md
+    § Step 3 line 8 says so since K9 was fixed, so it is a snag only if the
+    teammate could not find that. Log it, then install the
     command line pinned to the deployment's release:
     `curl -fsSL https://storage.googleapis.com/swarmcloud/channels/rc.install.sh | SWARMCLOUD_VERSION=<version> SWARM_CHANNEL=rc sh`
     for a candidate deployment
@@ -1054,13 +1057,12 @@ Every snag goes into the same snag log, under "Teammate".
   - `plugin/commands/sc.md` (`run --issue`, `plan approve`, `--auto-merge`);
   - [onboarding-acceptance.md § Check 1](onboarding-acceptance.md#check-1-a-new-user-clones-pushes-and-opens-a-pull-request-as-themselves-in-two-orgs)
     (the pull request is authored by the submitter).
-- **Disagreement (log it):** the console's **Send to your team** line, the
-  plan's §10 and install.md all say `/sc:submit`. No such command exists:
-  `plugin/commands/` holds `check`, `doctor`, `install`, `sc`, `setup` and
-  `team`
+- **Fixed before the proof (K3):** the console's **Send to your team** line,
+  the plan's §10 and install.md used to say `/sc:submit`, which does not
+  exist. They now say `/sc run --issue owner/repo#N`
   (`apps/swarm-ui/src/consolefinish/ChecklistFinish.tsx`, `SendBody`;
   `apps/swarm-ui/src/AdminSetupSteps.tsx`, `SendToTeam`). A teammate who
-  follows the console will meet this first.
+  still sees `/sc:submit` is on a console older than the fix: log it.
 
 **T5. Merge it.**
 
@@ -1128,8 +1130,8 @@ Every snag goes into the same snag log, under "Teammate".
 - **Checked against:** `SI/verbs/uninstall.py`; `SI/uninstall.py` (`STEPS`,
   `Uninstall.prompt`, `Uninstall.refusal`, `OWNED_BY`, `OWNER_PERMISSIONS`);
   [install.md § Uninstall](../install.md#uninstall).
-- **Disagreement (log it):** install.md lists seven deletions; the code runs
-  eight steps.
+- **Fixed (K7):** install.md used to list seven deletions; it now lists the
+  eight steps the code runs.
 
 **What it leaves on purpose.** `SI/remains.py` (`KINDS`, `survivors`) leaves
 the following, each with the page or step that removes it by hand:
@@ -1207,29 +1209,34 @@ table. Promotion (E2) waits for every tick.
 - [ ] The reinstall into project 1 reached `READY` (D4).
 - [ ] The upgrade from the candidate to `<V>` exited 0; doctor exited 0
       afterwards; the older plugin still ran an agent (D6).
-- [ ] The disagreements listed below are each fixed or accepted.
+- [ ] The disagreements listed below (K1 to K9, fixed on 2026-11-24) are in
+      the candidate under test.
 - [ ] `releases/<V>/TESTED` was recorded as a pass (E1).
 - [ ] The owner promoted the stable channel by typing `--promote <V>` (E2).
 - [ ] What happens to the proof deployments is decided and done (O6), and
       every remains record is kept with the log.
 
-### Known disagreements to log before you start
+### Known disagreements, fixed before the first proof install
 
-The code and the docs disagreed on these points on 2026-11-24. A person using
-only the product will read the docs, so each one is a snag until fixed or
-accepted. File them before C1 if you decide that under O5.
+The code and the docs disagreed on these points on 2026-11-24. The owner
+decided the same day to fix them first (O5 (a)). Each is fixed; the code was
+the truth in every case, so the docs, the plugin's setup command and two
+console strings changed, and no behaviour of the installer did.
+`tests/unit/install/test_install_doc_agrees.py` holds K1, K2 and K4 to K9 to
+the code they were checked against; the console tests hold K3. A
+disagreement found later is a snag like any other (C16).
 
-| # | The docs say | The code does | Where |
-|---|---|---|---|
-| K1 | the brand and the Desktop client are made in stage 2 in the terminal, with a hidden secret prompt | they are made in the console's **Sign-in client** step; the CLI waits in stage 13 | install.md § Stage 2 and § Steps outside the terminal and the console; `SI/steps/edge.py` (`BrandStep`, `DesktopClientStep`) |
-| K2 | Admin › Setup has six steps and a seven-row checklist | eight lines, plus an optional ninth | install.md § Step 3; `ChecklistFinish.tsx` header comment |
-| K3 | a teammate runs `/sc:submit` | no such command; the paths are `/sc run --issue`, `/sc plan approve`, or plain words | install.md § Step 3; `ChecklistFinish.tsx` (`SendBody`); `AdminSetupSteps.tsx` (`SendToTeam`); `day-one-plan.md` §10; `plugin/commands/` |
-| K4 | P4 starts from the root `install.sh` with `--version <RC>` | a candidate is installed from `channels/rc.install.sh` | `day-one-plan.md` §10; release.md § Each release |
-| K5 | the proposed budget is 500 USD for one person, 300 USD plus run time for a team | the proposal comes from `BUDGET_FLOOR_USD = 400` plus run time | install.md § What it costs; `SI/sizing.py` |
-| K6 | a deleted project's id is held 30 days | the id is never reusable | install.md § Stage 1; `SI/uninstall.py` |
-| K7 | the uninstall deletes in seven steps | eight steps | install.md § Uninstall; `SI/uninstall.py` (`STEPS`) |
-| K8 | the stage 13 message does not name the hand-over button | the message names **Hand over to swarm install** and the 6 h bound | install.md § Stage 13; `SI/steps/handoff.py` (`HandoffStep`) |
-| K9 | (nothing) | a teammate may need `sc` on `PATH` from `install.sh` before `sc login` | T2 |
+| # | The docs said | The code does (checked against) | Fixed where | How to see it |
+|---|---|---|---|---|
+| K1 | the brand and the Desktop client are made in stage 2 in the terminal, with a hidden secret prompt | they are made in the console's **Sign-in client** step; the CLI waits in stage 13 (`SI/steps/edge.py`: `BrandStep`, `DesktopClientStep`, `ClientSecretContainerStep`) | install.md § Stage 2 (item 1 is now the secret's empty container), § Stage 13, § Step 3 line 2, and the row in § Steps outside the terminal and the console | § Stage 2 asks nothing; § Step 3 line 2 lists Branding, Audience, Create client and the **Client id** / **Client secret** form. `test_k1_*` |
+| K2 | Admin › Setup has six steps and a seven-row checklist | eight lines, plus an optional ninth, Add a plugin (`ChecklistFinish.tsx`: header comment, `finishLines`) | install.md § Step 3: the intro and lines 1 to 9 (Cloud, Sign-in client, GitHub App, First team, Claude accounts, Smoke agent, Verify, Send to your team, Add a plugin) | § Step 3 says `2 of 8 done` and numbers nine lines, the ninth optional. `test_k2_*` |
+| K3 | a teammate runs `/sc:submit` | no such command; the paths are `/sc run --issue`, `/sc plan approve`, or plain words (`plugin/commands/sc.md`; `swarm_mcp/sc.py`, `run --issue`) | the console's **Send to your team** line in `ChecklistFinish.tsx` (`SendBody`) and `AdminSetupSteps.tsx` (`SendToTeam`); install.md § Step 3 line 8; `day-one-plan.md` §10 | the console's line reads `Then each teammate runs sc login, then /sc run --issue owner/repo#N`, with the same word count, so the prose ratchet holds. `AdminSetup.test.tsx` and `AdminSetupSteps.test.tsx` (Send to your team), and `test_k3_*` for docs and plugin |
+| K4 | P4 starts from the root `install.sh` with `--version <RC>` | a candidate is installed from `channels/rc.install.sh`; only a final release writes the root script (release.md § Each release, step 3) | `day-one-plan.md` §10, the P4 commands and a paragraph after them | the P4 block's first line is `curl -fsSL .../channels/rc.install.sh \| SWARM_CHANNEL=rc sh`. `test_k4_*` |
+| K5 | the proposed budget is 500 USD for one person, 300 USD plus run time for a team | `BUDGET_FLOOR_USD = 400` plus the expected agents' run time, rounded up to the next hundred (`SI/sizing.py`, `propose`) | install.md § What it costs | it says 400 USD plus run time: 600 USD for one person, 700 USD for 2 members, 1100 USD for 10. `test_k5_*` reads the floor and the one-person figure from `sizing` |
+| K6 | a deleted project's id is held 30 days | the id is never reusable; the project is deleted after 30 days (`SI/uninstall.py`, the project-deletion offer) | install.md § Stage 1, "A taken project id" | it says the id is never reusable. `test_k6_*` |
+| K7 | the uninstall deletes in seven steps | eight steps (`SI/uninstall.py`, `STEPS`) | install.md § Uninstall | the list has eight items, the last the budget, the remains record and the state buckets. `test_k7_*` compares the list with `STEPS` |
+| K8 | the stage 13 message does not name the hand-over button | the message names **Hand over to swarm install** and the 6 h bound (`SI/steps/handoff.py`: `HandoffStep`, `HAND_OVER`, `CONSOLE`) | install.md § Stage 13 | the printed block is the message as the code builds it. `test_k8_*` reads `HAND_OVER` and the bound from `handoff` |
+| K9 | (nothing) | a teammate may need `sc` on `PATH` from `install.sh` before `sc login`: the release's plugin runs the bridge from a wheel URL, which `swarm_mcp/invocation.py` (`source_requirement`) cannot spell, so the `sign-in required` answer (`signin.py`, `sign_in_hint`) says a bare `sc login` | install.md § Step 3 line 8; `plugin/commands/setup.md` (plugin 0.5.91, with its CHANGELOG entry); T2 below | § Step 3 line 8 says `sc` must be on `PATH` and gives both install lines; `/sc:setup` says where `sc` comes from. `test_k9_*`. The product gap (a sign-in line that runs with the plugin alone) is open: questions.json Q1 |
 
 ---
 
@@ -1285,7 +1292,8 @@ still fixed.
 shows a person accepting the agent's work. (b) is enabled
 (`issueruns._auto_merge_refusal`), but it is a second thing to prove.
 
-**O5. The docs disagreements K1 to K9.**
+**O5. The docs disagreements K1 to K9.** Decided by the owner on
+2026-11-24: (a), fix them first. Done; see section 7.
 
 - **(a)** File and fix them in a new candidate before proof install 1.
 - **(b)** Run proof install 1 as is, and log each one as a snag when met.
