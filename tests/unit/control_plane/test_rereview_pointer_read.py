@@ -209,3 +209,16 @@ def test_an_ordinary_artifact_reads_as_before(client, db, objects):
     assert body["status"] == "ok"
     assert body["content"] == "hello\n"
     assert body["attempt_id"] == "att_9"
+
+
+def test_the_restated_names_and_cap_are_the_workers():
+    import dataclasses
+
+    from agent_worker import inputs as inputs_mod
+    from agent_worker.config import WorkerConfig
+    from swarm_api import inspect as inspect_mod
+
+    assert inspect_mod.REPUBLISHED_FROM_KEY == inputs_mod.REPUBLISHED_FROM_KEY
+    default = next(f.default for f in dataclasses.fields(WorkerConfig)
+                   if f.name == "max_artifact_bytes")
+    assert inspect_mod.POINTER_MAX_BYTES == default
