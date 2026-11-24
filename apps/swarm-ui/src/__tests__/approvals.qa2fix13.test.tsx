@@ -22,7 +22,8 @@ function decided(id: string, requestedH: number, decidedH: number): Json {
   return {
     approval_id: id,
     tenant_id: 'eng',
-    kind: 'plan',
+    // A spec: a plan is the Pipeline board's card, not this list's (plans-pipeline §2.2).
+    kind: 'spec',
     subject: { run_id: `run_${id}`, issue: 'example-org/example-api#2364' },
     digest: { plan: 'p1' },
     summary: `example-org/example-api#2364: plan ${id}`,
