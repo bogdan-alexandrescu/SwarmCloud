@@ -50,6 +50,10 @@ REFUSED = {
     # gke-gcloud-auth-plugin 591.0.0: go1.27.1, x/net v0.59.0 (CVE-2026-78667,
     # -78669, -97031); 592.0.0 is go1.27.3, x/net v0.61.0 (measured 2026-11-06).
     "GKE_PLUGIN_VERSION": {"591.0.0"},
+    # kubectl 1.36.6 (and 1.35.10, 1.34.13): x/net v0.56.0, CVE-2026-39821 (x/net/idna,
+    # fixed in 0.57.0), refused from 2026-11-24 01:45Z; 1.37.2 is go1.26.10 with
+    # x/net v0.57.0 (measured 2026-11-24).
+    "KUBECTL_VERSION": {"1.34.13", "1.35.10", "1.36.6"},
 }
 
 #: The Go that links the indexer's gopls and terraform-ls, and ships as its
@@ -88,6 +92,16 @@ def test_workspace_apply_takes_agent_runtime_bases_gcloud_and_its_image() -> Non
         assert apply[var] == base[var], f"workspace-apply's {var} is not agent-runtime-base's"
     image = apply["GCLOUD_IMAGE"]
     assert f"google-cloud-cli:{base['GCLOUD_VERSION']}-stable@sha256:" in image, image
+
+
+def test_the_installers_kubectl_is_the_images_kubectl() -> None:
+    """swarm-install fetches the kubectl an operator's engine runs; it must not
+    lag the release the images were moved to for the scan."""
+    text = (REPO / "apps" / "swarm-install" / "swarm_install" / "tools.py").read_text()
+    pinned = re.search(r'^KUBECTL_VERSION = "([0-9.]+)"$', text, re.M)
+    assert pinned is not None
+    assert pinned.group(1) == _args(BASE)["KUBECTL_VERSION"]
+    assert pinned.group(1) not in REFUSED["KUBECTL_VERSION"]
 
 
 def test_the_indexers_go_carries_the_fixed_standard_library() -> None:
