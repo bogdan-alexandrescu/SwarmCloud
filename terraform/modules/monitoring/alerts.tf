@@ -608,6 +608,15 @@ resource "google_logging_metric" "reconciler_backend_unavailable" {
   label_extractors = {
     backend = "EXTRACT(jsonPayload.backend)"
   }
+
+  # Readable by the alert policy only some minutes after it is created: the
+  # policy waits on this create-time sleep (log_metric_settle_seconds, metrics.tf).
+  # Runs on create or replace only. on_failure = continue: a failed sleep must
+  # not taint the metric, which the next apply would then replace.
+  provisioner "local-exec" {
+    command    = "sleep ${local.log_metric_settle_seconds}"
+    on_failure = continue
+  }
 }
 
 resource "google_logging_metric" "reconciler_not_repairing" {
@@ -642,6 +651,15 @@ resource "google_logging_metric" "reconciler_not_repairing" {
   label_extractors = {
     lease_id = "EXTRACT(jsonPayload.lease_id)"
     backend  = "EXTRACT(jsonPayload.backend)"
+  }
+
+  # Readable by the alert policy only some minutes after it is created: the
+  # policy waits on this create-time sleep (log_metric_settle_seconds, metrics.tf).
+  # Runs on create or replace only. on_failure = continue: a failed sleep must
+  # not taint the metric, which the next apply would then replace.
+  provisioner "local-exec" {
+    command    = "sleep ${local.log_metric_settle_seconds}"
+    on_failure = continue
   }
 }
 

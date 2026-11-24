@@ -150,7 +150,9 @@ def test_the_wait_is_one_bounded_number_and_zero_without_policies() -> None:
     assert 0 < seconds <= 600, seconds
 
     outputs = _code((MONITORING / "outputs.tf").read_text(encoding="utf-8"))
-    assert re.search(r'output\s+"log_metric_settle_seconds"\s*\{\s*value\s*=\s*local\.log_metric_settle_seconds', outputs)
+    output = _block(outputs, r'output\s+"log_metric_settle_seconds"')
+    assert output is not None, "monitoring does not output log_metric_settle_seconds"
+    assert re.search(r"^\s*value\s*=\s*local\.log_metric_settle_seconds\s*$", output, re.M), output
 
     infra_locals = "\n".join(
         _code(p.read_text(encoding="utf-8")) for p in sorted((TF / "infra").glob("*.tf"))

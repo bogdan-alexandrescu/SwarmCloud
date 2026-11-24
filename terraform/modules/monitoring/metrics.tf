@@ -105,6 +105,25 @@ locals {
   # The shared half of every event filter. Workers run on Cloud Run Jobs and on
   # GKE, and the same line is written either way.
   event_log_sources = "resource.type=(\"cloud_run_job\" OR \"k8s_container\" OR \"cloud_run_revision\")"
+
+  # A NEW LOG-BASED METRIC IS NOT READABLE AT ONCE. An alert policy created in
+  # the same apply as the metric it reads fails with a 404 ("Cannot find
+  # metric(s)"); the provider's own message says the metric can take up to ten
+  # minutes to become visible. dev's release of 2026-11-23 failed exactly so.
+  # So every metric a policy reads carries a create-time `local-exec` sleep of
+  # this many seconds, and the policy, which references the metric, is created
+  # after it. A create-time provisioner runs only when its metric is created or
+  # replaced: a release that creates no metric waits zero seconds, and adding
+  # the block to an existing metric changes nothing in its state.
+  #
+  # 600 is the provider's stated bound; 0 without policies, since nothing
+  # then reads the metric. The infra root reads this number through the
+  # module's output rather than restating it (docs/operations.md, "Alerts").
+  log_metric_settle_seconds = var.create_alerts ? 600 : 0
+
+  # The event_metrics keys an alert policy reads (alerts.tf): only these
+  # instances of google_logging_metric.events wait when created.
+  alerted_events = ["generation_fenced", "dead_lettered"]
 }
 
 resource "google_logging_metric" "events" {
@@ -139,6 +158,15 @@ resource "google_logging_metric" "events" {
   }
 
   label_extractors = each.value.labels
+
+  # Readable by the alert policy only some minutes after it is created: the
+  # policy waits on this create-time sleep (log_metric_settle_seconds, metrics.tf).
+  # Runs on create or replace only. on_failure = continue: a failed sleep must
+  # not taint the metric, which the next apply would then replace.
+  provisioner "local-exec" {
+    command    = "sleep ${contains(local.alerted_events, each.key) ? local.log_metric_settle_seconds : 0}"
+    on_failure = continue
+  }
 }
 
 # Peak RSS is reported by the worker on every attempt. The sizing note in
@@ -289,6 +317,15 @@ resource "google_logging_metric" "safety_tick_attempts" {
     value_type  = "INT64"
     unit        = "1"
   }
+
+  # Readable by the alert policy only some minutes after it is created: the
+  # policy waits on this create-time sleep (log_metric_settle_seconds, metrics.tf).
+  # Runs on create or replace only. on_failure = continue: a failed sleep must
+  # not taint the metric, which the next apply would then replace.
+  provisioner "local-exec" {
+    command    = "sleep ${local.log_metric_settle_seconds}"
+    on_failure = continue
+  }
 }
 
 # Dispatch failures, per backend, counted from the scheduler's own log line.
@@ -334,6 +371,15 @@ resource "google_logging_metric" "dispatch_failures" {
 
   label_extractors = {
     backend = "REGEXP_EXTRACT(jsonPayload.message, \"backend=(\\\\S+)\")"
+  }
+
+  # Readable by the alert policy only some minutes after it is created: the
+  # policy waits on this create-time sleep (log_metric_settle_seconds, metrics.tf).
+  # Runs on create or replace only. on_failure = continue: a failed sleep must
+  # not taint the metric, which the next apply would then replace.
+  provisioner "local-exec" {
+    command    = "sleep ${local.log_metric_settle_seconds}"
+    on_failure = continue
   }
 }
 
@@ -455,6 +501,15 @@ resource "google_logging_metric" "spec_signature_invalid" {
   label_extractors = merge(local.spec_refusal_identity_extractors, {
     reason = "EXTRACT(jsonPayload.spec_check.reason)"
   })
+
+  # Readable by the alert policy only some minutes after it is created: the
+  # policy waits on this create-time sleep (log_metric_settle_seconds, metrics.tf).
+  # Runs on create or replace only. on_failure = continue: a failed sleep must
+  # not taint the metric, which the next apply would then replace.
+  provisioner "local-exec" {
+    command    = "sleep ${local.log_metric_settle_seconds}"
+    on_failure = continue
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -538,6 +593,15 @@ resource "google_logging_metric" "spec_upstream_invalid" {
     end_cause = "EXTRACT(jsonPayload.end_cause)"
     reason    = "REGEXP_EXTRACT(jsonPayload.spec_check.reason, \"^upstream:[^:]*:(.*)$\")"
   })
+
+  # Readable by the alert policy only some minutes after it is created: the
+  # policy waits on this create-time sleep (log_metric_settle_seconds, metrics.tf).
+  # Runs on create or replace only. on_failure = continue: a failed sleep must
+  # not taint the metric, which the next apply would then replace.
+  provisioner "local-exec" {
+    command    = "sleep ${local.log_metric_settle_seconds}"
+    on_failure = continue
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -600,6 +664,15 @@ resource "google_logging_metric" "worker_action_ended" {
   label_extractors = {
     tenant_id = "EXTRACT(jsonPayload.labels.tenant_id)"
     end_cause = "EXTRACT(jsonPayload.end_cause)"
+  }
+
+  # Readable by the alert policy only some minutes after it is created: the
+  # policy waits on this create-time sleep (log_metric_settle_seconds, metrics.tf).
+  # Runs on create or replace only. on_failure = continue: a failed sleep must
+  # not taint the metric, which the next apply would then replace.
+  provisioner "local-exec" {
+    command    = "sleep ${local.log_metric_settle_seconds}"
+    on_failure = continue
   }
 }
 
@@ -697,6 +770,15 @@ resource "google_logging_metric" "schedule_auto_paused" {
   label_extractors = {
     code = "REGEXP_EXTRACT(jsonPayload.message, \"auto_paused: (\\\\S+)\")"
   }
+
+  # Readable by the alert policy only some minutes after it is created: the
+  # policy waits on this create-time sleep (log_metric_settle_seconds, metrics.tf).
+  # Runs on create or replace only. on_failure = continue: a failed sleep must
+  # not taint the metric, which the next apply would then replace.
+  provisioner "local-exec" {
+    command    = "sleep ${local.log_metric_settle_seconds}"
+    on_failure = continue
+  }
 }
 
 resource "google_logging_metric" "schedule_needs_owner" {
@@ -724,6 +806,15 @@ resource "google_logging_metric" "schedule_needs_owner" {
   # An `extra=` field, so top level, not under a bound `labels` object.
   label_extractors = {
     tenant_id = "EXTRACT(jsonPayload.tenant_id)"
+  }
+
+  # Readable by the alert policy only some minutes after it is created: the
+  # policy waits on this create-time sleep (log_metric_settle_seconds, metrics.tf).
+  # Runs on create or replace only. on_failure = continue: a failed sleep must
+  # not taint the metric, which the next apply would then replace.
+  provisioner "local-exec" {
+    command    = "sleep ${local.log_metric_settle_seconds}"
+    on_failure = continue
   }
 }
 
@@ -754,5 +845,14 @@ resource "google_logging_metric" "workspace_stuck" {
 
   label_extractors = {
     reason = "EXTRACT(jsonPayload.reason)"
+  }
+
+  # Readable by the alert policy only some minutes after it is created: the
+  # policy waits on this create-time sleep (log_metric_settle_seconds, metrics.tf).
+  # Runs on create or replace only. on_failure = continue: a failed sleep must
+  # not taint the metric, which the next apply would then replace.
+  provisioner "local-exec" {
+    command    = "sleep ${local.log_metric_settle_seconds}"
+    on_failure = continue
   }
 }
