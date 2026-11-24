@@ -21,7 +21,7 @@ import { errorHeading, read, route, write, type ApiError, type Result } from './
 import type { TopicId } from './help'
 import { ACCOUNTS_POLL_MS, capacityPoll, paneHref, useLinkedParam, usePhoneTables } from './capacityPoll'
 import { HelpCard } from './HelpCard'
-import { InfoTip } from './People'
+import { InfoTip } from './InfoTip'
 import { Mark } from './primitives'
 import { Button, CIcon, Chip, Dialog, Table, ToneMark, WarnMark } from './components'
 import './styles/capacity.css'

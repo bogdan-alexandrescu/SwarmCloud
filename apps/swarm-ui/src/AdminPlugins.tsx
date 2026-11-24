@@ -17,20 +17,16 @@
 import { useState } from 'react'
 import { loadPluginCatalogue, PLATFORM_PLUGIN_CATALOGUE, type CatalogueEntry, type CatalogueSource, type PluginCatalogue } from './api'
 import { ButtonLink, Segmented } from './components'
-import { InfoTip } from './People'
+import { InfoTip } from './InfoTip'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
 import { formatDateTime } from './timezone'
+import { ADMIN_PLUGIN_ADD_PATH, adminPluginPath, catalogueCards } from './pluginPaths'
 import './styles/admin-plugins.css'
 
-const ROUTE = 'GET /v1/admin/plugin-catalogue'
+export { ADMIN_PLUGIN_ADD_PATH, ADMIN_PLUGINS_PATH, adminPluginPath, catalogueCards } from './pluginPaths'
 
-/** The addresses lane 10e routes: the catalogue, Add plugin, and a plugin's page (lane 10b). */
-export const ADMIN_PLUGINS_PATH = '/admin/plugins'
-export const ADMIN_PLUGIN_ADD_PATH = '/admin/plugins/add'
-export function adminPluginPath(installId: string): string {
-  return `${ADMIN_PLUGINS_PATH}/${encodeURIComponent(installId)}`
-}
+const ROUTE = 'GET /v1/admin/plugin-catalogue'
 
 /** Where a card sits: baked into the image, the platform's catalogue, or one workspace's. */
 export type CardScope = 'builtin' | 'platform' | 'workspace'
@@ -47,12 +43,6 @@ const SCOPE_TIPS: Readonly<Record<CardScope, string>> = {
 }
 
 type Filter = 'all' | CardScope
-
-/** Every card, built-ins first, then the platform's installs, then the workspaces'. */
-export function catalogueCards(c: PluginCatalogue): CatalogueEntry[] {
-  const byName = (a: CatalogueEntry, b: CatalogueEntry) => a.name.localeCompare(b.name)
-  return [...[...c.built_in].sort(byName), ...[...c.installs].sort(byName), ...[...c.others].sort(byName)]
-}
 
 /** The source in one line: `owner/repo@ref`, the marketplace entry, the file, or the image. */
 export function sourceLine(s: CatalogueSource): string {

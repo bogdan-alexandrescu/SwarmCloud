@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_worker import lifecycle, workspace as workspace_mod
+from agent_worker import lifecycle, publish_guard, workspace as workspace_mod
 from agent_worker.gitops import GitError, verify_worker_authorship
 from agent_worker.logs import build_logger
 
@@ -126,7 +126,7 @@ def test_the_folded_commit_is_the_persons(
     worker_factory, monkeypatch, origin, local_urls, forge
 ):
     """Past `MAX_KEPT_COMMITS` the history is folded into one worker commit."""
-    monkeypatch.setattr(lifecycle, "MAX_KEPT_COMMITS", 0)
+    monkeypatch.setattr(publish_guard, "MAX_KEPT_COMMITS", 0)
 
     def edit(repo: Path) -> None:
         for name in ("one.txt", "two.txt"):

@@ -67,4 +67,6 @@ packages = ["swarm_speech"]
 en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
 
 [tool.uv]
+# Release-age quarantine (#189): resolve only releases at least 14 days old, as the root pyproject.toml does.
+exclude-newer = "14 days"
 environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]

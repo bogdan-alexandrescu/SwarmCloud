@@ -10,6 +10,8 @@ import { timeAgo, type JoinLookup, type JoinRequestMine } from './types'
 import './styles/keys.css'
 import './styles/workspace-settings.css'
 
+export { JOIN_PATH, joinCodeFrom } from './workspacePaths'
+
 /**
  * /JOIN, A PERSON ASKS TO JOIN A GROUP WORKSPACE (lane JOIN-UI-PERSON;
  * docs/design/join-requests.md §4.1, §4.2, §4.8; part of archived issue 2325).
@@ -33,16 +35,6 @@ import './styles/workspace-settings.css'
  * WHAT A WORKING CODE SHOWS is the workspace's display name, and nothing
  * else: no id, no group, no member count, no admin's name.
  */
-
-/** The page's path. Not a section and not a tab: only a shared link leads here. */
-export const JOIN_PATH = '/join'
-
-/** The code a join link carries in its fragment, on `/join` only; null anywhere else or with none. */
-export function joinCodeFrom(pathname: string, hash: string): string | null {
-  if (pathname !== JOIN_PATH && pathname !== `${JOIN_PATH}/`) return null
-  const code = hash.replace(/^#/, '').trim()
-  return code === '' ? null : code
-}
 
 const MINE_ROUTE = 'GET /v1/join-requests/mine'
 /** The longest note the API keeps (`joinrequests.MESSAGE_MAX`). */

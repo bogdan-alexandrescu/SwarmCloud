@@ -211,6 +211,20 @@ def test_the_inventory_walkers_the_train_ejected_for_are_in_the_guard_set():
         assert guard not in DOC_GUARDS, guard
 
 
+def test_the_install_manifest_completeness_test_is_in_the_guard_set():
+    # It collects every Terraform resource, environment variable reference,
+    # secret, image and Kubernetes object in the tree and fails on one no
+    # install/manifest.yaml entry lists. A lane that adds a resource changes
+    # a .tf file the test never names, so no diff selects it: the merge train
+    # was the first to run it (2026-11-23), and only GUARD_TESTS -- which the
+    # pre-publish gate runs -- reaches it from a lane's own container.
+    guard = "tests/unit/install/test_manifest_complete.py"
+    # MUTATION: drop it from GUARD_TESTS and this is red.
+    assert guard in GUARDS, guard
+    # MUTATION: list it in DOC_GUARD_TESTS and every docs-only diff runs it.
+    assert guard not in DOC_GUARDS, guard
+
+
 def test_a_doc_beside_a_code_change_keeps_the_whole_guard_set():
     # Read from the fixtures: a test naming either path would select itself.
     both = (FIXTURES / "unread.txt").read_text() + (FIXTURES / "unread-code.txt").read_text()

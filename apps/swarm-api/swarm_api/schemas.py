@@ -23,6 +23,7 @@ from pydantic import (
     StrictInt,
     StrictStr,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -320,10 +321,28 @@ class StepVerdictGate(StrictModel):
     step still runs, without an agent, and still publishes: it is the step
     that opens the pull request. The values are checked by
     `validation.validate_step_routing`, which names the accepted ones.
+
+    The gate may also read further reviews (`also`): their verdict files,
+    staged through `input_from` under names of their own, are read the same
+    way, and the agent runs when ANY of the verdicts read is in `verdict_in`
+    -- the security review beside an issue run's first review, whose fix
+    runs when either says NOT_YET. Empty, the gate is the one review's, as
+    it always was.
     """
 
     step: str = Field(min_length=1, max_length=64)
     verdict_in: list[str] = Field(min_length=1, max_length=8)
+    also: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(
+        default_factory=list, max_length=4)
+
+    @model_serializer(mode="wrap")
+    def _omit_no_further_review(self, handler: Any) -> Any:
+        """An empty `also` is not written: a gate on one review dumps exactly
+        the `{"step", "verdict_in"}` it always did."""
+        out = handler(self)
+        if isinstance(out, dict) and not out.get("also"):
+            out.pop("also", None)
+        return out
 
 
 class WorkflowStepCreate(StrictModel):

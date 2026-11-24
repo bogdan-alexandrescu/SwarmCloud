@@ -74,6 +74,8 @@ Routes:
   front's delegation, and once done the planner's spoken sentences and cards.
   `200 {voice_session_id, ended, usage_seconds, reason}`, 404 for a session
   this process does not hold.
+* `POST /internal/sessions/{voice_session_id}/summary` -- summary.py's: an
+  ended session's few-sentence summary on the fast front's model class.
 * `GET /healthz` -- counts only.
 
 THE CALLER. Each `/internal/` call carries a Google ID token minted for
@@ -161,20 +163,20 @@ import os
 from typing import Any, AsyncIterator, Awaitable, Callable, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from . import readback
 from .follow import build_roster
 from .accountlease import (CAPABILITY, CAPABILITY_TEXT, NONE_AVAILABLE, NOT_IN_POOL, VoicePoolRefused,
                            build_broker)
-from .claudefront import (FRONT_MODELS, FrontDown, FrontRefused, FrontSessionEnded, FrontSessions,
-                          delegations_router)
+from .claudefront import (FRONT_MODELS, TURN_LINES_TYPE, FrontDown, FrontRefused, FrontSessionEnded, FrontSessions,
+                          delegations_router, turn_lines)
 from .claudefront import SessionExists as FrontExists
 from .claudeturn import admitted_model
 from .credential import CredentialError
 from .grant import GrantInvalid, SessionGrant
-from . import tools_read
+from . import summary, tools_read
 from .instructions import ReopenContext
 from .live import (LISTENING, MAX_OFFER_BYTES, PAUSE_AFTER_SECONDS, PAUSED, REOPEN_EVENT, SESSION_STATE, WAKING,
                    LiveApi, LiveError, LiveRefused, NotPaused, SessionEnded, SessionExists, Sessions)
@@ -304,6 +306,9 @@ class ReopenRequest(BaseModel):
 
 class TurnRequest(BaseModel):
     text: str = Field(min_length=1, max_length=MAX_TURN_CHARS)
+    #: A speech session's turn as NDJSON (claudefront.turn_lines): its first
+    #: sentence as soon as it is complete, then the answer.
+    stream: bool = False
 
 
 def session_grant(body: StartRequest) -> SessionGrant | None:
@@ -726,6 +731,9 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
     async def turn(voice_session_id: str, body: TurnRequest, _caller: str = Depends(caller)) -> Any:
         # By the session's mode: a speech session's turn is its front's alone.
         if app.state.fronts is not None and app.state.fronts.get(voice_session_id) is not None:
+            if body.stream:
+                return StreamingResponse(turn_lines(app.state.fronts, voice_session_id, body.text),
+                                         media_type=TURN_LINES_TYPE)
             return await speech_turn(voice_session_id, body.text)
         texts = app.state.texts
         if texts is None:
@@ -815,6 +823,7 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
     # (claudefront.py), both behind the same caller check.
     app.include_router(readback.router)
     app.include_router(delegations_router(lambda: app.state.fronts, caller))
+    app.include_router(summary.router_for(app, caller))
 
     return app
 

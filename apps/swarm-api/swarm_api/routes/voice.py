@@ -348,14 +348,15 @@ def speech_machine(request: Request, ctx: AppContext = Depends(get_context)) -> 
     return machine if machine is not None else rvs.machine_for(request.app, ctx)
 
 
-def _service(ctx: AppContext, client: Any, machine: Any = None) -> vs.VoiceSessions:
+def _service(ctx: AppContext, client: Any, machine: Any = None,
+             after_end: Callable[..., None] | None = None) -> vs.VoiceSessions:
     if client is None:
         raise vs.unavailable()
     return vs.VoiceSessions(ctx.db, client,
                             marker_key=str(getattr(ctx.settings, "child_key", "") or ""),
                             now=ctx.now,
                             class_models=ctx.settings.worker_class_models,
-                            machine=machine)
+                            machine=machine, after_end=after_end)
 
 
 #: The broker's reasons for "no account" (`GET /v1/voice/pool`); anything
@@ -660,6 +661,7 @@ class EndSession(BaseModel):
 @router.post("/sessions/{session_id}/end")
 async def end_session(
     session_id: str,
+    request: Request,
     body: EndSession | None = None,
     person: str = Depends(allowed_person),
     tenant_id: str = Depends(tenant_scope),
@@ -667,7 +669,11 @@ async def end_session(
     client: Any = Depends(voice_client),
     machine: Any = Depends(speech_machine),
 ) -> dict:
-    service = _service(ctx, client, machine)
+    from .voice_record import summaries_for  # voice_record imports this module
+
+    # The session's summary starts once it is closed (voice/record.py).
+    service = _service(ctx, client, machine,
+                       after_end=summaries_for(request, ctx, client).after_end if client is not None else None)
     _check_id(session_id, "vs_", "session_id")
     return await run_in_threadpool(
         service.end, tenant_id=tenant_id, person=person, session_id=session_id,

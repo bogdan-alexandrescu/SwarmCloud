@@ -165,6 +165,10 @@ class VerdictGate:
 
     task_id: str
     verdict_in: tuple[str, ...]
+    #: Further reviews the gate reads (`also_task_ids`, swarm-api's
+    #: `when.also`): the agent runs when ANY verdict read is in `verdict_in`.
+    #: () for the one review's gate it always was.
+    also_task_ids: tuple[str, ...] = ()
 
 
 #: The severity that sends a finding to the tenant's wave epic instead of the
@@ -371,12 +375,17 @@ def gate_from_dispatch(block: Any) -> VerdictGate | None:
     problem = None
     task_id = raw.get("task_id") if isinstance(raw, dict) else None
     verdicts = raw.get("verdict_in") if isinstance(raw, dict) else None
+    also = raw.get("also_task_ids", []) if isinstance(raw, dict) else None
     if not isinstance(raw, dict):
         problem = "it is not an object"
     elif not isinstance(task_id, str) or not task_id.strip():
         problem = "it names no upstream task"
     elif not isinstance(verdicts, list) or not verdicts:
         problem = "it names no verdicts"
+    elif not isinstance(also, list) or any(
+            not isinstance(item, str) or not item.strip() or item.strip() == task_id.strip()
+            for item in also):
+        problem = "its further reviews (also_task_ids) are not a list of other tasks"
     else:
         normalised = [_normalise(v) for v in verdicts]
         if any(v is None for v in normalised):
@@ -385,6 +394,7 @@ def gate_from_dispatch(block: Any) -> VerdictGate | None:
             return VerdictGate(
                 task_id=task_id.strip(),
                 verdict_in=tuple(dict.fromkeys(v for v in normalised if v)),
+                also_task_ids=tuple(dict.fromkeys(item.strip() for item in also)),
             )
     raise InputUnavailable(
         f"this step's verdict gate cannot be read: {problem}. A gate is "

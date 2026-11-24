@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_worker import lifecycle, workspace as workspace_mod
+from agent_worker import lifecycle, publish_guard, workspace as workspace_mod
 
 from test_agent_commits_are_kept import _commit
 from test_strategy_end_to_end import (  # noqa: F401 - fixtures are used by name
@@ -120,7 +120,7 @@ def test_a_refused_title_is_not_the_commit_subject(
 def test_a_fold_commit_takes_the_agents_title_and_names_no_task_in_its_subject(
     worker_factory, monkeypatch, origin, local_urls, forge
 ):
-    monkeypatch.setattr(lifecycle, "MAX_KEPT_COMMITS", 0)
+    monkeypatch.setattr(publish_guard, "MAX_KEPT_COMMITS", 0)
     commits, out = _attempt(
         worker_factory, monkeypatch, origin,
         task_id="t-fold", edit=_commit_past_the_keep_limit, title=TITLE,
@@ -135,7 +135,7 @@ def test_a_fold_commit_takes_the_agents_title_and_names_no_task_in_its_subject(
 def test_an_untitled_fold_commit_names_no_task_in_its_subject(
     worker_factory, monkeypatch, origin, local_urls, forge
 ):
-    monkeypatch.setattr(lifecycle, "MAX_KEPT_COMMITS", 0)
+    monkeypatch.setattr(publish_guard, "MAX_KEPT_COMMITS", 0)
     commits, _ = _attempt(
         worker_factory, monkeypatch, origin, task_id="t-fold-plain",
         edit=_commit_past_the_keep_limit,

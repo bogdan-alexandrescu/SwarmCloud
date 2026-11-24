@@ -222,6 +222,43 @@ submitted only when both are MERGE. A NOT_YET, or a verdict that does not
 read, fails the run and leaves the pull request open for a person. The
 worker's owner-question park does not apply to issue runs.
 
+## On a risk path: the security lens beside the first review
+
+The optional step above runs after the fix, so a NOT_YET from it fed no fix
+step: twice in one week a person had to send a second fixer by hand. So an
+issue run whose approved plan names a file on a risk path -- the review
+gate's own list, `reviewgate.DEFAULT_RISK_PATHS`: the frozen contract,
+redaction, credentials, tenant isolation, access rights, the workflow files
+-- compiles one review round that covers both lenses
+(`issueruns._with_security_lens`):
+
+* `security-lens` depends on the same build steps as `review` and runs
+  beside it, on `claude-code` at the profile's default class (no class is
+  chosen for it), and writes only `security-verdict.json`. Its id does not
+  end in `review`, so it owes no `verdict.json` and is not held to the
+  rendered-review rule a UI review is.
+* The one `fix` stages both verdict files under their own names, and its
+  gate reads both: `when: {"step": "review", "verdict_in": ["NOT_YET"],
+  "also": ["security-lens"]}`. Its agent runs when EITHER says NOT_YET and
+  is told to fix the findings in both files.
+* The re-review `rereview_step_for` derives carries the same gate, stages
+  both verdicts and carries the lens's instructions after the review's, so
+  its one verdict covers both lenses. It is the verdict the run merges on
+  (`issueci`); when both said MERGE its gate is shut and it passes the
+  review's MERGE on. A merge step reading one review's verdict alone is
+  refused for a fix gated on several (`validation.plan_merge`).
+
+`when.also` lives in swarm-api's step schema and in the signed dispatch
+block (`verdict_gate.also_task_ids`, written only when there is one), never
+in `apps/common/swarm_common/`: the frozen `WorkflowStep` holds no gate. The
+worker reads every staged verdict the gate names; the scheduler's shut-gate
+prediction and swarm-api's control-plane publish decide only a one-review
+gate and leave one with further reviews to the worker. A plan on no risk
+path compiles exactly as before.
+
+Cost: one extra agent step on a risk-path run (the lens), which replaces the
+second fixer a person had to send; a run on no risk path gets none.
+
 ## The invariants
 
 The step is an ordinary claude-code agent step. Admission, leases,
@@ -232,3 +269,17 @@ repository (invariant 9).
 
 A caller still picks a profile and a catalogue plugin by name only. The
 image and the skill's install come from the catalogue (invariant 10).
+
+## Review round 1 amendments
+
+* The lens is compiled from the plan's files, which are advisory, so the merge
+  gate (`issueci.merge_gate`) re-reads the pull request's real changed files:
+  a risk-path change whose workflow has neither the lens nor the optional
+  security review waits for a `merge` approval at that head.
+* A plan entry naming a directory (`terraform/infra`, `apps/redaction`), a
+  `..` or backslash spelling, or different case counts as a risk-path hit.
+* A risk-path run has one fix round only: `resolve_fix_loop` refuses a gate
+  with `also`, so the fix loop does not apply to it.
+* The lens writes `security-verdict.json`, the same name as the optional
+  security-review step; they are separate step directories, and `issueci`
+  reads the plugin step's only.

@@ -1324,10 +1324,17 @@ export interface StepPluginCreate {
  * step still runs, without an agent, and still publishes: it is the step that
  * opens the pull request. The values are checked by
  * `validation.validate_step_routing`, which names the accepted ones.
+ *
+ * The gate may also read further reviews (`also`): their verdict files, staged
+ * through `input_from` under names of their own, are read the same way, and
+ * the agent runs when ANY of the verdicts read is in `verdict_in` -- the
+ * security review beside an issue run's first review, whose fix runs when
+ * either says NOT_YET. Empty, the gate is the one review's, as it always was.
  */
 export interface StepVerdictGate {
   step: string
   verdict_in: string[]
+  also?: string[]
 }
 
 export interface StrandedSweepRequest {

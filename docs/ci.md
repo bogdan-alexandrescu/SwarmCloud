@@ -5924,6 +5924,40 @@ check's own start, so nothing ahead of it shortens it; only the step's
 deadline is shared. None of this is on the merge path: it runs in the lane's
 own container before it publishes.
 
+### The install manifest completeness test
+
+A merge train went red on 2026-11-23 on
+`tests/unit/install/test_manifest_complete.py::test_every_reference_is_listed`,
+ejecting six pull requests' worth of checks: a lane had added Terraform
+resources that `install/manifest.yaml` does not list. The test collects every
+Terraform resource, environment variable reference, secret, image, scheduler
+job and Kubernetes object in the tree and fails on one no manifest entry
+lists. A lane's new resource changes a `.tf` file the test never names, so no
+diff selects it and the train was the first place it ran. It is now in
+`GUARD_TESTS` in `scripts/changed-guards.sh`, which the pre-publish gate runs
+on every change, so the agent that adds an unlisted reference is told in its
+own fix turn: add an entry, or an `ignored:` line with a reason.
+
+**Measured** on 2026-11-23 in a 6-CPU lane container:
+
+| Run | Without it | With it | Added |
+|---|---|---|---|
+| The guard set's pytest pass, `-n 6`, as the script runs it (first pair) | 79.15 s | 94.87 s | 15.7 s |
+| The same, second pair | 84.29 s | 107.01 s | 22.7 s |
+| The file alone, one pytest worker (a gate part's share) | | 15.12 s | |
+| The file alone, `-n 6` | | 20.75 s | |
+
+About 10 s of it is the tree collection, a module-scoped fixture: under
+`-n 6` each worker that draws one of the file's seven tests collects again,
+which is why it adds more to a six-worker pass than it takes alone on one.
+The whole guard script on the same tree took 140 s before the change (85.7 s
+of it pytest). The gate's guard check has `GUARDS_BUDGET_SECONDS` = 600 s, so
+it fits with about 7 minutes to spare; at the gate's 120 s floor what the
+budget does not reach is left to CI, as for every guard part. It is OVER the
+"at most 10 CI-seconds a file" the guard list asks of its entries (pull-request
+CI reads the same array); `test_docs_describe_what_was_built` (52.9
+CI-seconds) is the other exception.
+
 ### While it works, a SwarmCloud agent runs only the related tests
 
 ```bash

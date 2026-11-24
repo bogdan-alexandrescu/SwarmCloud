@@ -161,7 +161,8 @@ swarm-voice's 404 (it holds no text conversation for the session: ended
 there, or lost to a restart) reads as 409 `conflict`, reason
 `voice_session_not_live`; its 429 `usage_limit_reached` as 429
 `rate_limited` with `detail.resets_at`. Neither the text nor the reply is
-logged or stored here.
+logged here; both are kept, redacted, as the session's transcript
+(voice/record.py), which only the session's person reads.
 
 A start swarm-voice refuses or does not answer ends the session at once with
 the cause `voice_unreachable` and frees the person's marker, so the next try
@@ -363,6 +364,11 @@ NO_LIVE_ACCOUNT = "no_voice_account_registered"
 #: A text turn, as the console sends it (swarm_voice.textchat.MAX_TURN_CHARS).
 MAX_TURN_CHARS = 4000
 TURN_TIMEOUT_SECONDS = 300.0
+#: The end-of-session summary's call (record.py): swarm-voice's own limit on
+#: the model call (summary.SUMMARY_SECONDS, 90 s) plus the lease's round trips.
+SUMMARY_TIMEOUT_SECONDS = 120.0
+#: swarm-voice's streamed speech turn (claudefront.TURN_LINES_TYPE).
+TURN_LINES_TYPE = "application/x-ndjson"
 #: `detail.reason` of the 409 for a turn on a session that takes none.
 NOT_LIVE = "voice_session_not_live"
 USAGE_LIMIT = "usage_limit_reached"
@@ -661,6 +667,9 @@ class TurnAnswer:
     cards: list[dict[str, Any]]
     #: The fast front's delegation to the planner, on a speech session.
     delegation_id: str | None = None
+    #: The front's first sentence, already handed to `on_sentence` while the
+    #: turn ran (a streamed speech turn); `reply` starts with it.
+    early: str | None = None
 
 
 @dataclass(frozen=True)
@@ -759,6 +768,44 @@ class HttpVoiceClient:
                 raw = b""
             return exc.code, raw or b""
 
+    def _post_lines(self, path: str, body: dict[str, Any], timeout: float,
+                    on_sentence: Callable[[str], None]) -> tuple[int, bytes]:
+        """`_post` for swarm-voice's streamed speech turn (claudefront.py
+        `turn_lines`): each `sentence` line goes to `on_sentence` as it is
+        read; the `answer` line is returned as the body, an `error` line as
+        its status and message. A swarm-voice that answers plain JSON (one
+        without the stream) is read as `_post` reads it."""
+        bearer = self._token(self._audience, timeout)
+        request = urllib.request.Request(
+            self._base + path, data=json.dumps(body).encode("utf-8"), method="POST",
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {bearer}"})
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - our own internal URL
+                if not str(response.headers.get("Content-Type") or "").startswith(TURN_LINES_TYPE):
+                    return response.status, response.read(MAX_SDP_BYTES + 1024)
+                for raw in response:
+                    try:
+                        line = json.loads(raw.decode("utf-8"))
+                    except ValueError:
+                        continue
+                    if not isinstance(line, dict):
+                        continue
+                    if line.get("t") == "sentence" and isinstance(line.get("text"), str):
+                        on_sentence(line["text"])
+                    elif line.get("t") == "answer":
+                        return response.status, json.dumps(line).encode("utf-8")
+                    elif line.get("t") == "error":
+                        status = line.get("status")
+                        return (status if isinstance(status, int) else 502,
+                                json.dumps({"detail": str(line.get("message") or "")}).encode("utf-8"))
+                return 502, b""
+        except urllib.error.HTTPError as exc:
+            try:
+                raw_error = exc.read(16 * 1024) if exc.fp is not None else b""
+            except OSError:
+                raw_error = b""
+            return exc.code, raw_error or b""
+
     def _get(self, path: str, timeout: float) -> tuple[int, bytes]:
         bearer = self._token(self._audience, timeout)
         request = urllib.request.Request(self._base + path, method="GET",
@@ -827,10 +874,22 @@ class HttpVoiceClient:
             raise VoiceUnreachable("swarm-voice answered without an SDP answer; the session was ended.")
         return StartAnswer(answer=answer, live_session_id=live_id)
 
-    def turn(self, session_id: str, text: str) -> TurnAnswer:
+    #: `turn` takes `on_sentence` (speech_relay.ClientTurns reads this).
+    streams_sentences = True
+
+    def turn(self, session_id: str, text: str, *,
+             on_sentence: Callable[[str], None] | None = None) -> TurnAnswer:
+        """swarm-voice's answer to one turn. With `on_sentence` (a speech
+        session's relay), the turn is streamed: the front's first sentence is
+        handed to it as soon as swarm-voice has it, and the answer's `early`
+        names it."""
         path = "/internal/sessions/" + urllib.parse.quote(session_id, safe="") + "/turns"
         try:
-            status, raw = self._post(path, {"text": text}, TURN_TIMEOUT_SECONDS)
+            if on_sentence is not None:
+                status, raw = self._post_lines(path, {"text": text, "stream": True}, TURN_TIMEOUT_SECONDS,
+                                               on_sentence)
+            else:
+                status, raw = self._post(path, {"text": text}, TURN_TIMEOUT_SECONDS)
         except (OSError, ValueError) as exc:
             log.warning("voice turn for session=%s did not reach swarm-voice (%s)", session_id, type(exc).__name__)
             raise VoiceUnreachable("swarm-voice could not be reached for this turn.") from None
@@ -862,9 +921,30 @@ class HttpVoiceClient:
         if not isinstance(turn_id, str) or not isinstance(reply, str):
             raise VoiceUnreachable("swarm-voice answered the turn without a reply.")
         delegation = body.get("delegation_id")
+        early = body.get("early")
         return TurnAnswer(turn_id=turn_id, reply=reply,
                           cards=[c for c in cards if isinstance(c, dict)] if isinstance(cards, list) else [],
-                          delegation_id=delegation if isinstance(delegation, str) and delegation else None)
+                          delegation_id=delegation if isinstance(delegation, str) and delegation else None,
+                          early=early if isinstance(early, str) and early and reply.startswith(early) else None)
+
+    def summarise(self, session_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """swarm-voice's summary of an ended session (record.py): `{summary,
+        model, billing, usage}`, or `VoiceUnreachable`. The body is never logged."""
+        path = "/internal/sessions/" + urllib.parse.quote(session_id, safe="") + "/summary"
+        try:
+            status, raw = self._post(path, body, SUMMARY_TIMEOUT_SECONDS)
+        except (OSError, ValueError) as exc:
+            log.warning("voice summary for session=%s did not reach swarm-voice (%s)", session_id,
+                        type(exc).__name__)
+            raise VoiceUnreachable("swarm-voice could not be reached for the summary.") from None
+        try:
+            answer = json.loads(raw.decode("utf-8")) if raw else None
+        except ValueError:
+            answer = None
+        if status != 200 or not isinstance(answer, dict) or not isinstance(answer.get("summary"), str):
+            log.warning("swarm-voice made no summary for session=%s (HTTP %s)", session_id, status)
+            raise VoiceUnreachable(f"swarm-voice made no summary (HTTP {status}).")
+        return answer
 
     def delegation(self, session_id: str, delegation_id: str, *, timeout: float) -> str | None:
         wait = max(0.0, min(float(timeout), DELEGATION_WAIT_SECONDS))
@@ -1079,8 +1159,12 @@ class VoiceSessions:
     def __init__(self, db: Any, client: VoiceClient, *, marker_key: str = "",
                  now: Callable[[], datetime],
                  class_models: Mapping[str, str] | None = None,
-                 machine: Any = None) -> None:
+                 machine: Any = None,
+                 after_end: Callable[..., None] | None = None) -> None:
         self._db = db
+        #: Called once a session is closed (record.Summaries.after_end); it
+        #: never raises, so it never blocks the end.
+        self._after_end = after_end
         self._client = client
         self._marker_key = marker_key
         self._now = now
@@ -1240,6 +1324,26 @@ class VoiceSessions:
                 ended.append(done[0])
                 self._tell_abandoned(*done)
         return ended
+
+    def live_idle_seconds(self) -> int:
+        """The most whole seconds any `live` session a marker names has gone
+        without activity (`last_activity`), or 0 when none is live; read
+        outside a transaction, writing nothing. The speech sweep logs it
+        after `sweep_abandoned`, so a session still counted here past
+        LIVE_STALE_SECONDS is one the sweep failed to end: the
+        voice-session-idle alert reads it (terraform/infra/voice_alerts.tf)."""
+        now = self._now()
+        longest = 0
+        for marker_snap in self._db.collection(LIVE_MARKERS).stream():
+            marker = marker_snap.to_dict() or {}
+            if not marker.get("project_id") or not marker.get("session_id"):
+                continue
+            snap = _snapshot(self._session_ref(marker["project_id"], marker["session_id"]).get())
+            session = (snap.to_dict() or {}) if snap.exists else {}
+            last = last_activity(session) if session.get("state") == LIVE else None
+            if last is not None:
+                longest = max(longest, int((now - last).total_seconds()))
+        return longest
 
     def start(self, *, tenant_id: str, person: str, offer: str,
               project_id: str | None, mode: str = MODE_LIVE, fallback: str | None = None,
@@ -1615,7 +1719,8 @@ class VoiceSessions:
         ended, still starting, or a Live (WebRTC) one. A speech session's turn
         is the fast front's at swarm-voice, never the text conversation's, and
         carries `delegation_id` when the front delegated. The text and the
-        reply are neither logged nor stored here."""
+        reply are never logged; both are kept, redacted, as the session's
+        transcript (record.py), and a failed write never fails the turn."""
         person = person.strip().lower()
         project_id = self._project_of(tenant_id=tenant_id, person=person, session_id=session_id)
         snap = _snapshot(self._session_ref(project_id, session_id).get())
@@ -1644,6 +1749,10 @@ class VoiceSessions:
                 said["reply"] = f"{answered.reply} {line.strip()}".strip()
         elif delegation:
             said["delegation_id"] = delegation
+        from . import record  # record.py imports this module
+        record.record_turn_quietly(self._db, tenant_id=tenant_id, person=person, project_id=project_id,
+                                   session_id=session_id, said=text, reply=str(said["reply"] or ""),
+                                   handed=bool(delegation), now=self._now)
         return said
 
     def delegation(self, session_id: str, delegation_id: str, *, timeout: float) -> str | None:
@@ -1734,5 +1843,8 @@ class VoiceSessions:
                     self._machine.stop(holder, cause=cause)
             log.info("voice session ended tenant=%s project=%s session=%s cause=%s voice_told=%s",
                      tenant_id, project_id, session_id, cause, told)
+            if self._after_end is not None:
+                self._after_end(tenant_id=tenant_id, person=person, project_id=project_id,
+                                session_id=session_id, cause=cause)
         return {"project_id": project_id, "session_id": session_id, "state": ENDED,
                 "changed": before is not None, "voice_told": told}

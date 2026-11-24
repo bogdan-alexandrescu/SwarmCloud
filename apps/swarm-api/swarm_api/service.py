@@ -326,6 +326,15 @@ def _step_resource_class(
     return resource_class_for_stage(profile, stage)
 
 
+def _also_reviews(step_specs: Any, by_id: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Every further review a step's gate reads (`when.also`), as submitted:
+    what `rereview_step_for` carries into the re-review's prompt."""
+    return {
+        step_id: by_id[step_id].model_dump()
+        for spec in step_specs for step_id in spec.when_also if step_id in by_id
+    }
+
+
 def refuse_long_names(metadata: Mapping[str, Any]) -> None:
     """Refuse, never cut, a `metadata.title` or `metadata.unit` over
     NAME_MAX_CHARS (owner, 2026-11-07, part of archived issue 2688): a name fits one row of
@@ -2030,6 +2039,8 @@ class SubmissionService:
                 builds_on=step_task_id[source.builds_on] if source.builds_on else None,
                 gate_task_id=step_task_id[source.when.step] if source.when else None,
                 gate_verdicts=source.when.verdict_in if source.when else (),
+                gate_also_task_ids=(
+                    [step_task_id[a] for a in source.when.also] if source.when else ()),
                 allow_empty_diff=source.allow_empty_diff or step_id in readers,
                 # Kept on a gated step only (`with_routing`): the MERGE path's
                 # pull request title when the implementer wrote none.
@@ -2290,6 +2301,7 @@ class SubmissionService:
                 input_from=dict(s.input_from),
                 when_step=s.when.step if s.when else None,
                 when_verdicts=tuple(s.when.verdict_in) if s.when else (),
+                when_also=tuple(s.when.also) if s.when else (),
                 builds_on=s.builds_on,
                 input_layout=resolve_input_layout(
                     spec.metadata, s.metadata, step_id=s.step_id
@@ -2463,7 +2475,7 @@ class SubmissionService:
             if sources is None or sources.review not in by_id:
                 continue
             derived = rereview_step_for(rest, by_id[sources.review].model_dump(), strategy,
-                                        class_models)
+                                        class_models, _also_reviews(rest, by_id))
             if derived is not None and (
                 WorkflowStepCreate.model_validate(derived).model_dump() == step.model_dump()
             ):
@@ -2515,7 +2527,8 @@ class SubmissionService:
         sources = merge_sources(step_specs, strategy)
         rereview = (
             rereview_step_for(step_specs, by_id[sources.review].model_dump(), strategy,
-                              self._settings.worker_class_models)
+                              self._settings.worker_class_models,
+                              _also_reviews(step_specs, by_id))
             if sources is not None and sources.review in by_id else None
         )
         if rereview is None:

@@ -115,6 +115,7 @@ from .routes import voice
 from .routes import voice_cards
 from .routes import voice_projects
 from .routes import voice_readback
+from .routes import voice_record
 from .routes import voice_roster
 from .routes import voice_settings
 from .routes import voice_telemetry
@@ -669,6 +670,7 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # Its read-backs (docs/design/voice-it-own-speech.md §7): a spoken
     # cancel, merge, deploy, delete or approve waits for a "go".
     app.include_router(voice_readback.router)
+    app.include_router(voice_record.router)
     # A person's click on a card: Open on a navigation offer (voice-it.md §3.12.3).
     app.include_router(voice_cards.router)
     # Its agent roster (voice-it.md §3.12.6): read once on mount or reconnect.

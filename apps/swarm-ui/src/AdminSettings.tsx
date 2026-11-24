@@ -39,8 +39,11 @@ import { AGE_TICK_MS, useNow } from './useNow'
 import { jevRateOf, parseJevRate, saveJevRate, type JevRate } from './jevUsage'
 // The Config pages' lead (`.ws-lead`, WS-SETTINGS-PAGE), which every Admin
 // page's lead draws with (`AdminLead` below).
+import { NEAR_CEILING } from './poolLook'
 import './styles/workspace-settings.css'
 import './styles/admin.css'
+
+export { NEAR_CEILING } from './poolLook'
 
 /**
  * Pool limits: the concurrency ceilings, editable.
@@ -303,13 +306,6 @@ export function useLeadRead<T>(load: () => Promise<Result<T>>): {
   )
   return { load: wrapped, failed, held }
 }
-
-/**
- * NEAR A CEILING: 80% of it in use, or more. Under that a pool still has a
- * fifth of its ceiling free, which is room for the next tasks rather than a
- * reason to call an admin; the mock-up's lead (S10b) is a pool at 92%.
- */
-export const NEAR_CEILING = 0.8
 
 /**
  * What Pool limits leads with (S10b). `unset` first: a pool with no ceiling

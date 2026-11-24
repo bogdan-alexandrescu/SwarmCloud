@@ -1,5 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+// Before App: every screen's sheet keeps its place ahead of styles.css (shellStyles.ts).
+import './shellStyles'
 import { App } from './App'
 import { ErrorBoundary } from './ErrorBoundary'
 import { installPreloadReload } from './preloadReload'

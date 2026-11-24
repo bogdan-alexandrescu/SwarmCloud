@@ -61,6 +61,7 @@ from ..errors import Forbidden, NotFound, Unauthenticated, UpstreamUnavailable
 from ..voice import budget as vbudget
 from ..voice import ledger as vledger
 from ..voice import readback as vreadback
+from ..voice import record as vrecord
 from ..voice import sessions as vs
 from ..voice import settings as vsettings
 from ..voice import speech_machine as sm
@@ -75,6 +76,10 @@ router = APIRouter(tags=["voice"])
 
 AUDIO_ROUTE = "/v1/voice/sessions/{session_id}/audio"
 SWEEP_ROUTE = "/v1/internal/voice/speech/sweep"
+#: The `event` of the sweep's one state line per run (`_log_sweep_state`):
+#: the log-based metrics behind Voice it's two alerts filter on this literal
+#: (terraform/infra/voice_alerts.tf). Rename one, rename both.
+SWEEP_STATE_EVENT = "voice_sweep_state"
 
 CLOSE_UNAUTHENTICATED = 4401
 CLOSE_NOT_ALLOWED = 4403
@@ -335,7 +340,10 @@ async def audio_socket(websocket: WebSocket, session_id: str) -> None:
             machine.fall_back(session, reason=reason)
         await run_in_threadpool(_down)
 
-    turns = getattr(app.state, "speech_turns", None) or sr.ClientTurns(client)
+    # Each spoken turn's two lines are kept, redacted, as the transcript (voice/record.py).
+    turns = vrecord.Recording(getattr(app.state, "speech_turns", None) or sr.ClientTurns(client), ctx.db,
+                              tenant_id=found.tenant_id, person=person, project_id=found.project_id,
+                              now=ctx.now)
     relay = sr.SpeechRelay(
         browser=_BrowserSocket(websocket), dial=vm_dialer(app, config), machine=machine,
         holder=holder, turns=turns, voice=str(chosen.get("tts_voice") or ""),
@@ -391,6 +399,7 @@ async def sweep(request: Request) -> dict[str, Any]:
     if machine is None:
         abandoned = len(await run_in_threadpool(sessions.sweep_abandoned))
         capped = len(await run_in_threadpool(guard.sweep))
+        await _log_sweep_state(sessions, unheld=False)
         return {"enabled": False, "lease": None, "ended": None, "stopped": False, "instance": None,
                 "abandoned": abandoned, "budget_ended": capped}
     # The machine's own causes first; what is left live without activity after.
@@ -399,9 +408,27 @@ async def sweep(request: Request) -> dict[str, Any]:
     # The caps' backstop (voice/budget.py): a session past its grace ends with
     # `budget_cap` even when swarm-voice never asks again.
     capped = len(await run_in_threadpool(guard.sweep))
+    unheld = bool(report.pop("unheld", False))
     log.info("speech sweep %s abandoned=%d budget_ended=%d", json.dumps(report, sort_keys=True),
              abandoned, capped)
+    await _log_sweep_state(sessions, unheld=unheld)
     return {"enabled": True, **report, "abandoned": abandoned, "budget_ended": capped}
+
+
+async def _log_sweep_state(sessions: vs.VoiceSessions, *, unheld: bool) -> None:
+    """The one structured line per sweep both Voice it alerts read
+    (terraform/infra/voice_alerts.tf): the longest a still-live session has
+    gone without activity, and whether the machine was found not at rest
+    with nothing holding it. A failed read logs nothing rather than a 0 that
+    would look healthy, and never fails the sweep."""
+    try:
+        idle = await run_in_threadpool(sessions.live_idle_seconds)
+    except Exception as exc:  # noqa: BLE001 -- the sweep's work is done; only the line is lost
+        log.warning("speech sweep state not logged (%s)", type(exc).__name__)
+        return
+    log.info("voice sweep state idle=%ds unheld=%s", idle, unheld,
+             extra={"event": SWEEP_STATE_EVENT, "voice_live_idle_seconds": idle,
+                    "speech_machine_unheld": unheld})
 
 
 def budget_ledger(request: Request, ctx: AppContext) -> vledger.VoiceLedger:
