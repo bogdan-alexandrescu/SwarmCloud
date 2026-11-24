@@ -407,7 +407,11 @@ jobs:
       # `path:line C<n> <rule-id>`, never the value.
       #
       #   * a pull request or a merge-queue entry: only the lines it adds
-      #     (--diff reads the merge base; the checkout above is full history);
+      #     (--diff reads the merge base; the checkout above is full history).
+      #     A pull request's --diff is the branch it targets NOW
+      #     (refs/remotes/origin/<base.ref>), never the base commit recorded
+      #     on the event, which a retarget leaves on the old branch; the
+      #     guard's own checkout stays the base commit's;
       #   * main, the schedule and a dispatch: every tracked file.
       #
       # The list unset or altered on a same-repository run is exit 2: red, never
@@ -421,7 +425,7 @@ jobs:
         env:
           DEPLOYMENT_PATTERNS: ${{ secrets.DEPLOYMENT_PATTERNS }}
           EVENT: ${{ github.event_name }}
-          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
           QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
           FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
         working-directory: pr
@@ -431,7 +435,7 @@ jobs:
           # (guard/); the change is data in pr/, never run.
           guard="${GITHUB_WORKSPACE}/guard/scripts/guards/deployment-values.sh"
           case "${EVENT}" in
-            pull_request) scope=(--diff "${PR_BASE}") ;;
+            pull_request) scope=(--diff "refs/remotes/origin/${PR_BASE_REF:?this pull request names no base branch}") ;;
             merge_group)  scope=(--diff "${QUEUE_BASE}") ;;
             *)            scope=(--tree) ;;
           esac
