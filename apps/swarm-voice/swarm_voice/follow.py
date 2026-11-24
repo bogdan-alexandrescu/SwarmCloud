@@ -258,6 +258,9 @@ class Follower:
     updates: vupdates.Board | None = None
     #: Each run's phase as last told.
     phases_told: dict[tuple[str, str], str] = field(default_factory=dict)
+    #: Told the voice id when a pass reads that a cap is reached (the planner
+    #: lets what it keeps warm go, planner.cool); None tells nothing.
+    on_capped: Callable[[str], None] | None = None
     #: Whether a pass has completed: the first is the baseline, told nothing.
     baseline: bool = False
 
@@ -302,8 +305,12 @@ class Follower:
         except Exception as exc:  # noqa: BLE001 - the next tick asks again
             log.warning("voice session %s: the caps could not be read: %s", self.voice_id, type(exc).__name__)
             return
-        if state is not None and self.updates is not None:
+        if state is None:
+            return
+        if self.updates is not None:
             self.updates.budget(self.voice_id, state)
+        if self.on_capped is not None and state.get("capped") is not None:
+            self.on_capped(self.voice_id)
 
     def _tell(self, now: dict[tuple[str, str], Row], written: list[Row],
               before: dict[tuple[str, str], Any]) -> None:
@@ -345,8 +352,10 @@ class RosterFollowers:
 
     def __init__(self, reads_for: Callable[[SessionGrant], RosterReads], *,
                  every: float = TICK_SECONDS, sleep: Sleep = asyncio.sleep,
-                 updates: vupdates.Board | None = vupdates.BOARD) -> None:
+                 updates: vupdates.Board | None = vupdates.BOARD,
+                 on_capped: Callable[[str], None] | None = None) -> None:
         self._reads_for = reads_for
+        self._on_capped = on_capped
         self._updates = updates
         self._every = every
         self._sleep = sleep
@@ -364,7 +373,8 @@ class RosterFollowers:
         if grant is None or self.running(voice_id):
             return
         follower = Follower(voice_id=voice_id, project_id=grant.project_id,
-                            reads=self._reads_for(grant), updates=self._updates)
+                            reads=self._reads_for(grant), updates=self._updates,
+                            on_capped=self._on_capped)
         self._followers[voice_id] = follower
         self._tasks[voice_id] = asyncio.create_task(
             follower.run(every=self._every, sleep=self._sleep), name=f"roster-{voice_id}")
@@ -389,7 +399,8 @@ class RosterFollowers:
             await self.stop(voice_id)
 
 
-def build_roster(http: httpx.AsyncClient) -> RosterFollowers | None:
+def build_roster(http: httpx.AsyncClient, *,
+                 on_capped: Callable[[str], None] | None = None) -> RosterFollowers | None:
     """The followers from SWARM_API_URL (and SWARM_API_AUDIENCE, else the
     URL), as the planner reaches swarm-api; None without that address."""
     base = os.environ.get("SWARM_API_URL", "").strip()
@@ -398,4 +409,4 @@ def build_roster(http: httpx.AsyncClient) -> RosterFollowers | None:
     audience = os.environ.get("SWARM_API_AUDIENCE", "").strip() or base
     tokens = tools_read.google_id_tokens(audience)
     return RosterFollowers(lambda grant: ApiReads(RosterApi(http, base_url=base, id_tokens=tokens,
-                                                            grant=grant)))
+                                                            grant=grant)), on_capped=on_capped)

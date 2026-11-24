@@ -190,6 +190,8 @@ class FakePlanner:
         self.calls: list[dict] = []
         self.gate = asyncio.Event()
         self.forgotten: list[str] = []
+        #: The sessions the planner was told to let its account and child go for.
+        self.cooled: list[tuple[str, str]] = []
         self.running = 0
         self.most = 0
         #: The planner model each delegation was asked for (None: the pin).
@@ -217,6 +219,9 @@ class FakePlanner:
 
     def forget(self, session_id: str) -> None:
         self.forgotten.append(session_id)
+
+    def cool(self, session_id: str, why: str) -> None:
+        self.cooled.append((session_id, why))
 
 
 def _grant() -> SessionGrant:

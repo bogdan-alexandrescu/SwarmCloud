@@ -668,6 +668,10 @@ class FrontSessions:
                 session.running, delegation.state, delegation.spoken = None, "done", CAP_SENTENCES[refused]
                 delegation.done.set()
                 self._trim(session)
+                cool = getattr(self._planner, "cool", None)
+                if cool is not None:
+                    # No further turn runs: its account and child are not kept for one.
+                    cool(session.voice_id, "a spend cap")
                 log.info("voice session %s: delegation %s refused at a cap (%s)", session.voice_id,
                          delegation.delegation_id, refused)
                 continue
