@@ -519,3 +519,90 @@ def test_session_fields_are_in_the_mask_and_the_table():
     text = sc.render_text(report_for([
         sessioned("task_r1", "implement", turns=40, families={"bash": 30}, sessions=1)]))
     assert "build: median 30, p90 30, p99 30 (n=1)" in text
+
+
+# --- sub-agent share ---------------------------------------------------------
+#
+# Read from what the worker already writes into result_summary.runner.usage
+# (agent_worker.usage): the parent's own token counts, `model_usage` (every
+# model the session paid for, sub-agents included) and `subagent_cost_usd`.
+
+
+def parented(tid, step, *, parent, rows, cost, subagent_cost=None, **kw):
+    """A task whose usage carries the parent's counts and per-model rows."""
+    u = {**parent, "num_turns": 10, "total_cost_usd": cost, "model_usage": rows}
+    if subagent_cost is not None:
+        u["subagent_cost_usd"] = subagent_cost
+    return task(tid, step, cost=cost, usage=u, **kw)
+
+
+PARENT = {"input_tokens": 100, "output_tokens": 100, "cache_read_input_tokens": 700,
+          "cache_creation_input_tokens": 100}
+
+
+def test_subagent_share_per_role_from_the_recorded_usage():
+    records = [
+        # A build task whose parent's model row holds 1,000 tokens beyond the
+        # parent's own: a sub-agent on the session's model.
+        parented("task_s1", "implement", parent=PARENT, cost=4.0, subagent_cost=1.0,
+                 rows=[{"model": "model-big", "input_tokens": 200, "output_tokens": 200,
+                        "cache_read_input_tokens": 1400, "cache_creation_input_tokens": 200,
+                        "cost_usd": 4.0}]),
+        # A build task whose second model's row holds no token: none started.
+        parented("task_s2", "implement", parent=PARENT, cost=2.0, subagent_cost=0.0,
+                 rows=[{"model": "model-big", **PARENT, "cost_usd": 1.9},
+                       {"model": "model-small", "input_tokens": 0, "output_tokens": 0,
+                        "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
+                        "cost_usd": 0.1}]),
+        # A review task that started none: its rows are the parent's own.
+        parented("task_s3", "review", parent=PARENT, cost=1.0, subagent_cost=0.0,
+                 rows=[{"model": "model-big", **PARENT, "cost_usd": 1.0}]),
+        # A fix task with no per-model usage: not measured, never zero.
+        task("task_s4", "review-fix"),
+    ]
+    m = last_week(report_for(records))
+    share = m["subagent_share_by_role"]
+    assert share["build"] == {"cost_pct": round(100 * 1.0 / 6.0, 1),
+                              "tokens_pct": round(100 * 1000 / 3000, 1),
+                              "tasks_started": {"at_least": 1, "at_most": 1, "of": 2}}
+    assert share["review"] == {"cost_pct": 0.0, "tokens_pct": 0.0,
+                               "tasks_started": {"at_least": 0, "at_most": 0, "of": 1}}
+    assert isinstance(share["fix"], sc.NotMeasured)
+    assert "not measured" in sc.render_value(share["fix"])
+    assert share["all"]["tasks_started"] == {"at_least": 1, "at_most": 1, "of": 3}
+    # Roles with no task in the week are not listed as zero either.
+    assert "planner" not in share
+
+
+def test_subagent_tokens_off_the_parents_model_count_at_most():
+    small = {"input_tokens": 50, "output_tokens": 50, "cache_read_input_tokens": 0,
+             "cache_creation_input_tokens": 0, "cost_usd": 0.2}
+    record = parented("task_s5", "implement", parent=PARENT, cost=1.2, subagent_cost=0.2,
+                      rows=[{"model": "model-big", **PARENT, "cost_usd": 1.0},
+                            {"model": "model-small", **small}])
+    share = last_week(report_for([record]))["subagent_share_by_role"]["build"]
+    assert share["tasks_started"] == {"at_least": 0, "at_most": 1, "of": 1}
+    assert share["tokens_pct"] == round(100 * 100 / 1100, 1)
+
+
+def test_subagent_cost_unknown_leaves_cost_not_measured_but_tokens_read():
+    record = parented("task_s6", "implement", parent=PARENT, cost=1.0,
+                      rows=[{"model": "model-big", **PARENT, "cost_usd": 1.0}])
+    share = last_week(report_for([record]))["subagent_share_by_role"]["build"]
+    assert isinstance(share["cost_pct"], sc.NotMeasured)
+    assert share["tokens_pct"] == 0.0
+
+
+def test_a_week_with_no_usage_says_not_measured_never_zero():
+    m = report_for([task("task_s7", "implement", usage={"num_turns": 3})])["weeks"]
+    assert isinstance(m[-1]["measures"]["subagent_share_by_role"], sc.NotMeasured)
+    assert isinstance(m[0]["measures"]["subagent_share_by_role"], sc.NotMeasured)  # no task at all
+    text = sc.render_text(report_for([]))
+    assert "sub-agent share" in text and "not measured" in text
+    assert sc.to_json(m[-1]["measures"]["subagent_share_by_role"]) == {
+        "not_measured": m[-1]["measures"]["subagent_share_by_role"].why}
+
+
+def test_subagent_share_reads_the_masked_usage_field():
+    assert "result_summary.runner.usage" in sc.FIELD_MASK
+    assert "subagent_share_by_role" in {key for key, _ in sc.ROWS}
