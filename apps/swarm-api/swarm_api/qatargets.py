@@ -616,8 +616,15 @@ def resolve_host(host: str) -> list[str]:
 
 def check_public_host(host: str, resolve: Resolver) -> str:
     """`host`, lower-cased, when it is a public name whose every address is
-    public unicast; a 422 otherwise. swarm_egress.policy's rule, plus the
-    resolution its CONNECT-time check makes at the proxy."""
+    public unicast; a 422 otherwise. swarm_egress.policy's name rule, plus a
+    resolution, which that CONNECT-time check does not make. Resolution is
+    checked at registration and at each approval only; after that a private
+    address is unreachable on GKE because of
+    kubernetes/network-policies/allow-egress.yaml (the internet minus every
+    private range), and on Cloud Run Jobs NOTHING stops it: the Job's
+    ALL_TRAFFIC VPC egress (terraform/modules/cloud_run_jobs/main.tf) meets
+    no egress deny (terraform/modules/network/firewall.tf) -- epic 21, and
+    docs/design/qa-environments.md's "A host that later resolves private"."""
     host = (host or "").lower().rstrip(".")
     try:
         ipaddress.ip_address(host)
