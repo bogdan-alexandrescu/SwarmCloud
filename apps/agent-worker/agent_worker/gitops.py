@@ -4465,8 +4465,9 @@ def _complete_publish_fetch(
 
     1. the commit graph is read from the clone through the SAME hardened
        upload-pack, commits only (`_merged_heads_in_walk`, `--filter=tree:0`:
-       no blob is read), and the merges' non-first parents -- the heads the
-       agent merged -- are listed;
+       no blob is read), and the parents of its merges -- the heads the
+       agent merged, on either side -- are listed (with no merge, every
+       parent in walk order);
     2. each is fetched FROM ORIGIN into this repository at depth 1 by the
        worker's own credentialed, bounded fetch (`fetch_on_origin`,
        `_origin_fetched_shallow`). Only a sha that landed as itself counts;
@@ -4533,8 +4534,10 @@ def _merged_heads_in_walk(
     timeout_seconds: int,
     logger: Any,
 ) -> list[str]:
-    """The non-first parents of the merges between `target` and the boundary
-    in `shallow_file`, read from the clone without reading one blob (issue 367).
+    """The parents in the walk from `target` to the boundary in
+    `shallow_file` -- every merge's parents, or every parent in walk order
+    when there is no merge -- read from the clone without reading one blob
+    (issue 367).
 
     The commits are fetched from the clone, as the publish fetches them
     (`_publish_fetch_argv`: the hardened upload-pack, object checks, the same
@@ -4590,11 +4593,16 @@ def _merged_heads_in_walk(
         return []
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
-    heads: list[str] = []
+    # Every parent of every merge -- the merged heads, on either side. With
+    # no merge in the walk, every parent in walk order: a branch the agent
+    # rebased onto, or built on, may be origin's too. Asking costs one
+    # bounded fetch each; only a sha origin serves joins the boundary.
+    merged: list[str] = []
+    others: list[str] = []
     for line in text.splitlines():
-        for sha in line.split()[2:]:
-            if _FULL_SHA_RE.match(sha) and sha not in heads:
-                heads.append(sha)
+        parents = [sha for sha in line.split()[1:] if _FULL_SHA_RE.match(sha)]
+        (merged if len(parents) > 1 else others).extend(parents)
+    heads = list(dict.fromkeys(merged or others))
     return heads[:_SHALLOW_MAX_LINES]
 
 

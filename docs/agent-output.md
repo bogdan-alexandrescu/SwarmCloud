@@ -481,8 +481,9 @@ unchanged, and makes neither of the extra fetches below:
 
 1. it reads the clone's commit graph, commits only (`--filter=tree:0`: no
    blob is read), through the same hardened upload-pack, into a scratch
-   repository of its own, and lists the heads the agent merged (the merges'
-   non-first parents). That scratch fetch's own lazy fetch is shut off too:
+   repository of its own, and lists the heads the agent merged (every
+   parent of every merge, on either side; with no merge, every parent in
+   walk order, for a branch the agent rebased onto). That scratch fetch's own lazy fetch is shut off too:
    git 2.39.5 was measured starting a plain `git-upload-pack` in the clone
    mid-fetch without it;
 2. it fetches each merged head **from origin** into the clean repository at
