@@ -78,6 +78,7 @@ import {
 } from './accountsLanes'
 import { Segmented } from './components'
 import { HelpNote } from './HelpCard'
+import { InfoTip } from './InfoTip'
 import { FIVE_HOUR, SEVEN_DAY, pluralise, unreadableFor } from './types'
 import './styles/accounts-timeline.css'
 
@@ -203,7 +204,12 @@ function bandWords(b: Band, now: number): ReactNode {
   const unknown = b.key !== FIVE_HOUR && b.key !== SEVEN_DAY
   const lead = unknown ? (
     <>
-      <b>{b.key}</b> · a window the console does not know by name, held to the {pct(b.floor)} floor ·{' '}
+      <b>{b.key}</b> · not a known window{' '}
+      <InfoTip
+        about={`the ${b.key} window`}
+        tip={`${b.key} · a window the console does not know by name, held to the ${pct(b.floor)} floor`}
+      />{' '}
+      · held to the {pct(b.floor)} floor ·{' '}
     </>
   ) : (
     <>{name} · </>
@@ -355,7 +361,11 @@ function statusOf(a: PoolAccount, scope: string | null, names: ReadonlyMap<strin
   if (unreadableFor(a, scope))
     return {
       tone: 'bad',
-      text: 'Skipped here: this workspace could not read its secret',
+      text: (
+        <>
+          Skipped here: its secret could not be read <InfoTip about="why it is skipped" tip="Skipped here: this workspace could not read its secret" />
+        </>
+      ),
     }
   const dup = blocksOf(a).find(isDuplicateBlock)
   if (dup !== undefined) {
@@ -376,7 +386,7 @@ function statusOf(a: PoolAccount, scope: string | null, names: ReadonlyMap<strin
       return {
         tone: 'bad',
         text: b.aged_reading
-          ? `${windowName(b.window)}: ${pct(left)} left, counted at half (${pct(left / 2)}), under its ${pct(b.floor)} floor`
+          ? `${windowName(b.window)}: ${pct(left)} left · counted at half (${pct(left / 2)}), under its ${pct(b.floor)} floor`
           : `${windowName(b.window)}: ${pct(left)} left, under its ${pct(b.floor)} floor`,
       }
     }
@@ -545,7 +555,13 @@ function Lane({
         {a.stale && a.observed_at !== null && <p className="acct-tl-meta is-stale-note">stale: {ageOf(a, now)}</p>}
         {possible && !blocksOf(a).some(isDuplicateBlock) && (
           <p className="acct-tl-meta is-dup-note">
-            May be one subscription with {possibleOf ?? 'an account in another workspace'}: they read identically
+            {possibleOf === undefined
+              ? 'May be one subscription with another workspace’s account'
+              : `May be one subscription with ${possibleOf}`}{' '}
+            <InfoTip
+              about="one subscription"
+              tip={`May be one subscription with ${possibleOf ?? 'an account in another workspace'}: they read identically`}
+            />
           </p>
         )}
         {/* THE KEPT HALF IS MARKED TOO (B2's twin): without it the withheld
@@ -562,8 +578,10 @@ function Lane({
         <FreeLine x={freeX} />
         {a.observed_at === null ? (
           <span className="acct-tl-chip">
-            5-hour and 7-day: <b>first reading pending</b>. No bands until the broker reads its windows; it takes one agent
-            until then
+            5-hour and 7-day: <b>first reading pending</b> <InfoTip
+              about="the first reading"
+              tip="5-hour and 7-day: first reading pending. No bands until the broker reads its windows; it takes one agent until then"
+            />
           </span>
         ) : (
           windows.map((k) => (
@@ -694,7 +712,11 @@ function WaitingRow({
           <a href={WAITING_HREF}>Open them in Work › Agents</a>
         </p>
         <p className="acct-tl-meta">
-          laid against the free slots from the readings and caps, oldest first; another ceiling may start fewer
+          laid against the free slots &middot; oldest first{' '}
+          <InfoTip
+            about="how they are laid"
+            tip="laid against the free slots from the readings and caps, oldest first; another ceiling may start fewer"
+          />
         </p>
       </div>
       <div className="acct-tl-track">
@@ -782,7 +804,9 @@ export function AccountsTimeline({
               ]}
             />
           </span>
-          <span className="acct-tl-utc">Ranked by when each can take a new agent. Times are UTC.</span>
+          <span className="acct-tl-utc">Times are UTC{' '}
+            <InfoTip about="the order" tip="Ranked by when each can take a new agent. Times are UTC." end />
+          </span>
         </div>
       )}
       {accounts.length > 0 && addForm}
@@ -829,7 +853,11 @@ export function AccountsTimeline({
             </div>
             <div className="acct-tl-track">
               <span className="acct-tl-chip">
-                A new account takes one agent until its first reading, and draws no bands until then.
+                No bands until its first reading{' '}
+                <InfoTip
+                  about="a new account"
+                  tip="A new account takes one agent until its first reading, and draws no bands until then."
+                />
               </span>
               {addForm}
             </div>
@@ -858,7 +886,10 @@ export function AccountsTimeline({
               <div className="acct-tl-row acct-tl-pool">
                 <div className="acct-tl-words">
                   <p className="acct-tl-rowhead">At this pace</p>
-                  <p className="acct-tl-meta">each subscription&rsquo;s 7-day use since its week opened, kept up</p>
+                  <p className="acct-tl-meta">
+                    each subscription&rsquo;s 7-day use, kept up{' '}
+                    <InfoTip about="this pace" tip="each subscription’s 7-day use since its week opened, kept up" />
+                  </p>
                 </div>
                 <div className="acct-tl-track">
                   <FreeLine x={freeX} />
@@ -874,9 +905,16 @@ export function AccountsTimeline({
                   ) : (
                     <span className="acct-tl-chip">
                       <span className="acct-dash">—</span>{' '}
-                      {forecast.unmeasured.length > 0
-                        ? `not forecast: ${forecast.unmeasured.map(accountName).join(', ')} ${forecast.unmeasured.length === 1 ? 'has' : 'have'} no 7-day reading to take a pace from`
-                        : 'not forecast: no subscription here takes agents'}
+                      {forecast.unmeasured.length > 0 ? (
+                        <>
+                          not forecast: {forecast.unmeasured.map(accountName).join(', ')} <InfoTip
+                            about="why it is not forecast"
+                            tip={`not forecast: ${forecast.unmeasured.map(accountName).join(', ')} ${forecast.unmeasured.length === 1 ? 'has' : 'have'} no 7-day reading to take a pace from`}
+                          />
+                        </>
+                      ) : (
+                        'not forecast: no subscription here takes agents'
+                      )}
                     </span>
                   )}
                 </div>

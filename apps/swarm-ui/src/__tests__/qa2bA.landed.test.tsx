@@ -99,7 +99,7 @@ describe('admin2-02: the frame refuses a workspace admin’s own page as such', 
     // MUTATION: drop `audience` from the frame's AdminRoleRefusal and this reads "platform".
     expect(refusal()!.getAttribute('data-audience')).toBe('workspace')
     expect(refusal()!.textContent).toContain('Platform people is for workspace admins')
-    expect(refusal()!.textContent).toContain('you administer none')
+    expect(refusal()!.textContent).toContain('You administer no group workspace')
   })
 
   it('tells the owner of only a personal workspace it is their own, never its admin', async () => {

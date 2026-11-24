@@ -63,6 +63,7 @@ import { loadWorkspaceJoined, loadWorkspaceRoster, loadWorkspaceSetup } from './
 import type { Result } from './fetch'
 import type { JoinedMembers, OnboardingDoc, WorkspaceRoster } from './types'
 import { ButtonLink, Chip, EmptyState, Segmented, routedClick } from './components'
+import { InfoTip } from './InfoTip'
 import { chooseTenant } from './fetch'
 import { AdminLead } from './AdminSettings'
 import { feedData, notificationsSnapshot, subscribeNotifications } from './notificationFeed'
@@ -152,6 +153,14 @@ export function rosterFacts(roster: WorkspaceRoster | null, joined: JoinedMember
   return facts
 }
 
+/** The page's sub line, a few words on the surface (issue 81)... */
+const SUB_SHORT: Readonly<Record<WorkspacesView, string>> = {
+  platform: 'Every group workspace; you are admin in each',
+  admin: 'The group workspaces you administer, and your own',
+  member: 'The group workspaces you are in, read only',
+}
+
+/** ...and the sentences it shortens, behind its (i), word for word. */
 const SUB: Readonly<Record<WorkspacesView, string>> = {
   platform: 'Every group workspace; you are admin in each as a platform admin. A workspace’s name opens its page and selects it.',
   admin: 'The group workspaces you administer, and your own. A workspace’s name opens its page and selects it.',
@@ -288,7 +297,7 @@ function WorkspaceList({ choices, platformAdmin, open, openPage }: { choices: re
               </a>
               <small>{personal.tenant_id}</small>
             </span>
-            <small className="wya-reading">personal · you are its fixed admin; its settings are under Profile</small>
+            <small className="wya-reading">personal · you are its fixed admin · settings under Profile</small>
           </li>
         )}
         {orderWorkspaces(rows, order).map(({ w, read, steps }) => {
@@ -373,7 +382,9 @@ export function WorkspacesYouAdminScreen({ go }: { go: (to: string) => void }) {
         )}
         <UrRefresh reads={[mine, me]} ageOf={[mine]} />
       </PageHead>
-      <p className="ur-sub">{SUB[view ?? 'admin']}</p>
+      <p className="ur-sub">
+        {SUB_SHORT[view ?? 'admin']} <InfoTip about="this list" tip={SUB[view ?? 'admin']} />
+      </p>
       <UrRegion state={mine.state} route="GET /v1/tenants/mine" what="Your workspaces" plural onRetry={mine.reload} empty={<EmptyList view={view} />}>
         {(data) => <WorkspaceList choices={data} platformAdmin={platformAdmin} open={open} openPage={openPage} />}
       </UrRegion>

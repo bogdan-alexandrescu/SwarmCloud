@@ -21,6 +21,7 @@ import { Card, Dash, Table, UsageBar, type Column } from './components'
 import type { TopicId } from './help'
 import { capacityPoll } from './capacityPoll'
 import { Screen } from './Shell'
+import { InfoTip } from './InfoTip'
 import {
   JEV_GROUP_LABEL,
   loadJevUsage,
@@ -135,7 +136,14 @@ export function JevUsageBody({ usage }: { usage: JevUsage }) {
             ? `Priced at $${usage.rate.input} per million tokens in${
                 usage.rate.output === null ? ' (output rate not set)' : `, $${usage.rate.output} out`
               }.`
-            : 'Jev’s price: rate not set. Dollars stay blank until a platform admin sets Jev’s per-token rate.'}
+            : (
+              // ISSUE 81: the cost disclosure stays as one short line; why the
+              // dollars are blank sits behind its (i), word for word.
+              <>
+                Jev’s price: rate not set.{' '}
+                <InfoTip about="Jev’s price" tip="Dollars stay blank until a platform admin sets Jev’s per-token rate." />
+              </>
+            )}
         </p>
       </Card>
       <Card title={`Monthly cap, ${m.month}`}>

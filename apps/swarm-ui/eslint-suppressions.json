@@ -44,7 +44,7 @@
       "count": 3
     },
     "sonarjs/no-nested-conditional": {
-      "count": 14
+      "count": 13
     },
     "sonarjs/no-nested-template-literals": {
       "count": 2
@@ -112,7 +112,7 @@
       "count": 1
     },
     "sonarjs/no-nested-conditional": {
-      "count": 7
+      "count": 6
     },
     "sonarjs/no-nested-template-literals": {
       "count": 2
@@ -122,14 +122,8 @@
     }
   },
   "src/AccountsVerdict.tsx": {
-    "no-useless-assignment": {
-      "count": 1
-    },
     "sonarjs/cognitive-complexity": {
       "count": 3
-    },
-    "sonarjs/different-types-comparison": {
-      "count": 1
     },
     "sonarjs/no-alphabetical-sort": {
       "count": 1
@@ -184,10 +178,10 @@
       "count": 1
     },
     "sonarjs/no-nested-conditional": {
-      "count": 11
+      "count": 8
     },
     "sonarjs/no-nested-template-literals": {
-      "count": 3
+      "count": 1
     },
     "sonarjs/prefer-read-only-props": {
       "count": 1
@@ -1035,7 +1029,7 @@
       "count": 3
     },
     "sonarjs/no-nested-conditional": {
-      "count": 7
+      "count": 6
     },
     "sonarjs/prefer-read-only-props": {
       "count": 7
@@ -1535,7 +1529,7 @@
       "count": 1
     },
     "sonarjs/function-return-type": {
-      "count": 3
+      "count": 1
     },
     "sonarjs/no-nested-conditional": {
       "count": 9
@@ -1885,10 +1879,10 @@
       "count": 3
     },
     "sonarjs/no-nested-conditional": {
-      "count": 8
+      "count": 7
     },
     "sonarjs/no-nested-template-literals": {
-      "count": 4
+      "count": 3
     },
     "sonarjs/prefer-read-only-props": {
       "count": 10
@@ -2072,19 +2066,16 @@
       "count": 6
     },
     "sonarjs/no-nested-conditional": {
-      "count": 35
+      "count": 34
     },
     "sonarjs/no-nested-template-literals": {
-      "count": 16
+      "count": 14
     },
     "sonarjs/prefer-read-only-props": {
       "count": 24
     }
   },
   "src/SecretsActions.tsx": {
-    "@typescript-eslint/no-unnecessary-type-assertion": {
-      "count": 1
-    },
     "sonarjs/cognitive-complexity": {
       "count": 2
     },
@@ -2092,13 +2083,13 @@
       "count": 1
     },
     "sonarjs/no-nested-conditional": {
-      "count": 10
+      "count": 7
     },
     "sonarjs/no-nested-template-literals": {
       "count": 3
     },
     "sonarjs/prefer-read-only-props": {
-      "count": 10
+      "count": 9
     }
   },
   "src/SetupLink.tsx": {
@@ -2815,7 +2806,7 @@
       "count": 2
     },
     "testing-library/no-node-access": {
-      "count": 85
+      "count": 82
     }
   },
   "src/__tests__/access.phone-chooser.test.tsx": {
@@ -3036,7 +3027,7 @@
       "count": 1
     },
     "testing-library/no-node-access": {
-      "count": 27
+      "count": 26
     }
   },
   "src/__tests__/accounts.split.test.tsx": {
@@ -3095,7 +3086,7 @@
       "count": 5
     },
     "sonarjs/prefer-specific-assertions": {
-      "count": 3
+      "count": 2
     },
     "testing-library/no-node-access": {
       "count": 3
@@ -8597,7 +8588,7 @@
       "count": 2
     },
     "testing-library/no-node-access": {
-      "count": 17
+      "count": 16
     }
   },
   "src/__tests__/qa1.fix15.notfound-bell.test.tsx": {
@@ -10600,7 +10591,7 @@
       "count": 1
     },
     "testing-library/no-node-access": {
-      "count": 15
+      "count": 13
     }
   },
   "src/__tests__/qatargets.flowsperstep.test.tsx": {
@@ -10665,7 +10656,7 @@
       "count": 1
     },
     "testing-library/no-node-access": {
-      "count": 131
+      "count": 129
     }
   },
   "src/__tests__/qatargets.writes.test.tsx": {
@@ -11154,7 +11145,7 @@
       "count": 4
     },
     "testing-library/no-node-access": {
-      "count": 43
+      "count": 42
     },
     "testing-library/prefer-find-by": {
       "count": 2
@@ -14700,7 +14691,7 @@
       "count": 5
     },
     "sonarjs/no-nested-template-literals": {
-      "count": 9
+      "count": 8
     },
     "sonarjs/super-linear-regex": {
       "count": 1

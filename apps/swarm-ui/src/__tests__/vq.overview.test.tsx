@@ -236,7 +236,11 @@ describe('VQ-005: one sample of failures, one window, the same words', () => {
     const el = await mount()
     const card = [...el.querySelectorAll('#ov-needs .ov-att')].find((c) => /failed agents? in the last 24 hours/.test(text(c)))
     expect(card, 'no failures card').toBeDefined()
-    const head = card!.querySelector('b')!.getAttribute('title') ?? ''
+    // ISSUE 81: the failures card carries a `why` now (the terminal sentence),
+    // and a card with a why titles its heading with it, so the headline is
+    // read off the card's accessible name, which leads with it.
+    const label = card!.getAttribute('aria-label') ?? [...card!.querySelectorAll('a[aria-label]')].pop()?.getAttribute('aria-label') ?? ''
+    const head = label.slice(label.indexOf('≥'))
     const note = text(el.querySelector('#ov-failures .ctl-card-note'))
     // Both off the FAILED read, which has more behind it: a lower bound.
     expect(head).toMatch(/^≥5 failed agents in the last 24 hours\b/)
