@@ -272,3 +272,31 @@ def test_a_stale_generation_relabels_nothing(tmp_path):
     with pytest.raises(FencedError):
         merge.run_merge(world.context())
     assert len(_labelled(world)) == 1
+
+
+def test_a_person_removing_ready_at_the_own_fix_head_is_refused(tmp_path):
+    """A `User` actor's removal at the round's head is theirs: refused
+    `READY_REMOVED_BY_PERSON`, never re-labelled."""
+    world = MergeWorld(tmp_path)
+    _through_own_conflict_fix(world)
+    world.github.route("GET", TIMELINE, (200, {}, [
+        {"event": "unlabeled", "label": {"name": "ready"},
+         "actor": {"login": "a-person", "type": "User"},
+         "created_at": "2026-11-24T15:44:40Z"}]))
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.summary["refusal"]["code"] == merge.READY_REMOVED_BY_PERSON, outcome.message
+    assert len(_labelled(world)) == 1
+
+
+def test_an_unread_timeline_at_the_own_fix_head_is_not_relabelled(tmp_path):
+    """A failed timeline read cannot rule out a person's removal: refused
+    `train_ejected` as before, not labelled over."""
+    world = MergeWorld(tmp_path)
+    _through_own_conflict_fix(world)
+    world.github.route("GET", TIMELINE, (500, {}, {"message": "boom"}))
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.summary["refusal"]["code"] == "train_ejected", outcome.message
+    assert outcome.summary["repository_train"]["removal_unread"]
+    assert len(_labelled(world)) == 1

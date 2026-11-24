@@ -4405,7 +4405,9 @@ def _board(run: _Run, merger: ForgeMerger, own: Mapping[str, Any], *, pr: PullRe
         at a head this step's own conflict fix round pushed (issue 381):
         the round's push is what made the gate remove it, so the step labels
         `ready` again there, once, or parks for a person
-        (`_own_fix_ready_lost`).
+        (`_own_fix_ready_lost`). Not when the timeline read failed
+        (`removal_unread`): a person's removal cannot be ruled out, so it is
+        refused `train_ejected` as before.
       * The train's ejection gets the path a red head gets (archived issue 3313). The head
         is green here -- its own checks were read green above -- so a train
         run of main plus this pull request alone that failed is often a
@@ -4469,7 +4471,10 @@ def _board(run: _Run, merger: ForgeMerger, own: Mapping[str, Any], *, pr: PullRe
             # Not the train's ejection. At a head this step's own conflict
             # fix pushed, the gate's removal is the step's own doing (issue
             # 381): labelled again, or a person's; anywhere else, as before.
-            round_task = _own_conflict_fix(run, own)
+            # A timeline read that failed cannot rule out a person's removal:
+            # never relabel over it, refuse as before.
+            round_task = (None if "removal_unread" in record
+                          else _own_conflict_fix(run, own))
             if round_task is not None:
                 return _own_fix_ready_lost(run, merger, pr=pr, head=head, base=base,
                                            switch=switch, round_task=round_task, said=said,
