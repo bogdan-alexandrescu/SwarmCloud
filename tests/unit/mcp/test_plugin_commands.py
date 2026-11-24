@@ -199,6 +199,8 @@ _WRITING_SUBCOMMANDS = frozenset(
         "cancel",          # stops running work
         "workflow",        # spends the shared pool, N steps at a time
         "workflow-cancel",
+        "workflow-pause",  # parks a workflow's steps
+        "workflow-resume",
         "init",            # writes .env
     }
 )

@@ -117,6 +117,8 @@ _WRITE_TOOLS = {
     "swarm_task_answer",
     # 6 November 2026 (part of archived issue 2688): it records many answers.
     "swarm_task_answers",
+    # docs/design/workflow-pause.md: they pause or resume a workflow's steps.
+    "swarm_workflow_pause", "swarm_workflow_resume",
 }
 
 
