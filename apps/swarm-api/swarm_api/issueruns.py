@@ -227,7 +227,8 @@ from .schemas import (
 )
 from swarm_common.profiles import MODEL_CLASSES, RUNNER_PROFILES, step_model_class
 
-from . import donewhen, planfiles, planhistory, reviewgate, sessiontag, stepclass, workcontract
+from . import (donewhen, planfiles, planhistory, reviewgate, sessiontag, stepceiling, stepclass,
+               workcontract)
 from . import refusals
 from .plansections import (
     MAX_CHANGES,
@@ -2359,11 +2360,12 @@ def planner_task(
                               explicit=model_class)
     return TaskCreate(
         runner_profile=PLANNER_PROFILE,
-        input={
+        # The planner's session limits (contract request 158, `stepceiling`).
+        input=stepceiling.stamp(stepclass.ROLE_PLANNER, PLANNER_PROFILE, {
             "prompt": planner_prompt(ref, run_id=run_id, open_work=open_work, context=context,
                                      earlier_runs=earlier_runs, tenant_id=tenant_id),
             "issue": ref.number,
-        },
+        }),
         repository_url=ref.repository_url,
         metadata={ISSUE_RUN_METADATA_KEY: run_id, **sessiontag.tag(claude_session),
                   **choice.metadata()},
@@ -2459,9 +2461,15 @@ def replan_task(run: "IssueRun", first: Any, findings: list[Mapping[str, Any]],
     choice = stepclass.choose(stepclass.ROLE_PLANNER, PLANNER_PROFILE, class_models,
                               explicit=explicit)
     prompt = str((first.input or {}).get("prompt") or planner_prompt(run.issue, run_id=run.id))
+    # The first planner's session limits again (contract request 158): its
+    # stored `context_ceiling` when it has one, else the planner's default.
+    carried = (first.input or {}).get(stepceiling.INPUT_KEY)
     return TaskCreate(
         runner_profile=PLANNER_PROFILE,
-        input={"prompt": prompt + replan_section(run.id, findings), "issue": run.issue.number},
+        input=stepceiling.stamp(stepclass.ROLE_PLANNER, PLANNER_PROFILE, {
+            "prompt": prompt + replan_section(run.id, findings), "issue": run.issue.number,
+            **({stepceiling.INPUT_KEY: carried} if isinstance(carried, Mapping) else {}),
+        }),
         repository_url=run.issue.repository_url,
         metadata={ISSUE_RUN_METADATA_KEY: run.id, **sessiontag.tag(run.claude_session),
                   **choice.metadata()},
