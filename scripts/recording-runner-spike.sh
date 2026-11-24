@@ -185,7 +185,7 @@ CONTEXT="$(kube_current_context)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/recording-spike.XXXXXX")"
 CREATED=0
 DELETED=0
-# shellcheck disable=SC2329  # invoked by the EXIT trap below
+# shellcheck disable=SC2317,SC2329  # invoked by the EXIT trap below
 on_exit() {
   rm -rf -- "${WORK}"
   if [[ "${CREATED}" -eq 1 && "${DELETED}" -ne 1 ]]; then

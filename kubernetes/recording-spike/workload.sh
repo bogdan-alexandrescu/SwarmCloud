@@ -1,5 +1,5 @@
 #!/bin/sh
-# shellcheck disable=SC2329  # each phase function is invoked through phase "$@"
+# shellcheck disable=SC2317,SC2329  # each phase function is invoked through phase "$@"
 # The recording-runner spike's FIXED WORKLOAD (docs/design/recording-runner.md
 # §5.2 C, risk 3; docs/runbooks/recording-runner-spike.md).
 #
