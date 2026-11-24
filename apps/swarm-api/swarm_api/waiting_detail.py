@@ -913,6 +913,25 @@ def _pause(facts: dict[str, Any], park: TaskEvent | None) -> dict[str, Any]:
             "since": None}
 
 
+def _workflow_pause(task: Task, facts: dict[str, Any]) -> dict[str, Any]:
+    """A step parked because its workflow is paused (docs/design/workflow-pause.md
+    sections 4.4 and 9). Its own branch, not `_pause`: a tenant's or a pool's
+    pause clears on its own and the pause sweep returns the step, where this
+    one waits for a person to resume the workflow (section 4.3).
+
+    The facts are the park's record: the scheduler's park names the workflow,
+    who paused it and when; the worker's park names when only. What was not
+    recorded is null, never the read time or the workflow document (this
+    module reads nothing).
+    """
+    by = _str(facts.get("paused_by"))
+    detail = {"workflow_id": _str(facts.get("workflow_id")) or task.workflow_id,
+              "paused_by": by, "paused_at": _as_dt(facts.get("paused_at"))}
+    summary = "Workflow paused" + (f" by {by}" if by else "")
+    return {"detail": detail, "summary": summary,
+            "resumes_when": "the workflow is resumed", "since": None}
+
+
 # --------------------------------------------------------------------------
 # History
 # --------------------------------------------------------------------------
@@ -1085,6 +1104,8 @@ def build_waiting(
         part = _budget(facts)
     elif reason == ParkReason.MANUAL_PAUSE.value:
         part = _pause(facts, park)
+    elif reason == ParkReason.WORKFLOW_PAUSED.value:
+        part = _workflow_pause(task, facts)
     else:
         part = {"detail": {}, "summary": f"Parked: {reason}",
                 "resumes_when": "the scheduler's sweep for this reason returns it", "since": None}
