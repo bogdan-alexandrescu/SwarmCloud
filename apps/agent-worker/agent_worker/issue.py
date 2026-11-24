@@ -42,9 +42,16 @@ file is read by an agent holding the tenant's checkout. A comment is written
 only when GitHub's own `author_association`, served with each comment in the
 same read-only call, is OWNER, MEMBER or COLLABORATOR (`TRUSTED_ASSOCIATIONS`,
 the same set the issue sweep starts work for), or when it is the platform's
-own comment: a `<!-- swarm` marker on its first line AND a GitHub App's bot
-account as its author, because a person can type the marker but cannot
-comment as a bot that is not installed on the repository. Every other
+own comment: a `<!-- swarm` marker on its first line, a bot account as its
+author AND `performed_via_github_app.id` equal to the platform's own App id
+(`platform_app_id`). A person can type the marker; any OTHER App's bot -- a
+workflow's, a dependency bot, an App that echoes a commenter's text -- can
+post it too, so a bot is trusted only as the platform's App, never as a bot
+(security review 2026-11-24). When the platform's App id is unknown or
+unavailable, no bot comment is trusted: the agent worker reads no App key
+(only the worker actions do, `Worker._read_action_app_key`), so the lifecycle
+passes none today and a platform comment is kept only when posted with a
+trusted person's token, by its association. Every other
 comment -- CONTRIBUTOR, FIRST_TIMER, FIRST_TIME_CONTRIBUTOR, MANNEQUIN, NONE,
 a missing or unknown value -- is dropped where it is parsed: no `Comment` is
 built for it, so its text and its author reach no file, log line, event or
@@ -164,16 +171,17 @@ KNOWN_ASSOCIATIONS = frozenset({
     "FIRST_TIMER", "FIRST_TIME_CONTRIBUTOR", "MANNEQUIN", "NONE",
 })
 
-#: The associations whose comments are written to the file. Owner decision
-#: pending in the PR's questions.json; built on the recommended option, which
-#: matches `swarm_api.issuesweep.TRUSTED_AUTHORS` (security review 2026-10-09):
-#: the people who can push to the repository. A CONTRIBUTOR has only had a
-#: pull request merged once and can still comment as anyone on the internet.
+#: The associations whose comments are written to the file: OWNER, MEMBER and
+#: COLLABORATOR, as the owner decided on 2026-11-24 -- the people who can push
+#: to the repository, the same set as `swarm_api.issuesweep.TRUSTED_AUTHORS`
+#: (security review 2026-10-09). A CONTRIBUTOR has only had a pull request
+#: merged once and can still comment as anyone on the internet.
 TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 
 #: The first line of every comment the platform writes begins with this
 #: (`swarm_api.issuecomments.marker`, `ghapprove`, `cifix`, the merge train,
-#: the schedules). Trusted only on a bot account's comment.
+#: the schedules). Trusted only on a comment the platform's OWN GitHub App
+#: posted (`_platform_written`); the marker alone proves nothing.
 PLATFORM_MARKER = "<!-- swarm"
 
 
@@ -188,10 +196,30 @@ def trusted(value: str) -> bool:
     return value in TRUSTED_ASSOCIATIONS
 
 
-def _platform_written(row: Mapping[str, Any]) -> bool:
-    """A comment the platform posted through its GitHub App: a bot's, with a marker."""
+def _app_id(value: Any) -> int | None:
+    """A positive GitHub App id, or None for anything else (bool included)."""
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
+
+
+def _platform_written(row: Mapping[str, Any], platform_app_id: int | None) -> bool:
+    """A comment the platform's OWN GitHub App posted: a bot's, with a marker.
+
+    All three are required: `user.type` Bot, `performed_via_github_app.id`
+    equal to `platform_app_id`, and the marker on the first non-blank line.
+    Another App's bot is a confused deputy -- it may post whatever a
+    commenter gets it to -- so it is not trusted whatever its text says. An
+    unknown `platform_app_id` (None, not a positive integer) trusts no bot.
+    """
+    expected = _app_id(platform_app_id)
+    if expected is None:
+        return False
     user = row.get("user")
     if not isinstance(user, dict) or user.get("type") != "Bot":
+        return False
+    app = row.get("performed_via_github_app")
+    if not isinstance(app, dict) or _app_id(app.get("id")) != expected:
         return False
     body = row.get("body")
     if not isinstance(body, str):
@@ -405,11 +433,14 @@ def fetch_issue(
     number: int,
     token: str | None,
     on_request: Callable[[], None] | None = None,
+    platform_app_id: int | None = None,
 ) -> Issue:
     """The issue's title, body and comments, read-only. Raises IssueUnavailable.
 
     `on_request` is called after every request: the lifecycle passes its
     heartbeat, because a slow forge must not look like a dead worker.
+    `platform_app_id` is the platform's own GitHub App id, the only App whose
+    bot's marked comments are trusted (`_platform_written`); None trusts no bot.
     """
     ref: RepoRef | None = parse_repo(repository_url)
     if ref is None:
@@ -463,7 +494,7 @@ def fetch_issue(
         for row in rows:
             if isinstance(row, dict):
                 said = association(row.get("author_association"))
-                if not (trusted(said) or _platform_written(row)):
+                if not (trusted(said) or _platform_written(row, platform_app_id)):
                     # Dropped here, before a `Comment` exists: only its
                     # association is kept, to be counted.
                     dropped.append(said)
@@ -635,11 +666,18 @@ def _fetch_retried(
     token: str | None,
     on_request: Callable[[], None] | None,
     retry: RetryPolicy | None,
+    platform_app_id: int | None = None,
 ) -> Issue:
-    """`fetch_issue` under `retry_transient`: the one fetch both paths make."""
+    """`fetch_issue` under `retry_transient`: the one fetch both paths make.
+
+    `platform_app_id` is passed on only when known: None is `fetch_issue`'s
+    own default (no bot trusted), so the call is the same without it.
+    """
+    pinned = {} if platform_app_id is None else {"platform_app_id": platform_app_id}
     return retry_transient(
         lambda: fetch_issue(
-            repository_url=repository_url, number=number, token=token, on_request=on_request
+            repository_url=repository_url, number=number, token=token, on_request=on_request,
+            **pinned,
         ),
         policy=retry,
         what=f"issue #{number}",
@@ -676,10 +714,12 @@ class IssuePrefetch:
         token: str | None,
         retry: RetryPolicy | None = None,
         clock: Callable[[], float] = time.monotonic,
+        platform_app_id: int | None = None,
     ) -> None:
         self.number = number
         self.repository_url = repository_url
         self.token = token
+        self.platform_app_id = platform_app_id
         self._retry = retry
         self._clock = clock
         self._issue: Issue | None = None
@@ -699,7 +739,7 @@ class IssuePrefetch:
         try:
             self._issue = _fetch_retried(
                 number=self.number, repository_url=self.repository_url, token=self.token,
-                on_request=None, retry=self._retry,
+                on_request=None, retry=self._retry, platform_app_id=self.platform_app_id,
             )
         except BaseException as exc:  # noqa: BLE001 -- raised again by `outcome`
             self._error = exc
@@ -747,6 +787,7 @@ def stage_issue(
     on_request: Callable[[], None] | None = None,
     retry: RetryPolicy | None = None,
     prefetched: IssuePrefetch | None = None,
+    platform_app_id: int | None = None,
 ) -> Path:
     """Fetch issue `number` of the task's repository into `work/issue.md`.
 
@@ -766,7 +807,10 @@ def stage_issue(
     `prefetched` (archived issue 721, P29) is the same fetch, already started beside the
     clone: joined here, and its issue -- or its exception -- taken as this
     call's own. Used only when it asked for this `number` of this
-    `repository_url`; otherwise the fetch is made here as it always was.
+    `repository_url` with this `platform_app_id`; otherwise the fetch is
+    made here as it always was.
+
+    `platform_app_id` is the platform's own GitHub App id (`fetch_issue`).
     """
     if not repository_url:
         raise IssueUnavailable(
@@ -786,6 +830,7 @@ def stage_issue(
         prefetched is not None
         and prefetched.number == number
         and prefetched.repository_url == repository_url
+        and prefetched.platform_app_id == platform_app_id
     )
     try:
         if usable:
@@ -794,7 +839,7 @@ def stage_issue(
         else:
             issue = _fetch_retried(
                 number=number, repository_url=repository_url, token=token,
-                on_request=on_request, retry=retry,
+                on_request=on_request, retry=retry, platform_app_id=platform_app_id,
             )
     except IssueUnavailable as exc:
         raise IssueUnavailable(annotated(str(exc))) from None

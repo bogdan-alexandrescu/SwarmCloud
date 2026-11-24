@@ -412,10 +412,14 @@ checkout, so a comment is kept only when GitHub's own `author_association`,
 served with each comment in the same read-only call, says its author is
 `OWNER`, `MEMBER` or `COLLABORATOR` of the repository -- the people who can
 push to it, the same set the issue sweep starts work for -- or when it is the
-platform's own: a `<!-- swarm` marker on its first line, posted by a GitHub
-App's bot account (a person can type the marker but cannot comment as a bot
-not installed on the repository; a platform comment posted with the owner's
-token is kept by its `OWNER` association anyway). `CONTRIBUTOR`,
+platform's own: a `<!-- swarm` marker on its first line, posted by a bot
+account whose `performed_via_github_app` id is the platform's OWN App id. A
+person can type the marker, and any other App's bot (a workflow's, a
+dependency bot, an App that echoes a commenter's text) can post it, so a bot
+is trusted only as the platform's App; when that id is unknown -- the agent
+worker reads no App key, so today it always is -- no bot comment is kept. A
+platform comment posted with the owner's token is kept by its `OWNER`
+association. `CONTRIBUTOR`,
 `FIRST_TIMER`, `FIRST_TIME_CONTRIBUTOR`, `MANNEQUIN`, `NONE`, a missing value
 and any value GitHub does not define are not trusted. An untrusted comment is
 not written at all, nor its author: the file ends with one line counting the
