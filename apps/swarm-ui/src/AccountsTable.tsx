@@ -127,9 +127,24 @@ export function whyOf(
   names: ReadonlyMap<string, string> = new Map(),
 ): ReactNode {
   const can = canTake(a, scope)
-  if (a.state === 'REAUTH_REQUIRED') return <><b>Signed out</b>: its sign-in expired, and it takes nothing until someone signs in again</>
-  if (a.state === 'PAUSED') return <><b>Paused</b>{a.reason ? `: ${a.reason}` : ''}. Its owner resumes it</>
-  if (a.state === 'DRAINING') return <><b>Draining</b>{a.reason ? ` (${a.reason})` : ''}: it serves the agents it holds and takes no new one</>
+  if (a.state === 'REAUTH_REQUIRED') {
+    return (
+      <>
+        <b>Signed out</b>: its sign-in expired{' '}
+        <InfoTip about="a signed-out account" tip="Signed out: its sign-in expired, and it takes nothing until someone signs in again" />
+      </>
+    )
+  }
+  if (a.state === 'PAUSED') return <><b>Paused</b>{a.reason ? `: ${a.reason}` : ''} &middot; its owner resumes it</>
+  if (a.state === 'DRAINING') {
+    return (
+      <>
+        <b>Draining</b>: it takes no new agent
+        {a.reason ? ` · ${a.reason}` : ''}{' '}
+        <InfoTip about="a draining account" tip={`Draining${a.reason ? ` (${a.reason})` : ''}: it serves the agents it holds and takes no new one`} />
+      </>
+    )
+  }
   if (a.state !== 'AVAILABLE') return <><b>{a.state.toLowerCase().replace(/_/g, ' ')}</b>: a state this console does not recognise</>
   // ISSUE 81: a could-not-check reason stays visible as one short line (under nine words).
   if (unreadableFor(a, scope)) return <><b>Skipped here</b>: its secret could not be read</>
@@ -165,13 +180,23 @@ export function whyOf(
     return (
       <>
         <b>Nothing.</b>
-        {said.length > 0
-          ? ` ${said.join('; ')}`
-          : notMeasured(a)
-            ? ' Not measured: OpenAI gives an API key no usage window'
-            : a.observed_at === null
-              ? ' Not measured yet; it takes one agent until it is'
-              : ''}
+        {said.length > 0 ? (
+          ` ${said.join(' · ')}`
+        ) : notMeasured(a) ? (
+          <>
+            {' '}
+            Not measured{' '}
+            <InfoTip about="an API key’s windows" tip="Not measured: OpenAI gives an API key no usage window" />
+          </>
+        ) : a.observed_at === null ? (
+          <>
+            {' '}
+            Not measured yet &middot; takes one agent until then{' '}
+            <InfoTip about="a first reading" tip="Not measured yet; it takes one agent until it is" />
+          </>
+        ) : (
+          ''
+        )}
       </>
     )
   }
@@ -182,8 +207,8 @@ export function whyOf(
       out.push(
         b.aged_reading ? (
           <span key={b.window}>
-            <b>An aged reading</b>: {windowName(b.window)} {pct(left)} left, read{' '}
-            {a.observed_at ? `${ageSpan(now - Date.parse(a.observed_at))} ago` : 'long ago'}, counts at half ({pct(left / 2)}),
+            <b>An aged reading</b>: {windowName(b.window)} {pct(left)} left &middot; read{' '}
+            {a.observed_at ? `${ageSpan(now - Date.parse(a.observed_at))} ago` : 'long ago'} &middot; counts at half ({pct(left / 2)}),
             under its {pct(b.floor)} floor
           </span>
         ) : (
@@ -196,14 +221,17 @@ export function whyOf(
       const others = blocksOf(a).some(isWindowBlock)
       out.push(
         <span key="cap">
-          <b>Full</b>: {b.cap} of {b.max_agents} agents.{others ? '' : ' Both windows are above their floors'}
+          <b>Full</b>: {b.cap} of {b.max_agents} agents{others ? '' : ' · both windows are above their floors'}
         </span>,
       )
     } else if (isFirstReadingBlock(b)) {
       out.push(
         <span key="first">
-          <b>Waiting for its first reading</b>: a new account takes {b.max_before_reading} agent until it is measured, and it
-          holds {b.assigned}
+          <b>Waiting for its first reading</b>: holds {b.assigned} of {b.max_before_reading}{' '}
+          <InfoTip
+            about="the first reading"
+            tip={`Waiting for its first reading: a new account takes ${b.max_before_reading} agent until it is measured, and it holds ${b.assigned}`}
+          />
         </span>,
       )
     }
@@ -257,7 +285,9 @@ export function WindowCell({ a, k, now }: { a: PoolAccount; k: string; now: numb
         <div className="acct-win-l">
           <b>{label}</b> <span className="acct-dash">&mdash;</span>
         </div>
-        <small>not measured: OpenAI gives an API key no usage window</small>
+        <small>
+          not measured <InfoTip about={`the ${label} window`} tip="not measured: OpenAI gives an API key no usage window" />
+        </small>
       </div>
     )
   }

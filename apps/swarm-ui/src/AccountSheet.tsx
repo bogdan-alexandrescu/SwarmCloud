@@ -1193,9 +1193,12 @@ export function SheetHealth({ a, owned }: { a: PoolAccount; owned: boolean }) {
               tip="The provider refused its credential. The broker assigns it nothing until someone signs in again; work that would have used it waits for another account."
             />{' '}
             {owned ? (
-              <span>
-                <b>Sign in again</b> is below, with this account&rsquo;s actions.
-              </span>
+              <>
+                <span>
+                  <b>Sign in again</b> is below.
+                </span>{' '}
+                <InfoTip about="where it is" tip="Sign in again is below, with this account’s actions." />
+              </>
             ) : (
               <span>
                 Its owner, <span className="mono">{a.owner_tenant}</span>, signs in again.
