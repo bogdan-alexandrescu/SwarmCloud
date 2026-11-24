@@ -58,7 +58,7 @@ from .test_fix_loop_drive import (  # noqa: F401 -- fixtures
 )
 
 #: The check's WF_FIX_LOOP_* values.
-LOOP_FILE = "fix-loop-rounds.txt"
+LOOP_FILE = "tests/acceptance/fixtures/workflow/fix-loop-rounds.txt"
 MAX_ROUNDS = 3
 EXPECTED_ROUNDS = ["re-review:1", "review-fix:2", "re-review:2"]
 #: The mock review's verdict.json: NOT_YET with one major finding, so the
