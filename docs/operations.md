@@ -502,6 +502,17 @@ hour, as one incident per tenant and reason that stays open while any stays
 stranded and closes about seven hours after the last is merged. Before the seven-day incident-volume measurement
 every sweep entry (520 in seven days) opened its own incident.
 
+**A new log-based metric makes its apply wait.** A policy that reads a
+log-based metric created in the same apply used to fail with a 404 ("Cannot
+find metric(s)"): a new metric is not readable at once, up to ten minutes by
+the provider's own message (dev's release of 2026-11-23). Each such metric
+now sleeps `log_metric_settle_seconds` (600; 0 when `create_alerts = false`)
+in a create-time provisioner, and its policy is created after. That runs only
+when a metric is created or replaced: a release that creates none waits zero
+seconds, and one that does waits up to 600. A fresh install creates up to 17 such
+metrics at once, up to 10 sleeping per wave (Terraform's default
+parallelism), so its apply can take up to about 20 minutes longer.
+
 ### Voice it alerts
 
 Two WARNING policies in `terraform/infra/voice_alerts.tf`, made only while
