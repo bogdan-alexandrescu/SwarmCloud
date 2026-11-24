@@ -3813,6 +3813,10 @@ export interface Workflow {
   submitted_by: string | null
   /** The submitter's display name (`people.add_names`); null when none is set. */
   submitted_by_name?: string | null
+  /** True while a person has paused the workflow (docs/design/workflow-pause.md). */
+  paused?: boolean
+  paused_at?: string | null
+  paused_by?: string | null
   priority: number
   on_step_failure: string
   cancel_requested: boolean
