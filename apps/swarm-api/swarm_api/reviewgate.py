@@ -6,7 +6,9 @@ a review, whatever it touched and however small. The owner decided on 2026-10-27
 skipped review: "No contract change. The scheduler holds the review PARKED
 (as the archived issue 748 control-publish hold does) and swarm-api ends it PARKED ->
 SUCCEEDED on a wake." `swarm_common.states` says of PARKED -> SUCCEEDED
-"only swarm-api writes it", and that stays true.
+that swarm-api writes it, guarded on its own claim, and that stays true for a
+review: the scheduler's one write of that edge is a re-review whose verdict
+gate is recorded shut (contract request 157), never a review gate.
 
 THE BLOCK. A workflow step may carry `metadata.review_gate = {"min_lines":
 300, "risk_paths": [...]}` (`validation.resolve_review_gate`, a 422 for an

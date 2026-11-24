@@ -979,6 +979,137 @@ def test_upstream_serves_a_merge_its_recorded_fixer_and_its_conflict_round_state
 
 
 # --------------------------------------------------------------------------
+# upstream: a person's one-step `publish_to_pr` lane on the merge's own pull
+# request (fr-5fdbfbf85bba, 2026-11-23)
+#
+# Four merge steps refused `head_moved`: the head was a one-step `fix` lane a
+# person submitted with `publish_to_pr`, which fast-forwarded one commit onto
+# the pull request, and `merge._person_lane` could not read it -- the rule
+# above served only a task whose signed `continues` is the root. Its SIGNED
+# `publish_to_pr.task_id` names the root just as surely; nothing else widens.
+# --------------------------------------------------------------------------
+
+PUBLISH_LANE = "task_publish_lane"
+
+
+def _publish_lane(db, task_id: str = PUBLISH_LANE, *, root: str = "task_fix",
+                  tenant: str = "eng", repository_url: str = REPO_URL,
+                  number: int = 7) -> dict[str, Any]:
+    """A one-step workflow's `fix` lane a person submitted with `publish_to_pr`,
+    signed as `publishtopr` signs it: the pull request's number and the task
+    whose `swarm/<id>` branch is its head."""
+    doc = seed_task(db, task_id=task_id, tenant_id=tenant, state="SUCCEEDED",
+                    runner_profile="claude-code", workflow_id="wf_publish_lane")
+    doc["repository_url"] = repository_url
+    doc["metadata"] = {"dispatch": {"strategy": "direct-pr",
+                                    "publish_to_pr": {"number": number, "task_id": root}}}
+    return SIGNER.sign_document(doc, task_id)
+
+
+def test_upstream_serves_a_publish_to_pr_lane_on_the_merges_own_pull_request(client, db):
+    worker = Worker()
+    _merge_step(client, db, worker)
+    _publish_lane(db)
+    response = worker.get(client, "upstream", f"upstream_task_id={PUBLISH_LANE}")
+    # MUTATION: serve only a candidate whose signed `continues` is the root
+    # (the rule before fr-5fdbfbf85bba) and this is the 403.
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["metadata"]["dispatch"]["publish_to_pr"]["task_id"] == (
+        "task_fix")
+
+
+def test_upstream_serves_a_publish_to_pr_lane_on_a_continued_openers_branch(client, db):
+    """The root is the opener's signed `continues`, as for a fix round."""
+    worker = Worker()
+    _merge_step(client, db, worker, opener_dispatch={"strategy": "direct-pr",
+                                                     "continues": "task_branch"})
+    _continuation(db, "task_branch", "task_none")
+    _publish_lane(db, root="task_branch")
+    _publish_lane(db, "task_onto_opener", root="task_fix")
+    assert worker.get(client, "upstream",
+                      f"upstream_task_id={PUBLISH_LANE}").status_code == 200
+    # The opener's own branch is not this pull request's: its lane is another's.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_onto_opener"))
+
+
+def test_upstream_serves_no_publish_to_pr_lane_onto_another_pull_request(client, db):
+    worker = Worker()
+    _merge_step(client, db, worker)
+    _publish_lane(db, root="task_elsewhere")
+    # MUTATION: serve any signed `publish_to_pr` lane and this is a 200.
+    assert _refused(worker.get(client, "upstream", f"upstream_task_id={PUBLISH_LANE}"))
+
+
+def test_upstream_serves_no_publish_to_pr_lane_of_another_tenant(client, db):
+    worker = Worker()
+    _merge_step(client, db, worker)
+    _publish_lane(db, tenant="research")
+    # MUTATION: drop the tenant check and this is a 200.
+    assert _refused(worker.get(client, "upstream", f"upstream_task_id={PUBLISH_LANE}"))
+
+
+def test_upstream_serves_no_publish_to_pr_lane_of_another_repository(client, db):
+    worker = Worker()
+    _merge_step(client, db, worker)
+    _publish_lane(db, repository_url="https://github.com/acme/gadgets.git")
+    _publish_lane(db, "task_no_repository", repository_url="")
+    # MUTATION: drop the repository check and the first is a 200.
+    assert _refused(worker.get(client, "upstream", f"upstream_task_id={PUBLISH_LANE}"))
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_no_repository"))
+
+
+def test_upstream_serves_no_publish_to_pr_lane_whose_field_is_unsigned_or_forged(client, db):
+    worker = Worker()
+    _merge_step(client, db, worker)
+    # Unsigned: the field written onto a task swarm-api never signed.
+    unsigned = seed_task(db, task_id="task_unsigned", tenant_id="eng", state="SUCCEEDED",
+                         workflow_id="wf_publish_lane")
+    unsigned["repository_url"] = REPO_URL
+    unsigned["metadata"] = {"dispatch": {"strategy": "direct-pr",
+                                         "publish_to_pr": {"number": 7, "task_id": "task_fix"}}}
+    # Forged: a signed lane onto another pull request, its field rewritten after signing.
+    forged = _publish_lane(db, "task_forged", root="task_elsewhere")
+    forged["metadata"]["dispatch"]["publish_to_pr"]["task_id"] = "task_fix"
+    # Added: a signed task with no `publish_to_pr`, the field added after signing.
+    added = _continuation(db, "task_added", "task_elsewhere")
+    added["repository_url"] = REPO_URL
+    del added["metadata"]["dispatch"]["continues"]
+    added["metadata"]["dispatch"]["publish_to_pr"] = {"number": 7, "task_id": "task_fix"}
+    # Copied: a signed lane's document under another id.
+    db.docs["tasks/task_copied"] = copy.deepcopy(_publish_lane(db))
+    # MUTATION: take the candidate's `publish_to_pr` unverified and these are 200s.
+    for upstream in ("task_unsigned", "task_forged", "task_added", "task_copied"):
+        assert _refused(worker.get(client, "upstream", f"upstream_task_id={upstream}")), upstream
+    assert worker.get(client, "upstream",
+                      f"upstream_task_id={PUBLISH_LANE}").status_code == 200
+
+
+def test_upstream_serves_no_publish_to_pr_lane_beside_continues_or_a_pr_role(client, db):
+    """`publishpr.target` refuses `publish_to_pr` beside `continues` or
+    `pr_role`: a document swarm-api could not have written names nothing."""
+    worker = Worker()
+    _merge_step(client, db, worker)
+    for task_id, extra in (("task_beside_continues", {"continues": "task_elsewhere"}),
+                           ("task_beside_role", {"pr_role": "single-pr"})):
+        doc = seed_task(db, task_id=task_id, tenant_id="eng", state="SUCCEEDED",
+                        workflow_id="wf_publish_lane")
+        doc["repository_url"] = REPO_URL
+        doc["metadata"] = {"dispatch": {"strategy": "direct-pr", **extra,
+                                        "publish_to_pr": {"number": 7, "task_id": "task_fix"}}}
+        SIGNER.sign_document(doc, task_id)
+        assert _refused(worker.get(client, "upstream", f"upstream_task_id={task_id}")), task_id
+
+
+def test_upstream_serves_a_non_merge_step_no_publish_to_pr_lane(client, db):
+    """A step with no signed `merge_target` reads no lane, whatever it names."""
+    worker = Worker()
+    opened(client, db, worker, workflow_id=WORKFLOW, depends_on=["task_fix"])
+    _ancestor(db, "task_fix")
+    _publish_lane(db)
+    assert _refused(worker.get(client, "upstream", f"upstream_task_id={PUBLISH_LANE}"))
+
+
+# --------------------------------------------------------------------------
 # upstream: a merge step's fix loop's re-review (FIX-LOOP-REREVIEW-READ)
 #
 # On dev a merge-on-verdict workflow's loop ran one round (`re-review:1`, its

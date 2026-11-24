@@ -425,10 +425,10 @@ refresh disabled, and let the broker own it.
 
 > **Amended 2026-10-01: there is no init container.** The flow below is unbuilt
 > v2 design. What runs: the worker process itself asks the broker for an
-> account at start (`apps/agent-worker/agent_worker/lifecycle.py::Worker._lease_account`), gets a
+> account at start (`apps/agent-worker/agent_worker/accountpool.py::AccountPoolMixin._lease_account`), gets a
 > Secret Manager secret NAME back, reads the value under its own service
 > account and shapes it into the agent child's environment
-> (`apps/agent-worker/agent_worker/lifecycle.py::Worker._account_credential_env`,
+> (`apps/agent-worker/agent_worker/accountpool.py::AccountPoolMixin._account_credential_env`,
 > `apps/agent-worker/agent_worker/accountlease.py::credential_env_from_account`). That is the same on a
 > Cloud Run Job execution and on a GKE pod, which is why it lives in the worker
 > rather than in a pod spec only one backend has. The broker stays the single

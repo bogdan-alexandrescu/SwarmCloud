@@ -279,6 +279,9 @@ def handoff_args(answer: Mapping[str, Any]) -> dict[str, Any]:
     if answer.get("idp_token_path") is not None:
         # QA-IDP-POST: a platform admin's approval; the gate checks it again.
         args["idp_token_path"] = answer["idp_token_path"]
+    if answer.get("idp_token_origin") is not None:
+        # Epic 21: the origin the path is on, by name; the gate checks it is a served extra origin.
+        args["idp_token_origin"] = answer["idp_token_origin"]
     bypass = answer.get("challenge_bypass")
     if bypass is not None:
         # §2.5: the gate checks its kind, name and value again; here only its shape.

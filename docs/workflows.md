@@ -2054,7 +2054,9 @@ that had already merged. No pod starts for either skip. On 2026-10-28 [the owner
 decided who ends a skipped review: "No contract change. The scheduler holds
 the review PARKED (as the control-publish hold does) and swarm-api ends
 it PARKED -> SUCCEEDED on a wake." `swarm_common.states` says of that edge
-"only swarm-api writes it", and it stays true: the review gate is decided in
+that swarm-api writes it, guarded on its own claim, and for a review it stays
+true (the scheduler writes it only for a re-review whose verdict gate is
+recorded shut, contract request 157): the review gate is decided in
 `swarm_api/reviewgate.py`, the fix-round precheck in
 `scheduler/reviewgate.py`.
 

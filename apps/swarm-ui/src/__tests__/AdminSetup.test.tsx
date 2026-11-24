@@ -346,4 +346,18 @@ describe('Admin › Setup, the sign-in client step', () => {
     expect(step('sign-in-client').className).not.toContain('is-done')
     expect(visible(step('sign-in-client'))).toMatch(/not read yet/i)
   })
+
+  it('Send to your team names a command the plugin has, never /sc:submit (K3 of the proof-install runbook)', async () => {
+    await mountPage(
+      firstRun({
+        github_app: { started: true, id: 4242, slug: 'swarmcloud-example', client_id: 'Iv1.example', installed_on: 'example-org', secrets_written_at: '2026-10-29T14:50:00Z', self_check: { ok: true, reason: null, at: '2026-10-29T14:52:00Z' } },
+        teams: [FIRST_TEAM],
+        engine: { ...(firstRun().engine as Json), verify: { check: 'end-to-end', done: 8, total: 8, started: T0, expected_end: T0, deadline: T0, result: 'passed' } },
+      }),
+    )
+    pick('send')
+    // MUTATION: name the plugin command that does not exist again -> fails.
+    expect(visible(panel())).not.toContain('/sc:submit')
+    expect(visible(panel())).toContain('/sc run --issue owner/repo#N')
+  })
 })
