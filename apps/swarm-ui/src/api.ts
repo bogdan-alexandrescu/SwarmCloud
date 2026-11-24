@@ -2509,6 +2509,55 @@ export async function cancelWorkflow(workflowId: string): Promise<Result<CancelW
 }
 
 /**
+ * What this client reads of a pause or resume answer
+ * (apps/swarm-api/swarm_api/routes/workflows.py `pause_workflow`,
+ * `resume_workflow`; docs/design/workflow-pause.md §3). Nothing on the page
+ * draws its fields: `PauseWorkflow` re-reads the workflow, whose `paused`,
+ * `paused_at` and `paused_by` are the record. A repeat answers
+ * `already_paused` / `already_running` and writes nothing.
+ */
+export interface PauseWorkflowResult {
+  workflow_id?: string
+  paused?: boolean
+  paused_at?: string | null
+  already_paused?: boolean
+  already_running?: boolean
+}
+
+/**
+ * PAUSE ONE WORKFLOW. `POST /v1/workflows/{id}/pause` with an empty body: the
+ * console sends no reason. Any member may (owner decision Q3); a viewer is
+ * refused 403 `role_member_required`, a finished workflow 409
+ * `workflow_terminal`, one being cancelled 409 `workflow_cancel_requested`,
+ * and a step that stayed contended 503 `pause_contended` (a retry finishes it
+ * without moving `paused_at`). Called by `PauseWorkflow` in Workflows.tsx.
+ * The fixture build records the probe and pauses nothing.
+ */
+export async function pauseWorkflow(workflowId: string): Promise<Result<PauseWorkflowResult>> {
+  return pauseOrResume(route('/v1/workflows/{id}/pause', { id: workflowId }), workflowId)
+}
+
+/**
+ * RESUME ONE PAUSED WORKFLOW. `POST /v1/workflows/{id}/resume` with an empty
+ * body (the route accepts no field). The same gate and refusals as pause; the
+ * scheduler's sweep promotes the parked steps. Called by `PauseWorkflow`.
+ */
+export async function resumeWorkflow(workflowId: string): Promise<Result<PauseWorkflowResult>> {
+  return pauseOrResume(route('/v1/workflows/{id}/resume', { id: workflowId }), workflowId)
+}
+
+async function pauseOrResume(target: ApiRoute, workflowId: string): Promise<Result<PauseWorkflowResult>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 60))
+    // The same `route()` as the live path, so the fixture lands in the same
+    // registry record a live write would (CH-18). It claims no step it signalled.
+    noteFixtureProbe(target, 60, true)
+    return { status: 'ok', fetchedAt: Date.now(), data: { workflow_id: workflowId } }
+  }
+  return write(target, 'POST', {}) as Promise<Result<PauseWorkflowResult>>
+}
+
+/**
  * RE-RUN ONE FAILED WORKFLOW STEP INSIDE ITS WORKFLOW.
  * `POST /v1/workflows/{id}/steps/{step}/rerun`
  * (apps/swarm-api/swarm_api/routes/workflows.py `rerun_workflow_step`,

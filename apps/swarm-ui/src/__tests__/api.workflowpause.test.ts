@@ -27,19 +27,13 @@ describe('the workflow pause and resume calls', () => {
   it('pauses with POST /v1/workflows/{id}/pause and an empty body', async () => {
     await pauseWorkflow('wf_a/b')
     expect(mocks.write).toHaveBeenCalledTimes(1)
-    const [target, method, body] = mocks.write.mock.calls[0]!
-    expect(target).toEqual({ url: '/v1/workflows/wf_a%2Fb/pause', template: '/v1/workflows/{id}/pause' })
-    expect(method).toBe('POST')
-    expect(body).toEqual({})
+    expect(mocks.write).toHaveBeenCalledWith({ url: '/v1/workflows/wf_a%2Fb/pause', template: '/v1/workflows/{id}/pause' }, 'POST', {})
   })
 
   it('resumes with POST /v1/workflows/{id}/resume and an empty body', async () => {
     await resumeWorkflow('wf_broker')
     expect(mocks.write).toHaveBeenCalledTimes(1)
-    const [target, method, body] = mocks.write.mock.calls[0]!
-    expect(target).toEqual({ url: '/v1/workflows/wf_broker/resume', template: '/v1/workflows/{id}/resume' })
-    expect(method).toBe('POST')
-    expect(body).toEqual({})
+    expect(mocks.write).toHaveBeenCalledWith({ url: '/v1/workflows/wf_broker/resume', template: '/v1/workflows/{id}/resume' }, 'POST', {})
   })
 
   it('hands back the API’s own answer, a refusal included', async () => {
