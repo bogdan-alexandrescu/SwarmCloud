@@ -296,3 +296,62 @@ def test_a_stored_target_with_only_a_login_origin_is_unchanged(client, db, seede
     (doc,) = target_docs(db).values()
     served = qatargets.QaTargetIssuer._answer(doc)
     assert served["origins"] == [BASE, IDP] and served["idp_token_path"] == TOKEN_PATH
+
+
+# --------------------------------------------------------------------------
+# https's own port written out (epic 21)
+# --------------------------------------------------------------------------
+
+
+def test_origins_written_with_443_are_stored_bare(client, db, seeded, hosts):
+    """A browser never writes `:443`, so an origin stored with it never
+    matched a request and the gate failed closed, silently."""
+    target = _registered(client, base_url=BASE + ":443/app",
+                         sign_in={**_SIGN_IN, "extra_origin": IDP + ":443"},
+                         extra_origins=[API + ":443", FILES])
+    # MUTATION: keep the port in `qaspec.base_url` and each of these keeps `:443`.
+    assert target["base_url"] == BASE + "/app"
+    assert target["sign_in"]["extra_origin"] == IDP
+    assert target["extra_origins"] == [API, FILES]
+    (doc,) = target_docs(db).values()
+    assert doc["origin"] == BASE
+
+
+def test_a_distinct_extra_host_with_443_is_accepted_and_deduped_against_its_bare_form(client, db, seeded, hosts):
+    assert _registered(client, extra_origins=[API + ":443"])["extra_origins"] == [API]
+    response = register(client, sign_in=_SIGN_IN, extra_origins=[API, API + ":443"])
+    assert response.status_code == 422, response.text
+
+
+def _stored_with_443(db: Any) -> None:
+    """The shape a target registered before `:443` was normalised has."""
+    (doc,) = target_docs(db).values()
+    doc.update(base_url=BASE + ":443", origin=BASE + ":443",
+               sign_in={**doc["sign_in"], "extra_origin": IDP + ":443"},
+               extra_origins=[API + ":443", FILES],
+               approved_origins=[BASE + ":443", IDP + ":443", API + ":443"])
+
+
+@pytest.mark.parametrize("change", [
+    {"name": "Shop again"},
+    {"extra_origins": [API + ":443", FILES]},
+    {"extra_origins": [API, FILES]},
+])
+def test_a_patch_repeating_a_stored_443_origin_is_not_a_change(client, db, seeded, hosts, change):
+    target = _registered(client)
+    assert approve(client, target["id"], extra_origin=IDP, extra_origins=[API],
+                   idp_token_path=TOKEN_PATH).status_code == 200
+    _stored_with_443(db)
+    response = client.patch(f"{TARGETS}/{target['id']}", json=change, headers=auth_header("carol"))
+    assert response.status_code == 200, response.text
+    changed = response.json()["qa_target"]
+    # MUTATION: compare the origins as written in `patch` and normalising resets every such leg.
+    assert changed["host_state"] == "approved"
+    assert changed["approved_idp_token_path"] == TOKEN_PATH
+    row = [r for r in audit_rows(db) if r["action"] == "qa_target_changed"][-1]
+    assert row["detail"]["host_reset"] is False
+    assert "extra_origins" not in row["detail"]
+    (doc,) = target_docs(db).values()
+    served = qatargets.QaTargetIssuer._answer(doc)
+    # The stored approval still covers the login's origin, now written bare.
+    assert served["idp_token_path"] == TOKEN_PATH and served["idp_token_origin"] == IDP

@@ -29,7 +29,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from swarm_api import roles
-from swarm_api.admins import ROLES_COLLECTION
+from swarm_api.admins import AUDIT_COLLECTION, ROLES_COLLECTION
 from swarm_api.auth import AuthContext, StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
 from swarm_api.deps import build_context
@@ -110,6 +110,29 @@ def name_admin(client: TestClient, who: str) -> None:
     response = client.put("/v1/admin/workspaces/eng/roles/person", headers=h("ops"),
                           json={"email": who, "role": "admin"})
     assert response.status_code == 200, response.text
+
+
+def refusal_rows(db: Recording) -> list[dict[str, Any]]:
+    """The rows a probe admin's refused change leaves (epic 21)."""
+    return [d for p, d in db.dump().items()
+            if p.startswith(f"{AUDIT_COLLECTION}/")
+            and d.get("action") == "workspace_probe_admin_refused"]
+
+
+def probe_grants(db: Recording) -> list[dict[str, Any]]:
+    """Every role grant the probe admin wrote."""
+    return [d for p, d in db.dump().items()
+            if p.startswith(f"{roles.GRANTS_COLLECTION}/") and d.get("granted_by") == PROBE]
+
+
+def assert_one_refusal(db: Recording, change: str) -> None:
+    (row,) = refusal_rows(db)
+    assert (row["by"], row["target_email"], row["target_tenant_id"]) == (
+        PROBE, "alice@example.com", "eng")
+    expected = ({"route": "role_set", "to": "viewer"} if change == "narrow"
+                else {"route": "role_cleared"})
+    assert row["detail"] == dict(expected, via="probe_admin", refused="role_admin_required")
+    assert probe_grants(db) == []
 
 
 def set_default(client: TestClient, user: str, tenant: str, role: str) -> Any:
@@ -251,10 +274,16 @@ def test_it_cannot_name_a_workspace_admin(client, db, monkeypatch):
     assert response.json()["code"] == "role_admin_required"
     assert response.json()["detail"]["source"] == "probe_admin"
     assert me(client, "bob", "eng")["me"]["role"] == "member"
+    (row,) = refusal_rows(db)
+    assert (row["by"], row["target_email"], row["target_tenant_id"]) == (
+        PROBE, "bob@example.com", "eng")
+    assert row["detail"] == {"route": "role_set", "via": "probe_admin", "to": "admin",
+                             "refused": "role_admin_required"}
+    assert probe_grants(db) == []
 
 
 @pytest.mark.parametrize("change", ["narrow", "clear"])
-def test_it_cannot_remove_a_workspace_admin(client, clock, change):
+def test_it_cannot_remove_a_workspace_admin(client, db, clock, change):
     name_admin(client, "alice@example.com")
     clock.tick(seconds=1)
     if change == "narrow":
@@ -267,6 +296,30 @@ def test_it_cannot_remove_a_workspace_admin(client, clock, change):
     assert response.status_code == 403
     assert response.json()["code"] == "role_admin_required"
     assert me(client, "alice", "eng")["me"]["role"] == "admin"
+    # The early check fired: the same row as the transaction's own refusal.
+    assert_one_refusal(db, change)
+
+
+def test_an_unwritable_refusal_row_leaves_the_role_refusal_unchanged(client, db, clock):
+    name_admin(client, "alice@example.com")
+    clock.tick(seconds=1)
+    body = {"email": "alice@example.com", "role": "viewer"}
+    first = client.put("/v1/workspace/roles/person", headers=h("probe", "eng"), json=body)
+    assert first.status_code == 403, first.text
+    db.broken.add(AUDIT_COLLECTION)
+    response = client.put("/v1/workspace/roles/person", headers=h("probe", "eng"), json=body)
+    db.broken.discard(AUDIT_COLLECTION)
+    # MUTATION: let the row's failure escape -> a 500 instead of the 403.
+    assert (response.status_code, response.json()) == (first.status_code, first.json())
+    assert len(refusal_rows(db)) == 1
+    assert probe_grants(db) == []
+
+
+def test_a_permitted_change_leaves_no_refusal_row(client, db):
+    response = client.put("/v1/workspace/roles/person", headers=h("probe", "eng"),
+                          json={"email": "bob@example.com", "role": "viewer"})
+    assert response.status_code == 200, response.text
+    assert refusal_rows(db) == []
 
 
 def test_it_may_narrow_a_member(client, clock):
@@ -298,7 +351,7 @@ def test_its_own_stored_admin_grant_is_capped_at_member_off_the_list(client, db)
 
 
 @pytest.mark.parametrize("change", ["narrow", "clear"])
-def test_an_admin_grant_stored_between_its_check_and_its_write_is_refused(client, clock,
+def test_an_admin_grant_stored_between_its_check_and_its_write_is_refused(client, db, clock,
                                                                           monkeypatch, change):
     """The race the security re-check found (epic 21): ops names alice eng's
     admin AFTER the probe admin's role write passed its early check and
@@ -337,6 +390,9 @@ def test_an_admin_grant_stored_between_its_check_and_its_write_is_refused(client
     assert response.status_code == 403, response.text
     assert response.json()["code"] == "role_admin_required"
     assert me(client, "alice", "eng")["me"]["role"] == "admin"
+    # Refused inside the transaction: one row, written after it rolled back.
+    # MUTATION: drop the row from the transaction's refusal -> none here.
+    assert_one_refusal(db, change)
 
 
 # -- an empty setting changes nothing --------------------------------------------
