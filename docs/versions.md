@@ -143,6 +143,17 @@ on **2026-11-27** and is re-checked before then. The owner's rule: take every
 fixed build as it ships (bump the pin, drop its path from the entry), and
 extend the rest one week only if upstream is still unfixed.
 
+**CVE-2026-39821, proposed for `kubectl` alone until 2026-12-01.** A
+`golang.org/x/net/idna` advisory (HIGH; incorrect Punycode label processing;
+fixed in x/net 0.57.0), newly listed on 2026-11-24, refused the same six images
+on `usr/local/bin/kubectl`. Measured that day after each checksum matched:
+kubectl 1.36.6, 1.35.10 and 1.34.13, and Google's own builds of those minors in
+its 594.0.1 `.deb`, link x/net v0.56.0. Only 1.37.2 links v0.57.0, and it is two
+minors past the 1.35 control plane, outside kubectl's supported skew. The
+`.trivyignore.yaml` entry is scoped to that one path and is in force only once
+the owner approves the pull request that adds it. When a kubectl inside the skew
+links x/net 0.57.0 or later, pin it and delete the entry.
+
 ---
 
 ## 1. Node: 24, not 20 — a deliberate departure
