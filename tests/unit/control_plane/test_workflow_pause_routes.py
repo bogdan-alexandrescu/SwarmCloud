@@ -210,6 +210,9 @@ def test_another_tenants_workflow_is_not_found(client, db, action):
     r = client.post(f"/v1/workflows/{workflow_id}/{action}", headers=auth_header("bob"))
 
     assert r.status_code == 404, r.text
+    # The store's tenant check, not a route that does not exist: FastAPI's own
+    # 404 carries no `code`.
+    assert r.json()["code"] in ("not_found", "workflow_not_in_tenant")
     assert db.docs[f"workflows/{workflow_id}"] == before
 
 
