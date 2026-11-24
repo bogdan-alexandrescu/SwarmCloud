@@ -1,6 +1,7 @@
 """Concerns moved out of `lifecycle.py` (part of issue 68): the publish guard into
 `publish_guard.py`, then a runner's run and spend into `spend.py`, then the
-account pool into `accountpool.py`, then the parks into `parking.py`.
+account pool into `accountpool.py`, then the parks into `parking.py`, then the
+publish's retryable ends into `publish_retry.py` (issue 367).
 
 A mechanical move: each name below lives in `publish_guard` now. The names
 `lifecycle` itself still calls, or another module or a test still reads
@@ -25,7 +26,7 @@ LIFECYCLE = Path(lifecycle.__file__)
 
 #: Set just above `lifecycle.py`'s length after the move. Lower it as the
 #: split goes on; never raise it.
-LIFECYCLE_LINE_CEILING = 17_670
+LIFECYCLE_LINE_CEILING = 17_630
 
 #: Moved, and still read through `lifecycle` (by itself, another module or a
 #: test): bound there as the same object.
@@ -526,6 +527,37 @@ def test_importing_parking_does_not_import_lifecycle():
 
     code = (
         "import sys, agent_worker.parking\n"
+        "assert 'agent_worker.lifecycle' not in sys.modules"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
+# -- the publish's retryable ends: `publish_retry.PublishRetryMixin` (issue 367) --
+
+PUBLISH_RETRY_METHODS = [
+    "_push_unreachable_marker",
+    "_fetch_incomplete_marker",
+    "_fail_for_publish_unreachable",
+    "_fail_for_fetch_incomplete",
+    "_origin_object_prober",
+]
+
+
+@pytest.mark.parametrize("name", PUBLISH_RETRY_METHODS)
+def test_each_publish_retry_method_is_inherited_from_publish_retry_mixin(name):
+    publish_retry = importlib.import_module("agent_worker.publish_retry")
+    assert name in vars(publish_retry.PublishRetryMixin)
+    assert name not in vars(lifecycle.Worker)
+    assert getattr(lifecycle.Worker, name) is getattr(publish_retry.PublishRetryMixin, name)
+
+
+def test_importing_publish_retry_does_not_import_lifecycle():
+    """No module-level import of `lifecycle` from `publish_retry`: circular."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys, agent_worker.publish_retry\n"
         "assert 'agent_worker.lifecycle' not in sys.modules"
     )
     subprocess.run([sys.executable, "-c", code], check=True)

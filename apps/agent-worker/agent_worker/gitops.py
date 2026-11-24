@@ -115,6 +115,24 @@ class MergedHeadUnreadable(GitError):
     """
 
 
+class PublishFetchIncomplete(GitError):
+    """The publish fetch from a partial clone failed on an object the clone
+    never downloaded, and completing it from origin did not help (issue 367).
+
+    A `GitError`, so every `except GitError` still catches it. `missing` is
+    the full sha git named; `on_origin` is origin's answer about it (True,
+    False, or None when it was not asked or did not answer). The harvest
+    records it as a retryable publish failure with the work kept, rather
+    than `publish_failed`: the retry may meet an origin that serves the
+    object, or the agent may build the work again without it.
+    """
+
+    def __init__(self, message: str, *, missing: str, on_origin: bool | None) -> None:
+        super().__init__(message)
+        self.missing = missing
+        self.on_origin = on_origin
+
+
 class PushRejected(GitError):
     """The forge refused a push because the branch holds commits HEAD does not
     descend from: a non-fast-forward, or a `--force-with-lease` whose expected
@@ -3794,8 +3812,14 @@ def prepare_publish_repo(
     confirm_on_origin: Callable[[list[str]], list[str]] | None = None,
     carry_merge: bool = False,
     fetch_on_origin: Callable[[Path, list[str]], list[str]] | None = None,
+    probe_on_origin: Callable[[str], bool | None] | None = None,
 ) -> Path:
     """Build the worker-owned CLEAN repository the publish decides and pushes from.
+
+    `probe_on_origin` (issue 367): asked at most once, and only when the
+    publish fetch failed on an object the clone never downloaded, whether
+    origin holds that object (`forge_holds_object`); the failure is then
+    `PublishFetchIncomplete`, naming the object and the answer.
 
     `fetch_on_origin` (archived issue 2901): the worker's own depth-1 fetch FROM THE FORGE,
     into this repository, of the clone's shallow cut-offs that neither the
@@ -4040,6 +4064,7 @@ def prepare_publish_repo(
         _publish_fetch_argv(git_binary, source_repo, shallow_file, refspecs),
         "publish-fetch",
     )
+    failed_log = logs_dir / "git-publish-fetch.err.log"
     if fetch_code != 0 and not empty and fetch_on_origin is not None:
         # A PARTIAL CLONE'S MERGE (issue 367): the agent fetched a branch with
         # `--filter=blob:none` and merged it, so its history reaches objects
@@ -4055,14 +4080,29 @@ def prepare_publish_repo(
         )
         if retried is not None:
             fetch_code = retried
+            failed_log = logs_dir / "git-publish-fetch-completed.err.log"
     if fetch_code != 0:
         # The fixed text first, verbatim: failure causes and the failure
         # review fingerprint on it. Then git's own reason (archived issue 2559: six failures
         # said only this, and which of the two it was had to be reproduced).
-        raise GitError(
-            "could not fetch the agent's work into the worker's clean repository "
-            "(an object failed git's checks, or the clone's history is incomplete); "
-            "nothing was pushed" + _stderr_tail(logs_dir / "git-publish-fetch.err.log")
+        fixed = ("could not fetch the agent's work into the worker's clean repository "
+                 "(an object failed git's checks, or the clone's history is incomplete); "
+                 "nothing was pushed")
+        tail = _stderr_tail(failed_log)
+        missing = _promisor_missing_object(tail)
+        if missing is None:
+            raise GitError(fixed + tail)
+        # A PARTIAL CLONE'S MISSING OBJECT (issue 367): named, with origin's
+        # answer, so the reader knows whether a retry can find it.
+        on_origin = _ask_origin_once(probe_on_origin, missing, logger=logger)
+        if on_origin is None:
+            answer = "origin was not asked"
+        else:
+            answer = "origin has it" if on_origin else "origin does not have it"
+        raise PublishFetchIncomplete(
+            f"{fixed}; the agent's clone is a partial clone that never downloaded "
+            f"object {missing}, and {answer}{tail}",
+            missing=missing, on_origin=on_origin,
         )
 
     checkout_code, _ = run(
@@ -4786,6 +4826,35 @@ def _stderr_tail(path: Path) -> str:
         return ""
     tail = " ".join(redact_text(text).text.split())[-_STDERR_TAIL_CHARS:]
     return f"; git: {tail}" if tail else ""
+
+
+#: git's words for an object a partial clone's upload side could not read
+#: with lazy fetching off (git 2.39.5, measured 2026-11-24): "fatal: could
+#: not fetch <sha> from promisor remote". Full shas only, read from the
+#: redacted, capped stderr tail the failure already carries.
+_PROMISOR_MISSING_RE = re.compile(r"could not fetch ([0-9a-f]{40}) from promisor remote")
+
+
+def _promisor_missing_object(tail: str) -> str | None:
+    """The object `_PROMISOR_MISSING_RE` names in `tail`, or None."""
+    found = _PROMISOR_MISSING_RE.search(tail)
+    return found.group(1) if found else None
+
+
+def _ask_origin_once(
+    probe: Callable[[str], bool | None] | None, sha: str, *, logger: Any
+) -> bool | None:
+    """`probe(sha)`, once; None when there is no probe, it raises or it
+    answers anything but a bool."""
+    if probe is None:
+        return None
+    try:
+        answer = probe(sha)
+    except Exception as exc:  # noqa: BLE001 - a probe that failed is no answer
+        logger.warning("could not ask origin about the clone's missing object",
+                       error=type(exc).__name__)
+        return None
+    return answer if isinstance(answer, bool) else None
 
 
 def _empty_worktree(root: Path) -> None:
@@ -6530,6 +6599,49 @@ def forge_holds_commit(
     read as before. The token is the tenant's own, written to a credential
     file as `fetch_branch_tip` does, never to the command line or a log.
     """
+    return _forge_serves(url=url, sha=sha, token=token, private_dir=private_dir,
+                         logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
+                         git_binary=git_binary, read=f"{sha}^{{commit}}")
+
+
+def forge_holds_object(
+    *,
+    url: str,
+    sha: str,
+    token: str | None,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+) -> bool:
+    """Whether the forge at `url` serves object `sha` of any type (issue 367):
+    the object a partial clone's publish fetch could not read.
+
+    `forge_holds_commit`'s probe -- a fresh repository under `private_dir`,
+    the token in a credential file removed in `finally`, a fetch by sha --
+    read back with `cat-file -e <sha>` rather than as a commit, so a blob or
+    a tree answers too. A blob wanted by sha is sent whatever the filter.
+    `token` may be None (a public repository). Any failure is False."""
+    return _forge_serves(url=url, sha=sha, token=token, private_dir=private_dir,
+                         logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
+                         git_binary=git_binary, read=sha)
+
+
+def _forge_serves(
+    *,
+    url: str,
+    sha: str,
+    token: str | None,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str,
+    read: str,
+) -> bool:
+    """The probe behind `forge_holds_commit` and `forge_holds_object`: fetch
+    `sha` by sha into a fresh repository, then `cat-file -e <read>` there."""
     if not _FULL_SHA_RE.match(sha or ""):
         return False
     try:
@@ -6539,7 +6651,7 @@ def forge_holds_commit(
     private_dir = Path(private_dir)
     private_dir.mkdir(parents=True, exist_ok=True)
     probe = Path(tempfile.mkdtemp(dir=str(private_dir), prefix="forge-probe-"))
-    cred_file = _write_credentials(url, token, private_dir)
+    cred_file = _write_credentials(url, token, private_dir) if token else None
     config_args = [*_TOKEN_SAFE]
     if cred_file is not None:
         config_args += ["-c", f"credential.helper=store --file={cred_file}"]
@@ -6561,8 +6673,7 @@ def forge_holds_commit(
         )
         if code != 0:
             return False
-        code, _ = run([git_binary, *_NO_HOOKS, "cat-file", "-e", f"{sha}^{{commit}}"],
-                      "forge-probe-read")
+        code, _ = run([git_binary, *_NO_HOOKS, "cat-file", "-e", read], "forge-probe-read")
         return code == 0
     finally:
         try:

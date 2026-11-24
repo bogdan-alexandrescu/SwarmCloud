@@ -499,6 +499,29 @@ so everything under it is already on the forge, and every commit the agent
 wrote above it is still fetched, checked and scanned. A head origin does not
 serve adds nothing and the retry is not made.
 
+**What the failure says when that is not enough.** If the retried fetch
+still fails, or no merged head could be completed, and git named the object
+it could not read ("could not fetch <sha> from promisor remote"), the
+publish raises `gitops.PublishFetchIncomplete`. Its message keeps the fixed
+text first, verbatim, then names the object and one of **origin has it**,
+**origin does not have it** or **origin was not asked**: the worker asks
+the forge once, with its own credential, in a fresh probe repository
+(`gitops.forge_holds_object`). A failure that names no object is the plain
+error, as before.
+
+**The step is retried, not failed** (`publish_retry.PublishRetryMixin`).
+Such a failure ended the step `publish_failed`, the workflow FAILED, and the
+work lived only in `swarm-work.patch`. Now the attempt ends retryably
+(cause `publish_fetch_incomplete`, end cause `outputs_missing` once
+attempts are spent), the task goes back to READY so its dependants keep
+waiting, and the patch and final checkpoint are kept. The retry publishes the
+kept work without running the agent when origin has, or was not asked about,
+the object and the restored clone is still at the head and base that failed
+-- the same check a push outage's retry makes. When origin does not have the
+object, the same publish would fail again, so the agent runs. The owner's
+open question -- park for a person instead -- was answered with the
+recommended option: retry with the work kept.
+
 ## Sessions and resumes: the context ceiling
 
 Nothing used to end a session as its context grew. In the week [the owner] measured

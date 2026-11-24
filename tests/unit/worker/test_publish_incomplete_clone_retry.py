@@ -152,9 +152,14 @@ def test_forge_holds_object_answers_for_a_blob(tmp_path: Path, local_urls):
 
 
 def _raising(on_origin: bool | None):
+    """The clean repository's build fails as a partial clone's would; the
+    tree patch's own repository (built from the base alone) is built as ever."""
     missing = secrets.token_hex(20)
+    real = lifecycle.prepare_publish_repo
 
     def prepare(**kwargs: Any) -> Path:
+        if kwargs.get("local_branch") == "swarm-tree-patch":
+            return real(**kwargs)
         raise gitops.PublishFetchIncomplete(
             f"{FIXED} (an object failed git's checks, or the clone's history is incomplete); "
             f"nothing was pushed; the agent's clone lacks object {missing}",
