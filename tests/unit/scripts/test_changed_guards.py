@@ -241,10 +241,9 @@ def test_a_doc_beside_a_code_change_keeps_the_whole_guard_set():
     assert "check-contract-parity.sh" in result.stdout
 
 
-# DOC CLOSURE (archived issue 2299). A doc that cites a changed non-doc path by its full
-# path counts as changed, so the tests that read that doc are selected: PR
-# archived pull request 2267 moved PushTestCell out of Access.tsx while docs/onboarding.md still
-# cited it, and the tests resolving that citation name only onboarding.md.
+# NO DOC CLOSURE (issue 71). Archived issue 2299 made a doc citing a changed
+# path count as changed, to run the tests that read the doc; no test reads
+# docs now (scripts/check_test_reads.py), so a citing doc selects nothing.
 def _doc_repo(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     (tmp_path / "scripts" / "lib").mkdir(parents=True)
     shutil.copy(SCRIPT, tmp_path / "scripts" / "changed-guards.sh")
@@ -269,7 +268,7 @@ def _doc_repo(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     return tmp_path, env
 
 
-def test_a_doc_citing_a_changed_path_selects_the_tests_that_read_the_doc(tmp_path: Path):
+def test_a_doc_citing_a_changed_path_selects_nothing(tmp_path: Path):
     root, env = _doc_repo(tmp_path)
     result = subprocess.run(
         ["bash", str(root / "scripts" / "changed-guards.sh"), "--list", "--files", "-"],
@@ -277,10 +276,8 @@ def test_a_doc_citing_a_changed_path_selects_the_tests_that_read_the_doc(tmp_pat
     )
     assert result.returncode == 0, result.stderr
     selected = _selected(result.stdout)
-    # MUTATION: drop the docs grep from changed-guards.sh and this is red.
-    assert "tests/unit/scripts/test_x_docs.py" in selected, selected
-    # The controls: a doc citing another file, and a doc citing A.tsx by its
-    # basename only, select none of their readers.
+    # MUTATION: restore the docs grep in changed-guards.sh and this is red.
+    assert "tests/unit/scripts/test_x_docs.py" not in selected, selected
     assert "tests/unit/scripts/test_y_docs.py" not in selected, selected
     assert "tests/unit/scripts/test_z_docs.py" not in selected, selected
 
