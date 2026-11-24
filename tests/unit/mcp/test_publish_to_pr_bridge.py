@@ -177,7 +177,8 @@ def test_a_spec_without_it_sends_exactly_what_it_sends_today():
     reply = _submit_spec(recorder, _spec(merge="on", title="Review round"))
     body = _body(recorder)
     assert "publish_to_pr" not in body
-    assert set(body) == {"steps", "metadata", "strategy", "repository_url"}
+    # Today's body, plus the submission's idempotency key (`send_submission`).
+    assert set(body) == {"steps", "metadata", "strategy", "repository_url", "idempotency_key"}
     assert body["metadata"]["merge"] == "on"
     assert body["metadata"]["title"] == "Review round"
     assert "publish_to_pr" not in reply

@@ -228,7 +228,10 @@ def test_the_batch_payload_is_the_single_dispatch_payload():
     payload = task_payload(prompt="p", runner_profile="mock", strategy="direct-pr", repository_url="https://g/x.git")
     created = SwarmClient.dispatch_batch(_Self(), [payload])
     assert created == [{"id": "t1", "state": "QUEUED"}]
-    assert seen == [("POST", "/v1/tasks/batch", {"tasks": [payload]})]
+    ((method, path, body),) = seen
+    # The batch, plus the submission's idempotency key (`send_submission`).
+    assert (method, path) == ("POST", "/v1/tasks/batch")
+    assert body == {"tasks": [payload], "idempotency_key": body["idempotency_key"]}
 
 
 def test_a_batch_over_the_apis_limit_is_refused_before_sending():

@@ -101,6 +101,7 @@ from .codec import (
 from . import modelprices, refusals
 from .errors import Conflict, NotFound, RateLimited, Unpageable, ValidationFailed
 from .executioncancel import ExecutionTarget
+from .idempotency import SUBMISSION_KEYS, Raced
 
 log = logging.getLogger(__name__)
 
@@ -1286,8 +1287,16 @@ class Store:
 
     # -- tasks ------------------------------------------------------------
 
-    def create_tasks(self, tasks: Sequence[Task], *, tenant_member: str = "") -> list[Task]:
+    def create_tasks(self, tasks: Sequence[Task], *, tenant_member: str = "",
+                     claim: Any = None) -> list[Task]:
         """Write tasks and their `submitted` events.
+
+        `claim` is an `idempotency.Keyed`, or None: its document is written
+        with `create` (create-if-absent) in the FIRST batch, beside the first
+        chunk of tasks. A batch commits whole, so when a concurrent submit
+        with the same key created the claim first, this batch is refused
+        ALREADY_EXISTS, none of its tasks is written, and `idempotency.Raced`
+        is raised for the caller to answer the winner's ids.
 
         Batched so a partially written submission cannot leave a task document
         with no event trail. Ordering within the batch matters for workflows:
@@ -1300,8 +1309,13 @@ class Store:
         is `"service_account"`, and ABSENT, not null, for everyone else.
         """
         now = self._now()
-        for chunk in self._chunks(list(tasks), _BATCH_CHUNK):
+        for index, chunk in enumerate(self._chunks(list(tasks), _BATCH_CHUNK)):
             batch = self._db.batch()
+            if index == 0 and claim is not None:
+                batch.create(
+                    self._db.collection(SUBMISSION_KEYS).document(claim.doc_id),
+                    claim.document(),
+                )
             for task in chunk:
                 ref = self._db.collection(TASKS).document(task.id)
                 batch.set(ref, task_to_firestore(task))
@@ -1324,7 +1338,12 @@ class Store:
                 )
                 batch.set(ref.collection(EVENTS).document(event.event_id),
                           event_to_firestore(event))
-            batch.commit()
+            try:
+                batch.commit()
+            except gexc.AlreadyExists as exc:
+                if index == 0 and claim is not None:
+                    raise Raced("a concurrent submit created this key's claim first") from exc
+                raise
         return list(tasks)
 
     def get_task(self, tenant_id: str, task_id: str, *, submitted_by: str | None) -> Task:
@@ -2007,9 +2026,11 @@ class Store:
     # -- workflows --------------------------------------------------------
 
     def create_workflow(
-        self, workflow: Workflow, tasks: Sequence[Task], *, tenant_member: str = ""
+        self, workflow: Workflow, tasks: Sequence[Task], *, tenant_member: str = "",
+        claim: Any = None,
     ) -> Workflow:
-        self.create_tasks(tasks, tenant_member=tenant_member)
+        """`claim` exactly as on `create_tasks`: with the first chunk of steps."""
+        self.create_tasks(tasks, tenant_member=tenant_member, claim=claim)
         (
             self._db.collection(WORKFLOWS)
             .document(workflow.workflow_id)
