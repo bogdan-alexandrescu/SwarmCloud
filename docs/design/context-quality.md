@@ -130,10 +130,20 @@ PR rather than done.
 | **Planner** (issue runs, sweeps) | `REPO INDEX` and `REPO GRAPH` prompt sections: candidates, 2-level impact, overlaps with open work, communities. They share a 24 KiB allowance and appear only with an extractor-v3 index | `swarm_api.plancontext`, called from `swarm_api.routes.runs.start_run`; `issueruns.planner_prompt` |
 | **Plan validation** | Parallel steps that list the same file, or a directory prefix of it, are refused, and the planner re-plans | `issueruns.territory_refusal` |
 | **Run hold** | An auto run whose files overlap a live run is held | `routes.runs.territory_conflict` |
-| **Reviewer** | A `REVIEW IMPACT` block (`territory.expand`, 1 hop) | `reviewcontext.read_review_context`, compiled by `issueruns.compile_plan` |
+| **Reviewer** | A `REVIEW IMPACT` block (`territory.expand`, 1 hop) of the files the build changed when they are known, else of the plan's files, saying which; and a `PLAN FILES` section, each plan step's files and tests and the changed files no step declared (also in the fix's prompt, at most 4 KiB) | `reviewcontext.read_review_context` and `planfiles.plan_files_section`, compiled by `issueruns.compile_plan` |
 | **CI fixer** | A `TESTED CODE` block for the red tests | `reviewcontext.read_fix_context`, in `issueci.ci_fix_continuation` |
 | **Orchestrator** (operator's MCP) | `swarm_territory`, and a warn-only territory check on `swarm_dispatch` and `swarm_workflow` units that declare `files`. It expands files to callers and tests through `POST /v1/repositories/{id}/territory` at depth 1 (`TERRITORY_DEPTH_DEFAULT = 1`, max 2), and is silent below format 3 | `swarm_mcp.server._territory_check` → `swarm_api.territory.expand` |
 | **Implementer** (every lane and issue-run step) | **Nothing.** It gets the checkout, whatever `CLAUDE.md` the CLI loads itself, and its brief | — |
+
+**Why the review's impact is still the plan's today.** The review step is
+compiled and signed when the plan is approved, before any build has run, and
+the scheduler readies it without swarm-api: the scheduler holds neither the
+tenant's index nor the signing key a rewritten prompt would need, and a
+worker cannot read the index. So the approval asks for the impact with
+`planfiles.AT_APPROVAL`, the block falls back to the plan's files and says
+why, and `PLAN FILES` says the outside-the-plan list is missing rather than
+empty. The diff-based path (`ChangedFiles.read`) is built and tested, waiting
+for a caller that runs once the build has finished.
 
 **The implementer gap, precisely:**
 * **`swarm-graph`, the MCP server, is built (KG4) and started by nothing.**
