@@ -680,6 +680,12 @@ class TransactionRunner(Protocol):
 #: library's own number for the commit, so a body gets the same tries whichever
 #: of its RPCs the contention lands on; each run still has the library's five
 #: commits. Bounded as well by the call's deadline (`_aborted_deadline`).
+#: A run whose five commits were ALL aborted counts as one aborted run too
+#: (issue 313): on 2026-11-24 a quota park lost its commit five times inside
+#: one run, the library's "Failed to commit transaction in 5 attempts." went
+#: straight up, and the task ended FAILED. Nothing was committed, so the body
+#: is run again on fresh reads, under this bound, this backoff and this
+#: deadline (`_commit_exhausted`).
 TRANSACTION_ABORTED_RUNS = 5
 
 #: The first wait between two aborted runs, doubled for each next one: 0.25,
@@ -730,13 +736,31 @@ class FirestoreTransactionRunner:
     def run(
         self, fn: Callable[[Any], Any], *, call_options: Mapping[str, Any] | None = None
     ) -> Any:
-        """`fn` in one transaction, run again on an ABORTED read or begin.
+        """`fn` in one transaction, run again whenever Firestore ABORTS it.
 
         See `TRANSACTION_ABORTED_RUNS`. A fresh transaction each run: the
         library rolled the aborted one back before the abort reached here.
-        Only `Aborted` is caught. The library's own "commit aborted five
-        times" is a `ValueError` and is raised as it is; so is every other
-        error, a fence among them.
+        Two errors are aborts: `Aborted` itself (a read's or the begin's) and
+        the library's own commit-exhausted `ValueError`, recognised by
+        `_commit_exhausted` alone (issue 313). Every other error, a fence
+        among them, is raised as it is, on the run that met it.
+
+        WHY RUNNING THE BODY AGAIN CANNOT APPLY ANYTHING TWICE. Both errors
+        mean nothing was committed: an aborted read never reached a commit,
+        and an aborted commit was refused whole -- Firestore applies a
+        transaction's writes all at once or not at all, and ABORTED is the
+        "not at all". The next run is the whole body again on a new
+        transaction, so it re-reads every document: a task a newer attempt
+        has taken meanwhile is refused by the body's own fence (invariant 5),
+        and whatever the body writes is computed from what is there now. The
+        caller sees one call that either committed once or raised, so the
+        order of its steps around the call (checkpoint, park, release, exit:
+        invariant 4) is the order it always was.
+
+        When the runs or the deadline are spent, what goes up is an `Aborted`
+        that says so -- how many runs, over how long -- with the last abort
+        as its cause, so a task that fails this way names contention rather
+        than the library's bare "Failed to commit transaction in 5 attempts.".
         """
         from google.api_core import exceptions as core_exceptions  # lazy: grpc
         from google.cloud import firestore  # lazy: unit tests never import grpc
@@ -745,18 +769,88 @@ class FirestoreTransactionRunner:
         def _inner(txn: Any) -> Any:
             return fn(txn)
 
-        deadline = _abort_clock() + _aborted_deadline(call_options)
+        started = _abort_clock()
+        allowed = _aborted_deadline(call_options)
+        deadline = started + allowed
         delay = _ABORT_BACKOFF_SECONDS
         runs = 1
         while True:
+            transaction = self._transaction(call_options)
             try:
-                return _inner(self._transaction(call_options))
-            except core_exceptions.Aborted:
-                if runs >= TRANSACTION_ABORTED_RUNS or _abort_clock() + delay > deadline:
+                return _inner(transaction)
+            except core_exceptions.Aborted as exc:
+                last: BaseException = exc
+            except ValueError as exc:
+                if not _commit_exhausted(exc, transaction):
                     raise
+                last = exc
+            spent = runs >= TRANSACTION_ABORTED_RUNS
+            if spent or _abort_clock() + delay > deadline:
+                raise _contention_exhausted(
+                    runs,
+                    _abort_clock() - started,
+                    allowed if not spent else None,
+                    last,
+                ) from last
             _abort_sleep(delay)
             delay *= 2
             runs += 1
+
+
+def _commit_exhausted(exc: ValueError, transaction: Any) -> bool:
+    """Whether `exc` is `firestore.transactional` giving up on an ABORTED commit.
+
+    THE SHAPE, read from google-cloud-firestore 2.30.0 (the version uv.lock
+    pins for the worker image), `transaction._Transactional.__call__`: after
+    `transaction._max_attempts` commits each raised `Aborted`, it raises
+    `ValueError(_EXCEED_ATTEMPTS_TEMPLATE.format(transaction._max_attempts))
+    from last_exc`, the template being `base_transaction._EXCEED_ATTEMPTS_TEMPLATE`
+    ("Failed to commit transaction in {:d} attempts."). All three are held
+    here: the exact class, the exact text for THIS transaction's attempts,
+    and an `Aborted` as its direct cause. A body's own `ValueError`, or the
+    library's other `ValueError`s (a transaction that cannot begin, commit or
+    roll back, a read after a write), fail at least one and go up untouched.
+    A library version that changes the shape fails the test that drives the
+    library's own `transactional`, rather than retrying the wrong thing.
+    """
+    from google.api_core import exceptions as core_exceptions  # lazy: grpc
+    from google.cloud.firestore_v1.base_transaction import (  # lazy: grpc
+        _EXCEED_ATTEMPTS_TEMPLATE,
+    )
+
+    if type(exc) is not ValueError:
+        return False
+    if not isinstance(exc.__cause__, core_exceptions.Aborted):
+        return False
+    attempts = getattr(transaction, "_max_attempts", None)
+    if not isinstance(attempts, int) or isinstance(attempts, bool):
+        return False
+    return exc.args == (_EXCEED_ATTEMPTS_TEMPLATE.format(attempts),)
+
+
+def _contention_exhausted(
+    runs: int, elapsed: float, deadline: float | None, last: BaseException
+) -> Exception:
+    """The `Aborted` a runner raises when it stops running an aborted body.
+
+    An `Aborted`, so every caller that already treats contention as
+    contention (the lifecycle's terminal rounds, which also walk the cause
+    chain) goes on doing so; its text says what happened in words a task's
+    error can carry. `deadline` is the call's deadline when that, and not
+    the bound on runs, is what stopped it.
+    """
+    from google.api_core import exceptions as core_exceptions  # lazy: grpc
+
+    why = (
+        f"stopped at the call's {deadline:.1f} s deadline"
+        if deadline is not None
+        else f"its bound of {TRANSACTION_ABORTED_RUNS} runs reached"
+    )
+    return core_exceptions.Aborted(
+        f"Firestore aborted this transaction on contention on each of {runs} runs "
+        f"over {elapsed:.1f} s ({why}); nothing was committed. "
+        f"Last: {type(last).__name__}: {last}"
+    )
 
 
 def _commit_retry(retry: Any) -> Any:
