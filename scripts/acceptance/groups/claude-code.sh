@@ -38,7 +38,7 @@ CC_FIX_LINE="    return a + b"
 CC_MODEL_CLASSES=(opus fable sonnet haiku)
 # The class whose pin the CLI may report BESIDE the one it was told to run:
 # the small model it runs for its own housekeeping, which the worker's
-# _note_model_mismatch (lifecycle.py) does not count as a substitution
+# _note_model_mismatch (spend.py, SpendMixin) does not count as a substitution
 # either. On a step of another class this pin in `usage.models` is noted,
 # not failed; any other class's pin there is a substitution and fails.
 CC_HOUSEKEEPING_CLASS="haiku"

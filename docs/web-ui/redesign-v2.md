@@ -223,8 +223,8 @@ peak_rss_bytes                     firestore=123456789      api=123456789
 `peak_rss_bytes` is the control: the harness is correct, the round-trip works, and
 exactly the five spend fields are dropped.
 
-The write path is fine. `apps/agent-worker/agent_worker/lifecycle.py::Worker._collect_spend` extracts usage and
-`apps/agent-worker/agent_worker/lifecycle.py::Worker._record_spend` calls
+The write path is fine. `apps/agent-worker/agent_worker/spend.py::SpendMixin._collect_spend` extracts usage and
+`apps/agent-worker/agent_worker/spend.py::SpendMixin._record_spend` calls
 `control.record_spend`, which merge-sets those five keys with a
 `not isinstance(v, bool)` guard (`apps/agent-worker/agent_worker/control.py::ControlPlane.record_spend`). The numbers reach Firestore
 and die at the decoder.

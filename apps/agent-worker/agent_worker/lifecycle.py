@@ -174,6 +174,7 @@ from . import usage as usage_mod
 from . import pythonenv as pythonenv_mod
 from .heartbeat import HeartbeatMixin
 from .checkpointing import CheckpointMixin
+from .spend import SpendMixin
 from . import owner_questions as owner_questions_mod
 from . import questions as questions_mod
 from . import flow_output as flow_output_mod
@@ -969,7 +970,7 @@ def _cut_at_word(text: str, limit: int) -> str:
     return head.rstrip().rstrip(".,;:") + "…"
 
 
-class Worker(HeartbeatMixin, CheckpointMixin):
+class Worker(HeartbeatMixin, CheckpointMixin, SpendMixin):
     """One attempt, start to finish."""
 
     def __init__(self, config: WorkerConfig, deps: WorkerDeps) -> None:
@@ -18279,250 +18280,6 @@ class Worker(HeartbeatMixin, CheckpointMixin):
             "stderr_truncated": cut("stderr"),
         }
 
-    # -- spend -------------------------------------------------------------
-    def _child_ended(self, result: ChildResult | None = None) -> None:
-        """Everything that has to happen the moment a runner is gone.
-
-        Called at every site that reaps a runner, so a new site gets every
-        part by calling one thing: the resource sample is stopped and
-        written, the run's spend is taken before a restart can overwrite
-        the result.json it is in, and the run is closed in `_runs` with what
-        it spent. `result` is the reaped runner's, where the site kept it.
-        """
-        self._stop_sampler()
-        before = dict(self._spend)
-        self._collect_spend()
-        if self.budget is not None:
-            self.budget.runner_ended()
-        self._close_run(result, spent_before=before)
-
-    def _open_run(self, *, resumed: bool) -> None:
-        """Start this runner's entry in `_runs` (SWAP-RUNS). Never raises."""
-        account = self._account
-        self._run_open = {
-            "run": len(self._runs) + 1,
-            "started_at": _rfc3339_now(),
-            "account": account.account_id if account is not None else None,
-            "resumed": resumed,
-            # `_just_swapped` is set by a swap and read after the next run
-            # ends, so here it says this run is the one the swap started.
-            "after_swap": bool(self._just_swapped),
-        }
-
-    def _close_run(self, result: ChildResult | None, *, spent_before: dict[str, Any]) -> None:
-        """Close the run `_open_run` started, once. Never raises.
-
-        Its duration and exit are the reaped runner's; its tokens and cost
-        are what `_collect_spend` added for it -- the difference, because a
-        resumed session reports the session's running totals (`_add_spend`).
-        A run that followed a swap also carries `reread`: the seconds and
-        tokens it spent before its first action (`cliagent.is_action`), as
-        the runner's account channel measured them, or everything it spent
-        when it never acted (`reached: false`).
-        """
-        entry, self._run_open = self._run_open, None
-        if entry is None:
-            return
-        try:
-            child = self._child
-            if result is not None:
-                seconds, exit_code, timed_out = (
-                    result.duration_seconds, result.exit_code, result.timed_out)
-            else:
-                # None when there is no child or it never started (issue 56).
-                seconds = child.elapsed_seconds if child is not None else None
-                exit_code = child.poll() if child is not None else None
-                timed_out = False
-            entry["ended_at"] = _rfc3339_now()
-            entry["duration_s"] = round(float(seconds), 3) if seconds is not None else None
-            entry["exit_code"] = exit_code
-            if timed_out:
-                entry["timed_out"] = True
-            tokens = {
-                key: self._spend[key] - spent_before.get(key, 0)
-                for key in _RUN_TOKEN_KEYS
-                if key in self._spend
-            }
-            if tokens:
-                entry["tokens"] = tokens
-            if "total_cost_usd" in self._spend:
-                entry["cost_usd"] = round(
-                    self._spend["total_cost_usd"] - spent_before.get("total_cost_usd", 0), 10)
-            if entry.get("after_swap") and self.ws is not None:
-                entry["reread"] = _reread_of(self._read_account_channel())
-        except Exception as exc:  # pragma: no cover - defensive; teardown path
-            self.log.warning("could not close the run's record", error=str(exc))
-        self._runs.append(entry)
-
-    def _collect_spend(self) -> None:
-        """Add the runner that just ended to this attempt's spend. Never raises.
-
-        ONCE PER RUNNER: `_spend_pending` is set when a runner starts and
-        cleared here, so the `_cleanup` backstop cannot count a run twice.
-
-        Reads result.json knowing it is THIS runner's or nothing: the reply
-        files are cleared before every start (`_run_child_supervised`), so a
-        runner killed before writing leaves no file here rather than a
-        restored one from a previous attempt.
-        """
-        if not self._spend_pending or self.ws is None:
-            return
-        self._spend_pending = False
-        try:
-            result = _read_json(self.ws.result_path) or {}
-            usage = _usage_summary(result.get("output"))
-            unpriced = _unpriced_sessions(result.get("output"))
-            incomplete = _cost_incomplete(result)
-        except Exception as exc:  # pragma: no cover - defensive; teardown path
-            self.log.warning("could not read the runner's spend", error=str(exc))
-            return
-        if incomplete:
-            # A SESSION WHOSE USAGE WAS NOT READ (COST-ACROSS-SESSIONS, part
-            # of archived issue 2688): the runner dropped its partial `total_cost_usd`, so
-            # what follows estimates the capture or reports no cost. Kept
-            # sticky on the attempt's spend and said in the summary
-            # (`result_summary.cost_incomplete`), never inferred from
-            # `cost_estimated` alone, which a priced stopped run also sets.
-            self._spend["cost_incomplete"] = True
-        stopped_cost: float | None = None
-        if "total_cost_usd" in usage and unpriced:
-            # SESSIONS A CONTEXT-CEILING HANDOFF ENDED (archived issue 2896): stopped at a
-            # turn boundary, they printed no result event, and the reported
-            # `total_cost_usd` is the last session's alone. Their per-model
-            # counts are priced by swarm-api like a stopped run's and added,
-            # so the attempt's cost is every session's. Only here: a run with
-            # no reported cost at all is priced from its whole stream below,
-            # which covers these sessions already. They ended before the
-            # last session began, so their cost goes on the session base
-            # below, never into the last session's running total: a later
-            # runner that RESUMES that session must neither lose it nor
-            # count it twice (`_add_spend`).
-            cost, tier_estimated = self.spend_pricer.estimate(unpriced)
-            if cost is None:
-                self.log.warning(
-                    "the cost of the sessions a context-ceiling handoff ended is not "
-                    "reported; the attempt's cost covers its other sessions only",
-                    sessions_models=sorted(unpriced))
-            else:
-                stopped_cost = cost
-                self._spend["cost_estimated"] = True
-                if tier_estimated:
-                    self._spend["tier_estimated"] = True
-        if "total_cost_usd" not in usage:
-            # A RUN STOPPED BEFORE IT COULD SAY (archived issue 627): a CLI killed on a
-            # cancel, a SIGTERM, a fence or a timeout prints no result event.
-            # What its stream showed is summed per model, and only the keys
-            # the run did not report itself are taken, so nothing is counted
-            # twice. SWARM-API PRICES IT (archived issue 1481): the worker sends the usage
-            # per model and takes back a figure or None -- "cost not
-            # reported" -- never one of its own.
-            estimate = self._stopped_run_usage()
-            by_model = estimate.pop("usage_by_model", None) or {}
-            more = {k: v for k, v in estimate.items() if k not in usage}
-            tier_estimated = False
-            if by_model:
-                cost, tier_estimated = self.spend_pricer.estimate(by_model)
-                if cost is not None:
-                    more["total_cost_usd"] = cost
-            if more:
-                usage = {**usage, **more}
-                if "total_cost_usd" in more:
-                    self._spend["cost_estimated"] = True
-                    if tier_estimated:
-                        # A tiered model's tier was picked from summed counts,
-                        # not per request (PRICES-TIER-PROMPT).
-                        self._spend["tier_estimated"] = True
-        self._note_model_mismatch(usage.get("models"))
-        if stopped_cost is not None:
-            self._spend = _add_spend(self._spend, {"total_cost_usd": stopped_cost})
-            if self._session_spend_base is not None:
-                self._session_spend_base = _add_spend(
-                    self._session_spend_base, {"total_cost_usd": stopped_cost})
-        if usage:
-            self._spend = _add_spend(
-                self._spend,
-                usage,
-                session_base=self._session_spend_base if self._spend_resumes_session else None,
-            )
-
-    def _note_model_mismatch(self, models: Any) -> None:
-        """Log `model_mismatch` when the stream ran none of the pinned model.
-
-        docs/design/model-per-step.md §4.6. `Attempt.model` is what the
-        worker was started with; `usage.models` is what the CLI's stream says
-        it ran. The two are different facts, and a pinned CLI that
-        substituted another model shows as a disagreement here. Judged as
-        "the pin is not among them", not "anything else is": the CLI also
-        reports the small model it runs for its own housekeeping beside the
-        one it was told to run, and that is not a substitution. A `[...]`
-        context suffix (`claude-opus-5-5[1m]`) is the same model.
-        """
-        pinned = self.cfg.model
-        if not pinned or not isinstance(models, list) or not models:
-            return
-        reported = sorted(str(m) for m in models)
-        if any(m.split("[", 1)[0] == pinned for m in reported):
-            return
-        self.log.warning(
-            "model_mismatch: the agent's stream reports models other than the pinned one",
-            cause="model_mismatch",
-            job_model=pinned,
-            stream_models=reported,
-        )
-
-    def _note_runner_spend_start(self, *, resumed: bool) -> None:
-        """Say, at a runner's start, whose session its spend will report.
-
-        A runner that starts a NEW session -- every first start, and a restart
-        from the prompt -- marks the spend so far as what was spent before
-        that session. A runner that RESUMES one leaves the mark where the
-        session began, so `_add_spend` can replace the session's earlier
-        figures with its later, cumulative ones (archived issue 667, observer P14).
-        """
-        self._spend_resumes_session = resumed
-        if not resumed or self._session_spend_base is None:
-            self._session_spend_base = dict(self._spend)
-
-    def _stopped_run_usage(self) -> dict[str, Any]:
-        """`_stream_usage` over this profile's agent capture, or {}."""
-        files = agent_stream_files(self.cfg.runner_profile)
-        if files is None or self.ws is None:
-            return {}
-        try:
-            return _stream_usage(self.ws.artifacts / files.stdout)
-        except Exception as exc:  # pragma: no cover - defensive; teardown path
-            self.log.warning("could not estimate the stopped run's spend", error=str(exc))
-            return {}
-
-    def _record_spend(self) -> None:
-        """Write what this attempt has spent onto its attempt document. Never raises.
-
-        Called from every exit (see `_upload_outputs` and `_cleanup`), and
-        writes only when there is something new: `record_spend` merge-sets
-        absolute totals, so writing the same figure twice is harmless and
-        writing a larger one later -- a crash that reaped its runner after the
-        first write -- corrects it.
-
-        Not fatal. An attempt that ran is not a failed attempt because its
-        accounting write failed, and this runs on the teardown path where the
-        lease is about to be released either way.
-        """
-        kept = self._credential_kept
-        if self._writes_forbidden or (not self._spend and kept is None):
-            return
-        snapshot = dict(self._spend)
-        if kept is not None:
-            # Request 152: the credential the attempt KEPT LAST, beside spend.
-            snapshot["credential"] = dict(kept)
-        if snapshot == self._spend_recorded:
-            return
-        try:
-            self.control.record_spend(snapshot)
-        except Exception as exc:
-            self.log.warning("could not record spend", error=f"{type(exc).__name__}: {exc}")
-            return
-        self._spend_recorded = snapshot
-
     # -- metrics -----------------------------------------------------------
     def _start_sampler(self, child: ChildProcess) -> None:
         ws = self.ws
@@ -19741,15 +19498,13 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 
 # -- what an attempt used: token counts and cost (issue 68) ---------------------------
 #
-# Moved, unchanged, to `usage.py`. Bound here only the names this file or a
-# test still reads through it: `_add_spend`, `_stream_usage`,
-# `_unpriced_sessions`, `_cost_incomplete` and `_usage_summary`. Read every
+# Moved, unchanged, to `usage.py`. Bound here only the names a test still
+# reads through it: `_add_spend`, `_stream_usage` and `_usage_summary`. The
+# worker's spend methods (`spend.py`) import theirs from `usage`; read every
 # other name in `usage` itself; a binding nothing reads let a stale
 # `monkeypatch.setattr(lifecycle, ...)` succeed and change nothing (issue 193).
 _add_spend = usage_mod._add_spend
 _stream_usage = usage_mod._stream_usage
-_unpriced_sessions = usage_mod._unpriced_sessions
-_cost_incomplete = usage_mod._cost_incomplete
 _usage_summary = usage_mod._usage_summary
 
 
@@ -19842,15 +19597,6 @@ def _tail_text(path: Path, limit: int = 2000) -> str:
     return path.read_text(errors="replace")[-limit:]
 
 
-#: The token counts a run's entry in `_runs` carries, each its own share.
-_RUN_TOKEN_KEYS = (
-    "input_tokens",
-    "output_tokens",
-    "cache_creation_input_tokens",
-    "cache_read_input_tokens",
-)
-
-
 def _runs_summary(runs: list[dict[str, Any]], swaps: list[dict[str, Any]]) -> dict[str, Any]:
     """`runs`, `swaps` and `swap_cost` for a summary, or {} (SWAP-RUNS, archived issue 2457).
 
@@ -19908,42 +19654,6 @@ def _runs_duration(runs: list[dict[str, Any]]) -> dict[str, Any]:
     if len(known) < len(runs):
         out["duration_partial"] = True
     return out
-
-
-def _reread_of(channel: dict[str, Any]) -> dict[str, Any]:
-    """A run's re-read cost from its account channel (`cliagent.AccountStreamWatcher`).
-
-    `reached: true` with the seconds and tokens spent before the run's first
-    action and the tool it was; `reached: false` with everything the run
-    spent when it never acted; `measured: false` when the channel said
-    nothing (a runner that wrote none). Numbers only, never stream text.
-    """
-    def figures(block: Any) -> dict[str, Any] | None:
-        if not isinstance(block, dict):
-            return None
-        seconds = block.get("seconds")
-        tokens = block.get("tokens")
-        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
-            return None
-        counts = {
-            key: int(tokens[key])
-            for key in _RUN_TOKEN_KEYS
-            if isinstance(tokens, dict) and isinstance(tokens.get(key), int)
-            and not isinstance(tokens.get(key), bool)
-        }
-        return {"seconds": round(float(seconds), 3), "tokens": counts}
-
-    first = channel.get("first_action")
-    reached = figures(first)
-    if reached is not None:
-        tool = first.get("tool") if isinstance(first, dict) else None
-        if isinstance(tool, str) and tool:
-            reached["tool"] = tool[:80]
-        return {"reached": True, **reached}
-    spent = figures(channel.get("spent"))
-    if spent is not None:
-        return {"reached": False, **spent}
-    return {"measured": False}
 
 
 def _rfc3339_now() -> str:
