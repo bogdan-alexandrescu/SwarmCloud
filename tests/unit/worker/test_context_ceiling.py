@@ -211,7 +211,8 @@ def test_a_resume_of_a_session_over_the_ceiling_is_a_fresh_session(ctx, monkeypa
 
 
 def test_a_resume_under_the_ceiling_still_resumes(ctx, monkeypatch):
-    session = _resume_from(ctx, monkeypatch, 120_000)
+    # Under the swap hand-off threshold too (`ceiling.SWAP_HANDOFF_CONTEXT_TOKENS`).
+    session = _resume_from(ctx, monkeypatch, 60_000)
     _plan(ctx, SMALL)
     out = run_cli_agent(ctx, _spec())
 
@@ -233,7 +234,7 @@ def test_a_resume_under_the_ceiling_still_resumes(ctx, monkeypatch):
 
 
 def _moved_twice(ctx: RunnerContext, monkeypatch, creation: int, *, fresh_sessions: int = 0,
-                 then: dict[str, Any] = SMALL, recorded: int = 120_000) -> tuple[str, Any]:
+                 then: dict[str, Any] = SMALL, recorded: int = 60_000) -> tuple[str, Any]:
     session = _resume_from(ctx, monkeypatch, recorded)
     if fresh_sessions:
         path = ctx.work_dir.parent / "private" / ceiling.STATE_NAME
@@ -265,7 +266,8 @@ def test_a_swap_whose_last_turn_wrote_its_context_to_cache_past_the_ceiling_is_f
 
 
 def test_a_swap_whose_whole_prompt_is_under_the_ceiling_still_resumes(ctx, monkeypatch):
-    session, _ = _moved_twice(ctx, monkeypatch, 100_000)
+    # 62,000: under the ceiling and under the swap hand-off threshold.
+    session, _ = _moved_twice(ctx, monkeypatch, 60_000)
     out = run_cli_agent(ctx, _spec())
 
     first, second = _starts(ctx)
@@ -422,3 +424,158 @@ def test_the_stream_is_read_from_the_pipe_not_assumed_whole():
     assert watcher.poll() is False and watcher.passed == ceiling.WHY_CONTEXT
     feed(b'{"type": "user"}\n')
     assert watcher.poll() is True and watcher.stopped_for == ceiling.WHY_CONTEXT
+
+
+# A SWAP OF A SESSION PAST THE HAND-OFF THRESHOLD GOES FRESH (wave 3, shorter
+# sessions). A swap's `--resume` writes the whole prompt to the new account's
+# cache; past `ceiling.SWAP_HANDOFF_CONTEXT_TOKENS` (half the ceiling) the
+# runner starts a fresh session from the hand-off note instead, inside the
+# same fresh-session cap, and records which path the swap took: in the
+# ceiling's summary and on the account channel the worker reads after a swap.
+
+
+def _channel(ctx: RunnerContext, monkeypatch) -> Path:
+    channel = ctx.work_dir.parent / "private" / "channel.json"
+    monkeypatch.setenv("SWARM_ACCOUNT_STREAM", str(channel))
+    return channel
+
+
+def _swap_path(channel: Path) -> Any:
+    return json.loads(channel.read_text()).get("swap_path")
+
+
+def _with_state(ctx: RunnerContext, **fields: Any) -> None:
+    path = ctx.work_dir.parent / "private" / ceiling.STATE_NAME
+    path.write_text(json.dumps({**json.loads(path.read_text()), **fields}))
+
+
+def test_the_swap_threshold_is_half_the_ceiling_and_never_above_a_lowered_one():
+    assert ceiling.SWAP_HANDOFF_CONTEXT_TOKENS == ceiling.CONTEXT_CEILING_TOKENS // 2
+    assert ceiling.swap_threshold(ceiling.resolve_limits(None, None)) == 100_000
+    lowered = ceiling.resolve_limits({"context_ceiling": {"tokens": 60_000}}, None)
+    assert ceiling.swap_threshold(lowered) == 60_000
+
+
+def test_a_swap_above_the_threshold_hands_off_from_the_note(ctx, monkeypatch):
+    session = _resume_from(ctx, monkeypatch, 120_000)
+    channel = _channel(ctx, monkeypatch)
+    (ctx.artifacts_dir / ceiling.AGENT_HANDOFF_NAME).write_text("Done: the parser. Left: tests.")
+    _plan(ctx, SMALL)
+    out = run_cli_agent(ctx, _spec())
+
+    (only,) = _starts(ctx)
+    # MUTATION: judge a swap against the ceiling (200,000) and 120,000 resumes.
+    assert "--resume" not in only["argv"] and session not in only["argv"]
+    assert only["stdin"].startswith("CONTEXT CEILING HANDOFF")
+    assert "Left: tests." in only["stdin"], "the fresh session starts from the note"
+    (stop,) = out["context_ceiling"]["stops"]
+    assert stop["at"] == ceiling.AT_RESUME and stop["why"] == ceiling.WHY_CONTEXT
+    assert stop["context_tokens"] == 120_000 and stop["resume_reason"] == "moved"
+    assert out["context_ceiling"]["fresh_sessions"] == 1
+    assert out["context_ceiling"]["swap"] == {
+        "path": ceiling.SWAP_HANDED_OFF, "context_tokens": 120_000, "threshold_tokens": 100_000}
+    assert _swap_path(channel) == ceiling.SWAP_HANDED_OFF
+
+
+def test_a_swap_below_the_threshold_resumes_as_today(ctx, monkeypatch):
+    session = _resume_from(ctx, monkeypatch, 90_000)
+    channel = _channel(ctx, monkeypatch)
+    _plan(ctx, SMALL)
+    out = run_cli_agent(ctx, _spec())
+
+    (only,) = _starts(ctx)
+    assert only["argv"][only["argv"].index("--resume") + 1] == session
+    assert "CONTEXT CEILING HANDOFF" not in only["stdin"]
+    assert out["context_ceiling"]["stops"] == []
+    assert out["context_ceiling"]["swap"] == {
+        "path": ceiling.SWAP_RESUMED, "context_tokens": 90_000, "threshold_tokens": 100_000}
+    assert _swap_path(channel) == ceiling.SWAP_RESUMED
+
+
+def test_a_credential_reload_above_the_swap_threshold_still_resumes(ctx, monkeypatch):
+    # The same account, its cache warm: a reload is judged on the ceiling.
+    session = _resume_from(ctx, monkeypatch, 120_000)
+    monkeypatch.setenv(RESUME_REASON_ENV, "credential_reloaded")
+    _plan(ctx, SMALL)
+    out = run_cli_agent(ctx, _spec())
+
+    (only,) = _starts(ctx)
+    assert only["argv"][only["argv"].index("--resume") + 1] == session
+    assert out["context_ceiling"]["stops"] == []
+    assert out["context_ceiling"]["swap"] is None, "no swap happened"
+
+
+def test_a_swap_above_the_threshold_with_the_fresh_sessions_spent_resumes(ctx, monkeypatch):
+    session = _resume_from(ctx, monkeypatch, 120_000)
+    _with_state(ctx, fresh_sessions=ceiling.MAX_FRESH_SESSIONS)
+    channel = _channel(ctx, monkeypatch)
+    _plan(ctx, SMALL)
+    out = run_cli_agent(ctx, _spec())
+
+    (only,) = _starts(ctx)
+    assert only["argv"][only["argv"].index("--resume") + 1] == session
+    assert out["context_ceiling"]["stops"] == []
+    assert out["context_ceiling"]["fresh_sessions"] == ceiling.MAX_FRESH_SESSIONS
+    assert out["context_ceiling"]["swap"]["path"] == ceiling.SWAP_RESUMED
+    assert _swap_path(channel) == ceiling.SWAP_RESUMED
+
+
+def test_a_swap_of_the_fresh_session_a_handoff_started_judges_that_session(ctx, monkeypatch):
+    # A hand-off in progress: the session over the ceiling was ended and a
+    # fresh one started from the note; the swap moved the fresh one, which is
+    # small, so it is resumed and no second fresh session is spent.
+    ended = _resume_from(ctx, monkeypatch, 230_000)
+    fresh = "sess-fresh-" + pysecrets.token_hex(4)
+    monkeypatch.setenv(RESUME_SESSION_ENV, fresh)
+    _with_state(ctx, session_id=fresh, context_tokens=30_000, fresh_sessions=1,
+                handed_off_sessions=[ended])
+    _plan(ctx, SMALL)
+    out = run_cli_agent(ctx, _spec())
+
+    (only,) = _starts(ctx)
+    assert only["argv"][only["argv"].index("--resume") + 1] == fresh
+    assert out["context_ceiling"]["stops"] == []
+    assert out["context_ceiling"]["fresh_sessions"] == 1
+    assert out["context_ceiling"]["swap"]["path"] == ceiling.SWAP_RESUMED
+
+
+def test_a_swap_naming_the_session_a_handoff_already_ended_never_resumes_it(ctx, monkeypatch):
+    # The swap came before the fresh session named itself, so the worker
+    # still holds the ended session's id: resuming it would re-read the very
+    # context the hand-off was for. It is handed off again, inside the cap.
+    ended = _resume_from(ctx, monkeypatch, 230_000)
+    _with_state(ctx, session_id=None, context_tokens=0, tool_calls=0, fresh_sessions=1,
+                handed_off_sessions=[ended])
+    _plan(ctx, SMALL)
+    out = run_cli_agent(ctx, _spec())
+
+    (only,) = _starts(ctx)
+    assert "--resume" not in only["argv"] and ended not in only["argv"]
+    assert only["stdin"].startswith("CONTEXT CEILING HANDOFF")
+    (stop,) = out["context_ceiling"]["stops"]
+    assert stop["why"] == ceiling.WHY_HANDED_OFF
+    assert out["context_ceiling"]["fresh_sessions"] == 2
+    assert out["context_ceiling"]["swap"]["path"] == ceiling.SWAP_HANDED_OFF
+
+
+def test_a_ceiling_stop_remembers_the_session_it_ended(ctx, monkeypatch):
+    private = ctx.work_dir.parent / "private"
+    private.mkdir()
+    monkeypatch.setenv(SESSION_FILE_ENV, str(private / "session.json"))
+    _plan(ctx, {"contexts": [50_000, 210_000, 220_000], "pause": 0.5}, SMALL)
+    run_cli_agent(ctx, _spec())
+
+    state = json.loads((private / ceiling.STATE_NAME).read_text())
+    assert state["handed_off_sessions"] == ["sess-0000-abcdef"]
+    assert state["session_id"] == "sess-0001-abcdef"
+
+
+@pytest.mark.parametrize(("channel", "record"), [
+    ({"swap_path": "resumed"}, {"swap_path": "resumed"}),
+    ({"swap_path": "handed_off"}, {"swap_path": "handed_off"}),
+    ({"swap_path": "anything else"}, {}),
+    ({"swap_path": None}, {}),
+    ({}, {}),
+])
+def test_the_worker_reads_the_swap_path_off_the_channel(channel, record):
+    assert ceiling.swap_path_of(channel) == record

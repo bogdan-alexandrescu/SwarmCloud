@@ -226,7 +226,7 @@ def test_a_swaps_handoff_session_has_each_standing_paragraph_once(tmp_path, monk
     # is where the swap hand-off and the system prompt meet.
     ctx = _play(tmp_path, monkeypatch, {"contexts": [2_000], "creations": [228_000]},
                 {"contexts": [1_000, 2_000]})
-    session = _resume_from(ctx, monkeypatch, 120_000)
+    session = _resume_from(ctx, monkeypatch, 60_000)
     assert claude_code.body(ctx)["context_ceiling"]["stops"] == [], "the first move resumes"
     out = claude_code.body(ctx)
 
