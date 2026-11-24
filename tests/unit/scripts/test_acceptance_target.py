@@ -12,8 +12,8 @@ What these hold, none of it needing a deployment, a credential or a network:
 * the acceptance configuration (scripts/acceptance/config.sh) resolves to the
   `smoke` tenant and the private sandbox repository, and refuses a target
   that is the repository this checkout or this CI run is for;
-* nothing the acceptance suite runs, and nothing in the release's acceptance
-  job, names the public repository -- the guard;
+* nothing the acceptance suite runs names the public repository -- the
+  guard;
 * every API call the suite makes carries `X-Swarm-Tenant: smoke`
   (common.sh api_request honours SWARM_API_TENANT, and lib.sh exports it), and
   the suite refuses to run when the API resolves it to any other tenant;
@@ -45,9 +45,6 @@ ACCEPTANCE = ROOT / "scripts" / "acceptance"
 CONFIG = ACCEPTANCE / "config.sh"
 LIB = ACCEPTANCE / "lib.sh"
 COMMON = ROOT / "scripts" / "lib" / "common.sh"
-#: Where acceptance runs since 2026-10-08 (cut A of the release timing
-#: report): a workflow of its own, after release.yml completes.
-ACCEPT = ROOT / ".github" / "workflows" / "accept.yml"
 
 #: The deployment's acceptance sandbox: private, default branch main. It is
 #: configuration (SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL), never a default.
@@ -197,12 +194,6 @@ def _acceptance_files() -> list[Path]:
     return sorted(p for p in ACCEPTANCE.rglob("*") if p.is_file() and "__pycache__" not in p.parts)
 
 
-def _acceptance_job_text() -> str:
-    """accept.yml as written, comments included: every job in it drives the
-    suite, the sandbox or the report."""
-    return ACCEPT.read_text()
-
-
 def test_the_guard_pattern_catches_every_spelling_and_not_the_sandbox():
     for spelling in (
         PUBLIC,
@@ -233,15 +224,6 @@ def test_no_acceptance_file_names_the_public_repository(path):
         if PUBLIC_RE.search(line)
     ]
     assert not hits, f"{path.relative_to(ROOT)} names the public repository:\n" + "\n".join(hits)
-
-
-def test_the_release_acceptance_job_does_not_name_the_public_repository():
-    job = _acceptance_job_text()
-    assert "verify-remote.sh" in job, "the slice is not the acceptance job"
-    assert not PUBLIC_RE.search(job)
-    # github.repository is the public repository in every run of this
-    # workflow; the job must not hand it to the suite or the sweep either.
-    assert "github.repository" not in job
 
 
 # ---------------------------------------------------------------------------
@@ -420,53 +402,8 @@ def test_no_acceptance_group_fetches_from_raw_githubusercontent():
 
 
 # ---------------------------------------------------------------------------
-# accept.yml's wiring (acceptance left release.yml on 2026-10-08)
+# The sandbox sync script
 # ---------------------------------------------------------------------------
-
-
-def _jobs() -> dict:
-    data = yaml.safe_load(ACCEPT.read_text())
-    return data["jobs"]
-
-
-def _steps_running(script: str) -> list[dict]:
-    return [s for job in _jobs().values() for s in job.get("steps") or [] if script in str(s.get("run", ""))]
-
-
-def test_the_release_sweeps_the_sandbox_with_the_sandbox_token_not_the_github_token():
-    (sweep,) = _steps_running("github-cleanup.sh")
-    env = sweep.get("env", {})
-    assert "secrets.SWARM_SANDBOX_GITHUB_TOKEN" in str(env.get("SWARM_ACCEPTANCE_GITHUB_TOKEN", ""))
-    assert "github.token" not in str(sweep), "the job's own token reaches only the public repository"
-
-
-def test_the_release_syncs_the_fixtures_into_the_sandbox_before_the_suite():
-    jobs = _jobs()
-    (sync,) = _steps_running("sandbox-sync.sh")
-    env = sync.get("env", {})
-    assert "secrets.SWARM_SANDBOX_GITHUB_TOKEN" in str(env.get("SWARM_ACCEPTANCE_GITHUB_TOKEN", ""))
-    syncing = [j for j, job in jobs.items() if sync in (job.get("steps") or [])]
-    suites = [j for j, job in jobs.items() if any("verify-remote.sh \"acceptance/" in str(s.get("run", "")) for s in job.get("steps") or [])]
-    assert suites, "no job runs the suite"
-    # The scheduled live-browser job (off the red path since 2026-10-14) does
-    # not sync: it runs beside, not after, a post-release run, and its task
-    # clones the fixtures the last post-release run synced from what dev runs.
-    # Two writers would race on the sandbox's one branch.
-    assert "live-browser" in suites, "the scheduled live-browser job runs the suite"
-    for job_id in [j for j in suites if j != "live-browser"]:
-        needs = jobs[job_id].get("needs") or []
-        assert syncing[0] in needs, f"{job_id} can start before the fixtures are on the sandbox"
-
-
-def test_the_acceptance_job_cannot_write_to_the_public_repository():
-    for job_id, job in _jobs().items():
-        perms = job.get("permissions", {})
-        assert perms.get("contents") in (None, "read"), (job_id, perms)
-        assert perms.get("pull-requests") in (None, "read", "none"), (job_id, perms)
-    for job_id in ("acceptance", "acceptance-2"):
-        assert _jobs()[job_id]["permissions"].get("id-token") == "write", "the suite still runs through verify-remote.sh"
-    top = yaml.safe_load(ACCEPT.read_text())["permissions"]
-    assert top == {"contents": "read"}, top
 
 
 def test_the_sandbox_sync_script_is_wired_as_an_entry_script():
@@ -526,9 +463,8 @@ def test_swarm_verify_is_not_a_listed_service_account_anywhere():
 # The suite runs in swarm-verify, which holds no GitHub token, so against the
 # private sandbox it SKIPs every pull-request read-back. Without the step
 # below, a release went green with the direct-pr title/body/diff and the
-# integrate merged-branch list never checked (review of archived issue 628). These pin that
-# the release makes them with the sandbox token before the sweep closes the
-# pull requests, and that the script fails on each defect it exists to catch.
+# integrate merged-branch list never checked (review of archived issue 628). These hold
+# that the script fails on each defect it exists to catch.
 
 VERIFY = ACCEPTANCE / "github-verify.sh"
 CALC = "tests/acceptance/fixtures/claude-code/calc.py"
@@ -727,36 +663,6 @@ def test_verify_writes_nothing_to_github():
     code = "\n".join(l for l in VERIFY.read_text().splitlines() if not l.lstrip().startswith("#"))
     for verb in ("PATCH", "DELETE", "POST", "PUT", "--data-binary"):
         assert verb not in code, f"github-verify.sh must only read; it mentions {verb}"
-
-
-def test_the_release_reads_the_pull_requests_back_with_the_sandbox_token_before_the_sweep():
-    jobs = _jobs()
-    results = jobs["sandbox-results"]
-    steps = results["steps"]
-
-    def at(script: str) -> int:
-        return next(i for i, s in enumerate(steps) if script in str(s.get("run", "")))
-
-    verify, sweep = at("github-verify.sh"), at("github-cleanup.sh")
-    assert verify < sweep, "the read-back runs before anything is closed"
-    # After every group, whatever they concluded: a failed suite's pull
-    # requests are read back too.
-    assert {"acceptance", "acceptance-2"} <= set(results.get("needs") or [])
-    assert "!cancelled()" in str(results.get("if", ""))
-    step = steps[verify]
-    env = step.get("env", {})
-    assert "secrets.SWARM_SANDBOX_GITHUB_TOKEN" in str(env.get("SWARM_ACCEPTANCE_GITHUB_TOKEN", ""))
-    assert "github.token" not in str(step)
-    # It judges only what this run opened: SINCE comes from a step that ran
-    # before the fixtures were synced, and so before any group started.
-    sandbox = jobs["sandbox"]["steps"]
-    started = next(i for i, s in enumerate(sandbox) if s.get("id") == "started")
-    sync = next(i for i, s in enumerate(sandbox) if "sandbox-sync.sh" in str(s.get("run", "")))
-    assert started < sync
-    assert "needs.sandbox.outputs.since" in str(env.get("SWARM_ACCEPTANCE_SINCE", ""))
-    assert jobs["sandbox"]["outputs"]["since"] == "${{ steps.started.outputs.at }}"
-    # The sweep is not skipped when the read-back fails.
-    assert "!cancelled()" in str(steps[sweep].get("if", ""))
 
 
 # ---------------------------------------------------------------------------

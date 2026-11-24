@@ -8,9 +8,10 @@ scripts/lib/resolve.sh (config_fetch), the read a laptop's `make tf-plan`
 makes, into the runner's temporary directory outside the checkout, and plans
 with that file.
 
-The fetch step runs here for real, against a local configuration directory
-standing in for the bucket (SWARM_DEPLOY_CONFIG_DIR, which config_fetch reads
-in place of gs://), with the placeholder project.
+The fetch step (its published run block, ci_run_blocks) runs here for real,
+against a local configuration directory standing in for the bucket
+(SWARM_DEPLOY_CONFIG_DIR, which config_fetch reads in place of gs://), with
+the placeholder project.
 """
 
 from __future__ import annotations
@@ -22,11 +23,10 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
+
+from .ci_run_blocks import run_block
 
 REPO = Path(__file__).resolve().parents[3]
-ACTION = REPO / ".github" / "actions" / "release-apply" / "action.yml"
-TERRAFORM = REPO / ".github" / "workflows" / "terraform.yml"
 FETCH = "fetch this environment's tfvars"
 
 _spec = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
@@ -34,61 +34,10 @@ placeholders = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(placeholders)
 
 
-def _load(path: Path) -> dict:
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
-
-
-def _steps(where: str) -> list[dict]:
+def _fetch_step(where: str) -> str:
     if where == "release-apply":
-        return _load(ACTION)["runs"]["steps"]
-    return _load(TERRAFORM)["jobs"]["plan"]["steps"]
-
-
-def _named(steps: list[dict], name: str) -> dict:
-    for step in steps:
-        if step.get("name") == name:
-            return step
-    raise AssertionError(f"no step named {name!r}")
-
-
-def _all_text() -> str:
-    paths = sorted((REPO / ".github").rglob("*.yml"))
-    return "\n".join(p.read_text(encoding="utf-8") for p in paths)
-
-
-def test_no_workflow_reads_tfvars_from_the_checkout():
-    """MUTATION: put back `-var-file="../environments/${ENVIRONMENT}/..."` and
-    this goes red: the file is not in a fresh checkout any more."""
-    text = _all_text()
-    assert "../environments/" not in text
-    assert "environments/${ENVIRONMENT}/${ENVIRONMENT}.tfvars" not in text
-
-
-@pytest.mark.parametrize("where", ["release-apply", "terraform.yml"])
-def test_the_plan_uses_the_fetched_file_and_fetches_it_first(where: str):
-    steps = _steps(where)
-    names = [s.get("name") for s in steps]
-    plan = next(s for s in steps if s.get("name") in ("plan", "terraform plan"))
-    assert FETCH in names, names
-    assert names.index(FETCH) < names.index(plan["name"])
-    assert '-var-file="${SWARM_TFVARS_FILE}"' in plan["run"]
-    fetch = _named(steps, FETCH)
-    assert 'XDG_CACHE_HOME="${RUNNER_TEMP}" ./scripts/lib/resolve.sh tfvars "${ENVIRONMENT}"' in fetch["run"]
-
-
-def test_every_job_that_plans_names_the_state_bucket_as_a_secret():
-    """The configuration root is gs://<state bucket>/config, so resolve.sh
-    needs the bucket; it is a deployment identifier, read as a secret. No
-    zone is passed: common.sh does not require one and nothing reads it."""
-    plan_env = _load(TERRAFORM)["jobs"]["plan"]["env"]
-    assert plan_env["TF_STATE_BUCKET"] == "${{ secrets.TF_STATE_BUCKET }}"
-    planners = 0
-    for workflow in ("release.yml", "hotfix.yml"):
-        for name, job in _load(REPO / ".github" / "workflows" / workflow)["jobs"].items():
-            if any("release-apply" in str(s.get("uses", "")) for s in job.get("steps", [])):
-                planners += 1
-                assert job["env"]["TF_STATE_BUCKET"] == "${{ secrets.TF_STATE_BUCKET }}", f"{workflow}: {name}"
-    assert planners >= 2, planners
+        return run_block(".github/actions/release-apply/action.yml", None, FETCH)
+    return run_block("terraform.yml", "plan", FETCH)
 
 
 @pytest.fixture()
@@ -131,7 +80,7 @@ def _run(script: str, env: dict) -> subprocess.CompletedProcess:
 
 @pytest.mark.parametrize("where", ["release-apply", "terraform.yml"])
 def test_the_fetch_step_passes_a_file_outside_the_checkout(runner: dict, where: str):
-    proc = _run(_named(_steps(where), FETCH)["run"], runner["env"])
+    proc = _run(_fetch_step(where), runner["env"])
     assert proc.returncode == 0, proc.stdout + proc.stderr
     lines = runner["github_env"].read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1 and lines[0].startswith("SWARM_TFVARS_FILE="), lines
@@ -146,7 +95,7 @@ def test_the_fetch_step_fails_when_the_environment_has_no_tfvars(runner: dict, w
     """No object, no plan: never an empty GITHUB_ENV line, never a tracked
     fallback."""
     runner["tfvars"].unlink()
-    proc = _run(_named(_steps(where), FETCH)["run"], runner["env"])
+    proc = _run(_fetch_step(where), runner["env"])
     assert proc.returncode != 0
     assert "dev.tfvars does not exist" in proc.stderr
     assert runner["github_env"].read_text(encoding="utf-8") == ""

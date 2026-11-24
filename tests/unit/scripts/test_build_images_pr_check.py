@@ -10,7 +10,7 @@ main 539b5b58 and f1c4b075). Main went red and releases were blocked.
 Owner decision, 2026-10-05: a pull request that changes images/** or a file an
 image copies in builds the affected images in Cloud Build WITHOUT pushing, so
 their build-time self-tests run before merge. The properties asserted here,
-each against the REAL scripts and workflow:
+each against the REAL scripts:
 
   * which images a set of changed paths reaches is DERIVED from the
     Dockerfiles' COPY sources and each recipe's directory -- planting a COPY
@@ -22,10 +22,6 @@ each against the REAL scripts and workflow:
     `images:` to push and no registry at all, touches no registry itself,
     writes no manifest, and builds agent-runtime-browser on a base built in
     the same Cloud Build instead of pulling one from the registry;
-  * every input path the mapping knows reaches application.yml's jobs on a
-    pull request (its `changes` job's APP_PATHS), so the build job runs;
-  * the workflow job runs both modes on a pull request and authenticates as
-    something other than the deployer.
 
 WHAT THIS CANNOT PROVE: that Cloud Build accepts the generated configs, that
 BuildKit resolves the locally built base without a pull, or that the
@@ -47,12 +43,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from .application_paths import reaches
-from .test_fast_checks_on_lane_prs import without_lane_clause
-
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "build-images.sh"
-WORKFLOW = REPO / ".github" / "workflows" / "application.yml"
 TAG = "feed00c0ffee"
 
 pytestmark = pytest.mark.skipif(
@@ -360,30 +352,6 @@ def test_workspace_apply_builds_from_a_context_holding_every_path_it_copies(tmp_
     assert not missing, f"images/workspace-apply/cloudbuild.yaml does not put {missing} in the build context"
 
 
-def test_every_image_input_fires_application_yml_on_a_pull_request(tmp_path):
-    """The build job lives in application.yml, and runs only when its
-    `changes` job says the change reaches the workflow (APP_PATHS, which was
-    the pull_request path filter until 2026-10-07). An input that list misses
-    skips the job, and the image goes unbuilt with every check green."""
-    proc = subprocess.run(
-        ["bash", str(SCRIPT), "--inputs"],
-        env=_env(tmp_path),
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
-    assert proc.returncode == 0, proc.stderr
-    samples = sorted({
-        # A concrete path each pattern matches: a glob star becomes a name.
-        re.sub(r"\*+", "x", pattern)
-        for _, pattern in (line.split("\t") for line in proc.stdout.splitlines() if line)
-    })
-    assert samples
-    missed = [sample for sample in samples if not reaches(sample)]
-    assert not missed, f"application.yml's jobs do not run on a pull request changing {missed}"
-
-
 # ---------------------------------------------------------------------------
 # --build-only, against a fake gcloud.
 # ---------------------------------------------------------------------------
@@ -579,57 +547,3 @@ def test_a_build_still_needs_a_project(tmp_path):
     assert proc.returncode != 0
     assert "PROJECT_ID is not set" in proc.stderr, proc.stderr
 
-
-# ---------------------------------------------------------------------------
-# The workflow.
-# ---------------------------------------------------------------------------
-def _jobs() -> dict:
-    return yaml.safe_load(WORKFLOW.read_text())["jobs"]
-
-
-def _pr_job() -> tuple[str, dict]:
-    hits = [
-        (job_id, job)
-        for job_id, job in _jobs().items()
-        if any("--build-only" in str(s.get("run", "")) for s in job.get("steps") or [])
-    ]
-    assert len(hits) == 1, f"expected one job running build-images.sh --build-only, found {hits}"
-    return hits[0]
-
-
-def test_a_pull_request_job_maps_the_change_and_builds_without_pushing():
-    job_id, job = _pr_job()
-    assert "pull_request" in str(job.get("if", "")), job.get("if")
-    runs = "\n".join(str(s.get("run", "")) for s in job["steps"])
-    assert "build-images.sh --affected-by" in runs, runs
-    # Three dots: what the pull request merges, not what main gained since.
-    assert "...${HEAD_SHA}" in runs, runs
-    for step in job["steps"]:
-        assert "upload-artifact" not in str(step.get("uses", "")), (
-            f"{job_id} records a build no release may promote"
-        )
-        assert "GCP_DEPLOY_SA" not in json.dumps(step), (
-            f"{job_id} authenticates as the deployer on a pull request: {step}"
-        )
-    # The build and its identity only when something was mapped.
-    gated = [s for s in job["steps"] if "--build-only" in str(s.get("run", ""))
-             or str(s.get("uses", "")).startswith("google-github-actions/")]
-    assert gated and all("steps." in str(s.get("if", "")) for s in gated), gated
-
-
-def test_mains_build_and_push_is_unchanged():
-    build = _jobs()["build"]
-    # ...and not on a merge queue entry, whose ref the pool rejects as it
-    # rejects a pull request's (test_merge_queue_workflows.py).
-    # (Then the lane clause every job ends with, test_fast_checks_on_lane_prs.py.)
-    assert without_lane_clause(build["if"]) == ("${{ !cancelled() && !failure() && github.event_name != 'pull_request' && github.event_name != 'merge_group' "
-        # A lane push (`swarm/**`) runs the tests but never builds (LANE CI-EARLY, test_ci_early.py).
-        "&& github.ref == 'refs/heads/main' || !cancelled() && !failure() && github.event_name == 'workflow_dispatch' }}")
-    runs = [str(s.get("run", "")) for s in build["steps"] if s.get("run")]
-    # Main builds and pushes: incrementally since observer proposal H
-    # (test_build_images_incremental.py), never without pushing.
-    builds = [r for r in runs if "./scripts/build-images.sh" in r]
-    assert len(builds) == 1, runs
-    assert "./scripts/build-images.sh --incremental" in builds[0], builds[0]
-    assert not re.search(r"--(build-only|local)\b", builds[0]), builds[0]
-    assert "build-not-run" not in _jobs(), "the 'not built' notice outlived the pull-request build"

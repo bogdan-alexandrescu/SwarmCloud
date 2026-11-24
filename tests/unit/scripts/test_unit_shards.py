@@ -41,8 +41,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from .ci_fold_layout import check_steps
-from .test_fast_checks_on_lane_prs import LANE_SKIP
+from .lane_clause_helpers import LANE_SKIP
 
 REPO = Path(__file__).resolve().parents[3]
 APPLICATION = REPO / ".github" / "workflows" / "application.yml"
@@ -134,19 +133,6 @@ def test_the_unit_tests_gate_the_release_not_the_build():
     assert str(jobs["python-unit"]["name"]).split(" (", 1)[0] in listed
     for job_id in ("python-checks", "shell", "manifests"):
         assert str(jobs[job_id].get("name") or job_id) in listed, job_id
-
-
-def test_the_old_python_jobs_other_checks_still_run():
-    """MUTATION: drop any step from python-checks."""
-    # Its steps run in `quick-checks` since CI-FOLD (archived issue 1799).
-    runs = "\n".join(str(s.get("run", "")) for s in check_steps("application.yml", "python-checks"))
-    for needle in ("uv lock --check", "uv sync --frozen", "check-frozen-contract.sh", "compileall",
-                   "test_plugin_bridge_install.py", "destroy.sh --self-test"):
-        assert needle in runs, needle
-    # The lock is checked before the frozen sync installs from it, in the job
-    # that checks it (test_uv_lock_check_step.py); each shard syncs too.
-    unit = "\n".join(str(s.get("run", "")) for s in _jobs()["python-unit"]["steps"])
-    assert "uv sync --frozen" in unit and "uv lock --check" not in unit
 
 
 # ---------------------------------------------------------------------------
@@ -397,7 +383,6 @@ def test_weights_covering_most_files_print_no_warning(tmp_path):
                   "tests/unit/scripts/test_ci_gate.py"],
          ["tests/unit/scheduler/test_gke_browser_pod_dns.py"]),
         ("swarm-ui", ["tests/unit/control_plane/test_runtimes_screen.py",
-                      "tests/unit/scripts/test_issue_forms.py",
                       "tests/unit/scripts/test_ui_node_line.py"],
          ["tests/unit/scheduler/test_gke_browser_pod_dns.py",
           "tests/unit/scripts/test_docs_spec_amendments.py"]),

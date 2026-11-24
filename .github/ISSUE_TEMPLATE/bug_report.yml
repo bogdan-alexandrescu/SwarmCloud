@@ -2,8 +2,7 @@
 # the shape is theirs, the content is SwarmCloud's. The rules around filing and
 # closing are in CLAUDE.md, "Issues".
 #
-# The `surface` options are held to the nav by
-# tests/unit/scripts/test_issue_forms.py: every tab in SECTIONS
+# The `surface` options follow the nav: every tab in SECTIONS
 # (apps/swarm-ui/src/App.tsx) must be offered here with its current name and
 # route, and nothing the nav no longer reaches may be. Change a tab and this
 # file has to follow, which is the point.

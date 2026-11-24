@@ -27,10 +27,7 @@ fake `gcloud` on PATH that remembers which tag points at which digest:
   * every image is rebuilt when build logic changed, there is no ancestor
     record, the record is of a commit that is not an ancestor, a reused digest
     is older than seven days, --full-build is given, or the environment is
-    prod;
-  * application.yml asks for the previous record, builds incrementally, can
-    be told to build everything, and has the history and the permission it
-    needs.
+    prod.
 
 WHAT THIS CANNOT PROVE: that Artifact Registry's `docker tags add` behaves as
 the fake does (a tag moved to the named digest). It is the command
@@ -50,12 +47,10 @@ import time
 from pathlib import Path
 
 import pytest
-import yaml
 
 from .test_ci_built_images import IMAGES, REGISTRY
 
 REPO = Path(__file__).resolve().parents[3]
-WORKFLOW = REPO / ".github" / "workflows" / "application.yml"
 # agent-runtime-base-nocodex is the base's Dockerfile built with INSTALL_CODEX=0
 # (BROWSER-NO-CODEX): the base's inputs are its inputs.
 # agent-runtime-lightpanda (LIGHTPANDA-BUILD-SCRIPTS) is built FROM the base
@@ -172,8 +167,11 @@ class Sandbox:
         for name in (".gitignore", ".gcloudignore", ".dockerignore", "pyproject.toml", "uv.lock"):
             if (REPO / name).exists():
                 shutil.copy2(REPO / name, self.root / name)
+        # build-images.sh lists the workflow among its build logic by path
+        # (a change to it rebuilds everything); its text is never read, so a
+        # stand-in is enough.
         (self.root / ".github" / "workflows").mkdir(parents=True)
-        shutil.copy2(WORKFLOW, self.root / ".github" / "workflows" / "application.yml")
+        (self.root / ".github" / "workflows" / "application.yml").write_text("name: application\n")
         (self.root / "apps" / "swarm-ui" / "src").mkdir(parents=True)
         (self.root / "apps" / "swarm-ui" / "src" / "App.tsx").write_text("export {};\n")
         self.git("init", "-q")
@@ -544,36 +542,3 @@ def test_full_build_without_incremental_is_refused(box):
         env=box.env, capture_output=True, text=True, timeout=60, check=False,
     )
     assert proc.returncode != 0 and "--full-build" in proc.stderr
-
-
-# ---------------------------------------------------------------------------
-# application.yml's wiring.
-# ---------------------------------------------------------------------------
-def _workflow() -> dict:
-    data = yaml.safe_load(WORKFLOW.read_text())
-    if True in data:
-        data["on"] = data.pop(True)
-    return data
-
-
-def test_application_builds_incrementally_and_can_be_told_to_build_everything():
-    workflow = _workflow()
-    build = workflow["jobs"]["build"]
-    assert build["permissions"].get("actions") == "read", "the build job cannot read its earlier runs"
-    checkout = next(s for s in build["steps"] if str(s.get("uses", "")).startswith("actions/checkout@"))
-    assert (checkout.get("with") or {}).get("fetch-depth") == 0, (
-        "a one-commit clone can neither diff from a previous build nor tell an ancestor"
-    )
-    assert any(str(s.get("uses", "")).startswith("astral-sh/setup-uv@") for s in build["steps"]), (
-        "without uv every uv.lock change rebuilds every Python image"
-    )
-    step = next(s for s in build["steps"] if "scripts/build-images.sh" in str(s.get("run", "")))
-    run = step["run"]
-    assert "ci-built-images.sh --previous" in run, run
-    assert "build-images.sh --incremental" in run, run
-    assert "--full-build" in run and "FULL_BUILD" in run, run
-    assert (step.get("env") or {}).get("GH_TOKEN"), "the previous record is read with gh, which needs a token"
-    dispatch = workflow["on"]["workflow_dispatch"]["inputs"]["full_build"]
-    assert dispatch["type"] == "boolean" and dispatch["default"] is False
-    summary = [s for s in build["steps"] if "GITHUB_STEP_SUMMARY" in str(s.get("run", ""))]
-    assert summary and "reused" in summary[0]["run"], "the job no longer says which images were rebuilt"

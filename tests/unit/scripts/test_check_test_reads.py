@@ -228,6 +228,32 @@ def test_the_baselines_are_sorted_and_disjoint():
         seen.update(entries)
 
 
+#: The most each baseline may list. A baseline only shrinks: a step of issue
+#: 71 that cleans files lowers its cap here with its list. scripts-ci.txt
+#: listed 73 files before step 3 cleaned the first half of them.
+BASELINE_CAPS = {"scripts-ci.txt": 36}
+
+
+@pytest.mark.parametrize("name, cap", sorted(BASELINE_CAPS.items()))
+def test_a_cleaned_baseline_stays_under_its_cap(name, cap):
+    entries = [line for line in (BASELINES / name).read_text().splitlines()
+               if line.strip() and not line.startswith("#")]
+    # MUTATION: put a cleaned file back on scripts-ci.txt (with a read put
+    # back in it) and the list outgrows its cap -- red here, naming it.
+    assert len(entries) <= cap, (name, len(entries), cap)
+
+
+def test_a_cleaned_file_is_not_read_back_into_a_baseline(tmp_path, capsys):
+    # The cap holds a list's length; this holds the rule behind it: a file the
+    # scanner finds clean cannot stay listed (the baseline would be stale).
+    helper = "tests/unit/scripts/cleaned.py"
+    root = _tree(tmp_path, {helper: HEAD + "def x():\n    return (ROOT / 'apps' / 'x.py').read_text()\n",
+                            "baselines/scripts-ci.txt": helper + "\n"})
+    code = ctr.main(["--root", str(root), "--baseline-dir", str(root / "baselines")])
+    assert code == 1
+    assert helper in capsys.readouterr().out
+
+
 def test_the_tree_holds_no_read_outside_the_baselines(capsys):
     # The whole tree: a new read anywhere under tests/ is red here, and so is
     # a baselined file that no longer reads out of its tree (shrink the list).

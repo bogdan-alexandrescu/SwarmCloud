@@ -14,10 +14,9 @@ checks) and terraform.yml (which ci-gate waits for) -- also ran on a push to
 SUPERSEDED FOR THE TRIGGERS (owner decision 2026-11-02, CI once per head,
 part of archived issue 2688): a lane head ran every check twice, and merges queued behind
 both runs, so a lane branch no longer runs them on push;
-test_ci_once_per_head.py holds that. What stays here holds what a lane push
+What stays here holds what a lane push
 would do if one ran (a workflow_dispatch on a lane ref, a push run at a
-shared sha): never build, plan or release, and the merge step's per-event
-rule.
+shared sha).
 
 WHY PUSH TRIGGERS AND NOT AN EARLY DRAFT PULL REQUEST. The merge step reads
 every run of a required check at the head commit and holds the check green
@@ -31,8 +30,10 @@ pull request from the one merged (the integrator pushes its own branch), the
 merge step refuses drafts, and a red draft would start the CI fixer on a
 branch the fix step is about to write.
 
-What a lane push must NOT do is anything only main may: build and push
-images, plan against the dev project, release. Those are asserted here too.
+What stays here: the merge step's per-event rule, and the trivy gate's base
+on a lane push, run from the step's published shell
+(scripts/generated/ci-run-blocks.json). The workflow-structure pins (which
+events release, build, plan or fix) were deleted by issue 71.
 """
 
 from __future__ import annotations
@@ -42,81 +43,15 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
 
-from .test_fast_checks_on_lane_prs import LANE_SKIP
-from .test_release_reuses_ci_images import _evaluate, _render
+from .ci_run_blocks import run_block
 
 
-REPO = Path(__file__).resolve().parents[3]
-WORKFLOWS = REPO / ".github" / "workflows"
 MAIN_TIP = "c" * 40
-
-
-def _workflow(name: str) -> dict:
-    return yaml.safe_load((WORKFLOWS / name).read_text())
-
-
-def _on(name: str) -> dict:
-    # PyYAML reads the bare key `on` as True.
-    data = _workflow(name)
-    return data.get("on", data.get(True))
-
-
-def test_a_lane_push_never_releases():
-    """MUTATION: add `swarm/**` to release.yml's push branches."""
-    assert (_on("release.yml").get("push") or {}).get("branches") == ["main"]
-
-
-def test_a_lane_push_never_builds_or_pushes_images():
-    """`build images` pushes to the registry with a cloud identity; it ran on
-    every event but pull_request and merge_group, which would now include a
-    lane push. MUTATION: keep the old `github.event_name != 'pull_request'` if."""
-    build = _workflow("application.yml")["jobs"]["build"]
-    # The lane clause (test_fast_checks_on_lane_prs.py) ends every job's `if:`.
-    assert build["if"] == (
-        "${{ (!cancelled() && !failure() && github.event_name != 'pull_request' && "
-        "github.event_name != 'merge_group' && github.ref == 'refs/heads/main' || "
-        "!cancelled() && !failure() && github.event_name == 'workflow_dispatch') && " + LANE_SKIP + " }}"
-    ), build["if"]
-
-
-def test_a_lane_push_never_plans_and_says_so():
-    """The plan authenticates to the dev project; on a lane push it is not
-    run, and `plan-not-run` says so in the run, as it does on a pull request.
-    MUTATION: keep the plan's `!= 'pull_request' && != 'merge_group'` if."""
-    jobs = _workflow("terraform.yml")["jobs"]
-    assert jobs["plan"]["if"] == (
-        "(github.event_name != 'pull_request' && github.event_name != 'merge_group' && "
-        "github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') && " + LANE_SKIP
-    ), jobs["plan"]["if"]
-    assert jobs["plan-not-run"]["if"] == (
-        "(github.event_name == 'pull_request' || github.event_name == 'merge_group' || "
-        "(github.event_name == 'push' && github.ref != 'refs/heads/main')) && " + LANE_SKIP
-    ), jobs["plan-not-run"]["if"]
-
-
-def test_the_ci_fixer_acts_only_on_a_pull_requests_run():
-    """A lane push and the pull request at the same head both run
-    application.yml; a red head would start two fixers. The fixer already
-    refuses a branch with no pull request (ci-fix.sh). MUTATION: drop the
-    event condition."""
-    condition = _workflow("ci-fix.yml")["jobs"]["fix"]["if"]
-    assert "github.event.workflow_run.event == 'pull_request'" in condition, condition
-
-
-def test_a_lane_push_is_cancelled_by_the_next_push_to_its_branch():
-    """Concurrency is the ref on a lane branch, so a newer push to it cancels
-    the older run. Main's own rule (one group, cancelled since 2026-10-26,
-    #2438) is held by test_release_newest_only.py, not here. MUTATION: give
-    every push a per-commit group."""
-    concurrency = _workflow("application.yml")["concurrency"]
-    lane = {"github.ref": "refs/heads/swarm/task_1"}
-    assert _evaluate(concurrency["cancel-in-progress"], **lane) is True
-    assert _render(concurrency["group"], **lane, **{"github.sha": "a" * 40}) == _render(
-        concurrency["group"], **lane, **{"github.sha": "b" * 40}
-    ) == "application-refs/heads/swarm/task_1"
-    assert _workflow("security.yml")["concurrency"]["group"] == "security-${{ github.ref }}"
+#: security.yml's `trivy (repo)` job (`filesystem`): CI-FOLD (archived issue
+#: 1799) leaves it unfolded so that only it holds security-events: write
+#: (owner, 2026-10-21).
+TRIVY_GATE = ("security.yml", "filesystem", "fail on fixable HIGH/CRITICAL new against the base branch")
 
 
 def _run(run_id: int, event: str, conclusion: str | None, status: str = "completed") -> dict:
@@ -157,13 +92,9 @@ def test_the_merge_step_holds_each_event_s_latest_run_at_the_head(runs, state):
 # --- the trivy gate's base on a lane push ------------------------------------
 def _gate(tmp_path: Path, *, event: str, ref: str, base: str, ls_remote: str = f"{MAIN_TIP}\trefs/heads/main\n",
           ls_status: int = 0) -> tuple[subprocess.CompletedProcess[str], str]:
-    # security.yml's own `trivy (repo)` job: CI-FOLD (archived issue 1799) leaves it unfolded
-    # so that only it holds security-events: write (owner, 2026-10-21).
-    steps = yaml.safe_load((WORKFLOWS / "security.yml").read_text())["jobs"]["filesystem"]["steps"]
-    (gate,) = [s for s in steps if "scripts/trivy-new-findings.sh gate" in str(s.get("run", ""))]
-    env = gate.get("env") or {}
-    assert env.get("EVENT") == "${{ github.event_name }}", env
-    assert env.get("REF") == "${{ github.ref }}", env
+    # The step's env maps EVENT, REF and BASE_SHA from the event; the test
+    # sets them directly.
+    script = run_block(*TRIVY_GATE)
     root = tmp_path / "tree"
     (root / "scripts").mkdir(parents=True)
     calls = tmp_path / "calls"
@@ -183,7 +114,7 @@ def _gate(tmp_path: Path, *, event: str, ref: str, base: str, ls_remote: str = f
     )
     git.chmod(0o755)
     body = tmp_path / "gate.sh"
-    body.write_text(gate["run"])
+    body.write_text(script)
     proc = subprocess.run(
         ["bash", "-e", str(body)], cwd=root, capture_output=True, text=True, timeout=60,
         env={**os.environ, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",

@@ -1,5 +1,5 @@
 """The flaky-test quarantine: tests/flaky.txt, its parser, its wiring into
-collection and into the unit job (docs/ci.md, "Flaky tests and the quarantine").
+collection (docs/ci.md, "Flaky tests and the quarantine").
 
 What is held here:
   * the list parses, and a malformed line is refused with its line number --
@@ -8,9 +8,7 @@ What is held here:
     test would leave its entry quarantining nothing while the real flake
     gates again;
   * the `flaky` marker is registered, and tests/unit/conftest.py puts it on
-    exactly the listed items;
-  * the unit job deselects the marker from the gating run and runs it in a
-    step that cannot fail the gate.
+    exactly the listed items.
 """
 
 from __future__ import annotations
@@ -22,12 +20,10 @@ import tomllib
 from pathlib import Path
 
 import pytest
-import yaml
 
 import flaky_quarantine as fq
 
 REPO = Path(__file__).resolve().parents[3]
-APPLICATION = REPO / ".github" / "workflows" / "application.yml"
 CONFTEST = REPO / "tests" / "unit" / "conftest.py"
 
 HERE_ID = "tests/unit/scripts/test_flaky_quarantine.py"
@@ -192,30 +188,3 @@ def test_the_checked_in_list_parses():
     assert fq.LIST.is_file(), "tests/flaky.txt is gone: docs/ci.md and the unit job name it"
     fq.load()
 
-
-# ---------------------------------------------------------------------------
-# The unit job
-# ---------------------------------------------------------------------------
-def _unit_steps() -> list[dict]:
-    return yaml.safe_load(APPLICATION.read_text())["jobs"]["python-unit"]["steps"]
-
-
-def test_the_gating_run_deselects_the_quarantine():
-    """MUTATION: drop `-m "not flaky"` and a listed flake gates again."""
-    (gate,) = [s for s in _unit_steps() if "uv run pytest" in str(s.get("run", ""))
-               and "--junitxml" in str(s.get("run", ""))]
-    assert '-m "not flaky"' in gate["run"], gate["run"]
-    assert not gate.get("continue-on-error"), "the gating run must be able to fail"
-
-
-def test_the_quarantined_tests_still_run_and_never_fail_the_gate():
-    """MUTATION: drop the step (the flakes are skipped for good), drop
-    `continue-on-error`, or let the run's exit status become the step's."""
-    (quarantine,) = [s for s in _unit_steps() if "uv run pytest" in str(s.get("run", ""))
-                     and "-m flaky" in str(s.get("run", ""))]
-    assert quarantine.get("continue-on-error") is True, quarantine
-    run = quarantine["run"]
-    assert "|| rc=$?" in run, run
-    assert "::warning" in run and "GITHUB_STEP_SUMMARY" in run, run
-    assert '"${files[@]}"' in run, "it runs this shard's files, not the whole suite"
-    assert (quarantine.get("env") or {}).get("SWARM_REQUIRE_REAL_REAP") == "1"

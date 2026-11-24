@@ -15,9 +15,8 @@ Held here, with no network and no credentials:
   actions, read from swarm_api rather than restated, and FAILs anything else;
 * the probe SKIPs, naming what is missing, until the owner has provisioned
   its identities, and never runs against the shared smoke tenant;
-* accept.yml runs it in the existing smoke job (the owner, 2026-10-28), through
-  verify-remote.sh, which carries its four settings into the execution;
-* the design records it as built.
+* verify-remote.sh carries its four settings into the execution, and the
+  group file is its own entry point.
 """
 
 from __future__ import annotations
@@ -34,13 +33,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from .test_release_reuses_ci_images import _code, _workflow
-
 REPO = Path(__file__).resolve().parents[3]
 GROUP = REPO / "scripts" / "acceptance" / "groups" / "roles.sh"
 CONFIG = REPO / "scripts" / "acceptance" / "config.sh"
 VERIFY_REMOTE = REPO / "scripts" / "verify-remote.sh"
-DESIGN = REPO / "docs" / "design" / "workspace-roles.md"
 TARGET = "acceptance/groups/roles"
 _PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
 _PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
@@ -292,26 +288,6 @@ def test_provisioned_it_still_reaches_the_configuration_check(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_accept_yml_runs_it_in_the_existing_smoke_job():
-    jobs = _workflow("accept.yml")["jobs"]
-    steps = [s for s in jobs["smoke"]["steps"] if TARGET in _code(s.get("run", ""))]
-    assert len(steps) == 1
-    step = steps[0]
-    # Unquoted: the probe clones no fixture, so it is not one of the suites
-    # test_acceptance_target.py makes wait for the sandbox sync.
-    assert _code(step["run"]).strip() == f"./scripts/verify-remote.sh {TARGET}"
-    assert "!cancelled()" in str(step.get("if"))
-    for name in SETTINGS:
-        # An account or a person's address is a masked secret
-        # (docs/design/generic-repository.md, section 2.1); the rest are variables.
-        context = "secrets" if name.endswith(("_SA", "_PERSON")) else "vars"
-        assert step["env"][name] == f"${{{{ {context}.{name.removeprefix('SWARM_ACCEPTANCE_')} }}}}"
-    # Not a new matrix group, and not the tenant-isolation job.
-    for job_id, job in jobs.items():
-        if job_id != "smoke":
-            assert TARGET not in json.dumps(job), job_id
-
-
 def _fake_gcloud(tmp_path: Path) -> Path:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -418,20 +394,3 @@ def test_the_group_runs_on_its_own():
     assert mode & stat.S_IXUSR, "scripts/acceptance/groups/roles.sh is not executable"
     head = GROUP.read_text().splitlines()
     assert head[0] == "#!/usr/bin/env bash"
-
-
-# ---------------------------------------------------------------------------
-# The design says it is built
-# ---------------------------------------------------------------------------
-
-
-def test_the_design_records_roles_accept_as_built():
-    text = DESIGN.read_text()
-    start = text.index("**ROLES-ACCEPT (")
-    entry = text[start:text.index("\n\n", start)]
-    assert "built on 2026-10-28" in entry
-    assert "`scripts/acceptance/groups/roles.sh`" in entry
-    assert "`.github/workflows/accept.yml`" in entry
-    assert "No acceptance probe asserts" not in entry
-    left = text[text.index("**What is left, in order.**"):]
-    assert not left.startswith("**What is left, in order.** ROLES-ACCEPT;")

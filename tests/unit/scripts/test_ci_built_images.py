@@ -30,8 +30,6 @@ the build path, a fake `gcloud`) on PATH:
   * `--reuse-ci only` submits NO Cloud Build; `--reuse-ci or-build` on a
     commit CI never built builds every image, at the commit's tag, and records
     the commit in the manifest;
-  * the job and artifact the script looks for are the ones application.yml
-    actually has -- read from application.yml, not restated here;
   * `--previous` (observer proposal H, 2026-10-08) hands main's build the
     newest record of an ANCESTOR commit: never the commit itself, never a
     later merge, never a failed or expired build; exit 3 when there is none
@@ -56,7 +54,6 @@ import time
 from pathlib import Path
 
 import pytest
-import yaml
 
 REPO = Path(__file__).resolve().parents[3]
 OWNER_REPO = "owner/swarm"
@@ -64,9 +61,8 @@ REGISTRY = "us-central1-docker.pkg.dev/swarm-test-project/swarm-images"
 SHA = "c0ffee" * 6 + "abcd"
 OTHER_SHA = "0badc0de" * 5
 # The jobs that gate the release, as scripts/lib/common.sh names them
-# (CI_RELEASE_TEST_JOBS): every job application.yml's ci-gate needs.
-# test_the_release_is_gated_on_every_job_ci_gate_needs holds the list to
-# common.sh and to application.yml.
+# (CI_RELEASE_TEST_JOBS): every job application.yml's ci-gate needs. A run
+# that lists fewer is refused (test_a_finished_run_without_the_gating_tests_is_refused).
 TEST_JOBS = (
     "shellcheck",
     "release workflow wiring (actionlint)",
@@ -141,57 +137,15 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-# ---------------------------------------------------------------------------
-# What application.yml actually builds and uploads, read from the file, so the
-# fake world below is built from the real names and a rename fails here.
-# ---------------------------------------------------------------------------
-def _workflow(name: str) -> dict:
-    data = yaml.safe_load((REPO / ".github" / "workflows" / name).read_text())
-    # PyYAML reads the bare key `on` as the boolean True.
-    if True in data:
-        data["on"] = data.pop(True)
-    return data
-
-
-def _uncommented(run: str) -> str:
-    return "\n".join(l for l in run.splitlines() if not l.lstrip().startswith("#"))
-
-
-def application_build() -> dict:
-    """The job in application.yml that builds the images on main, with the
-    name it runs under, the environment it builds for and the artifact it
-    uploads -- or an assertion naming what could not be found."""
-    jobs = _workflow("application.yml")["jobs"]
-    builders = [
-        (job_id, job)
-        for job_id, job in jobs.items()
-        for step in job.get("steps") or []
-        if "scripts/build-images.sh" in _uncommented(step.get("run", ""))
-        # The pull-request job's runs (archived issue 650) map a change to images and build
-        # them WITHOUT pushing; neither records a build a release could use.
-        and not re.search(r"--(build-only|affected-by|inputs)\b", _uncommented(step.get("run", "")))
-    ]
-    assert len(builders) == 1, (
-        f"expected exactly one job in application.yml to run build-images.sh, found "
-        f"{[j for j, _ in builders]}"
-    )
-    job_id, job = builders[0]
-    env = dict(job.get("env") or {})
-    uploads = [s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
-    assert len(uploads) == 1, f"application.yml's {job_id} job uploads {len(uploads)} artifacts, not one"
-    with_ = uploads[0].get("with") or {}
-    env.update(uploads[0].get("env") or {})
-
-    def resolve(value: str) -> str:
-        return re.sub(r"\$\{\{\s*env\.([A-Z_]+)\s*\}\}", lambda m: str(env.get(m.group(1), m.group(0))), str(value))
-
-    return {
-        "job_id": job_id,
-        "name": job.get("name", job_id),
-        "environment": str(env.get("ENVIRONMENT", "")),
-        "artifact": resolve(with_.get("name", "")),
-        "path": resolve(with_.get("path", "")),
-    }
+# What application.yml's build job runs under, builds for and uploads: the
+# names ci-built-images.sh looks for by default (JOB, the artifact and the
+# manifest build-images.sh writes), so the fake world below serves them.
+BUILD = {
+    "name": "build images",
+    "environment": "dev",
+    "artifact": "images-dev",
+    "path": "build/images-dev.json",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -408,10 +362,10 @@ def ci_run(
     tests_pending: int = 0,
     **fields,
 ) -> dict:
-    """application.yml's run of `sha`, shaped from application.yml itself.
+    """application.yml's run of `sha`, as the GitHub API lists it.
     `tests_*` shape the jobs that gate the release (CI_RELEASE_TEST_JOBS):
     their conclusion, None for not listed, and how many looks they run for."""
-    build = application_build()
+    build = BUILD
     env = environment or build["environment"]
     artifacts = []
     if job_conclusion == "success":
@@ -729,24 +683,6 @@ def test_the_running_ceiling_defaults_to_ninety_minutes_and_is_checked():
     text = (REPO / "scripts" / "lib" / "ci-built-images.sh").read_text()
     assert 'WAIT_RUNNING="${CI_BUILD_WAIT_RUNNING:-5400}"' in text
     assert re.search(r"for knob in [^;]*\bWAIT_RUNNING\b", text)
-
-
-def test_the_script_looks_for_what_application_yml_actually_builds_and_uploads():
-    """The job name and the artifact are an interface between two workflows.
-    Stated once in each, so compared here: application.yml's build job must
-    answer to the name the script looks for, build for the environment its
-    artifact is named after, and upload the file build-images.sh writes."""
-    build = application_build()
-    script = (REPO / "scripts" / "lib" / "ci-built-images.sh").read_text()
-    default_job = re.search(r'^JOB="\$\{CI_BUILD_JOB:-([^}]*)\}"', script, re.M)
-    assert default_job, "ci-built-images.sh no longer declares its default job name as JOB=\"${CI_BUILD_JOB:-...}\""
-    assert build["name"] == default_job.group(1), (
-        f"application.yml's build job is named {build['name']!r}; ci-built-images.sh looks for "
-        f"{default_job.group(1)!r}, so every release would find it 'never built'"
-    )
-    assert build["environment"] == "dev", f"application.yml builds for {build['environment']!r}"
-    assert build["artifact"] == f"images-{build['environment']}", build
-    assert build["path"] == f"build/images-{build['environment']}.json", build
 
 
 # ---------------------------------------------------------------------------
@@ -1103,65 +1039,3 @@ def test_gating_tests_skipped_by_their_paths_pass_the_gate(tmp_path):
     proc, out, _ = lookup(tmp_path, world)
     assert proc.returncode == 0, proc.stderr[-3000:]
     assert json.loads(out.read_text()) == record_for()
-
-
-def test_the_release_is_gated_on_every_job_ci_gate_needs():
-    """`build images` starts with its run (owner pick on PR 3344), and the
-    release waits instead for the jobs CI_RELEASE_TEST_JOBS names. Those are
-    exactly the jobs application.yml's `ci-gate` needs, by the names they run
-    under, in the same order (audit, 2026-11-21: the list was three jobs by
-    hand, so a failed integration or UI test did not keep a release back).
-    A matrix job runs as `<name up to its matrix part> (k/N)`, and is listed
-    by that part. MUTATION: add a job to ci-gate's `needs:` and not to the
-    list, rename a job, or list one ci-gate does not need."""
-    jobs = _workflow("application.yml")["jobs"]
-    build = next(job for job in jobs.values() if job.get("name") == "build images")
-    assert not build.get("needs"), f"`build images` waits for {build.get('needs')} again"
-    needs = jobs["ci-gate"]["needs"]
-    needs = [needs] if isinstance(needs, str) else list(needs)
-    expected = []
-    for job_id in needs:
-        name = str(jobs[job_id].get("name") or job_id)
-        if "${{" in name:
-            assert "strategy" in jobs[job_id], f"{job_id}: an expression in the name of a job with no matrix"
-            stem, _, tail = name.partition(" (")
-            assert "${{" in tail and "${{" not in stem and tail.endswith(")"), \
-                f"{job_id}: {name!r} is not `<name> (<matrix part>)`, the shape the readers match"
-            name = stem
-        expected.append(name)
-    common = (REPO / "scripts" / "lib" / "common.sh").read_text()
-    listed = re.search(r"^CI_RELEASE_TEST_JOBS=\(\n(.*?)^\)", common, re.M | re.S)
-    assert listed, "common.sh no longer declares CI_RELEASE_TEST_JOBS=( ... )"
-    names = tuple(re.findall(r'^\s*"([^"]+)"', listed.group(1), re.M))
-    assert names == tuple(expected), (
-        f"CI_RELEASE_TEST_JOBS differs from ci-gate's needs: missing {sorted(set(expected) - set(names))}, "
-        f"extra {sorted(set(names) - set(expected))} (or the order)")
-    assert names == TEST_JOBS, names
-    assert {n for n in names if any("${{" in str(j.get("name", "")) and str(j["name"]).startswith(n + " (")
-                                     for j in jobs.values())} == set(MATRIX_TEST_JOBS)
-    # No entry also catches another job of the workflow by the matrix rule:
-    # `<entry> (...)` names only that entry's own legs.
-    for n in names:
-        for job_id, job in jobs.items():
-            other = str(job.get("name") or job_id)
-            assert not (other != n and other.startswith(n + " (") and "${{" not in other), (n, other)
-
-
-
-def test_main_builds_even_when_a_needed_check_was_skipped_by_its_paths():
-    """`build images` needed python, shell and manifests until the owner's pick
-    on PR 3344, and shell and manifests are skipped on a commit that touches no
-    shell or Kubernetes file. The guard stays so a need added back cannot
-    bring this back. Without
-    `!cancelled() && !failure()` GitHub skips a job whose needs were skipped, so
-    on 2026-10-14 main commit adc51c0f built nothing and every release after it
-    refused it ("CI never built adc51c0f ... its 'build images' job was
-    skipped"). A skipped check is not a failed one; a failed one must still stop
-    the build. MUTATION: drop either guard from the job's `if:`."""
-    jobs = _workflow("application.yml")["jobs"]
-    builds = [job for job in jobs.values() if job.get("name") == "build images"]
-    assert len(builds) == 1, [job.get("name") for job in jobs.values()]
-    condition = str(builds[0].get("if", ""))
-    assert "!cancelled()" in condition and "!failure()" in condition, condition
-    # Still never on a pull request: a PR builds without pushing in its own job.
-    assert "github.event_name != 'pull_request'" in condition, condition

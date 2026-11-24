@@ -29,7 +29,7 @@ X.glob/rglob(pattern) and an f-string that starts with X. A name is followed
 through simple assignments at module, class and function level (DOCS = ROOT /
 "docs"; DOCS / "ci.md"), through a string constant (CI = "docs/ci.md"; ROOT /
 CI), through `from helper import NAME` and `import helper` of a module under
-tests/ (a sibling such as tests/unit/scripts/application_paths.py, found
+tests/ (a sibling such as tests/unit/scripts/ci_run_blocks.py, found
 beside the file or in a directory above it, or by its dotted path), and
 through a function that takes a relative path and joins it to a path (def
 read(rel): return (ROOT / rel).read_text(); read("docs/ci.md"), or one that

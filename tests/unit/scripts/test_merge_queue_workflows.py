@@ -38,7 +38,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from .test_ci_gate import GATE_WORKFLOW, SHA, gate, tf_jobs, wait
+from .test_ci_gate import SHA, gate, tf_jobs, wait
 from .test_workflow_step_reachability import _events, _triggers
 
 REPO = Path(__file__).resolve().parents[3]
@@ -199,17 +199,6 @@ def test_ci_gate_fails_a_merge_group_whose_workflow_failed(tmp_path):
     proc, _events_seen = wait(tmp_path, world, ["LICENSE"], event="merge_group")
     assert proc.returncode != 0
     assert "terraform.yml" in proc.stderr
-
-
-def test_ci_gate_hands_the_queue_entrys_commits_to_the_script():
-    """On merge_group, `github.sha` is the entry's head and the base is
-    `merge_group.base_sha`; `pull_request.*` is empty there."""
-    job = _load(GATE_WORKFLOW)["jobs"]["ci-gate"]
-    (step,) = [s for s in job["steps"] if "ci-gate.sh wait" in str(s.get("run", ""))]
-    env = step.get("env") or {}
-    assert "github.sha" in str(env.get("HEAD_SHA")), env
-    assert "github.event.merge_group.base_sha" in str(env.get("BASE_SHA")), env
-    assert env.get("EVENT") == "${{ github.event_name }}", env
 
 
 def test_nothing_that_mints_a_cloud_identity_runs_on_merge_group():

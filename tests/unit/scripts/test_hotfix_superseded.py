@@ -17,14 +17,15 @@ and deploy skipped. Any other failure stays red.
 It has NO `newest` check (the comment next to the step says why): a hotfix
 that was built still ships, minutes before the newer commit's normal release.
 
-The step is run here, as written in hotfix.yml, against the fake `gh` of
+The step is run here, as published from hotfix.yml in
+scripts/generated/ci-run-blocks.json, against the fake `gh` of
 test_release_newest_only.py. WHAT THIS CANNOT PROVE is what that file cannot:
 that GitHub lists a run cancelled by concurrency as `cancelled`, and that the
 compare API says `ahead` for a commit main has moved past.
 
-Also held here: the three comments that said application.yml gives each
-commit on main a concurrency group of its own -- untrue since #2438 -- do not
-say it again.
+Also held here: the comment in scripts/lib/ci-built-images.sh that said
+application.yml gives each commit on main a concurrency group of its own --
+untrue since #2438 -- does not say it again.
 """
 
 from __future__ import annotations
@@ -38,26 +39,11 @@ from pathlib import Path
 
 import pytest
 
-from . import test_release_prod_gate as gate_model
+from .ci_run_blocks import REPO, run_block
 from .test_release_newest_only import APP_JOBS, APP_RUNS, COMPARE, FAKE_GH, REPO_NAME, RUN_ID, SHA, _cancelled_run
-from .test_release_prod_gate import _attempts
-from .test_release_reuses_ci_images import REPO, _evaluate, _load_workflow, _render, _workflow
 
 NEWER = "c" * 40
 MAIN_HEAD = f"repos/{REPO_NAME}/commits/main"
-
-PUSH = {
-    "github.event_name": "push",
-    "github.ref": "refs/heads/main",
-    "github.event.inputs.environment": None,
-    "github.event.inputs.skip_build": None,
-}
-
-
-def _images_steps() -> dict[str, dict]:
-    steps = _load_workflow("hotfix.yml")["jobs"]["images"]["steps"]
-    return {s["id"]: s for s in steps if "id" in s}
-
 
 def _run_after(tmp_path: Path, responses: dict, *, stage: str) -> tuple[subprocess.CompletedProcess, dict, str, list]:
     bin_dir = tmp_path / "bin"
@@ -81,73 +67,10 @@ def _run_after(tmp_path: Path, responses: dict, *, stage: str) -> tuple[subproce
         "FAKE_GH_LOG": str(log),
     }
     proc = subprocess.run(
-        ["bash", "-c", _images_steps()["after"]["run"]], env=env, capture_output=True, text=True, timeout=60
+        ["bash", "-c", run_block("hotfix.yml", "images", "after")], env=env, capture_output=True, text=True, timeout=60
     )
     outputs = dict(line.split("=", 1) for line in output.read_text().splitlines() if "=" in line)
     return proc, outputs, summary.read_text(), log.read_text().splitlines()
-
-
-# ---------------------------------------------------------------------------
-# The step's place in hotfix.yml
-
-
-def test_the_step_judges_the_stage_on_a_push_and_a_dispatch_is_untouched():
-    """MUTATION: drop the `after` step, run it before the stage, or let
-    `continue-on-error` hold on a dispatch (a dispatch ships main's head and
-    must fail as it always did)."""
-    job = _load_workflow("hotfix.yml")["jobs"]["images"]
-    steps = _images_steps()
-    ids = [s.get("id") for s in job["steps"]]
-    assert "after" in ids, "hotfix.yml's images job has no `after` step: a build a newer push cancelled fails the lane red"
-    assert ids.index("stage") < ids.index("after"), ids
-    for event, expected in (("push", True), ("workflow_dispatch", False)):
-        ctx = {"github.event_name": event}
-        assert _evaluate(steps["stage"]["continue-on-error"], **ctx) is expected, event
-        assert _evaluate(steps["after"]["if"], **ctx) is expected, event
-    assert steps["after"]["env"]["STAGE"] == "${{ steps.stage.outcome }}"
-    output = job["outputs"]["superseded"]
-    for after, expected in (("true", "True"), ("false", "False"), ("", "False")):
-        assert _render(output, **{"steps.after.outputs.superseded": after}) == expected, (after, output)
-
-
-def test_a_hotfix_has_no_newest_check():
-    """A hotfix that was built still ships; superseding it because main moved
-    on would drop nearly every hotfix. MUTATION: copy release.yml's
-    `newest` step across, and gate the stage on it."""
-    steps = _images_steps()
-    assert "newest" not in steps, "hotfix.yml supersedes a built hotfix as soon as anything merges after it"
-    assert "steps.newest" not in json.dumps(_load_workflow("hotfix.yml"))
-
-
-@pytest.fixture
-def gated(monkeypatch):
-    monkeypatch.setitem(gate_model.STEP_OUTPUTS, ("gate", "proceed"), ("true", "false", ""))
-    monkeypatch.setitem(gate_model.STEP_OUTPUTS, ("images", "superseded"), ("true", "false"))
-    return _workflow("hotfix.yml")["jobs"]
-
-
-def test_a_superseded_hotfix_promotes_applies_and_deploys_nothing(gated):
-    """MUTATION: drop `if: needs.images.outputs.superseded != 'true'` from
-    `promote`, or give `infrastructure` or `deploy` an `always()`."""
-    jobs = gated
-    tried = 0
-    for results, outs in _attempts(jobs, PUSH):
-        if outs["images"].get("superseded") != "true":
-            continue
-        tried += 1
-        for job_id in ("promote", "infrastructure", "deploy"):
-            assert results[job_id] == "skipped", f"a superseded hotfix ran {job_id}: {results}"
-    assert tried, "no attempt had images superseded: the model never asked"
-
-
-def test_a_hotfix_that_is_not_superseded_still_reaches_every_stage(gated):
-    clean = [
-        r for r, o in _attempts(gated, PUSH, endings=("success",))
-        if o["gate"].get("proceed") == "true" and o["images"].get("superseded") == "false"
-    ]
-    assert clean
-    for results in clean:
-        assert all(r == "success" for r in results.values()), results
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +142,6 @@ def test_any_other_failure_stays_red(tmp_path, case, status, responses):
 
 STALE_COMMENTS = [
     REPO / "scripts" / "lib" / "ci-built-images.sh",
-    REPO / ".github" / "actions" / "release-images" / "action.yml",
 ]
 
 # Each commit on main having a concurrency group of its own, however it is

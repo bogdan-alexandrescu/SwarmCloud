@@ -37,7 +37,7 @@ THE SELECTION. python=subset (a change confined to docs/ and apps/swarm-ui/)
 runs only the files that read those areas: a module whose source builds a
 path through the directory -- `REPO / "docs"`, "docs/ci.md",
 "apps/swarm-ui/src", `/ "swarm-ui"` -- then every module that imports one of
-those (a helper, or a test module used as one: test_issue_forms imports
+those (a helper, or a test module used as one: test_qa_routes imports
 test_nav_headings_agree), and everything under a conftest that reads it, until
 nothing is added. A mention in prose -- "(docs/ci.md)" in a docstring -- is not
 a read, nor is a dict key named "docs": matching those pulled in 496 of 551

@@ -136,10 +136,10 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # helpers: the walkers of .github/ and images/ -- every workflow, every
 # Dockerfile, or every file of one image directory -- each under 5
 # CI-seconds, about 12 s together (CI-GUARDS-DOCS, part of archived issue 1822). After
-# test_repo_index_extract: three more of those walkers, test_auto_merge_base_
-# merge (2.6 s), test_issue_forms (0.6 s) and test_verify_deployer_trust
-# (4.0 s), +7.2 CI-seconds a pull request; they also read CLAUDE.md or
-# docs/runbooks/merge-app.md by name, so a docs-only diff of those selects
+# test_repo_index_extract: more of those walkers, test_auto_merge_base_
+# merge (2.6 s) and test_verify_deployer_trust (4.0 s), +6.6 CI-seconds a
+# pull request (the issue-forms walker was a third until issue 71 deleted
+# it); they also read CLAUDE.md or docs/runbooks/merge-app.md by name, so a docs-only diff of those selects
 # them as readers (CI-GUARDS-THREE, part of archived issue 1822). After
 # test_verify_deployer_trust: test_check_test_pointers (about 2.5 s), which
 # refuses a comment under apps/ that names a test -- a new one names no test,
@@ -196,7 +196,6 @@ GUARD_TESTS=(
   tests/unit/worker/test_checkpoint_retention.py
   tests/unit/worker/test_workspace_provisioner_scope.py
   tests/unit/scripts/test_swarm_verify_image_helpers.py
-  tests/unit/scripts/test_fork_prs_off_self_hosted.py
   tests/unit/scripts/test_workflow_step_reachability.py
   tests/unit/scripts/test_image_streaming.py
   tests/unit/scripts/test_pr_image_scan.py
@@ -204,7 +203,6 @@ GUARD_TESTS=(
   tests/unit/worker/test_jev_browser_image.py
   tests/unit/worker/test_repo_index_extract.py
   tests/unit/scripts/test_auto_merge_base_merge.py
-  tests/unit/scripts/test_issue_forms.py
   tests/unit/scripts/test_verify_deployer_trust.py
   tests/unit/scripts/test_check_test_pointers.py
   tests/unit/scripts/test_check_test_reads.py

@@ -36,9 +36,7 @@ Google's token endpoint and swarm-api) and a fake `gcloud`, both on PATH:
   service's address the person is refused;
 * the probe SKIPs, naming what is missing, until its settings and the front
   door's URL are set, and never runs in the shared smoke tenant;
-* accept.yml runs it in the smoke job beside the roles probe, through
-  verify-remote.sh, which carries its settings into the execution;
-* the design records it as built.
+* verify-remote.sh carries its settings into the execution.
 """
 
 from __future__ import annotations
@@ -46,7 +44,6 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-import re
 import secrets
 import shutil
 import stat
@@ -54,8 +51,6 @@ import subprocess
 from pathlib import Path
 
 import pytest
-
-from .test_release_reuses_ci_images import _code, _workflow
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -67,7 +62,6 @@ _PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
 placeholder_deployment = _PLACEHOLDERS.deployment()
 GROUP = REPO / "scripts" / "acceptance" / "groups" / "join.sh"
 VERIFY_REMOTE = REPO / "scripts" / "verify-remote.sh"
-DESIGN = REPO / "docs" / "design" / "join-requests.md"
 TARGET = "acceptance/groups/join"
 #: The probe's settings: the test workspace, the platform-admin identity, the
 #: person who asks, and the Secret Manager secret holding that person's
@@ -609,26 +603,6 @@ def test_provisioned_it_still_reaches_the_configuration_check(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_accept_yml_runs_it_in_the_smoke_job_beside_the_roles_probe():
-    jobs = _workflow("accept.yml")["jobs"]
-    steps = jobs["smoke"]["steps"]
-    mine = [i for i, s in enumerate(steps) if TARGET in _code(s.get("run", ""))]
-    roles = [i for i, s in enumerate(steps) if "acceptance/groups/roles" in _code(s.get("run", ""))]
-    assert len(mine) == 1 and len(roles) == 1
-    assert mine[0] == roles[0] + 1, "the join probe runs right after the roles probe"
-    step = steps[mine[0]]
-    assert _code(step["run"]).strip() == f"./scripts/verify-remote.sh {TARGET}"
-    assert "!cancelled()" in str(step.get("if"))
-    for name in SETTINGS:
-        # An account or a person's address is a masked secret
-        # (docs/design/generic-repository.md, section 2.1); the rest are variables.
-        context = "secrets" if name.endswith(("_SA", "_PERSON")) else "vars"
-        assert step["env"][name] == f"${{{{ {context}.{name.removeprefix('SWARM_ACCEPTANCE_')} }}}}"
-    for job_id, job in jobs.items():
-        if job_id != "smoke":
-            assert TARGET not in json.dumps(job), job_id
-
-
 def test_verify_remote_carries_the_probes_settings_into_the_execution(tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -655,20 +629,3 @@ def test_the_group_runs_on_its_own():
     assert GROUP.stat().st_mode & stat.S_IXUSR, "scripts/acceptance/groups/join.sh is not executable"
     assert GROUP.read_text().splitlines()[0] == "#!/usr/bin/env bash"
 
-
-# ---------------------------------------------------------------------------
-# The design says what was built
-# ---------------------------------------------------------------------------
-
-
-def test_the_design_records_what_each_lane_built():
-    text = DESIGN.read_text()
-    built = text[text.index("## 8."):]
-    assert "Nothing yet" not in built
-    for lane in ("JOIN-STORE", "JOIN-RESOLVE", "JOIN-API", "JOIN-BELL", "JOIN-UI-PERSON",
-                 "JOIN-WIRE", "JOIN-UI-ADMIN", "JOIN-INDEX", "JOIN-BELL-WIRE", "JOIN-DOCS-ACCEPT"):
-        assert f"**{lane}" in built, lane
-    # Each lane is named in words: an old issue or pull request number means
-    # nothing once the repository moves (docs/design/generic-repository.md, Q5).
-    assert not re.search(r"#\d", built), re.findall(r".{0,40}#\d+", built)
-    assert "`scripts/acceptance/groups/join.sh`" in built

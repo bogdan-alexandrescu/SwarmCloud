@@ -30,7 +30,7 @@ from typing import Any
 import pytest
 import yaml
 
-from .test_fast_checks_on_lane_prs import LANE_SKIP, without_lane_clause
+from .lane_clause_helpers import LANE_SKIP, without_lane_clause
 
 REPO = Path(__file__).resolve().parents[3]
 WORKFLOWS = sorted((REPO / ".github" / "workflows").glob("*.yml"))

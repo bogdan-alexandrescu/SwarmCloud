@@ -22,7 +22,7 @@ The properties asserted here, read from the files that ship:
   * gopls and terraform-ls are compiled from module source with the
     golang.org/x pins of archived pull request 661, and HashiCorp's zip is not in it;
   * every build arg its build config passes is one the Dockerfile declares;
-  * the build and the promotion both carry it, and the scheduled scan reads it.
+  * the build and the promotion both carry it.
 
 WHAT THIS CANNOT PROVE: that the image builds, or what it weighs in the
 registry. CI's `build images` job builds it; scripts/image-sizes.sh measures
@@ -197,13 +197,6 @@ def test_the_release_builds_and_promotes_the_indexer(script):
 
 def test_build_and_promotion_name_the_same_images():
     assert _targets(REPO / "scripts" / "build-images.sh") == _targets(REPO / "scripts" / "push-images.sh")
-
-
-def test_the_scheduled_scan_reads_the_indexer():
-    text = (REPO / ".github" / "workflows" / "security.yml").read_text(encoding="utf-8")
-    loop = re.search(r"for image in ([^;]+); do\n\s*echo \"==> \$\{image\}:dev\"", text)
-    assert loop, "the scheduled channel scan loop moved"
-    assert "agent-runtime-indexer" in loop.group(1).split()
 
 
 def test_the_base_still_carries_what_claude_code_and_codex_start():

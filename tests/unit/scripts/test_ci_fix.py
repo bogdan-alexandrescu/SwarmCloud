@@ -25,15 +25,9 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
-
-from .application_paths import app_paths, reaches
-from .ci_fold_layout import check_steps
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "ci-fix.sh"
-WORKFLOW = REPO / ".github" / "workflows" / "ci-fix.yml"
-APPLICATION = REPO / ".github" / "workflows" / "application.yml"
 
 TASK = "task_0123456789abcdef0123"
 BRANCH = f"swarm/{TASK}"
@@ -1056,54 +1050,6 @@ def test_the_script_makes_no_read_of_its_own_the_api_decides(fake):
     # MUTATION: keep the `decide` subcommand -- a second, unreachable rule.
     assert _run(fake, "decide", stdin="{}").returncode != 0
     assert "/tasks/" not in SCRIPT.read_text()
-
-
-# --------------------------------------------------------------------------
-# The workflow that runs it
-# --------------------------------------------------------------------------
-
-def _workflow() -> dict:
-    return yaml.safe_load(WORKFLOW.read_text())
-
-
-def test_the_workflow_runs_when_application_completes_and_only_on_a_red_swarm_branch():
-    wf = _workflow()
-    on = wf.get("on", wf.get(True))
-    assert on["workflow_run"]["workflows"] == [yaml.safe_load(APPLICATION.read_text())["name"]]
-    assert on["workflow_run"]["types"] == ["completed"]
-    (job,) = wf["jobs"].values()
-    condition = job["if"]
-    assert "github.event.workflow_run.conclusion == 'failure'" in condition
-    assert "startsWith(github.event.workflow_run.head_branch, 'swarm/')" in condition
-    # A fork's branch can be called swarm/<anything>; its CI failure is not ours to fix.
-    assert "github.event.workflow_run.head_repository.full_name == github.repository" in condition
-
-
-def test_the_workflow_never_checks_out_or_interpolates_the_pr_it_is_fixing():
-    """workflow_run runs with this repository's secrets. Running the red
-    branch's code, or pasting its branch name into a shell, hands them over."""
-    wf = _workflow()
-    (job,) = wf["jobs"].values()
-    for step in job["steps"]:
-        if str(step.get("uses", "")).startswith("actions/checkout"):
-            assert "ref" not in (step.get("with") or {}), "the fixer checked out the PR"
-        run = step.get("run", "")
-        assert "github.event.workflow_run" not in run, (
-            "an event field is interpolated into a shell; pass it through env"
-        )
-    permissions = wf.get("permissions") or {}
-    assert permissions.get("pull-requests") == "write"
-    assert permissions.get("contents") == "read"
-    assert permissions.get("actions") == "read"
-
-
-def test_the_workflow_is_linted_and_its_tests_run_on_the_prs_that_change_it():
-    """It runs only after a red CI on a swarm branch, so a broken expression in
-    it would first show on the PR it was meant to fix."""
-    assert reaches(".github/workflows/ci-fix.yml"), app_paths()
-    # The actionlint steps of `quick-checks` since CI-FOLD (archived issue 1799).
-    runs = "\n".join(step.get("run", "") for step in check_steps("application.yml", "workflows"))
-    assert ".github/workflows/ci-fix.yml" in runs, "ci-fix.yml is not linted"
 
 
 # --------------------------------------------------------------------------

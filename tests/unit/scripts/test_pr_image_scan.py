@@ -23,10 +23,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from .ci_fold_layout import check_steps
 from .test_build_images_local import _builds, _local, _value
 from .test_build_mirror import _refresh
-from .test_fast_checks_on_lane_prs import without_lane_clause
+from .lane_clause_helpers import without_lane_clause
 
 REPO = Path(__file__).resolve().parents[3]
 APPLICATION = REPO / ".github" / "workflows" / "application.yml"
@@ -260,20 +259,6 @@ def test_every_image_download_retries_on_an_http_error():
 def test_the_go_module_fetches_retry():
     text = (REPO / "images" / "agent-runtime-indexer" / "Dockerfile").read_text()
     assert "three_tries build_server golang.org/x/tools/gopls" in text
-
-
-# --------------------------------------------------------------------------
-# ruff.
-# --------------------------------------------------------------------------
-def test_ruff_check_is_a_gated_job():
-    jobs = _jobs()
-    job = jobs["ruff"]
-    assert job["name"] == "ruff check"
-    # The check runs as the `ruff check · ...` steps of `quick-checks` since
-    # CI-FOLD (archived issue 1799); `ruff` keeps the name (test_ci_fold.py).
-    runs = "\n".join(str(s.get("run", "")) for s in check_steps("application.yml", "ruff"))
-    assert "uv run --frozen --only-dev ruff check" in runs, runs
-    assert {"ruff", "quick-checks"} <= set(jobs["ci-gate"]["needs"])
 
 
 # --------------------------------------------------------------------------

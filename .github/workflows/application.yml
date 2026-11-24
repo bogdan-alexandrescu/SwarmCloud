@@ -121,8 +121,8 @@ env:
 # (id-token) runs on the self-hosted runner pool's VMs through the one guarded
 # `runs-on` expression: a fork's pull request, or the repo variable
 # SELF_HOSTED_CI set to `off` (the capacity escape hatch), sends it to
-# GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted is listed,
-# with why, in tests/unit/scripts/test_fork_prs_off_self_hosted.py.
+# GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted says why in
+# its own comment.
 jobs:
   shell:
     name: shellcheck
@@ -672,8 +672,8 @@ jobs:
             # so a pull request is the only place it is linted (actionlint below)
             # and held to its shape (tests/unit/scripts/test_release_acceptance_job.py).
             .github/workflows/accept.yml
-            # tests/unit/scripts/test_issue_forms.py validates the issue forms and
-            # the label declaration. Without these a PR editing only a form would run
+            # actionlint and the YAML checks read the issue forms and the label
+            # declaration. Without these a PR editing only a form would run
             # nothing -- and a form GitHub rejects fails nowhere a reviewer looks.
             .github/ISSUE_TEMPLATE/**
             .github/labels.yml
@@ -1257,7 +1257,7 @@ jobs:
         # `uv sync --frozen` installs what uv.lock says without checking it
         # against the pyproject files, so a stale or hand-edited lock passed
         # every job here (archived issue 76). One check is enough: every job reads this one
-        # lock. tests/unit/scripts/test_uv_lock_check_step.py holds it here.
+        # lock.
         id: python-checks-lock
         if: ${{ !cancelled() && (needs.changes.outputs.python == 'all' || needs.changes.outputs.python == 'selected') && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'python-checks') }}
         run: uv lock --check
@@ -1417,7 +1417,7 @@ jobs:
     timeout-minutes: 30
     # SELF-HOSTED (owner decision 2026-10-12, in the runner pool's own repository): the ephemeral
     # self-hosted VMs, with fork PRs kept on a GitHub-hosted image. The expression is
-    # the one tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces, and
+    # the guarded one every self-hosted job uses, and
     # SELF_HOSTED_CI=off (a repo variable) sends it to ubuntu-24.04 as well.
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
     needs: changes
@@ -1823,7 +1823,7 @@ jobs:
     name: swarm-ui typecheck / build
     # SELF-HOSTED (owner decision 2026-10-12, in the runner pool's own repository): the ephemeral
     # self-hosted VMs, with fork PRs kept on a GitHub-hosted image. The expression is
-    # the one tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces, and
+    # the guarded one every self-hosted job uses, and
     # SELF_HOSTED_CI=off (a repo variable) sends it to ubuntu-24.04 as well.
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
     needs: changes
@@ -1947,7 +1947,7 @@ jobs:
     name: swarm-ui component tests (${{ matrix.shard }}/${{ strategy.job-total }})
     # SELF-HOSTED (owner decision 2026-10-12, in the runner pool's own repository): the ephemeral
     # self-hosted VMs, with fork PRs kept on a GitHub-hosted image. The expression is
-    # the one tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces, and
+    # the guarded one every self-hosted job uses, and
     # SELF_HOSTED_CI=off (a repo variable) sends it to ubuntu-24.04 as well.
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
     needs: changes
@@ -2101,7 +2101,7 @@ jobs:
     name: integration tests (emulator)
     # SELF-HOSTED (owner decision 2026-10-12, in the runner pool's own repository): the ephemeral
     # self-hosted VMs, with fork PRs kept on a GitHub-hosted image. The expression is
-    # the one tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces, and
+    # the guarded one every self-hosted job uses, and
     # SELF_HOSTED_CI=off (a repo variable) sends it to ubuntu-24.04 as well.
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
     # Skipped when the change reaches nothing in this workflow (`changes`).

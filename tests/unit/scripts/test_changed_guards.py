@@ -163,8 +163,8 @@ def test_a_docs_only_change_still_selects_the_tests_that_read_the_changed_doc():
     for reader in readers:
         assert reader in selected, reader
     # A non-doc guard may also be a READER of a changed doc: test_auto_merge_
-    # base_merge reads docs/runbooks/merge-app.md and test_issue_forms reads
-    # CLAUDE.md (CI-GUARDS-THREE, part of archived issue 1822). Such a guard is selected as a
+    # base_merge reads docs/runbooks/merge-app.md and test_verify_deployer_
+    # trust names CLAUDE.md (CI-GUARDS-THREE, part of archived issue 1822). Such a guard is selected as a
     # reader, by the same rule that picks test_merge_step_docs, not because the
     # guard set leaked in -- so it is allowed here only when its own text names
     # a changed doc, and every other non-doc guard is still refused.
@@ -183,15 +183,14 @@ def test_a_docs_only_change_still_selects_the_tests_that_read_the_changed_doc():
 
 
 def test_the_cheap_walkers_that_read_a_doc_are_in_the_guard_set():
-    # The three CI-GUARDS-DOCS left out only because the docs-only assertion
+    # The CI-GUARDS-DOCS left out only because the docs-only assertion
     # above read them as leaks (CI-GUARDS-THREE, part of archived issue 1822): each walks
     # .github/ or scripts/ and weighs under 5 CI-seconds.
     for guard in (
         "tests/unit/scripts/test_auto_merge_base_merge.py",
-        "tests/unit/scripts/test_issue_forms.py",
         "tests/unit/scripts/test_verify_deployer_trust.py",
     ):
-        # MUTATION: drop any of the three from GUARD_TESTS and this is red, naming it.
+        # MUTATION: drop either from GUARD_TESTS and this is red, naming it.
         assert guard in GUARDS, guard
         # MUTATION: list one of them in DOC_GUARD_TESTS and every docs-only
         # diff runs it -- red here.
@@ -306,7 +305,7 @@ def test_a_docs_only_change_follows_no_doc_citation(tmp_path: Path):
 
 
 def test_a_changed_test_file_is_selected_itself():
-    path = "tests/unit/scripts/test_issue_forms.py"
+    path = "tests/unit/scripts/test_check_test_reads.py"
     result = _run("--list", "--files", "-", stdin=path + "\n")
     assert result.returncode == 0, result.stderr
     assert path in _selected(result.stdout)

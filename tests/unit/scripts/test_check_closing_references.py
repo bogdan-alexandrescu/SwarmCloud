@@ -24,7 +24,9 @@ These tests RUN it against a fake `gh`:
   listed by GitHub: exit 2 and the refusal comment on stdout;
 * an unreadable answer or a failed read: non-zero and not 2 -- fail closed.
 
-The workflow wiring is held at the bottom. Nothing here touches the network.
+At the bottom, auto-merge.yml's own `gate` shell (from
+scripts/generated/ci-run-blocks.json) is run with a refusal handed in.
+Nothing here touches the network.
 """
 
 from __future__ import annotations
@@ -38,11 +40,11 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
+
+from .ci_run_blocks import run_block
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "check-closing-references.sh"
-AUTO_MERGE = REPO / ".github" / "workflows" / "auto-merge.yml"
 THIS_REPO = "example-org/example-repo"
 REFUSED = 2
 
@@ -464,49 +466,15 @@ def test_the_query_asks_for_the_labels():
 
 
 # ---------------------------------------------------------------------------
-# The workflow calls it before auto-merge is enabled
+# auto-merge.yml's gate shell refuses on the check's finding
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="module")
-def enable() -> dict:
-    return yaml.safe_load(AUTO_MERGE.read_text())["jobs"]["enable"]
-
-
-def _ids(job: dict) -> list:
-    return [step.get("id") for step in job.get("steps") or []]
-
-
-def test_the_enable_job_runs_the_check_from_the_default_branch_before_the_gate(enable: dict):
-    """Main's script, never the pull request's: pull_request_target holds a
-    write token. MUTATION: check out the head, or move the check after the merge."""
-    steps = enable["steps"]
-    ids = _ids(enable)
-    assert "closing-references" in ids and "gate" in ids, ids
-    assert ids.index("pr") < ids.index("closing-references") < ids.index("gate") < ids.index("merge"), ids
-    step = steps[ids.index("closing-references")]
-    assert "scripts/check-closing-references.sh" in step["run"]
-    assert step.get("if") == "steps.pr.outputs.evaluate == 'true'", step.get("if")
-    checkouts = [s for s in steps if "checkout" in str(s.get("uses") or "")]
-    assert len(checkouts) == 1, checkouts
-    assert ids.index(checkouts[0].get("id")) < ids.index("closing-references")
-    inputs = checkouts[0].get("with") or {}
-    assert inputs.get("ref") == "${{ github.event.repository.default_branch }}", inputs
-    assert inputs.get("persist-credentials") is False, inputs
-    assert inputs.get("sparse-checkout") == "scripts", inputs
-
-
-def test_the_gate_refuses_on_the_checks_finding(enable: dict):
-    gate = next(s for s in enable["steps"] if s.get("id") == "gate")
-    assert (gate.get("env") or {}).get("CLOSING_REFUSAL") == "${{ steps.closing-references.outputs.refusal }}"
-    assert "CLOSING_REFUSAL" in gate["run"]
-
-
 @pytest.fixture
-def run_gate_with_refusal(enable: dict, tmp_path: Path):
+def run_gate_with_refusal(tmp_path: Path):
     """The gate's own shell with a refusal handed in, against a fake gh that
     records the label removal and the comment."""
-    script = next(s for s in enable["steps"] if s.get("id") == "gate")["run"]
+    script = run_block("auto-merge.yml", "enable", "gate")
     # Its own directory, so a test can run the check (`run_check`) beside it.
     tmp_path = tmp_path / "gate"
     tmp_path.mkdir()

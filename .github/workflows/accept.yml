@@ -149,8 +149,7 @@ env:
 # GitHub-hosted ubuntu-24.04. The fork-PR clause the other workflows carry is
 # left out on purpose: this workflow starts only from a completed release on
 # main or by hand, never from a pull request, so no fork's code can reach it
-# (test_fork_prs_off_self_hosted.py checks the triggers). Every job that stays
-# hosted is listed, with why, in that test.
+# (see its triggers). Every job that stays hosted says why in its own comment.
 jobs:
   # -------------------------------------------------------------------------
   # What dev runs, and whether this run should judge it.

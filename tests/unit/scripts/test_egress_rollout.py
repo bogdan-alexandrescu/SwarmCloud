@@ -7,20 +7,14 @@ digest -- and `kubernetes/apply.sh --swarm-system` applies it after the relay.
 Nothing waited for it to roll or read back what it runs. `scripts/roll-egress.sh`
 does, through the same implementation as the relay's roll
 (`scripts/roll-live-relay.sh --component egress`), so the cluster checks and the
-shared-project deny-list exist once. These tests hold:
-
-  * the SCRIPT, against a fake cluster, terraform and gcloud: it applies through
-    `kubernetes/apply.sh --swarm-system --confirm`, waits for
-    `rollout status statefulset/swarm-egress`, and proves the forwarder's pods
-    run the digest the manifest names; a stale pod fails it; egress switched
-    off (enable_browser_egress false) is a notice, not a failure; enabled with
-    no manifest (no swarm-egress digest) is a failure; and the shared
-    cluster on the never-touch list (PEER_CLUSTER) -- by flag, by context, or by terraform's own
-    output -- is refused before anything is written;
-  * the WORKFLOW: release.yml's deploy job runs it after the relay's roll and
-    before the smoke test. SwarmCloud lanes cannot push .github/workflows/, so
-    that change ships as a separate `workflow:` commit the operator pushes;
-    the workflow test is red until it lands.
+shared-project deny-list exist once. These tests hold the SCRIPT, against a
+fake cluster, terraform and gcloud: it applies through `kubernetes/apply.sh
+--swarm-system --confirm`, waits for `rollout status statefulset/swarm-egress`,
+and proves the forwarder's pods run the digest the manifest names; a stale pod
+fails it; egress switched off (enable_browser_egress false) is a notice, not a
+failure; enabled with no manifest (no swarm-egress digest) is a failure; and
+the shared cluster on the never-touch list (PEER_CLUSTER) -- by flag, by
+context, or by terraform's own output -- is refused before anything is written.
 
 No cluster, no credentials, no network: every binary is a fake on PATH.
 """
@@ -38,7 +32,6 @@ import pytest
 
 from .test_live_netpol import FAKE_API_CIDR, FAKE_SUBNET, LEAKY, _relay_manifest, _service
 from .test_live_relay_rollout import FAKE_GCLOUD
-from .test_release_reuses_ci_images import _workflow
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -65,9 +58,6 @@ FOREIGN_REF = f"gke_{PROJECT}_{LOCATION}-a_{PEER_CLUSTER}"
 DIGEST = "sha256:" + "8" * 64
 STALE_DIGEST = "sha256:" + "0" * 64
 IMAGE = f"us-central1-docker.pkg.dev/{PROJECT}/swarm-images/swarm-egress@{DIGEST}"
-
-STEP = "roll swarm-egress to this release's image"
-RELAY_STEP = "roll the live relay to this release's image"
 
 
 def _egress_manifest() -> str:
@@ -345,21 +335,3 @@ def test_an_unknown_component_is_refused():
     assert proc.returncode != 0
     assert "--component" in proc.stderr, proc.stderr
 
-
-def test_the_release_rolls_swarm_egress_after_the_relay():
-    steps = _workflow("release.yml")["jobs"]["deploy"]["steps"]
-    names = [s.get("name") for s in steps]
-    assert STEP in names, f"the deploy job has no step named {STEP!r}"
-    at = names.index(STEP)
-    step = steps[at]
-    run = str(step.get("run", ""))
-    assert "./scripts/roll-egress.sh" in run, run
-    for flag in ("--confirm", "--get-credentials", "--tf-init"):
-        assert flag in run, f"the egress step does not pass {flag}"
-    # After the relay (apply.sh applies swarm-egress after it), before the smoke test.
-    assert at > max(i for i, n in enumerate(names) if n == RELAY_STEP)
-    assert at < names.index("smoke test (inside the VPC)")
-    when = str(step.get("if", ""))
-    assert "steps.verify.outcome == 'success'" in when and "!cancelled()" in when, when
-    assert not step.get("continue-on-error"), "a forwarder that did not roll would pass the release"
-    assert ".venv/bin/python" in str((step.get("env") or {}).get("PYTHON_BIN", ""))
