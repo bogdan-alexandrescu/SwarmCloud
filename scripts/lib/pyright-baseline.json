@@ -184,9 +184,6 @@
     "apps/agent-worker/agent_worker/security_review.py": {
       "reportArgumentType": 2
     },
-    "apps/agent-worker/agent_worker/spend.py": {
-      "reportAttributeAccessIssue": 27
-    },
     "apps/agent-worker/agent_worker/verdict.py": {
       "reportArgumentType": 1,
       "reportOptionalMemberAccess": 1

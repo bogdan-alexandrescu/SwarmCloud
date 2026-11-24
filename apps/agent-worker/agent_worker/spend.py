@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .control import ControlPlane
 from .procman import ChildResult
 from .runners.streams import agent_stream_files
 from .usage import (
@@ -75,6 +76,23 @@ def _reread_of(channel: dict[str, Any]) -> dict[str, Any]:
 
 class SpendMixin:
     """The run and spend methods of `lifecycle.Worker`, which inherits them."""
+
+    # What `lifecycle.Worker` supplies to these methods; annotations only (no
+    # value, so nothing is bound at runtime), so the type checker resolves them.
+    _account: Any
+    _child: Any
+    _credential_kept: Any
+    _just_swapped: Any
+    _read_account_channel: Any
+    _runs: Any
+    _stop_sampler: Any
+    _writes_forbidden: Any
+    budget: Any
+    cfg: Any
+    control: ControlPlane
+    log: Any
+    spend_pricer: Any
+    ws: Any
 
     def _child_ended(self, result: ChildResult | None = None) -> None:
         """Everything that has to happen the moment a runner is gone.
