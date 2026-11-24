@@ -2271,9 +2271,12 @@ jobs:
     name: pyright (basic, baseline)
     # A full run takes ~1.5 minutes; anything near 15 is a hang, not a check.
     timeout-minutes: 15
-    # SELF-HOSTED (owner decision 2026-10-12), fork PRs on a GitHub-hosted
-    # image: the expression tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces.
-    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    # ON A GITHUB-HOSTED RUNNER, NOT THE SELF-HOSTED POOL: runner queues were
+    # 47 % of a pull request's critical path (docs/ci.md "Where pull-request CI
+    # time goes"), so a job on the pool would queue the shards it runs beside.
+    # ubuntu-24.04 has the 4 vCPUs the pin of PYRIGHT_THREADS assumes, and the
+    # pool's VM count per pull request (test_ci_fold.py) is unchanged.
+    runs-on: ubuntu-24.04
     needs: changes
     if: needs.changes.outputs.full == 'true' && needs.changes.outputs.python == 'all' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'pyright') && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
     steps:
