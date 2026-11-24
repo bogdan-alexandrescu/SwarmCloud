@@ -137,6 +137,9 @@ from ..issueruns import (
     refuse_planner_model_class,
     run_summary,
     served_plan_revisions,
+    MAX_THREAD_TEXT_CHARS,
+    plan_thread_events,
+    served_plan_thread,
     territory_overlap,
     widen_hold,
     workflow_paths,
@@ -1690,6 +1693,7 @@ def get_run(
     row["expected_cost_usd"] = expected_cost_usd(ctx, run)
     row["may_decide"] = run_may_decide(ctx, auth, tenant_id, run)
     row = with_plan_revisions(ctx, run, row)
+    row = with_plan_thread(ctx, run, row)
     return {"run": with_planner_documents(ctx, tenant_id, run, row)}
 
 
@@ -1703,6 +1707,25 @@ def with_plan_revisions(ctx: AppContext, run: IssueRun, row: dict) -> dict:
     revisions, complete = served_plan_revisions(run, _runs(ctx).plan_revisions(run))
     row["plan_revisions"] = revisions
     row["plan_history_complete"] = complete
+    return row
+
+
+def with_plan_thread(ctx: AppContext, run: IssueRun, row: dict) -> dict:
+    """`row` with `plan_thread` (the stored entries and the events derived
+    from the run, oldest first) and `thread_truncated` (plans-pipeline.md
+    §3.4).
+
+    Only the one-run read serves it, after the tenant's read of the run
+    passed; an entry, workflow or task naming another tenant is never read
+    into it. The revisions it derives `planned`/`revised` from are the ones
+    `with_plan_revisions` put on the row."""
+    runs = _runs(ctx)
+    documents, more = runs.plan_thread_documents(run)
+    workflows, tasks = runs.plan_thread_sources(run)
+    events = plan_thread_events(run, row.get("plan_revisions") or [], workflows, tasks)
+    thread, truncated = served_plan_thread(run, documents, events, more=more)
+    row["plan_thread"] = thread
+    row["thread_truncated"] = truncated
     return row
 
 
@@ -1843,6 +1866,70 @@ def edit_plan(
         revision=PlanRevisionWrite(author_kind="person", by=auth.email, made_by="edit"),
     )
     return {"run": sync_issue(ctx, run).to_api()}
+
+
+class PlanThreadAnchor(StrictModel):
+    part: str = Field(min_length=1, max_length=32)
+    ref: str | None = Field(default=None, max_length=300)
+
+
+class PlanComment(StrictModel):
+    """`plan:comment`'s body (plans-pipeline.md §3.4): a new comment
+    (`plan_digest`, `anchor`, `text`) or a fold (`entry_id`, `resolved`).
+
+    `text` is bounded here only so the request is; the comment's own bound,
+    MAX_THREAD_TEXT_CHARS, is `issueruns.thread_text`'s, with its message."""
+
+    plan_digest: str | None = Field(default=None, min_length=1, max_length=128)
+    anchor: PlanThreadAnchor | None = None
+    text: str | None = Field(default=None, max_length=4 * MAX_THREAD_TEXT_CHARS)
+    entry_id: str | None = Field(default=None, min_length=1, max_length=64)
+    resolved: bool | None = None
+
+
+@router.post("/{run_id}/plan:comment")
+def comment_on_plan(
+    run_id: str,
+    body: PlanComment,
+    response: Response,
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Comment on a revision of the run's plan, or fold a comment
+    (plans-pipeline.md §3.4).
+
+    The comment level: the role floor `plan:edit` uses, read fresh before
+    anything is read or written, so a viewer is refused with
+    `role_member_required`. Folding is its author's or anyone's at the edit
+    level, which is the same floor. Another tenant's run is the same 404 as
+    no run. A comment never changes the plan, its digest, its revision or the
+    run's state: it is data kept beside the run, and nothing on the platform
+    reads it as an instruction."""
+    approvals.require_decider(ctx, auth)
+    runs = _runs(ctx)
+    folding = body.entry_id is not None or body.resolved is not None
+    if folding:
+        if body.entry_id is None or body.resolved is None or any(
+                value is not None for value in (body.plan_digest, body.anchor, body.text)):
+            raise ValidationFailed(
+                "a fold sends `entry_id` and `resolved`, and nothing else",
+                detail={"fields": sorted(body.model_dump(exclude_none=True))},
+            )
+        entry = runs.resolve_plan_comment(tenant_id, run_id, body.entry_id,
+                                          resolved=body.resolved, by=auth.email)
+        return {"entry": entry}
+    if body.plan_digest is None or body.anchor is None or body.text is None:
+        raise ValidationFailed(
+            "a comment sends `plan_digest`, `anchor` and `text`",
+            detail={"fields": sorted(body.model_dump(exclude_none=True))},
+        )
+    entry = runs.add_plan_comment(
+        tenant_id, run_id, digest=body.plan_digest, anchor_part=body.anchor.part,
+        anchor_ref=body.anchor.ref, text=body.text, by=auth.email,
+    )
+    response.status_code = status.HTTP_201_CREATED
+    return {"entry": entry}
 
 
 @router.post("/{run_id}/plan:reject")
