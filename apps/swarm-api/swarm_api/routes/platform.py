@@ -25,12 +25,13 @@ from .. import route_scope, runnerimages, runnersizes
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context
 from ..served_limits import configured_limits
+from ..wire_types import Capacity, ProvidersPage, Stats
 from .accounts import account_pool
 
 router = APIRouter(prefix="/v1", tags=["platform"])
 
 
-@router.get("/stats")
+@router.get("/stats", responses={200: {"model": Stats}})
 def stats(
     # The platform half (twelve count()s over every tenant) runs only when it
     # is asked for, and only for an admin (archived issue 2149). The console shell polls
@@ -110,7 +111,7 @@ def model_prices(
     return {"model_prices": ctx.store.get_platform_settings()["model_prices"]}
 
 
-@router.get("/capacity")
+@router.get("/capacity", responses={200: {"model": Capacity}})
 def capacity(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
@@ -118,7 +119,7 @@ def capacity(
     return ctx.submissions.capacity(auth)
 
 
-@router.get("/providers")
+@router.get("/providers", responses={200: {"model": ProvidersPage}})
 def providers(
     request: Request,
     auth: AuthContext = Depends(current_auth),

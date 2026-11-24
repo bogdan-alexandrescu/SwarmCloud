@@ -44,21 +44,55 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from pathlib import Path
+
 import pytest
 
 from .conftest import PROJECT, auth_header, seed_task, seed_tenant
-from .test_ui_api_field_contract import TYPES_TS, _interface_body, _source
+
+REPO = Path(__file__).resolve().parents[3]
+TYPES_TS = REPO / "apps/swarm-ui/src/types.ts"
+#: The console's generated shapes (part of #72): an interface in `types.ts`
+#: that extends `ApiX` extends the generated `X` declared here.
+GENERATED_TS = REPO / "apps/swarm-ui/src/generated/api-types.ts"
+
+
+def _source(path: Path) -> str:
+    # A missing client file must FAIL, not skip: in CI output a skip is
+    # indistinguishable from a pass.
+    assert path.is_file(), f"{path} is not present; this test would check nothing"
+    text = path.read_text()
+    assert text.strip(), f"{path} is empty; this test would check nothing"
+    return text
+
+
+def _interface_body(source: str, name: str) -> str:
+    """The text between the braces of one exported interface, braces counted
+    so an inline object type does not truncate it."""
+    marker = f"export interface {name} {{"
+    assert marker in source, f"{marker!r} is not in the source; this check would be vacuous"
+    start = source.index(marker) + len(marker)
+    depth = 1
+    for i in range(start, len(source)):
+        if source[i] == "{":
+            depth += 1
+        elif source[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start:i]
+    raise AssertionError(f"interface {name} is not closed")
 
 BUCKET = f"swarm-artifacts-{PROJECT}"
 NOW = datetime(2026, 9, 25, 12, 0, tzinfo=timezone.utc)
 BASE = "tenants/eng/tasks/task_a/attempts/att_1"
 
 
-def _fields(name: str) -> dict[str, bool]:
-    """Field -> optional, for one interface, including what it `extends`."""
-    source = _source(TYPES_TS)
+def _fields(name: str, path: Path = TYPES_TS) -> dict[str, bool]:
+    """Field -> optional, for one interface, including what it `extends`
+    (a generated `ApiX` is read from the generated file)."""
+    source = _source(path)
     header = re.search(rf"export interface {name}(?: extends (\w+))? \{{", source)
-    assert header, f"interface {name} is not in types.ts; this check would be vacuous"
+    assert header, f"interface {name} is not in {path.name}; this check would be vacuous"
     parent = header.group(1)
     body = (
         _interface_body(source.replace(header.group(0), f"export interface {name} {{", 1), name)
@@ -68,7 +102,11 @@ def _fields(name: str) -> dict[str, bool]:
     found = dict(re.findall(r"^  (\w+)(\??):", body, flags=re.MULTILINE))
     assert found, f"no fields parsed out of interface {name}; the check would be vacuous"
     own = {field: mark == "?" for field, mark in found.items()}
-    return {**_fields(parent), **own} if parent else own
+    if not parent:
+        return own
+    inherited = (_fields(parent[len("Api"):], GENERATED_TS) if parent.startswith("Api")
+                 else _fields(parent, path))
+    return {**inherited, **own}
 
 
 def _inline_fields(interface: str, field: str) -> set[str]:
