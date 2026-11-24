@@ -100,6 +100,67 @@ def test_a_string_literal_is_not_a_comment(tmp_path):
     assert ctp.main(["--root", str(root)]) == 0
 
 
+JS_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
+
+
+@pytest.mark.parametrize("suffix", JS_SUFFIXES)
+@pytest.mark.parametrize("source, line", [
+    ("const x = 1\n// pinned by Phone.test.tsx\n", 2),
+    ("const x = 1 // held equal by tests/unit/worker/test_widget.py\n", 1),
+    ("const x = 1\n/* the reason,\n   held by Phone.test.tsx */\nconst y = 2\n", 3),
+    ("const x = 1 /* see Phone.test.tsx */ + 2\n", 1),
+    ("const r = a / b // Phone.test.tsx: a division, then a comment\n", 1),
+    ("const s = `a ${'b' /* Phone.test.tsx */} c`\n", 1),
+    ("// a URL in a comment: https://example.com/Phone.test.tsx\n", 1),
+])
+def test_a_planted_pointer_in_a_javascript_comment_is_flagged(tmp_path, capsys, suffix,
+                                                               source, line):
+    # MUTATION: route these suffixes through hash_comments and this is red.
+    root = _repo(tmp_path, {**TESTS, f"apps/app/src/mod{suffix}": source})
+    assert ctp.main(["--root", str(root)]) == 1
+    assert f"apps/app/src/mod{suffix}:{line}:" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("suffix", JS_SUFFIXES)
+@pytest.mark.parametrize("source", [
+    "const a = 'Phone.test.tsx'\n",
+    'const a = "tests/unit/worker/test_widget.py"\n',
+    "const a = `${name} Phone.test.tsx`\n",
+    "const a = `line one\nPhone.test.tsx ${'x'} and more`\n",
+    "const a = 'it\\'s // Phone.test.tsx'\n",
+    'const u = "https://example.com/Phone.test.tsx"\n',
+    "const u = 'https://example.com/' + 'Phone.test.tsx'\n",
+    "const u = `https://example.com/${'Phone.test.tsx'}`\n",
+    "const re = /[//]Phone.test.tsx/\n",
+    "const re = /^\\//; const n = 'Phone.test.tsx'\n",
+    "if (ok) return /a\\/\\/b/.test(s) && f('Phone.test.tsx')\n",
+    "const re = /x[/*]/; const n = 'Phone.test.tsx /* */'\n",
+    "// a comment naming no test\nconst a = 'Phone.test.tsx'\n",
+])
+def test_a_javascript_string_or_regex_is_not_a_comment(tmp_path, capsys, suffix, source):
+    root = _repo(tmp_path, {**TESTS, f"apps/app/src/mod{suffix}": source})
+    assert ctp.main(["--root", str(root)]) == 0, capsys.readouterr().out
+
+
+def test_the_console_is_scanned(tmp_path, capsys):
+    # The console was once allowlisted whole; it is scanned like every app.
+    source = "export const x = 1\n// pinned by Phone.test.tsx\n"
+    root = _repo(tmp_path, {**TESTS, "apps/swarm-ui/src/Phone.tsx": source})
+    assert ctp.main(["--root", str(root)]) == 1
+    assert "apps/swarm-ui/src/Phone.tsx:2:" in capsys.readouterr().out
+
+
+def test_console_test_code_is_not_scanned(tmp_path):
+    pointer = "// held equal by Phone.test.tsx\n"
+    files = {**TESTS,
+             "apps/swarm-ui/src/__tests__/helpers.ts": pointer,
+             "apps/swarm-ui/test/register-ts.mjs": pointer,
+             "apps/swarm-ui/tests/run.mjs": pointer,
+             "apps/swarm-ui/src/Other.test.tsx": pointer}
+    root = _repo(tmp_path, files)
+    assert ctp.main(["--root", str(root)]) == 0
+
+
 def test_test_code_and_the_allowlist_are_not_scanned(tmp_path):
     pointer = "# held equal by tests/unit/worker/test_widget.py\n"
     files = {**TESTS, "apps/app/tests/helper.py": pointer, "apps/app/app/test_x.py": pointer}
@@ -111,13 +172,19 @@ def test_test_code_and_the_allowlist_are_not_scanned(tmp_path):
 
 def test_the_allowlist_is_exactly_the_files_other_pull_requests_hold():
     # Issue 69 left these for a follow-up; the list only ever shrinks.
-    assert ctp.ALLOWLIST_PREFIXES == ("apps/common/swarm_common/", "apps/swarm-ui/")
+    # Issue 191 emptied the console and dropped the entries that hid nothing.
+    assert ctp.ALLOWLIST_PREFIXES == ("apps/common/swarm_common/",)
     assert ctp.ALLOWLIST == {
         "apps/agent-worker/agent_worker/lifecycle.py",
-        "apps/agent-worker/agent_worker/heartbeat.py",
-        "apps/swarm-api/swarm_api/routes/tasks.py",
         "apps/swarm-api/swarm_api/wire_types.py",
     }
+
+
+def test_every_allowlist_entry_still_hides_a_pointer():
+    # An entry whose file names no test any more only hides the next one.
+    known = ctp.Known.of(ROOT)
+    for rel in sorted(ctp.ALLOWLIST):
+        assert ctp.scan_file(ROOT, rel, known), f"{rel} holds no pointer: drop it"
 
 
 def test_no_comment_under_apps_points_at_a_test(capsys):
