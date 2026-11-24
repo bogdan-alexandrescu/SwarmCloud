@@ -20,8 +20,8 @@
 // 3 GiB each (measured: about six minutes, inside an 8 GiB container); more
 // workers were killed for memory there.
 //
-// test/eslintBaseline.test.mjs proves a violation outside the baseline fails
-// and the same violation inside it passes.
+// A violation outside the baseline must fail the gate while the same violation
+// inside it passes, so the rules stay errors and only the baseline excuses them.
 
 import { defineConfig } from 'eslint/config'
 import js from '@eslint/js'
