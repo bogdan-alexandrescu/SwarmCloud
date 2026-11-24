@@ -34,7 +34,8 @@ redaction's test-path rules -- may still describe a `tests/` directory or a
 
 WHAT IS SCANNED: every tracked file under apps/ except test code (files under
 a tests/, test/ or __tests__/ directory, test_*.py, *_test.py, conftest.py,
-*.test.* and *.spec.*), lock files, and the files in ALLOWLIST.
+*.test.* and *.spec.*), lock files, and the frozen contract
+(apps/common/swarm_common/, ALLOWLIST_PREFIXES).
 
   exit 0  no pointer
   exit 1  a pointer; each is printed as `path:line: text`
@@ -52,17 +53,18 @@ import sys
 import tokenize
 from pathlib import Path
 
-# Files other open pull requests hold while issue 69 lands: their pointers are
-# left for a follow-up, and this list shrinks as each is cleaned. Nothing is
-# ever added to it (issue 69). apps/common/swarm_common/ is a prefix: the frozen
-# contract, which no lane edits. Issue 191 cleaned the console and dropped it.
+# The files whose pointers issue 69 left for a follow-up while other open pull
+# requests held them. Empty: issue 191 cleaned the console, and issue 69's
+# last follow-up cleaned the worker's lifecycle.py and swarm-api's
+# wire_types.py: every non-test file under apps/ but the frozen contract is
+# scanned. Nothing is ever added to it (issue 69): a new pointer is reworded,
+# never allowlisted.
+# apps/common/swarm_common/ stays a prefix: the frozen contract, which no lane
+# edits, so a pointer there is reported as a change request instead.
 ALLOWLIST_PREFIXES = (
     "apps/common/swarm_common/",
 )
-ALLOWLIST = frozenset({
-    "apps/agent-worker/agent_worker/lifecycle.py",
-    "apps/swarm-api/swarm_api/wire_types.py",
-})
+ALLOWLIST: frozenset[str] = frozenset()
 
 _TEST_DIR = re.compile(r"(^|/)(tests?|__tests__)/")
 _TEST_FILE = re.compile(

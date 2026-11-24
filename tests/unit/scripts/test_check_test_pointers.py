@@ -164,30 +164,35 @@ def test_console_test_code_is_not_scanned(tmp_path):
     assert ctp.main(["--root", str(root)]) == 0
 
 
-def test_test_code_and_the_allowlist_are_not_scanned(tmp_path):
+def test_test_code_and_the_frozen_contract_are_not_scanned(tmp_path):
     pointer = "# held equal by tests/unit/worker/test_widget.py\n"
     files = {**TESTS, "apps/app/tests/helper.py": pointer, "apps/app/app/test_x.py": pointer}
-    files.update({path: pointer for path in ctp.ALLOWLIST})
     files["apps/common/swarm_common/models.py"] = pointer
     root = _repo(tmp_path, files)
     assert ctp.main(["--root", str(root)]) == 0
 
 
-def test_the_allowlist_is_exactly_the_files_other_pull_requests_hold():
-    # Issue 69 left these for a follow-up; the list only ever shrinks.
-    # Issue 191 emptied the console and dropped the entries that hid nothing.
+def test_the_allowlist_of_files_is_empty():
+    # Issue 69's follow-ups cleaned every file it once held (the console in
+    # issue 191, then lifecycle.py and wire_types.py); it never grows again.
+    # Only the frozen contract stays exempt, as a prefix.
     assert ctp.ALLOWLIST_PREFIXES == ("apps/common/swarm_common/",)
-    assert ctp.ALLOWLIST == {
-        "apps/agent-worker/agent_worker/lifecycle.py",
-        "apps/swarm-api/swarm_api/wire_types.py",
-    }
+    assert ctp.ALLOWLIST == frozenset()
 
 
-def test_every_allowlist_entry_still_hides_a_pointer():
-    # An entry whose file names no test any more only hides the next one.
-    known = ctp.Known.of(ROOT)
-    for rel in sorted(ctp.ALLOWLIST):
-        assert ctp.scan_file(ROOT, rel, known), f"{rel} holds no pointer: drop it"
+@pytest.mark.parametrize("rel", ["apps/agent-worker/agent_worker/lifecycle.py",
+                                 "apps/swarm-api/swarm_api/wire_types.py"])
+def test_the_files_the_allowlist_held_are_scanned_and_clean(rel):
+    # The last two entries: scanned like any other file now, and pointer-free.
+    assert ctp.scanned(rel)
+    assert ctp.scan_file(ROOT, rel, ctp.Known.of(ROOT)) == []
+
+
+def test_a_pointer_in_a_formerly_allowlisted_file_fails(tmp_path, capsys):
+    rel = "apps/swarm-api/swarm_api/wire_types.py"
+    root = _repo(tmp_path, {**TESTS, rel: "# held equal by tests/unit/worker/test_widget.py\n"})
+    assert ctp.main(["--root", str(root)]) == 1
+    assert f"{rel}:1:" in capsys.readouterr().out
 
 
 def test_no_comment_under_apps_points_at_a_test(capsys):
