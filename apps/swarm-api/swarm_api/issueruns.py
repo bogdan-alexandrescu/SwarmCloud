@@ -198,7 +198,7 @@ import os
 import posixpath
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import lru_cache
 from enum import Enum
 from types import MappingProxyType
@@ -229,6 +229,7 @@ from swarm_common.profiles import MODEL_CLASSES, RUNNER_PROFILES, step_model_cla
 
 from . import (donewhen, planfiles, planhistory, reviewgate, sessiontag, stepceiling, stepclass,
                workcontract)
+from . import refusals
 from .plansections import (
     MAX_CHANGES,
     MAX_GRAPH_EDGES,
@@ -4957,6 +4958,256 @@ def served_plan_revisions(run: IssueRun, documents: list[Mapping[str, Any]],
     return served, complete
 
 
+# --------------------------------------------------------------------------
+# The plan thread (plans-pipeline.md §3.4; lane P3 PLANS-THREAD)
+# --------------------------------------------------------------------------
+
+#: Comments anchored to a part of a plan, one document per entry, under the
+#: run (`issue_runs/{run_id}/plan_thread/{entry_id}`).
+PLAN_THREAD_COLLECTION = "plan_thread"
+#: The workflows the thread's derived events read (`store.WORKFLOWS`).
+THREAD_WORKFLOWS_COLLECTION = "workflows"
+#: The id prefix of a thread entry.
+PLAN_THREAD_ENTRY_PREFIX = "pth"
+#: The newest entries, stored and derived, the run read serves; past it the
+#: read says `thread_truncated: true` (§3.4).
+PLAN_THREAD_LIMIT = 300
+#: A comment's text, in characters, as sent and as stored (§3.4). Past it the
+#: comment is refused, never cut: a cut comment says something its author did
+#: not write.
+MAX_THREAD_TEXT_CHARS = 4_000
+#: The parts of a plan a comment can be anchored to (§3.4).
+THREAD_ANCHOR_PARTS = ("plan", "step", "requirement", "overlap", "diagram")
+#: The run states that take a comment: from PLANNED through DONE, so a
+#: reviewer can remark on what the plan became; never a rejected plan, a
+#: NOT_READY verdict (no plan), or a run still planning.
+THREAD_OPEN_STATES = frozenset({
+    RunState.PLANNED, RunState.APPROVED, RunState.RUNNING, RunState.CHECKING,
+    RunState.FIXING, RunState.DONE,
+})
+#: The order of entries that carry the same moment: the derived events in the
+#: order a run lives them, then what people wrote.
+_THREAD_EVENT_RANK = {
+    "planned": 0, "revised": 1, "approved": 2, "rejected": 3, "step_task": 4,
+    "pull_request": 5, "ci_round": 6, "review": 7, "merged": 8, "keyword": 9,
+}
+_THREAD_STORED_RANK = len(_THREAD_EVENT_RANK)
+#: A stored entry's keys, as the run read serves them.
+_SERVED_THREAD_KEYS = ("entry_id", "kind", "anchor", "by", "text", "on_digest", "on_revision",
+                       "answered_by_revision", "resolved", "diagram", "cost", "at")
+
+
+class AnchorUnknown(ValidationFailed):
+    """422: a comment's anchor names a part the revision it was written on
+    does not hold (§3.4)."""
+
+    code = "anchor_unknown"
+
+
+class PlanThreadClosed(Conflict):
+    """409: the run is in a state that takes no comment (§3.4)."""
+
+    code = "plan_thread_closed"
+
+
+def thread_anchor(part: Any, ref: Any, plan: Mapping[str, Any]) -> dict[str, Any]:
+    """`{"part", "ref"}` for a comment on `plan`, refused with AnchorUnknown
+    when `plan` does not hold that part.
+
+    `plan` anchors to no ref; a step by its `step_id`; a requirement by its
+    number, 1 up, as the plan's steps name them; an overlap by its
+    `owner/repo#N`; a diagram by its `diagram_id`.
+
+    AnchorUnknown is a new refusal, so it goes through `refusals.refuse`
+    (REFUSAL_ANCHOR_UNKNOWN): switched off, the comment is kept with the
+    anchor as sent -- a remark pinned to nothing, which decides nothing --
+    and the log names the refusal it would have made."""
+    # `part` and `ref` are caller text: masked like `text` before they are kept,
+    # served or put in a refusal message (a pasted token is never stored in clear).
+    safe_ref = redact_detail(ref, limit=300) if isinstance(ref, str) else None
+    kept = {"part": redact_detail(str(part), limit=32), "ref": safe_ref}
+    if part not in THREAD_ANCHOR_PARTS:
+        refusals.refuse(AnchorUnknown(
+            f"a comment is anchored to one of {list(THREAD_ANCHOR_PARTS)}",
+            detail={"part": kept["part"]},
+        ))
+        return kept
+    if part == "plan":
+        if ref is not None:
+            refusals.refuse(AnchorUnknown("a comment on the whole plan names no ref",
+                                          detail={"part": part}))
+        return kept
+    known: list[str] = []
+    if part == "step":
+        known = [str(step.get("step_id")) for step in plan.get("steps") or ()
+                 if isinstance(step, Mapping)]
+    elif part == "requirement":
+        known = [str(n) for n in range(1, len(plan.get("requirements") or ()) + 1)]
+    elif part == "overlap":
+        known = [str(item.get("ref")) for item in plan.get("overlaps") or ()
+                 if isinstance(item, Mapping)]
+    elif part == "diagram":
+        known = [str(item.get("diagram_id")) for item in plan.get("diagrams") or ()
+                 if isinstance(item, Mapping) and item.get("diagram_id")]
+    if not isinstance(ref, str) or ref not in known:
+        shown = safe_ref[:200] if safe_ref is not None else None
+        refusals.refuse(AnchorUnknown(
+            f"the plan revision this comment was written on has no {part} {shown!r}",
+            detail={"part": part, "ref": shown},
+        ))
+    return kept
+
+
+def thread_text(text: Any) -> str:
+    """A comment's text as it is stored: refused when blank or past
+    MAX_THREAD_TEXT_CHARS, then masked like every stored text."""
+    if not isinstance(text, str) or not text.strip():
+        raise ValidationFailed("a comment has text", detail={"field": "text"})
+    if len(text) > MAX_THREAD_TEXT_CHARS:
+        raise ValidationFailed(
+            f"a comment is at most {MAX_THREAD_TEXT_CHARS} characters",
+            detail={"field": "text", "limit": MAX_THREAD_TEXT_CHARS, "length": len(text)},
+        )
+    return redact_detail(text, limit=MAX_THREAD_TEXT_CHARS)
+
+
+def thread_entry_id() -> str:
+    return f"{PLAN_THREAD_ENTRY_PREFIX}_{os.urandom(10).hex()}"
+
+
+def served_thread_entry(document: Mapping[str, Any]) -> dict[str, Any]:
+    """A stored thread entry as the API serves it: its text through the
+    redaction every served run text goes through, whatever was stored."""
+    row = {key: document.get(key) for key in _SERVED_THREAD_KEYS}
+    text = row.get("text")
+    row["text"] = redact_detail(text, limit=MAX_THREAD_TEXT_CHARS) if isinstance(text, str) else ""
+    anchor = row.get("anchor") if isinstance(row.get("anchor"), Mapping) else {}
+    part, ref = anchor.get("part"), anchor.get("ref")
+    row["anchor"] = {
+        "part": redact_detail(part, limit=32) if isinstance(part, str) else part,
+        "ref": redact_detail(ref, limit=300) if isinstance(ref, str) else ref,
+    }
+    row["resolved"] = row.get("resolved") is True
+    row["at"] = _iso(row["at"])
+    return row
+
+
+def _moment(value: Any) -> datetime | None:
+    """A stored or served moment as an aware datetime, or None."""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def _entered(run: IssueRun, state: RunState, *, last: bool) -> Any:
+    """When `run` entered `state`: its first or its last entry, or None."""
+    times = [entry.get("at") for entry in run.history
+             if isinstance(entry, Mapping) and entry.get("to") == state.value]
+    if not times:
+        return None
+    return times[-1] if last else times[0]
+
+
+def plan_thread_events(run: IssueRun, revisions: Sequence[Mapping[str, Any]],
+                       workflows: Mapping[str, Mapping[str, Any]],
+                       tasks: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The events the thread shows, derived from the run on every read and
+    never stored (§3.4): each revision, the decision, each step's task, the
+    pull request, each CI fix round, the review, the merge and the keyword.
+
+    `revisions` are the run's served revisions (`served_plan_revisions`);
+    `workflows` and `tasks` are the run's own, by id, already checked against
+    its tenant. An event whose moment is unknown is left out rather than
+    placed at a guessed one. Pure: nothing is read here."""
+    events: list[dict[str, Any]] = []
+
+    def add(event: str, at: Any, ref: Any = None, **fields: Any) -> None:
+        if _moment(at) is None:
+            return
+        events.append({"kind": "event", "event": event, "at": _iso(at), "ref": ref, **fields})
+
+    by_digest: dict[str, Any] = {}
+    for row in sorted(revisions, key=lambda r: r.get("revision") or 0):
+        number = row.get("revision")
+        by_digest[str(row.get("digest"))] = number
+        author = row.get("author") if isinstance(row.get("author"), Mapping) else {}
+        add("planned" if number == 1 else "revised", row.get("at"), None,
+            revision=number, digest=row.get("digest"), by=author.get("by"),
+            made_by=row.get("made_by"))
+    if run.approved_at is not None:
+        add("approved", run.approved_at, None, by=run.approved_by, digest=run.approved_digest,
+            revision=by_digest.get(str(run.approved_digest)))
+    if run.state == RunState.REJECTED:
+        reason = run.rejection_reason
+        add("rejected", _entered(run, RunState.REJECTED, last=True), None, by=run.rejected_by,
+            reason=redact_detail(reason, limit=1024) if isinstance(reason, str) else None)
+    build = workflows.get(run.workflow_id or "")
+    if build is not None:
+        for step in build.get("steps") or ():
+            if not isinstance(step, Mapping):
+                continue
+            task_id = step.get("task_id")
+            task = tasks.get(str(task_id)) if task_id else None
+            add("step_task", (task or {}).get("created_at") or build.get("created_at"),
+                step.get("step_id"), task_id=task_id, workflow_id=run.workflow_id,
+                state=(task or {}).get("state"))
+    pull = run.pull_request or {}
+    if pull.get("number") is not None:
+        add("pull_request", _entered(run, RunState.CHECKING, last=False), str(pull.get("number")),
+            number=pull.get("number"), url=pull.get("url"))
+    for round_number, workflow_id in enumerate(run.ci_fix_workflows, start=1):
+        fix = workflows.get(workflow_id)
+        if fix is not None:
+            add("ci_round", fix.get("created_at"), workflow_id, round=round_number,
+                workflow_id=workflow_id, state=fix.get("state"))
+    reviewed_at = _entered(run, RunState.CHECKING, last=True)
+    if run.requirements_met is not None:
+        add("review", reviewed_at, None, requirements_met=run.requirements_met,
+            requirements_unmet=[redact_detail(item, limit=1000)
+                                for item in run.requirements_unmet])
+    if pull.get("merged_at") is not None:
+        add("merged", pull.get("merged_at"), str(pull.get("number")), number=pull.get("number"))
+    written = pull.get("keyword_written")
+    if written in ("closes", "part_of"):
+        done_at = _entered(run, RunState.DONE, last=True)
+        closes = written == "closes"
+        add("keyword", done_at or reviewed_at, f"#{run.issue.number}", closes=closes,
+            keyword=f"{'Closes' if closes else 'part of'} #{run.issue.number}")
+    return events
+
+
+def served_plan_thread(run: IssueRun, documents: Sequence[Mapping[str, Any]],
+                       events: Sequence[Mapping[str, Any]], *, more: bool = False,
+                       ) -> tuple[list[dict[str, Any]], bool]:
+    """The thread the run read serves, oldest first: the stored entries of
+    this run (one naming another tenant or run is not this run's, and is
+    dropped and logged) and the derived `events`, merged by time, the newest
+    PLAN_THREAD_LIMIT of them; and whether any were cut. `more` says the
+    stored read itself stopped at its bound."""
+    rows: list[tuple[datetime, int, dict[str, Any]]] = []
+    for document in documents:
+        if document.get("tenant_id") != run.tenant_id or document.get("run_id") != run.id:
+            log.warning("plan thread entry %s under run %s names another run or tenant; "
+                        "not served", document.get("entry_id"), run.id)
+            continue
+        moment = _moment(document.get("at"))
+        if moment is None:
+            continue
+        rows.append((moment, _THREAD_STORED_RANK, served_thread_entry(document)))
+    for event in events:
+        moment = _moment(event.get("at"))
+        if moment is not None:
+            rows.append((moment, _THREAD_EVENT_RANK.get(str(event.get("event")), 0), dict(event)))
+    rows.sort(key=lambda item: (item[0], item[1]))
+    truncated = more or len(rows) > PLAN_THREAD_LIMIT
+    return [row for _, _, row in rows[-PLAN_THREAD_LIMIT:]], truncated
+
+
 class IssueRuns:
     """The `issue_runs` collection. Every read is checked against the caller's tenant."""
 
@@ -5249,6 +5500,112 @@ class IssueRuns:
         if revision == (run.plan_revision or 1):
             return synthesised_revision(run, whole=True)
         raise missing
+
+    # -- the plan thread (plans-pipeline.md §3.4) -------------------------------
+
+    def _plan_on(self, run: IssueRun, digest: str) -> tuple[Mapping[str, Any], int]:
+        """The plan and revision number `digest` names among `run`'s revisions,
+        or PlanChanged: a comment is on a revision the run had, the current
+        one or an older one. A stored revision whose plan does not hash to
+        its digest anchors nothing (a forged document)."""
+        if run.plan is not None and digest == run.plan_digest:
+            return run.plan, run.plan_revision or 1
+        if run.plan is not None:
+            query = (self._ref(run.id).collection(PLAN_REVISIONS_COLLECTION)
+                     .where(filter=FieldFilter("digest", "==", digest)).limit(5))
+            for snap in query.stream():
+                doc = snap.to_dict() or {}
+                if (doc.get("tenant_id") == run.tenant_id and doc.get("run_id") == run.id
+                        and _revision_verified(doc.get("plan"), doc.get("digest"))
+                        and isinstance(doc.get("revision"), int)):
+                    return doc["plan"], doc["revision"]
+        raise PlanChanged(
+            f"the digest sent is not a revision of the plan of run {run.id!r}; read the run "
+            "again and comment on a plan it shows",
+            detail={"plan_digest": run.plan_digest, "sent": digest[:128]},
+        )
+
+    def add_plan_comment(self, tenant_id: str, run_id: str, *, digest: str, anchor_part: Any,
+                         anchor_ref: Any, text: Any, by: str) -> dict[str, Any]:
+        """Keep one comment on the tenant's run, as the API serves it.
+
+        Another tenant's run is the same 404 as no run. The comment is a
+        document under the run and nothing else: the run's plan, digest,
+        revision and state are not read for writing and not written, whatever
+        the text says -- a comment is data, never an instruction."""
+        run = self.get(tenant_id, run_id)
+        if run.state not in THREAD_OPEN_STATES:
+            # A new refusal (REFUSAL_PLAN_THREAD_CLOSED): switched off, the
+            # comment is kept and the log names the refusal it would have made.
+            refusals.refuse(PlanThreadClosed(
+                f"run {run_id!r} is {run.state.value}; its plan takes no comment",
+                detail={"state": run.state.value},
+            ))
+        plan, revision = self._plan_on(run, digest)
+        anchor = thread_anchor(anchor_part, anchor_ref, plan)
+        stored = thread_text(text)
+        entry_id = thread_entry_id()
+        document = {
+            "tenant_id": run.tenant_id, "run_id": run.id, "entry_id": entry_id,
+            "kind": "comment", "anchor": anchor, "by": by, "text": stored,
+            "on_digest": digest, "on_revision": revision, "answered_by_revision": None,
+            "resolved": False, "diagram": None, "cost": None, "at": self._now(),
+        }
+        self._ref(run.id).collection(PLAN_THREAD_COLLECTION).document(entry_id).create(document)
+        log.info("issue run %s tenant=%s plan comment %s on revision %s by=%s",
+                 run_id, tenant_id, entry_id, revision, by)
+        return served_thread_entry(document)
+
+    def resolve_plan_comment(self, tenant_id: str, run_id: str, entry_id: str, *,
+                             resolved: bool, by: str) -> dict[str, Any]:
+        """Fold (or unfold) one comment of the tenant's run. An entry that is
+        not this run's comment is the same 404 as no entry."""
+        run = self.get(tenant_id, run_id)
+        ref = self._ref(run.id).collection(PLAN_THREAD_COLLECTION).document(entry_id)
+        snap = ref.get()
+        doc = snap.to_dict() if snap.exists else None
+        if (doc is None or doc.get("tenant_id") != run.tenant_id or doc.get("run_id") != run.id
+                or doc.get("kind") != "comment"):
+            raise NotFound(f"run {run_id!r} has no comment {entry_id[:64]!r}")
+        changes = {"resolved": resolved, "resolved_by": by, "resolved_at": self._now()}
+        ref.update(changes)
+        return served_thread_entry({**doc, **changes})
+
+    def plan_thread_documents(self, run: IssueRun) -> tuple[list[dict[str, Any]], bool]:
+        """`run`'s newest stored thread entries, at most PLAN_THREAD_LIMIT,
+        and whether there were more. `run` is one `get` already read for the
+        caller's tenant; `served_plan_thread` drops a document naming another."""
+        query = (self._ref(run.id).collection(PLAN_THREAD_COLLECTION)
+                 .order_by("at", direction=firestore.Query.DESCENDING)
+                 .limit(PLAN_THREAD_LIMIT + 1))
+        documents = [snap.to_dict() for snap in query.stream()]
+        return documents[:PLAN_THREAD_LIMIT], len(documents) > PLAN_THREAD_LIMIT
+
+    def plan_thread_sources(self, run: IssueRun,
+                            ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+        """The workflows (the build and each CI fix round) and the build's
+        step tasks the derived events read, by id; one naming another tenant
+        is not this run's and is not read."""
+        workflows: dict[str, dict[str, Any]] = {}
+        for workflow_id in [run.workflow_id, *run.ci_fix_workflows]:
+            if not workflow_id or workflow_id in workflows:
+                continue
+            snap = self._db.collection(THREAD_WORKFLOWS_COLLECTION).document(workflow_id).get()
+            data = snap.to_dict() if snap.exists else None
+            if data is not None and data.get("tenant_id") == run.tenant_id:
+                workflows[workflow_id] = data
+        tasks: dict[str, dict[str, Any]] = {}
+        build = workflows.get(run.workflow_id or "")
+        for step in (build or {}).get("steps") or ():
+            task_id = step.get("task_id") if isinstance(step, Mapping) else None
+            if not task_id or task_id in tasks:
+                continue
+            snap = self._db.collection(TASKS_COLLECTION).document(str(task_id)).get()
+            data = snap.to_dict() if snap.exists else None
+            if data is not None and data.get("tenant_id") == run.tenant_id:
+                tasks[str(task_id)] = data
+        return workflows, tasks
+
 
     def patch(self, tenant_id: str, run_id: str, patch: Patch, *,
               sign: Resign | None = None) -> IssueRun:

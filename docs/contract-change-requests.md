@@ -160,7 +160,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 153 | `specsign.py`: the plugin record kind `bundle` in `PLUGIN_RECORD_KINDS`, ids `("bundle_id",)`, platform scope only, so a `plugin_bundles/{bundle_id}` record is MAC'd in request 140's canonical form (managed plugins P6, lane 13 of the design's table 17.1) | ACCEPTED by the owner 2026-11-09 (accepted by the owner 2026-11-09, answering docs/design/managed-plugins.md section 18, Q20) and APPLIED 2026-11-09 by the pull request that adds this line (lane plugins-bundle-contract): a bundle record names no tenant and a workspace-scope one has no canonical form |
 | 154 | `profiles.py` / `states.py`: five comment lines name the owner by initials, and take the placeholder "the owner", behaviour unchanged (the repository move) | ACCEPTED by the owner 11 November 2026 and APPLIED by the pull request that adds this line |
 | 155 | `specsign.py`: a `"plans"` block in `SETTINGS_MAC_FIELDS`, `("diagrams", "chat_model_class")`, so a workspace's plan-review settings (`workspace_settings/{tenant_id}.plans`, docs/design/plans-pipeline.md sections 6.4 and 7.8) are signed by the frozen list (PLAN-SETTINGS) | REQUESTED 2026-11-13 by the pull request that adds this line; not applied. Until it is, `canonical_settings_block` refuses the block and swarm-api cannot sign it through the frozen list |
-| 157 | `states.py`: the scheduler may end a re-review whose verdict gate is shut PARKED -> SUCCEEDED, guarded on its own promotion write, without a lease (re-review gate) | REQUESTED 2026-11-23 by the pull request that adds this line; not applied. Until it is, a re-review whose gate is shut is leased and dispatched as today |
+| 157 | `states.py`: the scheduler may end a re-review whose verdict gate is shut PARKED -> SUCCEEDED, guarded on its own promotion write, without a lease (re-review gate) | ACCEPTED by the owner 2026-11-24 and APPLIED by the pull request that adds this line (requested 2026-11-23): the PARKED row's comment only, no edge changed; the scheduler half (`SchedulerStore.end_shut_gate_rereview`) and the worker's staging of the re-review's pointer entry (`agent_worker.inputs.republished_source`) land with it |
 | 158 | `profiles.py`: declare `context_ceiling` as an optional object input on the claude-code runner family, so a step may carry its own lower session limits (per-role session limits) | ACCEPTED by the owner 2026-11-24 and APPLIED by the pull request that adds this status (requested 2026-11-23): declared on the seven claude-code-runner profiles, and stamped per role by `swarm_api.stepceiling` |
 | 159 | `profiles.py`: an `xlarge` resource class (16 CPU requested and limit, 64 GiB, GKE only, outside the admin-sized `CLASS_ORDER`) and a `recording` runner profile (no agent, a Docker daemon in a sandboxed pod, 86,400 s), shipped `available=False` (recording runner, docs/design/recording-runner.md, part of #8) | NOT ACCEPTED: waiting for the owner. REQUESTED 2026-11-24 by the pull request that adds this line; not applied. Until it is, no class is above 8 CPU or 32 GiB and no profile runs longer than 14,400 s |
 | 160 | `states.py` / `models.py`: `ParkReason.WORKFLOW_PAUSED`, `Workflow.paused`, `paused_at` and `paused_by`, and `EventType.PAUSE_REQUESTED` and `RESUME_REQUESTED`, so a workflow can be paused and resumed (docs/design/workflow-pause.md, part of issue 7) | NOT ACCEPTED: REQUESTED 2026-11-24 by the pull request that adds this line; not applied. Nothing is built on it; until the owner decides there is no workflow pause |
@@ -18127,10 +18127,16 @@ the design's order.
 
 ## 157. `states.py`: the scheduler may end a re-review whose verdict gate is shut PARKED -> SUCCEEDED, guarded on its own promotion write, without a lease (re-review gate)
 
-**Status:** REQUESTED 2026-11-23 by the pull request that adds this section;
-not applied. Nothing in the scheduler was changed for it: a re-review whose
-gate is shut is leased and dispatched exactly as today until the owner
-decides.
+**Status:** ACCEPTED by the owner 2026-11-24 and APPLIED 2026-11-24 by the
+pull request that marks it so (requested 2026-11-23 by the pull request that
+added this section). Applied exactly as "The requested change" below writes
+it: the comment on the PARKED row of `_ALLOWED`, no edge changed. The
+scheduler half and the worker staging change it names landed in the same
+pull request: `scheduler.store.SchedulerStore.end_shut_gate_rereview` (one
+transaction that re-reads the re-review, its integrator's record and its
+review's manifest) called from `Scheduler._promote_dependant`, and
+`agent_worker.inputs.republished_source`, which lets the merge step locate the
+re-review's verdict entry in its gate's review's own prefix.
 
 ### What is true today
 
@@ -18258,8 +18264,8 @@ promotion writes no second SUCCEEDED and no second event.
 
 ### Who decides
 
-The owner: accepting it lets the scheduler write the edge. Awaiting the
-owner's acceptance.
+The owner: accepting it lets the scheduler write the edge. Accepted by the
+owner 2026-11-24.
 
 
 ---

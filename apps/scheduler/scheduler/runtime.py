@@ -298,6 +298,123 @@ def republishes(
             "verdict_in": list(dict.fromkeys(verdict_in)), "read_from": integrator}
 
 
+#: `result_summary.published_by` on a step the control plane ended without a
+#: worker: swarm-api's `verdictpublish.PUBLISHED_BY`, and this module's.
+PUBLISHED_BY_CONTROL_PLANE = "control_plane"
+#: Who wrote a manifest entry no attempt uploaded, and the key naming the task
+#: whose own object it points at. `agent_worker.inputs.INLINE_WRITER` and
+#: `REPUBLISHED_FROM_KEY`, restated (the scheduler image does not carry the
+#: worker) and held equal by a test.
+ARTIFACT_WRITER = "control_plane"
+REPUBLISHED_FROM_KEY = "republished_from"
+#: The inline text key of swarm-api's skipped-review entry
+#: (`agent_worker.inputs.INLINE_ARTIFACT_KEY`), restated.
+INLINE_ARTIFACT_KEY = "inline"
+#: The record the worker writes for a shut gate (`Worker._evaluate_verdict_gate`),
+#: copied from the integrator's record of the same verdict file: contract
+#: request 157's list, no more.
+VERDICT_RECORD_KEYS = (
+    "task_id", "file", "verdict", "verdict_in", "agent_ran", "findings",
+    "findings_dropped", "gate_reading", "skipped_review",
+)
+
+
+def _passed_on_entry(review: Mapping[str, Any] | None, *, tenant_id: str, review_task_id: str,
+                     filename: str) -> dict[str, Any] | None:
+    """The re-review's manifest entry for `filename`, pointing at the review's own, or None.
+
+    The worker would copy the review's file byte for byte; the scheduler does
+    not read the bucket, so the entry names the review's object (its `uri` and
+    `bytes`) or carries swarm-api's inline text, and says which review under
+    `republished_from` (`agent_worker.inputs.republished_source` reads it).
+    Anything else -- no such entry, attachments, an object outside this
+    tenant's prefix for that review, no usable size -- is None, and the
+    re-review is dispatched as today.
+    """
+    if review is None or review.get("state") != SUCCEEDED:
+        return None
+    summary = review.get("result_summary")
+    entries = summary.get("artifacts") if isinstance(summary, Mapping) else None
+    entry = next((row for row in entries if isinstance(row, Mapping)
+                  and row.get("name") == filename), None) if isinstance(entries, list) else None
+    if entry is None or entry.get("attachments"):
+        return None
+    out: dict[str, Any] = {"name": filename, "written_by": ARTIFACT_WRITER,
+                           REPUBLISHED_FROM_KEY: review_task_id}
+    uri = entry.get("uri")
+    if isinstance(uri, str) and uri:
+        size = entry.get("bytes")
+        prefix = f"tenants/{tenant_id}/tasks/{review_task_id}/attempts/"
+        root = uri.find("tenants/")
+        if (isinstance(size, bool) or not isinstance(size, int) or size < 0
+                or root < 0 or not uri[root:].startswith(prefix) or not uri.endswith(f"/artifacts/{filename}")):
+            return None
+        out.update({"uri": uri, "bytes": size})
+        return out
+    text = entry.get(INLINE_ARTIFACT_KEY)
+    if entry.get("written_by") == ARTIFACT_WRITER and isinstance(text, str):
+        out[INLINE_ARTIFACT_KEY] = text
+        return out
+    return None
+
+
+def shut_gate_ending(
+    stored: Mapping[str, Any],
+    read: Callable[[str], Mapping[str, Any] | None],
+) -> dict[str, Any] | None:
+    """The `result_summary` a re-review whose gate is recorded shut ends with, or None.
+
+    Contract request 157 (accepted by the owner 2026-11-24): the scheduler ends
+    such a re-review PARKED -> SUCCEEDED instead of promoting it, with what its
+    worker would have recorded -- the gate record, `skipped_agent`, and the
+    verdict file passed on -- and `published_by: "control_plane"`.
+
+    `stored` is the re-review as read (inside the transaction, when the write
+    is decided); `read` the tenant-gated document read. None -- dispatch as
+    today -- unless the step is an unresolved `browser_if_ui` re-review whose
+    `inherit` names a review in its `depends_on`, `republishes` finds its gate
+    certainly shut from the integrator's record, and that review has the
+    record's verdict file to point at (`_passed_on_entry`).
+    """
+    metadata = stored.get("metadata")
+    policy = policy_of(metadata)
+    if policy is None or "resolved" in policy:
+        return None
+    inherit = policy.get("inherit")
+    review_task_id = inherit.get("task_id") if isinstance(inherit, Mapping) else None
+    depends_on = stored.get("depends_on")
+    depends_on = [str(value) for value in depends_on] if isinstance(depends_on, list) else []
+    if not isinstance(review_task_id, str) or review_task_id not in depends_on:
+        return None
+    dispatch = metadata.get(DISPATCH_METADATA_KEY) if isinstance(metadata, Mapping) else None
+    shut = republishes(depends_on, review_task_id, dispatch, read)
+    if shut is None:
+        return None
+    integrator = read(shut["read_from"]) or {}
+    summary = integrator.get("result_summary")
+    record = summary.get("verdict_gate") if isinstance(summary, Mapping) else None
+    if not isinstance(record, Mapping):
+        return None
+    filename = record.get("file")
+    verdict = record.get("verdict")
+    if (not isinstance(filename, str) or not filename or "/" in filename
+            or not isinstance(verdict, str) or not verdict):
+        return None
+    entry = _passed_on_entry(read(review_task_id), tenant_id=str(stored.get("tenant_id")),
+                             review_task_id=review_task_id, filename=filename)
+    if entry is None:
+        return None
+    copied = {key: record[key] for key in VERDICT_RECORD_KEYS if key in record}
+    copied.update({"task_id": review_task_id, "file": filename,
+                   "verdict_in": list(shut["verdict_in"]), "agent_ran": False})
+    return {
+        "published_by": PUBLISHED_BY_CONTROL_PLANE,
+        "verdict_gate": copied,
+        "skipped_agent": f"review verdict {verdict}",
+        "artifacts": [entry],
+    }
+
+
 def resolve(
     task_depends_on: list[str],
     policy: Mapping[str, Any],
