@@ -424,6 +424,18 @@ checkpoints:
   `work/`, reads the journal, skips every command marked done, and runs the
   interrupted one again from its start. So an interruption loses at most one
   command plus one interval, not the 24 hours.
+* **Evidence is bounded below the checkpoint cap.** `work/` is memory-backed
+  tmpfs (`checkpoint.py`), so evidence in `work/` is charged to the same 64 GiB
+  the suites need, and `checkpoint.py` refuses a checkpoint over
+  `max_checkpoint_bytes` (2 GiB), after which every later periodic checkpoint
+  would fail and invariant 8 would stop holding for the rest of the job. The
+  plan format therefore caps the total evidence kept in `work/` (journal
+  included) at 1 GiB, half of the checkpoint cap. Larger evidence (full logs,
+  recordings) goes to GCS per command, under the tenant's prefix, and `work/`
+  keeps only its digests in the journal. The runner checks the cap after each
+  command; when a command's evidence would exceed it, the runner **fails the
+  task loudly** (non-zero exit, reason in the status) rather than continue
+  without checkpoints. A failed periodic checkpoint is never skipped silently.
 * What is not checkpointed: the Docker image store and running containers. A
   retry pulls images again. A plan's command must therefore be restartable
   from its start, which the plan format states (section 7).
