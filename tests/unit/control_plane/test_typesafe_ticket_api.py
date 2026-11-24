@@ -17,7 +17,6 @@ test_live_api.py. Every key is built at runtime (CLAUDE.md).
 from __future__ import annotations
 
 import base64
-import inspect
 import json
 import logging
 import secrets
@@ -28,7 +27,7 @@ from typing import Any
 
 import pytest
 
-from swarm_api import refusals, typesafe_ticket
+from swarm_api import refusals
 from swarm_api.settings import ApiSettings
 from swarm_api.typesafe_ticket import (
     MAX_TICKET_SECONDS,
@@ -433,13 +432,6 @@ def test_no_log_line_carries_the_ticket_or_the_mac_key(ready, caplog):
     text = "\n".join(r.getMessage() for r in caplog.records)
     for part in (ticket, *ticket.split("."), FWD_KEY):
         assert part not in text
-
-
-def test_swarm_api_reads_no_secret_value_to_mint():
-    """The ticket names a secret; swarm-api never reads one for it."""
-    source = inspect.getsource(typesafe_ticket)
-    for call in ("access_secret_version", "SecretManagerServiceClient", ".access("):
-        assert call not in source
 
 
 def test_the_settings_are_read_from_the_environment(monkeypatch):

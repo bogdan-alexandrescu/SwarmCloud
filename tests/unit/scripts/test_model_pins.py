@@ -1,3 +1,4 @@
+# source-text: forbidden-pattern - no non-pin model id under apps/; it stays a test because each pin is read from terraform/infra/locals.tf's runner_models at run time and every exception must still match the whole scan
 """One source for model pins: every class-pin literal under apps/ equals terraform's `runner_models`.
 
 terraform/infra/locals.tf's `runner_models` is "the one place a model id is

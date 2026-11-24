@@ -1,3 +1,4 @@
+# source-text: contract - swarm_install/tfvars.py must pass infra_tenants_tfvars as "" the way terraform/bootstrap and bootstrap.sh expect
 """terraform/bootstrap is safe to apply to a project being installed (DAYONE-BOOT-1, part of archived issue 2688).
 
 Three things a fresh project needs from this root, each held to the HCL that

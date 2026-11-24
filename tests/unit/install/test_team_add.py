@@ -325,9 +325,9 @@ def test_team_git_value_only_through_link() -> None:
     assert "never typed here" in text
     # No event carries it: events reach a Claude session (/sc:install).
     assert api.link_token not in json.dumps(events.record)
-    # The module asks for no token anywhere (the autouse fixture fails any read).
-    source = (team_mod.__file__ and open(team_mod.__file__).read()) or ""
-    assert "input(" not in source and "getpass" not in source
+    # The module asks for no token anywhere: the autouse fixture fails any
+    # read, and the rule team-add-prompts-for-nothing in
+    # scripts/source_text_rules/services.py refuses `input(` and `getpass`.
 
 
 def test_git_owner_defaults_to_the_first_admin_and_can_be_named() -> None:

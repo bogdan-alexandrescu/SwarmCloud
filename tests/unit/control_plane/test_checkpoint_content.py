@@ -1,3 +1,4 @@
+# source-text: contract - the paths CheckpointBrowser.tsx calls must be the checkpoint routes this API serves
 """What is INSIDE a checkpoint -- listing, one file, the whole archive.
 
 Owner decision 2026-09-24 on redesign-v2 S3 / item A3: a checkpoint gets all

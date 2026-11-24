@@ -1,3 +1,4 @@
+# source-text: contract - the request calls in swarm_mcp/secrets.py must be exactly five routes a swarm-api router serves with the same method and path
 """Config › Secrets from the sc plugin: links and reads only (SSC-SC, part of archived issue 2158).
 
 docs/design/secrets-scopes.md §6.4, with the owner's answer Q8 of its §11: a value

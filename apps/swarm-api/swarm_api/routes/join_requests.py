@@ -60,7 +60,7 @@ command, resource spec or backend parameter (invariant 10).
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
@@ -83,6 +83,7 @@ from ..errors import (
     JoinWorkspaceChanged,
     MembershipUnavailable,
     NotFound,
+    RoleUnavailable,
     UpstreamUnavailable,
     WorkspaceLeaveLastAdmin,
     WorkspaceLeaveNotMember,
@@ -484,8 +485,23 @@ def remove_member(
     while another admin who can still select the workspace remains (409
     `workspace_leave_last_admin`, nothing written but the refusal's audit
     row), checked and written in one transaction over the workspace's guard
-    document, as `leave_workspace` does (`last_admin`)."""
-    group, me = _members_admin(ctx, auth)
+    document, as `leave_workspace` does (`last_admin`).
+
+    A scoped probe admin is refused 403 `probe_admin_not_permitted` and
+    leaves one `workspace_probe_admin_refused` audit row
+    (`last_admin.probe_admin_refusals`).
+
+    FAIL-CLOSED: whether the person holds `admin` is read from the roles
+    store before and inside the transaction; when it cannot be read the
+    removal is 503 `role_unavailable` and writes nothing, for a person who
+    holds no admin role too -- a guess of "not an admin" is the one that
+    could remove the workspace's last admin (docs/design/join-requests.md,
+    "Member removal fails closed")."""
+    with last_admin.probe_admin_refusals(
+            ctx, tenant_id=tenant_id, by=auth.email,
+            target=lambda: memberships.clean_person(body.email, "email"),
+            detail={"route": last_admin.ROUTE_REMOVE}):
+        group, me = _members_admin(ctx, auth)
     subject = memberships.clean_person(body.email, "email")
     store = membership_store(ctx)
     # Read fresh first, so a person with nothing to remove hears that before
@@ -504,9 +520,7 @@ def remove_member(
         message = (f"{subject} is this workspace's only admin who can still select it; name "
                    "another admin who is a member before removing them. Nothing was written")
 
-    # The directory's answers about the other admins, before the transaction.
-    known = last_admin.lookups_ahead(request, ctx, tenant_id=tenant_id, subject=subject,
-                                     group=group, registered=registered)
+    known: Mapping[str, bool] = {}
 
     def _apply(txn: Any) -> bool | None:
         last_admin.read_guard(ctx, txn, tenant_id)
@@ -532,8 +546,21 @@ def remove_member(
                     detail={"still_in_group": still}, writer=txn)
         return still
 
-    still = last_admin.run(ctx, _apply, tenant_id=tenant_id, subject=subject, by=by,
-                           detail={"route": last_admin.ROUTE_REMOVE, "via": via})
+    try:
+        # The directory's answers about the other admins, before the transaction.
+        known = last_admin.lookups_ahead(request, ctx, tenant_id=tenant_id, subject=subject,
+                                         group=group, registered=registered)
+        still = last_admin.run(ctx, _apply, tenant_id=tenant_id, subject=subject, by=by,
+                               detail={"route": last_admin.ROUTE_REMOVE, "via": via})
+    except RoleUnavailable:
+        # Fail-closed, for a person who holds no admin role too: without the
+        # role the route cannot know, and "not an admin" is the guess that
+        # could remove the last one. Raised before anything was written, or
+        # from inside the transaction, which then wrote nothing.
+        raise RoleUnavailable(
+            f"whether {subject} holds this workspace's admin role could not be read, so "
+            "removing them could leave it without an admin; retry shortly. Nothing was "
+            "written") from None
     return {"email": subject, "state": memberships.REMOVED, "still_in_group": still}
 
 
@@ -707,12 +734,38 @@ def approve_join_request(
         raise JoinRoleNotAllowed(
             f"an approval gives this workspace's default ({default}) or viewer below it; "
             "name an admin after they have joined")
+    by = (auth.email or "").strip().lower()
+    # A probe admin refused -- by the early check or inside the transaction --
+    # leaves one `workspace_probe_admin_refused` row, after the rollback.
+    with last_admin.probe_admin_refusals(
+            ctx, tenant_id=tenant_id, by=by, target=lambda: subject,
+            detail={"route": last_admin.ROUTE_JOIN_APPROVED, "to": chosen}):
+        admitted = _approve(request, ctx, ref=ref, view=view, via=via, by=by, chosen=chosen,
+                            default=default)
+    out: dict[str, Any] = {"ref": view.request.ref, "state": joinrequests.APPROVED,
+                           "email": subject, "tenant_id": tenant_id, "role": chosen,
+                           "admitted": admitted, "group_change": None}
+    if not admitted:
+        out["group_change"] = {
+            "group": group,
+            "command": f"gcloud identity groups memberships add --group-email={group} "
+                       f"--member-email={subject}",
+        }
+    return out
+
+
+def _approve(request: Request, ctx: AppContext, *, ref: str, view: RequestView, via: str,
+             by: str, chosen: str, default: str) -> bool:
+    """`approve_join_request`'s checks and its one transaction; whether the
+    approval admitted the person (`platform_memberships`)."""
+    tenant_id, group, subject = view.request.tenant_id, view.request.group, view.request.requester
+    store = ctx.roles
+    assert store is not None
     if via == joinrequests.VIA_PROBE_ADMIN:
         # A probe admin's approval never changes or clears a stored `admin`
         # role -- one a platform admin named ahead of the person's joining.
         # A fast answer; `also` decides it again inside the transaction.
         roles.probe_admin_admin_target(store, tenant_id, subject, chosen)
-    by = (auth.email or "").strip().lower()
     admitted = platform_memberships_on(ctx.settings)
     registered = _registered(ctx)
     same = _same_request(view)
@@ -770,16 +823,7 @@ def approve_join_request(
         last_admin.audit_refusal(ctx, tenant_id=tenant_id, subject=subject, by=by, detail={
             "route": last_admin.ROUTE_JOIN_APPROVED, "via": via, "to": chosen})
         raise
-    out: dict[str, Any] = {"ref": view.request.ref, "state": joinrequests.APPROVED,
-                           "email": subject, "tenant_id": tenant_id, "role": chosen,
-                           "admitted": admitted, "group_change": None}
-    if not admitted:
-        out["group_change"] = {
-            "group": group,
-            "command": f"gcloud identity groups memberships add --group-email={group} "
-                       f"--member-email={subject}",
-        }
-    return out
+    return admitted
 
 
 @router.post("/v1/admin/join-requests/{ref}/deny")

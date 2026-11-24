@@ -471,8 +471,8 @@ def test_no_cloud_kms_client_is_left_in_the_job():
     """Nothing reads Cloud KMS at run time, so the deployer needs no grant on
     the key (owner decision 2026-10-19): no endpoint, no lookup."""
     module = _load()
-    text = ENTRY.read_text()
-    assert "cloudkms" not in text and "publicKey" not in text
+    # That entry.py's text names neither `cloudkms` nor `publicKey` is the lint
+    # rule `workspace-apply-reads-no-kms` (scripts/source_text_rules/scripts_tree.py).
     assert not hasattr(module, "KMS")
     assert not hasattr(module.Cloud, "public_key")
 
@@ -612,19 +612,10 @@ def test_the_trusted_key_is_the_one_terraform_names():
     assert not hasattr(module, "SIGNING_KEYS"), "the image trusts a key of its own again"
 
 
-def test_entry_imports_the_standard_library_and_the_frozen_specsign_only():
-    """The canonical bytes and the digest are the frozen contract's, as the
-    workers' are (swarm_common.specsign.jcs, spec_digest): one spelling of
-    RFC 8785 for signer and verifier. Nothing else outside the standard
-    library: the image's Debian python3 has nothing installed."""
-    text = ENTRY.read_text()
-    imported = set(re.findall(r"^(?:from|import) ([a-z0-9_.]+)", text, re.M))
-    assert {name.split(".")[0] for name in imported} <= {
-        "__future__", "base64", "hashlib", "json", "os", "re", "sys", "tempfile", "urllib",
-        "collections", "datetime", "pathlib", "typing", "swarm_common"}
-    assert re.search(r"^from swarm_common import specsign\b", text, re.M)
-    assert "specsign.jcs(" in text and "specsign.spec_digest(" in text
-    assert "json.dumps(payload" not in text, "a second RFC 8785 spelling beside the frozen one"
+# That entry.py imports the standard library and the frozen swarm_common.specsign
+# only, calls specsign.jcs and specsign.spec_digest, and spells no second RFC 8785
+# (`json.dumps(payload`) is the lint rule `workspace-apply-stdlib-and-frozen-specsign`
+# (scripts/source_text_rules/scripts_tree.py).
 
 
 def test_the_image_carries_the_frozen_package_where_entry_looks():

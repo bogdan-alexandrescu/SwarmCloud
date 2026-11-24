@@ -47,7 +47,9 @@ completed (livegate/qatarget.py). It is refused without the extra origin
 named. It is NOT a registration field: a workspace admin's change cannot set
 it, a change of host or extra origin clears it with the approval, and an
 approval that does not name it clears it, so the admin takes it back by
-approving again. The audit row names it.
+approving again. The audit row names it. The worker's answer serves the
+path with the login's origin by name (`idp_token_origin`), and the gate
+binds the path to that origin alone (epic 21).
 
 THE CREDENTIAL (§2.1, VQ-Q2). One Secret Manager secret per tenant,
 `swarm-tenant-<tenant>-qa`, declared empty by Terraform (lane VQ-3) and its
@@ -614,8 +616,15 @@ def resolve_host(host: str) -> list[str]:
 
 def check_public_host(host: str, resolve: Resolver) -> str:
     """`host`, lower-cased, when it is a public name whose every address is
-    public unicast; a 422 otherwise. swarm_egress.policy's rule, plus the
-    resolution its CONNECT-time check makes at the proxy."""
+    public unicast; a 422 otherwise. swarm_egress.policy's name rule, plus a
+    resolution, which that CONNECT-time check does not make. Resolution is
+    checked at registration and at each approval only; after that a private
+    address is unreachable on GKE because of
+    kubernetes/network-policies/allow-egress.yaml (the internet minus every
+    private range), and on Cloud Run Jobs NOTHING stops it: the Job's
+    ALL_TRAFFIC VPC egress (terraform/modules/cloud_run_jobs/main.tf) meets
+    no egress deny (terraform/modules/network/firewall.tf) -- epic 21, and
+    docs/design/qa-environments.md's "A host that later resolves private"."""
     host = (host or "").lower().rstrip(".")
     try:
         ipaddress.ip_address(host)
@@ -673,10 +682,17 @@ def _extra_origin(raw: Any, resolve: Resolver, *, what: str = "sign_in.extra_ori
 
 
 def _same_origin(a: str, b: str) -> bool:
-    """https's own port written out is the same origin (`qaspec._leg_origins`)."""
-    def bare(origin: str) -> str:
-        return origin[:-len(":443")] if origin.endswith(":443") else origin
-    return bare(a.lower()) == bare(b.lower())
+    """https's own port written out is the same origin (`qaspec.bare_origin`)."""
+    return qaspec.bare_origin(a) == qaspec.bare_origin(b)
+
+
+def _bare(origin: Any) -> Any:
+    """`qaspec.bare_origin` of a stored origin; anything else as it is."""
+    return qaspec.bare_origin(origin) if isinstance(origin, str) else origin
+
+
+def _bare_list(origins: Any) -> list[Any]:
+    return [_bare(o) for o in origins or []]
 
 
 def _extra_origins(raw: Any, resolve: Resolver, *, base: str, sign_in: Mapping[str, Any]) -> list[str] | None:
@@ -1522,9 +1538,11 @@ class QaTargets:
             status = {k: old[k] for k in _STATUS_FIELDS if k in old}
             # Any change of the leg's origins, its list of extra ones included,
             # is a change of what the approval covered.
-            host_reset = (old.get("host"), (old.get("sign_in") or {}).get("extra_origin"),
-                          list(old.get("extra_origins") or [])) != \
-                (leg["host"], leg["sign_in"].get("extra_origin"), list(leg.get("extra_origins") or []))
+            # Compared bare (epic 21): a leg stored with `:443` before
+            # registration dropped it reads back bare, and is not a new origin.
+            host_reset = (old.get("host"), _bare((old.get("sign_in") or {}).get("extra_origin")),
+                          _bare_list(old.get("extra_origins"))) != \
+                (leg["host"], _bare(leg["sign_in"].get("extra_origin")), _bare_list(leg.get("extra_origins")))
             if host_reset:
                 status.update(host_state=HOST_PENDING, approved_by=None, approved_at=None,
                               approved_origins=[], **{IDP_TOKEN_FIELD: None})
@@ -1540,7 +1558,7 @@ class QaTargets:
             # Origins are hosts, not secrets: the row says what the list was
             # and became, so the change can be read without the target (epic 21).
             was, now_listed = list(old.get("extra_origins") or []), list(leg.get("extra_origins") or [])
-            if was != now_listed:
+            if _bare_list(was) != _bare_list(now_listed):
                 summary["extra_origins"] = {"from": was, "to": now_listed}
             legs.append(summary)
         names = {leg["name"] for leg in doc["environments"]}
@@ -2900,13 +2918,17 @@ class QaTargetIssuer:
             served["challenge_bypass"] = {"kind": bypass.get("kind"), "name": bypass.get("name")}
         approved_origins = list(target.get("approved_origins") or [origin])
         token_path = target.get(IDP_TOKEN_FIELD)
-        login_origin = sign_in.get("extra_origin")
-        if isinstance(token_path, str) and isinstance(login_origin, str) and login_origin in approved_origins:
+        login_origin = _bare(sign_in.get("extra_origin"))
+        if isinstance(token_path, str) and isinstance(login_origin, str) \
+                and login_origin in _bare_list(approved_origins):
             # QA-IDP-POST: only with the login's origin it was approved on,
-            # whatever other extra origins were approved beside it. The gate
-            # puts it on the first origin after the base, which `approve_host`
-            # makes the login's.
+            # whatever other extra origins were approved beside it, and that
+            # origin served BY NAME beside it (epic 21): the gate binds the
+            # path to `idp_token_origin`, never to a position in `origins`.
+            # Bare, as a browser writes it; a target stored with `:443` is
+            # compared bare, and the worker reads `origins` bare too.
             served["idp_token_path"] = token_path
+            served["idp_token_origin"] = login_origin
         return {
             **served,
             "target_id": target.get("id"),

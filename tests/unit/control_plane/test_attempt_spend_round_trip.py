@@ -103,16 +103,3 @@ def test_a_measured_zero_survives(field):
     api = attempt_to_api(attempt_from_dict(_doc(**{field: 0})))
     assert api[field] == 0, f"a measured zero for {field} was turned back into None"
     assert api[field] is not None
-
-
-def test_the_serialiser_no_longer_blames_the_worker():
-    """The comment was cited as fact in a design doc and shaped a UI decision."""
-    import inspect
-
-    from swarm_api import codec
-
-    src = inspect.getsource(codec)
-    assert "Null until the worker fix ships" not in src, (
-        "the serialiser still claims these are null pending a worker fix that shipped; "
-        "that comment is why the cost columns were removed from the UI"
-    )

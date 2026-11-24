@@ -1,3 +1,4 @@
+# source-text: contract - vitestWorkers.ts's env gate must name a variable cliagent._PLAIN_PASSTHROUGH passes to the agent
 """The agent's own process is started with SWARM_TASK_ID (archived issue 1641).
 
 archived pull request 1642 capped vitest's workers in an agent container: `agentMaxWorkers` in

@@ -1,3 +1,4 @@
+# source-text: contract - the swarm-graph main.py, server.py, cache.py and stats.py constants must equal the ports, key and memory limit its manifest renders
 """The shared graph service's Kubernetes objects (docs/design/graph-service.md
 §2.1, §3.4; lane GS-INFRA, part of archived issue 1384).
 

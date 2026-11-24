@@ -58,6 +58,8 @@ def test_a_platform_admin_approves_the_token_path_with_the_extra_origin(client, 
     served = qatargets.QaTargetIssuer._answer(doc)
     # MUTATION: leave it out of `QaTargetIssuer._answer` and the gate never lets the refresh through.
     assert served["idp_token_path"] == TOKEN_PATH
+    # MUTATION: leave `idp_token_origin` out of `_answer` and the worker refuses the path (epic 21).
+    assert served["idp_token_origin"] == IDP
     assert served["origins"] == ["https://shop.example.com", IDP]
     row = [r for r in audit_rows(db) if r["action"] == "qa_target_host_approved"][-1]
     # MUTATION: leave it out of the audit row and nobody can tell who widened the gate.
@@ -130,7 +132,9 @@ def test_moving_the_extra_origin_takes_it_away(client, db, seeded):
     # MUTATION: leave it out of the host reset in `QaTargets.patch` and the path rides onto the new origin.
     assert changed["approved_idp_token_path"] is None
     (doc,) = target_docs(db).values()
-    assert "idp_token_path" not in qatargets.QaTargetIssuer._answer(doc)
+    served = qatargets.QaTargetIssuer._answer(doc)
+    assert "idp_token_path" not in served
+    assert "idp_token_origin" not in served
 
 
 def test_another_change_keeps_it(client, db, seeded):
@@ -150,7 +154,9 @@ def test_an_approval_that_does_not_name_it_takes_it_away(client, db, seeded):
     # MUTATION: keep the previous approval's path and an admin cannot take the exception back.
     assert approved["approved_idp_token_path"] is None
     (doc,) = target_docs(db).values()
-    assert "idp_token_path" not in qatargets.QaTargetIssuer._answer(doc)
+    served = qatargets.QaTargetIssuer._answer(doc)
+    assert "idp_token_path" not in served
+    assert "idp_token_origin" not in served
 
 
 def test_a_target_approved_without_it_is_served_as_before(client, db, seeded):
@@ -160,3 +166,41 @@ def test_a_target_approved_without_it_is_served_as_before(client, db, seeded):
     served = qatargets.QaTargetIssuer._answer(doc)
     # MUTATION: serve `idp_token_path: None` and the worker hands the gate a null it refuses.
     assert "idp_token_path" not in served
+    # MUTATION: serve the login's origin without its approved path and the answer names an origin for nothing.
+    assert "idp_token_origin" not in served
+
+
+def test_the_answer_names_the_logins_origin_wherever_it_sits_in_origins(client, db, seeded):
+    """Epic 21: the worker binds the token URL to the origin served by name,
+    not to the first origin after the base, so the order of `origins` decides nothing."""
+    target = _registered(client)
+    approve(client, target["id"], extra_origin=IDP, idp_token_path=TOKEN_PATH)
+    (doc,) = target_docs(db).values()
+    doc = {**doc, "approved_origins": ["https://shop.example.com", "https://api.example.com", IDP]}
+    served = qatargets.QaTargetIssuer._answer(doc)
+    assert served["idp_token_path"] == TOKEN_PATH
+    # MUTATION: serve `origins[1]` (the first after the base) and this names the API host.
+    assert served["idp_token_origin"] == IDP
+
+
+def test_a_login_origin_stored_with_443_is_named_bare(client, db, seeded):
+    """A target registered before `:443` was normalised still serves its path,
+    and names the origin as a browser writes it."""
+    target = _registered(client)
+    approve(client, target["id"], extra_origin=IDP, idp_token_path=TOKEN_PATH)
+    (doc,) = target_docs(db).values()
+    doc = {**doc, "sign_in": {**doc["sign_in"], "extra_origin": IDP + ":443"},
+           "approved_origins": ["https://shop.example.com", IDP + ":443"]}
+    served = qatargets.QaTargetIssuer._answer(doc)
+    assert served["idp_token_path"] == TOKEN_PATH
+    assert served["idp_token_origin"] == IDP
+
+
+def test_neither_is_served_before_approval(client, db, seeded):
+    _registered(client)
+    (doc,) = target_docs(db).values()
+    doc = {**doc, "approved_idp_token_path": TOKEN_PATH}
+    served = qatargets.QaTargetIssuer._answer(doc)
+    # MUTATION: serve the path whenever it is stored and an unapproved origin is reached.
+    assert "idp_token_path" not in served
+    assert "idp_token_origin" not in served

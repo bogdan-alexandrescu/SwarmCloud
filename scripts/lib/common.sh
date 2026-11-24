@@ -481,6 +481,28 @@ config_fetch() {
 CONFIG_METADATA_TOKEN_URL="http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
 CONFIG_STORAGE_API="https://storage.googleapis.com/storage/v1"
 
+# The REST transport's bounded retry (issue 370). Dev acceptance went red when
+# the swarm-verify job's ONE read of config/dev/deny-list.json timed out after
+# 30 s and nothing asked again. Each REST call -- the metadata server's token,
+# the object's generation, its media -- is now tried again ONLY on a network
+# timeout or no connection (curl exit 28 or 7) or an HTTP 5xx; a 403 refuses at
+# once, a 404 reads as missing at once, any other answer is final. After the
+# last try the call fails exactly as a single failed try did, so
+# deny_list_require still refuses everything: an unread list is never an empty
+# one and never its last cached copy. SWARM_CONFIG_READ_TRIES and
+# SWARM_CONFIG_READ_PAUSE override the two defaults; a value out of range
+# refuses before any network call rather than retrying without a bound.
+#
+# 3 tries: one try was what failed; a third covers a second blip without
+# turning an outage into a long wait. Kept at most 5.
+CONFIG_READ_TRIES_DEFAULT=3
+# 10 s between tries: long enough for a dropped connection or a 503 to clear,
+# short enough for CI. Worst case, every call needing all its tries: the token
+# (3 x 10 s + 2 x 10 s = 50 s), the generation and the media (3 x 30 s +
+# 2 x 10 s = 110 s each) take 270 s instead of 70 s, 200 s more, inside the
+# swarm-verify task's 1800 s and accept.yml's 30 minutes. Kept at most 30.
+CONFIG_READ_PAUSE_DEFAULT=10
+
 config_fetch_one() {
   local env="${1:-}" name="${2:-}" transport="${SWARM_CONFIG_TRANSPORT:-gcloud}" dir src part work rc=0
   [[ "${env}" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || { err "config_fetch_one: '${env}' is not an environment name"; return 1; }
@@ -585,26 +607,85 @@ _config_gcloud_generation() {
   return 1
 }
 
+# _config_rest_read_knobs: SWARM_CONFIG_READ_TRIES and SWARM_CONFIG_READ_PAUSE,
+# checked, into CONFIG_READ_TRIES and CONFIG_READ_PAUSE. 1, saying why, when one
+# is out of range: a bad knob refuses the read, it never means "no bound".
+_config_rest_read_knobs() {
+  local tries="${SWARM_CONFIG_READ_TRIES:-${CONFIG_READ_TRIES_DEFAULT}}"
+  local pause="${SWARM_CONFIG_READ_PAUSE:-${CONFIG_READ_PAUSE_DEFAULT}}"
+  [[ "${tries}" =~ ^[1-5]$ ]] \
+    || { err "SWARM_CONFIG_READ_TRIES is '${tries}'; it is a number of tries from 1 to 5"; return 1; }
+  if ! [[ "${pause}" =~ ^[0-9]{1,2}$ ]] || (( 10#${pause} > 30 )); then
+    err "SWARM_CONFIG_READ_PAUSE is '${pause}'; it is a number of seconds from 0 to 30"
+    return 1
+  fi
+  CONFIG_READ_TRIES="${tries}"
+  CONFIG_READ_PAUSE="$(( 10#${pause} ))"
+}
+
+# _config_rest_transient CURL_EXIT STATUS: 0 when a REST call is worth another
+# try -- a network timeout (28), no connection (7) or an HTTP 5xx -- and 1 for
+# every other answer, a 403 and a 404 among them.
+_config_rest_transient() {
+  local rc="$1" status="$2"
+  (( rc == 28 || rc == 7 )) && return 0
+  [[ "${status}" =~ ^5[0-9][0-9]$ ]]
+}
+
+# _config_rest_pause TRY WHAT: says a retry is coming (TRY of the tries) and
+# pauses. WHAT names the call and its status, never a bucket, URL or token.
+_config_rest_pause() {
+  warn "the configuration read's ${2}; try ${1} of ${CONFIG_READ_TRIES} in ${CONFIG_READ_PAUSE} s"
+  sleep "${CONFIG_READ_PAUSE}"
+}
+
 # _config_rest_call WORK URL OUT [DUMP] -> the HTTP status on stdout, curl's
 # exit status as the function's. The token goes in through WORK/auth (`-H @`),
-# never in argv, where a process listing or a shim's log would show it.
+# never in argv, where a process listing or a shim's log would show it. Tried
+# again on a timeout, no connection or a 5xx, up to CONFIG_READ_TRIES times
+# (the retry block above); the last try's status and exit are the answer.
 _config_rest_call() {
-  local work="$1" url="$2" out="$3" dump="${4:-}"
+  local work="$1" url="$2" out="$3" dump="${4:-}" try=1 status rc
   local -a extra=()
   [[ -z "${dump}" ]] || extra=(-D "${dump}")
-  _config_tool curl -fsS --max-time 30 -H "@${work}/auth" ${extra[@]+"${extra[@]}"} \
-    -o "${out}" -w '%{http_code}' "${url}" 2>"${work}/curl.err"
+  _config_rest_read_knobs || return 1
+  while :; do
+    rc=0
+    status="$(_config_tool curl -fsS --max-time 30 -H "@${work}/auth" ${extra[@]+"${extra[@]}"} \
+      -o "${out}" -w '%{http_code}' "${url}" 2>"${work}/curl.err")" || rc=$?
+    if (( try >= CONFIG_READ_TRIES )) || ! _config_rest_transient "${rc}" "${status}"; then
+      printf '%s' "${status}"
+      return "${rc}"
+    fi
+    try=$(( try + 1 ))
+    _config_rest_pause "${try}" "bucket call failed (HTTP ${status:-none}, curl exit ${rc})"
+  done
 }
 
 # _config_rest_token WORK: the metadata server's access token, into WORK/auth
-# as a header line, mode 0600, never printed.
+# as a header line, mode 0600, never printed. Tried again the same bounded way
+# as _config_rest_call; the status of a -f failure is read from curl's
+# "returned error: NNN" line, since the token's body never reaches stdout.
 _config_rest_token() {
-  local work="$1" token
-  if ! ( umask 077 && _config_tool curl -fsS --max-time 10 -H 'Metadata-Flavor: Google' \
-           -o "${work}/token.json" "${CONFIG_METADATA_TOKEN_URL}" 2>"${work}/curl.err" ); then
-    err "could not get a token from the metadata server: $(head -n 1 "${work}/curl.err" | redact)"
-    return 1
-  fi
+  local work="$1" token try=1 rc why status
+  local re='returned error: ([0-9][0-9][0-9])'
+  _config_rest_read_knobs || return 1
+  while :; do
+    rc=0
+    ( umask 077 && _config_tool curl -fsS --max-time 10 -H 'Metadata-Flavor: Google' \
+        -o "${work}/token.json" "${CONFIG_METADATA_TOKEN_URL}" 2>"${work}/curl.err" ) || rc=$?
+    (( rc == 0 )) && break
+    why="$(head -n 1 "${work}/curl.err" 2>/dev/null || true)"
+    status=""
+    [[ "${why}" =~ ${re} ]] && status="${BASH_REMATCH[1]}"
+    if (( try >= CONFIG_READ_TRIES )) || ! _config_rest_transient "${rc}" "${status}"; then
+      rm -f -- "${work}/token.json"
+      err "could not get a token from the metadata server: $(printf '%s\n' "${why}" | redact)"
+      return 1
+    fi
+    try=$(( try + 1 ))
+    _config_rest_pause "${try}" "metadata token call failed (HTTP ${status:-none}, curl exit ${rc})"
+  done
   token="$(jq -r '.access_token // empty' "${work}/token.json" 2>/dev/null || true)"
   rm -f -- "${work}/token.json"
   [[ "${token}" =~ ^[A-Za-z0-9._~+/=-]+$ ]] || { err "the metadata server returned no usable token"; return 1; }

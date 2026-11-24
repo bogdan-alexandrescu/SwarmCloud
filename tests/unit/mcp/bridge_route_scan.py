@@ -1,3 +1,4 @@
+# source-text: contract - helper for test_against_the_real_api.py: collects the (method, path) of every request swarm_mcp builds, to match swarm-api's route table
 """Every request path the bridge package builds, read out of its source.
 
 `test_against_the_real_api.py` compares these against the real API's route

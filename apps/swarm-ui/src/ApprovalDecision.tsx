@@ -40,7 +40,7 @@ import { scheduleAddress } from './schedulePaths'
 import { Screen, timeAgo } from './Shell'
 import { useNow } from './useNow'
 import './styles/schedules.css'
-import { APPROVAL_KIND, approvalAddress, approvalsAddress } from './approvalPaths'
+import { APPROVAL_KIND, approvalAddress, approvalsAddress, pipelineAddress } from './approvalPaths'
 import './styles/automate-approvals.css'
 
 export { APPROVAL_KIND, APPROVALS_ADDRESS, approvalAddress, approvalsAddress } from './approvalPaths'
@@ -1941,7 +1941,18 @@ export function ApprovalDecision({ d, kind, go, onDecided, served = null, onRelo
 }
 
 /** The way back to the list the item was opened from, its kind kept. */
-export function BackToList({ kind, go }: { kind: string | null; go: (to: string) => void }) {
+export function BackToList({ kind, go, board = null }: { kind: string | null; go: (to: string) => void; board?: string | null }) {
+  // Opened from the Pipeline board (plans-pipeline §2.1): Back is a link to
+  // the board with the filters its address carried, never history.
+  if (board !== null) {
+    return (
+      <p className="ad-back">
+        <InApp go={go} to={pipelineAddress(board)}>
+          ‹ Pipeline
+        </InApp>
+      </p>
+    )
+  }
   return (
     <p className="ad-back">
       <InApp go={go} to={approvalsAddress(kind)}>
@@ -1988,7 +1999,22 @@ async function servedPlan(d: Decision): Promise<ServedPlan | null> {
  * /v1/approvals/{id}`), so a link to an item someone else decided, or one that
  * expired, lands on what became of it (AUT-6) rather than on the list.
  */
-export function ApprovalDecisionScreen({ itemId, kind, round, go, onDecided }: { itemId: string; kind: string | null; round: number; go: (to: string) => void; onDecided: (word: string) => void }) {
+export function ApprovalDecisionScreen({
+  itemId,
+  kind,
+  round,
+  go,
+  onDecided,
+  board = null,
+}: {
+  itemId: string
+  kind: string | null
+  round: number
+  go: (to: string) => void
+  onDecided: (word: string) => void
+  /** The Pipeline board's query when the item was opened from the board, else null. */
+  board?: string | null
+}) {
   // Reading a newer revision reads the item and its run again (D:P2c).
   const [again, setAgain] = useState(0)
   return (
@@ -2005,7 +2031,7 @@ export function ApprovalDecisionScreen({ itemId, kind, round, go, onDecided }: {
     >
       {({ r, served }) => (
         <>
-          <BackToList kind={kind} go={go} />
+          <BackToList kind={kind} go={go} board={board} />
           {r.status === 'ok' ? (
             <ApprovalDecision d={r.data} kind={kind} go={go} onDecided={onDecided} served={served} onReload={() => setAgain((n) => n + 1)} />
           ) : r.status === 'error' ? (

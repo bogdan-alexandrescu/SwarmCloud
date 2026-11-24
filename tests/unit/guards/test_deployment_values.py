@@ -391,8 +391,8 @@ def test_the_repository_address_is_allowed_only_where_it_must_appear(tmp_path: P
 
 def test_the_default_mode_is_report():
     # Lane 12 flips this once --tree reports zero (section 4.4).
-    text = (ROOT / "scripts" / "guards" / "deployment_values.py").read_text(encoding="utf-8")
-    assert re.search(r'^DEFAULT_MODE = "report"$', text, re.M)
+    # The loaded guard's own value (dv, below), not its source text.
+    assert dv.DEFAULT_MODE == "report"
 
 
 # ---------------------------------------------------------------------------

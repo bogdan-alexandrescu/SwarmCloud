@@ -18,7 +18,9 @@ THE DEFECT, and why an empty list was the worst possible shape for it:
 
 The fix points the reader at the existing writer. These tests pin that, and pin
 the two distinctions an artifact list has to keep: unfinished vs. produced
-nothing, and dropped-at-the-cap vs. never-written.
+nothing, and dropped-at-the-cap vs. never-written. That the dead read does not
+come back anywhere under apps/ is the lint rule `no-task-artifacts-subcollection`
+(scripts/source_text_rules/control_plane_am.py).
 """
 
 from __future__ import annotations
@@ -184,30 +186,6 @@ def test_a_malformed_summary_does_not_500(client, db) -> None:
     body = response.json()
     assert body["artifacts"] == []
     assert body["artifacts_skipped"] == []
-
-
-def test_nothing_reads_a_task_artifacts_subcollection_any_more() -> None:
-    """The dead read must not come back, in this or any other component.
-
-    It was survivable for so long precisely because it was invisible: one
-    `.collection("artifacts")` under a task document, answering 200 with `[]`.
-    """
-    from pathlib import Path
-
-    apps = Path(__file__).resolve().parents[3] / "apps"
-    assert apps.is_dir(), f"{apps} is not the apps tree; this check would scan nothing"
-    offenders = []
-    for path in apps.rglob("*.py"):
-        if ".venv" in path.parts:
-            continue
-        for number, line in enumerate(path.read_text().splitlines(), start=1):
-            if ".collection(ARTIFACTS)" in line or '.collection("artifacts")' in line:
-                offenders.append(f"{path}:{number}: {line.strip()}")
-
-    assert not offenders, (
-        "nothing writes tasks/<id>/artifacts; the manifest is "
-        "task.result_summary['artifacts']:\n  " + "\n  ".join(offenders)
-    )
 
 
 def test_files_past_the_file_cap_are_counted_not_hidden(client, db) -> None:

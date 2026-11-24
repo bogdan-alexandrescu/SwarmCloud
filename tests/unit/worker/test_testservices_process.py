@@ -1,3 +1,4 @@
+# source-text: contract - lifecycle.py must start the test services after the clone and stop them in _cleanup before the workspace is destroyed
 """A declared Postgres runs for the whole attempt, as the worker's child, on loopback only (TS-RUN, archived issue 1627).
 
 docs/design/test-services.md §3.1, §4.1, §5.4, §5.5 and §7's TS-RUN row,

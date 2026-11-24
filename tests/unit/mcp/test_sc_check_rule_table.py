@@ -1,3 +1,4 @@
+# source-text: contract - every rule string check.py returns must have a row in the /sc check skill table and a RULE_SAY note, and no more
 """Every rule `swarm_check` can return has a row in the /sc check rule table.
 
 The `check` rule table (plugin/skills/sc/reference/check.md since the skill's

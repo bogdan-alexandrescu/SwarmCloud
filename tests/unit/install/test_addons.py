@@ -1,3 +1,4 @@
+# source-text: contract - add-on overlay keys and ADDON_SECRETS in setup_links.py must match terraform variables and addons.ADDONS; also feeds kubernetes manifests to network_parity as fixtures
 """`swarm addon enable|disable <name>` (DAYONE-ADDON-1, part of archived issue 2688): the five
 add-ons, each opt-in after READY, on fakes.
 

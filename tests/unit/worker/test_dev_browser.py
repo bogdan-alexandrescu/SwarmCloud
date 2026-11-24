@@ -1,3 +1,4 @@
+# source-text: contract - the dev-browser image's selftest.py must exercise the wrapper's install, headless, connect and version paths
 """DEVB-INSTALL (owner decisions 2026-10-14; part of archived issue 1030).
 
 dev-browser v1 (SawyerHood/dev-browser 1.0.0-rc.3) on `claude-code-browser`,

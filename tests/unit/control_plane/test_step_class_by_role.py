@@ -89,6 +89,7 @@ REF = parse_issue_ref("example-org/example#7")
     (stepclass.ROLE_REREVIEW, "sonnet"),
     (stepclass.ROLE_CI_FIX, "sonnet"),
     (stepclass.ROLE_CONFLICT_FIX, "sonnet"),
+    (stepclass.ROLE_READINESS, "sonnet"),
 ])
 def test_each_role_gets_its_default(role, expected):
     choice = stepclass.choose(role, CODE, PINS)
@@ -104,6 +105,8 @@ def test_the_table_is_the_owners():
         "review, diff not read": "opus", "security review": "opus", "fix": "opus",
         "re-review": "sonnet", "CI fix": "sonnet", "conflict fix": "sonnet",
         "review, over the size ceiling": "opus",
+        # The owner, 2026-11-24: the readiness pre-pass on the cheaper class.
+        "readiness pre-pass": "sonnet",
     }
 
 

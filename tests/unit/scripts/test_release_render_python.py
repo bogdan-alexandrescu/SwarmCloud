@@ -1,3 +1,4 @@
+# source-text: contract - kubernetes/render.py must import quota_broker, the premise for release.yml installing the project's packages before apply.sh
 """The release's tenant-namespace apply runs render.py on the project's Python.
 
 archived issue 346 (archived pull request 354 review): the `deploy` job's "apply each tenant namespace with its

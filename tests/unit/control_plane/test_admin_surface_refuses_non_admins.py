@@ -1,3 +1,4 @@
+# source-text: contract - the /v1/admin paths swarm_mcp names and the routes' admin_auth declarations must all be on the surface swept here
 """Every platform-level route refuses a workspace admin, a member and a viewer.
 
 WHY THIS EXISTS
@@ -402,21 +403,13 @@ def test_every_admin_path_the_mcp_names_is_on_the_swept_surface() -> None:
     assert not missing, f"the MCP calls admin paths the sweep does not hold: {missing}"
 
 
-def test_the_mcp_sends_the_callers_identity_and_nothing_that_could_raise_it() -> None:
-    """No key that acts as an admin for a non-admin: every header the MCP
-    client sets is the caller's own bearer token, the workspace it selects
-    (which the API checks against the caller), or content negotiation."""
-    # `Accept-Encoding` is content negotiation (API-GZIP, archived issue 1822): it asks for a
-    # gzip body and can raise nothing. `User-Agent` is `swarm-mcp/<version>
-    # (<kind>)` (archived issue 2688): it names the client build for the version-skew check
-    # and carries no credential, so it can raise nothing either.
-    allowed = {"Authorization", "Accept", "Accept-Encoding", "Content-Type", "Content-Length",
-               "TENANT_HEADER", "User-Agent"}
-    seen: dict[str, list[str]] = {}
-    for source in _mcp_sources():
-        for match in re.finditer(r"add_header\(\s*(?:\"([^\"]+)\"|([A-Za-z_.]+))", source.read_text()):
-            name = match.group(1) or match.group(2).rsplit(".", 1)[-1]
-            seen.setdefault(name, []).append(source.name)
+def test_the_mcp_sends_the_callers_own_bearer_token() -> None:
+    """The header it must set. That it sets no OTHER header beyond the caller's
+    identity is the lint rule `mcp-headers-are-the-callers`
+    (scripts/source_text_rules/control_plane_am.py)."""
+    seen = {
+        match.group(1) or match.group(2).rsplit(".", 1)[-1]
+        for source in _mcp_sources()
+        for match in re.finditer(r"add_header\(\s*(?:\"([^\"]+)\"|([A-Za-z_.]+))", source.read_text())
+    }
     assert "Authorization" in seen, "the scan found no Authorization header; it read nothing"
-    extra = {name: files for name, files in seen.items() if name not in allowed}
-    assert not extra, f"the MCP sets headers beyond the caller's identity: {extra}"

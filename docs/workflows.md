@@ -301,6 +301,8 @@ What `claude-code` and `codex` declare (contract request 28):
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
 | `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
 | `pull_request` | integer 1..999999 | a pull request in the task's repository: its body, conversation and review threads are written to pull_request.md in the workspace and named in the prompt |
+| `context_ceiling` | object, `type` one of limits | lowers this step's session limits; never raises them |
+| `context_ceiling` `limits` | `tokens` integer 1..200000, `tool_calls` integer 1..150 | `tokens`: ; `tool_calls`:  |
 <!-- /runner-inputs:claude-code -->
 
 <!-- runner-inputs:codex generated from RUNNER_PROFILES["codex"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
@@ -320,6 +322,8 @@ disabled until the merge-step design is enabled, and declares what `claude-code`
 |---|---|---|
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
 | `pull_request` | integer 1..999999 | a pull request in the task's repository: its body, conversation and review threads are written to pull_request.md in the workspace and named in the prompt |
+| `context_ceiling` | object, `type` one of limits | lowers this step's session limits; never raises them |
+| `context_ceiling` `limits` | `tokens` integer 1..200000, `tool_calls` integer 1..150 | `tokens`: ; `tool_calls`:  |
 <!-- /runner-inputs:claude-code-review -->
 
 `indexer` is `claude-code` on `agent-runtime-indexer`, the image that carries
@@ -330,6 +334,8 @@ index runs on it; it declares what `claude-code` does:
 | input | kind and bounds | what the indexer runner does with it |
 |---|---|---|
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `context_ceiling` | object, `type` one of limits | lowers this step's session limits; never raises them |
+| `context_ceiling` `limits` | `tokens` integer 1..200000, `tool_calls` integer 1..150 | `tokens`: ; `tool_calls`:  |
 <!-- /runner-inputs:indexer -->
 
 `claude-code-browser` is `claude-code` on `agent-runtime-browser`, Playwright
@@ -344,6 +350,8 @@ class and runs on GKE Autopilot; it declares what `claude-code` does:
 | `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
 | `browser_tool` | string, one of auto \| playwright \| dev-browser \| jev | the live browser's tool: auto (every tool available; the default), playwright (the Playwright MCP tools only), dev-browser (the dev-browser CLI first, Playwright as fallback) or jev (the jev MCP tools, which send page text to TypeSafe and need a TypeSafe key; Playwright as fallback) |
 | `qa_identity` | string, one of console | sign the live browser in to this deployment's console as its QA identity, a service account with its own workspace; the platform adds the credential, the agent never holds it, and a tenant may name it only when a platform admin has granted it |
+| `context_ceiling` | object, `type` one of limits | lowers this step's session limits; never raises them |
+| `context_ceiling` `limits` | `tokens` integer 1..200000, `tool_calls` integer 1..150 | `tokens`: ; `tool_calls`:  |
 <!-- /runner-inputs:claude-code-browser -->
 
 `claude-code-large` is `claude-code` exactly (same image, runner, inputs,
@@ -358,6 +366,8 @@ on-demand (contract request 113). A heavy lane picks it by name when
 |---|---|---|
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
 | `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+| `context_ceiling` | object, `type` one of limits | lowers this step's session limits; never raises them |
+| `context_ceiling` `limits` | `tokens` integer 1..200000, `tool_calls` integer 1..150 | `tokens`: ; `tool_calls`:  |
 <!-- /runner-inputs:claude-code-large -->
 
 `claude-code-medium` is `claude-code` exactly (same image, runner, inputs,
@@ -372,6 +382,8 @@ It declares what `claude-code` does:
 |---|---|---|
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
 | `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+| `context_ceiling` | object, `type` one of limits | lowers this step's session limits; never raises them |
+| `context_ceiling` `limits` | `tokens` integer 1..200000, `tool_calls` integer 1..150 | `tokens`: ; `tool_calls`:  |
 <!-- /runner-inputs:claude-code-medium -->
 
 `claude-code-lightpanda` is `claude-code` on the `agent-runtime-lightpanda`
@@ -387,6 +399,8 @@ It has no live view and no `browser_tool`; a page it cannot read goes to a
 |---|---|---|
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
 | `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+| `context_ceiling` | object, `type` one of limits | lowers this step's session limits; never raises them |
+| `context_ceiling` `limits` | `tokens` integer 1..200000, `tool_calls` integer 1..150 | `tokens`: ; `tool_calls`:  |
 <!-- /runner-inputs:claude-code-lightpanda -->
 
 Which browser agent type serves which kind of visual QA, and a workflow that
@@ -404,7 +418,29 @@ prompt by absolute path. The credential stays in the worker's memory, as it
 does for the clone, and is never sent to a host other than the
 repository's own. The issue's text is scrubbed of every secret the attempt
 holds, and it is data for the agent: nothing in it chooses anything the
-platform does (invariant 10). A fetch that fails -- no such issue, a pull
+platform does (invariant 10).
+
+Only trusted authors' comments are written. Anyone can comment on a public
+repository's issue, and an agent reads the file holding the tenant's
+checkout, so a comment is kept only when GitHub's own `author_association`,
+served with each comment in the same read-only call, says its author is
+`OWNER`, `MEMBER` or `COLLABORATOR` of the repository -- the people who can
+push to it, the same set the issue sweep starts work for -- or when it is the
+platform's own: a `<!-- swarm` marker on its first line, posted by a bot
+account whose `performed_via_github_app` id is the platform's OWN App id. A
+person can type the marker, and any other App's bot (a workflow's, a
+dependency bot, an App that echoes a commenter's text) can post it, so a bot
+is trusted only as the platform's App; when that id is unknown -- the agent
+worker reads no App key, so today it always is -- no bot comment is kept. A
+platform comment posted with the owner's token is kept by its `OWNER`
+association. `CONTRIBUTOR`,
+`FIRST_TIMER`, `FIRST_TIME_CONTRIBUTOR`, `MANNEQUIN`, `NONE`, a missing value
+and any value GitHub does not define are not trusted. An untrusted comment is
+not written at all, nor its author: the file ends with one line counting the
+left-out comments by association, and no text of theirs reaches a log line,
+an event or a summary. The issue's own description is written whoever filed
+it, because a trusted submitter dispatched the task on it, but when its
+author is not trusted the file says so at its top. A fetch that fails -- no such issue, a pull
 request's number, a repository the credential cannot read, a forge that
 cannot be reached -- fails the attempt with `INPUTS_UNAVAILABLE` and the
 agent never starts. A step that asks for an issue cannot also stage an
@@ -2054,7 +2090,9 @@ that had already merged. No pod starts for either skip. On 2026-10-28 [the owner
 decided who ends a skipped review: "No contract change. The scheduler holds
 the review PARKED (as the control-publish hold does) and swarm-api ends
 it PARKED -> SUCCEEDED on a wake." `swarm_common.states` says of that edge
-"only swarm-api writes it", and it stays true: the review gate is decided in
+that swarm-api writes it, guarded on its own claim, and for a review it stays
+true (the scheduler writes it only for a re-review whose verdict gate is
+recorded shut, contract request 157): the review gate is decided in
 `swarm_api/reviewgate.py`, the fix-round precheck in
 `scheduler/reviewgate.py`.
 
@@ -3330,7 +3368,7 @@ lost, from the per-tenant merge-wake tick (`fixloop.sweep_tenant`).
 | a re-review says NOT_YET, no round left | parks for a person, `fix_loop_exhausted` |
 | a fix pushed nothing, or the same head | parks for a person, `fix_changed_nothing` |
 | a round did not succeed | parks for a person, `round_failed` |
-| a verdict did not read, or a re-review recorded no head | parks for a person, `review_unreadable` |
+| a verdict did not read, or a re-review recorded no head | parks for a person, `review_unreadable`, naming the decline's `code`, the `keys` that refused the file and the head that was judged. Keys the loop does not read (`minors`, `checks`, `needs_owner`, `open_questions`) never refuse it, even when the redaction masked text in them: they cannot change the verdict |
 | a round could not be submitted (the submitter left the tenant, no pull request) | parks for a person, `round_refused` |
 | the pull request was merged outside the loop | ends SUCCEEDED, `merged_outside` |
 | the pull request was closed | ends CANCELLED, `closed_outside` |
@@ -3352,7 +3390,13 @@ its tenant may take either, as any member may cancel the workflow:
 * **add a round**: `POST /v1/workflows/{workflow_id}/fix-loop/rounds`,
   `{"rounds": 1, "note": "..."}` (`fixloop.add_rounds`). The note, at most 4
   KiB, is guidance for the next fix. The next action is a fix, or a
-  re-review of the same head after `review_unreadable`. A loop never runs
+  re-review of the same head after `review_unreadable`. At round 0 that
+  head is the root's pushed head, so the added round is `re-review:1`.
+  When no head is recorded for a round to start from, the route refuses
+  409 with `detail.reason: "no_head"` and changes nothing. The reply's
+  `report` lists each failure of its drive as `failures`, task id and
+  code, beside the count; a drive that raised adds `error`, the
+  exception's redacted text. A loop never runs
   more than 10 rounds in all, rounds a person added counted; past that the
   route refuses 409. Why a ceiling: a person adding rounds one at a time
   should still meet a bound on cost.

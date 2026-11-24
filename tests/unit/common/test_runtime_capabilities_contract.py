@@ -1,3 +1,4 @@
+# source-text: contract - every RunnerProfile(...) call in swarm_common/profiles.py must pass runtime_capabilities= explicitly, not inherit the default
 """Contract request 136, part C: `RunnerProfile.runtime_capabilities`.
 
 Each profile names the runtime capabilities its runner provides

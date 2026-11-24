@@ -145,10 +145,16 @@ _ON_STEP_FAILURE_DEFAULT: str = Workflow.__dataclass_fields__["on_step_failure"]
 #:                        a promotion was decided on;
 #:   lease_superseded     the task has moved to a newer generation or another
 #:                        lease -- the reconciler fenced this attempt.
+#:   generation_changed   still PARKED for the same reason, but its fencing
+#:                        generation moved since the read (contract request 157);
+#:   gate_not_shut        a shut-gate re-review's gate, re-read with the task,
+#:                        is no longer certainly shut (contract request 157).
 TASK_MISSING = "task_missing"
 STATE_CHANGED = "state_changed"
 PARK_REASON_CHANGED = "park_reason_changed"
 LEASE_SUPERSEDED = "lease_superseded"
+GENERATION_CHANGED = "generation_changed"
+GATE_NOT_SHUT = "gate_not_shut"
 
 #: States in which the task's next move belongs to its WORKER. A failed dispatch
 #: that finds its own lease here must not release it: the create call reported
@@ -217,6 +223,15 @@ class GuardedWrite:
     found: str | None
     reason: str | None = None
     target: str | None = None
+
+
+@dataclass(frozen=True)
+class WorkflowPause:
+    """A workflow's pause in force (contract request 160,
+    docs/design/workflow-pause.md section 4.1): when it started and who asked."""
+
+    paused_at: datetime | None
+    paused_by: str | None
 
 
 @dataclass(frozen=True)
@@ -587,6 +602,37 @@ class SchedulerStore:
             return _ON_STEP_FAILURE_DEFAULT
         return str(value).strip().lower()
 
+    def workflow_pause(self, workflow_id: str, tenant_id: str) -> WorkflowPause | None:
+        """The workflow's pause, or None when it is not paused.
+
+        One point read of the workflow document, the pause's one authority
+        (docs/design/workflow-pause.md section 2.1); the caller caches it for
+        the drain, as `workflow_on_step_failure` is. Only a stored `paused`
+        that `is True` is a pause, so a workflow written before contract
+        request 160 is not paused. None as well for a missing document and for
+        one of ANOTHER TENANT than the step asking (invariant 9): the API
+        never writes either, so both mean a corrupt or forged task, and a
+        pause read across tenants must not hold this tenant's work.
+        """
+        snap = self._db.collection(WORKFLOWS).document(workflow_id).get()
+        if not snap.exists:
+            return None
+        data = snap.to_dict() or {}
+        if data.get("tenant_id") != tenant_id:
+            log.warning(
+                "workflow %s belongs to tenant %r, not %r; its pause is not applied to "
+                "that tenant's step", workflow_id, data.get("tenant_id"), tenant_id,
+            )
+            return None
+        if data.get("paused") is not True:
+            return None
+        try:
+            paused_at = as_datetime(data.get("paused_at"))
+        except (TypeError, ValueError):
+            paused_at = None
+        by = data.get("paused_by")
+        return WorkflowPause(paused_at=paused_at, paused_by=str(by) if by else None)
+
     def tasks_in_state(self, state: TaskState, limit: int) -> list[Task]:
         """Every tenant's tasks in one state, up to `limit`. Equality filter only.
 
@@ -947,6 +993,105 @@ class SchedulerStore:
         if outcome.applied:
             extra = event_detail() if event_detail is not None else {}
             self.append_event(task, EventType.READY, {**(detail or {}), **extra})
+        return outcome
+
+    def end_shut_gate_rereview(
+        self,
+        task: Task,
+        ending: Callable[
+            [dict[str, Any], Callable[[str], dict[str, Any] | None]], dict[str, Any] | None
+        ],
+    ) -> GuardedWrite:
+        """PARKED -> SUCCEEDED for a re-review whose verdict gate is recorded shut (contract request 157).
+
+        Accepted by the owner 2026-11-24. The write that would otherwise
+        promote the step, with the same guard -- the state and the park
+        reason the caller read -- and the fencing generation read: a task
+        that moved, or a stale read of one, is left alone. In the SAME
+        transaction the integrator's record and the review's manifest are
+        re-read (`ending(stored, read)`, `runtime.shut_gate_ending`): a gate
+        that is no longer certainly shut writes nothing (`GATE_NOT_SHUT`).
+
+        NO LEASE, NO CAPACITY. The step never passes READY, so admission never
+        sees it: no pool is reserved and none is released (invariant 2), it is
+        never LEASED so concurrency never counts it (invariant 3), and nothing
+        is dispatched (invariant 1). `current_lease_id` stays None, and no
+        attempt is created, so `attempt_count` is untouched.
+
+        ONE `succeeded` EVENT, appended only when the write applied: a second
+        drain or a retried pass meets a SUCCEEDED task, its guard fails, and
+        nothing is written twice.
+        """
+        if task.state is not TaskState.PARKED:
+            raise InvalidTransition(task.state, TaskState.SUCCEEDED)
+        assert_transition(task.state, TaskState.SUCCEEDED)
+        task_ref = self._db.collection(TASKS).document(task.id)
+        expected = task.state.value
+        expected_reason = task.park_reason.value if task.park_reason else None
+        expected_generation = task.current_generation
+        written_summary: dict[str, Any] = {}
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> GuardedWrite:
+            snap = _snapshot(txn.get(task_ref))
+            stored = (snap.to_dict() or {}) if snap.exists else None
+            found = stored.get("state") if stored is not None else None
+            if stored is None:
+                return GuardedWrite("end_shut_gate", False, expected, found, TASK_MISSING)
+            if found != expected:
+                return GuardedWrite("end_shut_gate", False, expected, found, STATE_CHANGED)
+            if (stored.get("park_reason") or None) != expected_reason:
+                return GuardedWrite("end_shut_gate", False, expected, found, PARK_REASON_CHANGED)
+            if (stored.get("current_generation") or 0) != expected_generation:
+                return GuardedWrite("end_shut_gate", False, expected, found, GENERATION_CHANGED)
+            read_cache: dict[str, dict[str, Any] | None] = {}
+
+            def read(task_id: str) -> dict[str, Any] | None:
+                # Tenant-gated as `task_document` is, inside this transaction.
+                if task_id not in read_cache:
+                    other = _snapshot(txn.get(self._db.collection(TASKS).document(task_id)))
+                    data = (other.to_dict() or {}) if other.exists else None
+                    read_cache[task_id] = (
+                        data if data is not None and data.get("tenant_id") == task.tenant_id
+                        else None)
+                return read_cache[task_id]
+
+            summary = ending(stored, read) if stored.get("cancel_requested") is not True else None
+            if summary is None:
+                return GuardedWrite("end_shut_gate", False, expected, found, GATE_NOT_SHUT)
+            now = self._now()
+            written = {
+                "state": TaskState.SUCCEEDED.value,
+                "park_reason": None,
+                "next_eligible_at": None,
+                "blocked_by": [],
+                "current_lease_id": None,
+                "completed_at": now,
+                "last_error": None,
+                "end_cause": None,
+                "result_summary": summary,
+                "updated_at": now,
+            }
+            workflow = self._workflow_write(txn, task.id, task.tenant_id, {**stored, **written}, now)
+            txn.update(task_ref, written)
+            if workflow is not None:
+                txn.update(*workflow)
+            written_summary.clear()
+            written_summary.update(summary)
+            return GuardedWrite("end_shut_gate", True, expected, found, None,
+                                TaskState.SUCCEEDED.value)
+
+        outcome = _apply(transaction)
+        if not outcome.applied:
+            self._log_skip(outcome, task, consequence="not ended here")
+            return outcome
+        gate = written_summary.get("verdict_gate") or {}
+        self.append_event(task, EventType.SUCCEEDED, {
+            "published_by": written_summary.get("published_by"),
+            "skipped_agent": written_summary.get("skipped_agent"),
+            "verdict_gate": {key: gate.get(key) for key in ("task_id", "verdict", "verdict_in")},
+        })
         return outcome
 
     def dead_letter_parked(

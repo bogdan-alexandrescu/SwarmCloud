@@ -13,8 +13,10 @@ them in as `judgment.settings_mac(settings)`. What these tests hold:
   * `ApiSettings.from_env` reads the three variables, the keys stay out of
     the repr, and unset they are no key and nobody cut over;
   * `settings_mac` carries them to a reader, current key first;
-  * every construction of a reader in swarm_api passes the settings', and a
-    reader cannot be built without them;
+  * a reader cannot be built without them (that every construction of a
+    reader in swarm_api passes the settings' is the source-text rule
+    `settings-readers-built-with-the-settings-mac` in
+    scripts/source_text_rules/control_plane_nz.py);
   * the environment alone, with settings that do not carry them, signs
     nothing and cuts nobody over -- the value reaches a reader only through
     the settings.
@@ -24,9 +26,7 @@ Every key is built at runtime (CLAUDE.md).
 
 from __future__ import annotations
 
-import ast
 import secrets
-from pathlib import Path
 
 import pytest
 
@@ -35,10 +35,6 @@ from swarm_api.auth import TENANT_HEADER
 from swarm_api.settings import ApiSettings
 
 from .conftest import api_settings, auth_header, seed_tenant
-
-SWARM_API = Path(judgment.__file__).resolve().parent
-READERS = ("JudgmentSettings", "MergeSettingsStore", "CodeIntelligenceStore")
-
 
 def new_key() -> str:
     return "settings-" + secrets.token_hex(24)
@@ -91,32 +87,6 @@ def test_a_blank_key_is_no_key_and_the_previous_alone_still_verifies():
     mac = judgment.settings_mac(api_settings(settings_key=" ", settings_key_previous=previous))
     assert mac.keys == (previous,)
     assert judgment.settings_mac(object()) == judgment.SettingsMac()
-
-
-def _reader_calls(tree: ast.AST):
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        name = node.func.attr if isinstance(node.func, ast.Attribute) else \
-            getattr(node.func, "id", None)
-        if name in READERS:
-            yield name, node
-
-
-def test_every_reader_in_swarm_api_is_built_with_the_settings_mac():
-    sites: list[str] = []
-    for path in sorted(SWARM_API.rglob("*.py")):
-        for name, call in _reader_calls(ast.parse(path.read_text(), str(path))):
-            where = f"{path.relative_to(SWARM_API)}:{call.lineno} {name}"
-            sites.append(where)
-            mac = [k.value for k in call.keywords if k.arg == "mac"]
-            assert mac, f"{where} builds a reader without the settings' mac"
-            value = mac[0]
-            assert isinstance(value, ast.Call) and getattr(value.func, "id", None) == \
-                "settings_mac", f"{where} passes a mac not built from its settings"
-    # live, mergetrain, service (twice), graph_ticket, typesafe_ticket and the
-    # three routes (judgment twice): a count that drops means the scan missed one.
-    assert len(sites) >= 10, sites
 
 
 def test_a_reader_cannot_be_built_without_the_settings_mac(db):

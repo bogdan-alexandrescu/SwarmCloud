@@ -1056,6 +1056,12 @@ function ApproveHostForm({
                   {o}
                 </label>
               ))}
+              {leg.environment === 'non_production' && (
+                // Epic 21: a mutating flow's writes are not confined to the base host.
+                <p className="ur-small" data-writes-notice="">
+                  {`Flows on this environment may write, and their writes reach each ticked host as well as ${host}, a shared API among them.`}
+                </p>
+              )}
             </div>
           </>
         )}

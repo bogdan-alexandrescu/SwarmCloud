@@ -20,18 +20,17 @@ for wherever a `Location` header could point:
 
 MUTATIONS: put `urllib.request.urlopen` back in `_request` -- the other-host
 test sees the second server hit and the identity test sees no call. Give
-`issue.py` its own opener again -- the identity and source tests fail. Make
+`issue.py` its own opener again -- the identity test fails, and so does the
+check_source_text.py rule that holds the source. Make
 `_NoRedirect.redirect_request` call `super()` -- every refusal test follows.
 """
 
 from __future__ import annotations
 
-import ast
 import http.server
 import threading
 import urllib.error
 import urllib.request
-from pathlib import Path
 from typing import Any, Iterator
 
 import pytest
@@ -40,8 +39,6 @@ from agent_worker import forge
 from agent_worker import issue as issue_mod
 
 from fake_github import fresh_token
-
-REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 class _Server:
@@ -247,65 +244,12 @@ def test_the_opener_has_no_handler_that_follows_a_redirect():
         )
 
 
-def _imports_forge(tree: ast.AST) -> bool:
-    """True when the module imports its package's forge module, in any spelling."""
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            if module.split(".")[-1] == "forge" or any(a.name == "forge" for a in node.names):
-                return True
-        elif isinstance(node, ast.Import):
-            if any(a.name.split(".")[-1] == "forge" for a in node.names):
-                return True
-    return False
-
-
-def _forge_modules(package: Path) -> list[Path]:
-    """Every module of `package` that is, or imports, its forge module."""
-    found = []
-    for path in sorted(package.rglob("*.py")):
-        is_forge = path.name == "forge.py" and path.parent == package
-        if is_forge or _imports_forge(ast.parse(path.read_text(encoding="utf-8"))):
-            found.append(path)
-    return found
-
-
-def _opener_calls(path: Path) -> list[tuple[str, int]]:
-    """Every call to `urlopen` or `build_opener` in `path`, by name and line."""
-    calls = []
-    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-        if isinstance(node, ast.Call):
-            func = node.func
-            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-            if name in ("urlopen", "build_opener"):
-                calls.append((name, node.lineno))
-    return calls
-
-
-@pytest.mark.parametrize("package", ["apps/agent-worker/agent_worker", "apps/swarm-api/swarm_api"])
-def test_no_module_that_handles_the_forge_token_builds_its_own_opener(package):
-    """forge.py builds the one opener; nothing that imports it opens a URL another way."""
-    root = REPO_ROOT / package
-    modules = _forge_modules(root)
-    assert len(modules) >= 3, f"the scan found too little to mean anything: {modules}"
-    offenders = []
-    for path in modules:
-        calls = _opener_calls(path)
-        if path == root / "forge.py":
-            # The one opener itself.
-            assert [name for name, _ in calls] == ["build_opener"], (path, calls)
-            continue
-        offenders += [f"{path.relative_to(REPO_ROOT)}:{line} {name}" for name, line in calls]
-    assert offenders == [], f"a token-carrying module opens URLs with its own opener: {offenders}"
+# That no module handling the forge token builds an opener or calls `urlopen`
+# of its own, and that issue.py does not restate GITHUB_HOSTS, are the rules
+# `forge-token-modules-use-the-one-opener` and
+# `issue-reads-github-hosts-from-forge` in scripts/source_text_rules/worker.py
+# (issue 73).
 
 
 def test_issue_reads_github_hosts_from_forge_rather_than_restating_it():
     assert issue_mod.GITHUB_HOSTS is forge.GITHUB_HOSTS
-    tree = ast.parse((REPO_ROOT / "apps/agent-worker/agent_worker/issue.py").read_text())
-    assigned = [
-        node for node in ast.walk(tree)
-        if isinstance(node, (ast.Assign, ast.AnnAssign))
-        and any(getattr(t, "id", None) == "GITHUB_HOSTS"
-                for t in (node.targets if isinstance(node, ast.Assign) else [node.target]))
-    ]
-    assert assigned == []

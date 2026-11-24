@@ -643,6 +643,30 @@ SWITCHES: dict[str, Switch] = {
         "refuses the same names before sending is released and no stored schedule's spec "
         "carries a longer name",
     ),
+    # Workflow pause and resume (docs/design/workflow-pause.md section 3, part
+    # of issue 7; contract request 160 accepted 2026-11-24). Both refusals gate
+    # only POST /v1/workflows/{id}/pause and /resume, routes that did not exist
+    # before, so no existing caller can be refused by them (archived pull
+    # request 845's failure cannot recur). SHIPS ON (default=True), pending the
+    # owner's answer to the lane's question (questions.json): report-only
+    # would record a pause on a finished workflow, or one being cancelled,
+    # that nothing can act on and that the reconciler's `paused == true`
+    # query would then read for ever. Off (REFUSAL_WORKFLOW_TERMINAL=off,
+    # REFUSAL_WORKFLOW_CANCEL_REQUESTED=off), the pause or resume is recorded.
+    "workflow_terminal": Switch(
+        code="workflow_terminal",
+        why="pausing or resuming a workflow that has finished is refused 409. Ships on: the "
+        "route is new, so no caller relies on it; off, the pause is recorded on a workflow "
+        "none of whose steps can act on it",
+        default=True,
+    ),
+    "workflow_cancel_requested": Switch(
+        code="workflow_cancel_requested",
+        why="pausing or resuming a workflow being cancelled is refused 409: cancel wins. Ships "
+        "on: the route is new, so no caller relies on it; off, the pause is recorded and the "
+        "cancel still ends every step",
+        default=True,
+    ),
     # Join requests (docs/design/join-requests.md §4.9, lane JOIN-STORE, part
     # of archived issue 2325) have NO switch here, deliberately: join_link_unknown,
     # join_already_member, join_already_reaches, join_not_offered,
@@ -659,6 +683,22 @@ SWITCHES: dict[str, Switch] = {
     # of these also refuses removing, demoting or clearing a workspace's last
     # admin (issue 47, routes/last_admin.py): the owner asked for the refusal,
     # and a switch that let it through would be the breach itself.
+    # The plan thread (docs/design/plans-pipeline.md §3.4, lane P3
+    # PLANS-THREAD). Both gate a route new with that lane; off, a comment is
+    # kept anyway -- data beside the run that decides nothing -- and the log
+    # names the refusal it would have made.
+    "anchor_unknown": Switch(
+        code="anchor_unknown",
+        why="a plan:comment anchored to a step, requirement, overlap or diagram the revision "
+        "it was written on does not hold is refused 422. On once the decision page's margin "
+        "composer (lane U4) sends anchors only from the revision it shows",
+    ),
+    "plan_thread_closed": Switch(
+        code="plan_thread_closed",
+        why="a plan:comment on a run that is not PLANNED through DONE (a rejected plan, a "
+        "NOT_READY verdict, a run still planning, failed or cancelled) is refused 409. On "
+        "once the decision page (lane U4) hides the composer on such a run",
+    ),
 }
 
 

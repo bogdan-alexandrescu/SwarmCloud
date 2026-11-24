@@ -1,3 +1,4 @@
+# source-text: contract - the forwarder's PUSH_ROUTE must match the @router.post("/repositories/push") decorator in swarm-api routes/admin.py
 """swarm-github-hooks, the process and its three outside calls (lane GS-HOOKS).
 
   * `create_receiver()` is a factory: importing the package builds no client and
