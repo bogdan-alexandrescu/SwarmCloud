@@ -68,7 +68,7 @@ def test_a_hand_off_of_five_origins_is_refused():
 
 
 def test_the_token_path_rides_on_the_login_origin_beside_other_extra_origins():
-    target = _target(idp_token_path=TOKEN_PATH, mutating=False, environment="production")
+    target = _target(idp_token_path=TOKEN_PATH, idp_token_origin=IDP, mutating=False, environment="production")
     # MUTATION: refuse a token path when more than one extra origin is approved and this hand-off is refused.
     assert target.idp_token_url == f"{IDP}{TOKEN_PATH}"
     target.signing_in = True
@@ -76,3 +76,21 @@ def test_the_token_path_rides_on_the_login_origin_beside_other_extra_origins():
     assert target.judge("POST", f"{IDP}{TOKEN_PATH}", top_document=False).action == "continue"
     # MUTATION: put the path on every extra origin and the API host's same path is written to.
     assert target.judge("POST", f"{API}{TOKEN_PATH}", top_document=False).action == "refuse"
+
+
+def test_the_token_path_rides_on_the_named_origin_not_the_first_extra_one():
+    """Epic 21: the order of `origins` decides nothing; swarm-api names the login's origin."""
+    target = _target(origins=[ORIGIN, API, IDP, FILES], idp_token_path=TOKEN_PATH, idp_token_origin=IDP,
+                     mutating=False, environment="production")
+    # MUTATION: bind to the first origin after the base and this is the API host's URL.
+    assert target.idp_token_url == f"{IDP}{TOKEN_PATH}"
+
+
+def test_a_served_origin_written_with_443_admits_the_bare_origin():
+    """Epic 21: a target stored before `:443` was normalised still matches
+    what the browser sends, which never carries https's own port."""
+    target = _target(origins=[ORIGIN + ":443", IDP, API + ":443"], base_url=f"{ORIGIN}:443/home")
+    # MUTATION: keep `:443` in `origin_of` and both are refused, the gate failing closed in silence.
+    assert target.judge("POST", f"{API}/x", top_document=False).action == "continue"
+    assert target.judge("GET", f"{ORIGIN}/x", top_document=True).action == "continue"
+    assert target.base_origin == ORIGIN

@@ -156,7 +156,8 @@ def _run(lane: dict, *, event: str = "pull_request", fork: bool = False, pattern
         "GITHUB_ACTIONS": "true",
         "SWARM_ENV_FILE": str(lane["tmp"] / "no.env"),
         "EVENT": event,
-        "PR_BASE": _git(lane["root"], "rev-parse", "origin/main") if event == "pull_request" else "",
+        # The branch the pull request targets now, never a recorded base commit.
+        "PR_BASE_REF": "main" if event == "pull_request" else "",
         "GITHUB_WORKSPACE": str(lane["workspace"]),
         "QUEUE_BASE": "",
         "FORK": "true" if fork else "false",
@@ -229,3 +230,14 @@ def test_a_fork_adding_a_shaped_value_is_red_with_a_count_only(lane):
     assert proc.returncode == 1, proc.stdout + proc.stderr
     assert "fail: 1 findings" in proc.stdout
     assert "notes.md" not in proc.stdout and account not in proc.stdout
+
+
+def test_a_pull_requests_diff_is_against_the_branch_it_targets_now():
+    """A retargeted pull request's recorded base commit is the old branch's:
+    the added lines are read against the branch it targets now, while the
+    guard itself still comes from the base commit. MUTATION: hand --diff the
+    recorded pull_request.base.sha."""
+    env = _step().get("env") or {}
+    assert env.get("PR_BASE_REF") == "${{ github.event.pull_request.base.ref }}", env
+    assert "pull_request.base.sha" not in str(env), env
+    assert '--diff "refs/remotes/origin/${PR_BASE_REF:?' in _script(), _script()

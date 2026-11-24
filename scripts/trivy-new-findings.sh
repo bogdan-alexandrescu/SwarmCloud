@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # trivy-new-findings: fail a pull request only on the Trivy findings it adds.
 #
-#   scripts/trivy-new-findings.sh gate [--base <rev>]
+#   scripts/trivy-new-findings.sh gate [--base <rev> | --merge-base <rev>]
 #       Scan this checkout and, when --base names a commit, the same tree at
 #       that commit (a detached worktree), then compare. No --base, or an empty
 #       one (a push to main, the weekly schedule), compares with nothing: every
 #       finding fails, which is what a gate on main should do.
+#       --merge-base <rev> compares with `git merge-base HEAD <rev>`, read from
+#       this checkout's own history and never fetched: CI passes the branch the
+#       pull request targets NOW, because the base commit GitHub records on the
+#       event is the old branch's after a retarget (security.yml says how the
+#       checkout gets the history). No merge base in the history is exit 2.
 #
 #   scripts/trivy-new-findings.sh compare <base.json> <head.json>
 #       Compare two `trivy fs --format json` reports.
@@ -24,6 +29,14 @@
 # package of the same lockfile or Dockerfile is the same finding, whatever line
 # or installed version it is reported at. A finding absent from the base
 # branch's scan of the same target is new, and only new findings fail the PR.
+#
+# A SECRET has no package, and (target, rule) alone made a second secret of
+# the same rule in the same file "already known". Its identity adds the line
+# it is on AS TRIVY REDACTS IT (the `Match` field, the secret itself replaced
+# by asterisks) -- the variable it is assigned to, not where the line sits --
+# and secrets are compared by COUNT: two identically redacted lines where the
+# base had one are one new finding. The Match text is only compared, never
+# printed; a new secret is reported with its line number.
 # Everything the scan finds is still uploaded as SARIF by the workflow, so
 # what the base already had stays visible in the Security tab; it simply is
 # not this PR's to fix.
@@ -33,7 +46,8 @@
 # people to ignore the gate).
 #
 # It prints one line per new finding, tab-separated -- target, rule id,
-# package (`-` for none), severity, title -- and never a secret's matched text,
+# package (`-` for none), severity, title (a secret's with its line) -- and
+# never a secret's matched text,
 # then the counts it compared on stderr, so an empty result is visibly a
 # comparison and not a scan that did not run.
 #
@@ -59,18 +73,26 @@ FINDINGS_JQ='
 def findings:
   [ .Results[]? as $r
     | ( ($r.Vulnerabilities // [])[]
-          | {target: $r.Target, rule: .VulnerabilityID, pkg: (.PkgName // ""), severity: .Severity, title: (.Title // "")} ),
+          | {target: $r.Target, rule: .VulnerabilityID, pkg: (.PkgName // ""), severity: .Severity, title: (.Title // ""),
+             secret: false, match: "", line: 0} ),
       ( ($r.Secrets // [])[]
-          | {target: $r.Target, rule: .RuleID, pkg: "", severity: .Severity, title: (.Title // "")} ),
+          | {target: $r.Target, rule: .RuleID, pkg: "", severity: .Severity, title: (.Title // ""),
+             secret: true, match: ((.Match // "") | gsub("^\\s+|\\s+$"; "")), line: (.StartLine // 0)} ),
       ( ($r.Misconfigurations // [])[] | select(.Status != "PASS")
-          | {target: $r.Target, rule: (.AVDID // .ID), pkg: "", severity: .Severity, title: (.Title // "")} ) ];
-def key: [.target, .rule, .pkg] | tojson;
+          | {target: $r.Target, rule: (.AVDID // .ID), pkg: "", severity: .Severity, title: (.Title // ""),
+             secret: false, match: "", line: 0} ) ];
+def key: [.target, .rule, .pkg, .match] | tojson;
 ($base[0] | findings) as $b
 | ($head[0] | findings) as $h
-| (reduce ($b[] | key) as $k ({}; .[$k] = true)) as $known
-| [ $h[] | select($known[key] | not) ] | unique_by(key) as $new
+| (reduce ($b[] | key) as $k ({}; .[$k] += 1)) as $known
+| ( [ $h[] | select(.secret == false) ] | unique_by(key) ) as $once
+| ( [ $h[] | select(.secret == true) ] ) as $secrets
+| [ ($once + $secrets) | group_by(key)[] | sort_by(.line) | .[($known[.[0] | key] // 0):][] ] as $new
 | "#counts head \($h | length), base \($b | length), new \($new | length)",
-  ( $new[] | [.target, .rule, (if .pkg == "" then "-" else .pkg end), .severity, .title] | @tsv )
+  ( $new[]
+    | [.target, .rule, (if .pkg == "" then "-" else .pkg end), .severity,
+       (if .secret == true then "\(.title) (line \(.line))" else .title end)]
+    | @tsv )
 '
 
 compare() {
@@ -186,14 +208,26 @@ scan() {
 }
 
 gate() {
-  local base_rev="" work status accepted ignore=()
+  local base_rev="" against="" given=0 work status accepted ignore=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --base) base_rev="${2-}"; shift 2 ;;
-      --base=*) base_rev="${1#*=}"; shift ;;
+      --base) base_rev="${2-}"; given=$((given + 1)); shift 2 ;;
+      --base=*) base_rev="${1#*=}"; given=$((given + 1)); shift ;;
+      --merge-base) [[ $# -ge 2 && -n "$2" ]] || usage; against="$2"; given=$((given + 1)); shift 2 ;;
+      --merge-base=*) against="${1#*=}"; [[ -n "${against}" ]] || usage; given=$((given + 1)); shift ;;
       *) usage ;;
     esac
   done
+  [[ "${given}" -le 1 ]] || { err "gate takes one of --base and --merge-base, once"; return 2; }
+
+  # The true merge base, from this checkout's history alone: no fetch (the
+  # workflow's checkout keeps no credential), and none found is a failure,
+  # never "no base" (every finding new) and never the argument itself.
+  if [[ -n "${against}" ]]; then
+    base_rev="$(git merge-base HEAD "${against}" 2>/dev/null)" \
+      || { err "no merge base of HEAD and ${against} in this checkout: is ${against} fetched, and the history deep enough (fetch-depth: 0)?"; return 2; }
+    info "merge base of HEAD and ${against}: ${base_rev}"
+  fi
   work="$(mktemp -d "${TMPDIR:-/tmp}/trivy-gate.XXXXXX")"
   # shellcheck disable=SC2064  # expand now: ${work} is local
   trap "git worktree remove --force '${work}/base' >/dev/null 2>&1 || true; rm -rf '${work}'" EXIT

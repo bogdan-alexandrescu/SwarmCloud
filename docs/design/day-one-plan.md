@@ -876,17 +876,20 @@ Stage 12 needs the first team: the existing sign-in files an account into the si
 **The commands the owner runs in P4** (from the product only, D12; no checkout):
 
 ```
-curl -fsSL https://storage.googleapis.com/swarmcloud/install.sh | sh
+curl -fsSL https://storage.googleapis.com/swarmcloud/channels/rc.install.sh | SWARM_CHANNEL=rc sh
 swarm install --project example-project --env prod --version <RC> --domain swarm.example.com
 #   ... guided human steps; then the ONE URL: https://swarm.example.com/admin/setup
-#   Admin › Setup: GitHub App, first team, Claude accounts, Send to your team
+#   Admin › Setup: Sign-in client, GitHub App, first team, Claude accounts,
+#   smoke agent, Hand over to swarm install, Send to your team
 #   (the CLI prints READY after verify)
 swarm doctor                     # exit 0
 swarm team add <second group>    # or Admin › Setup, second team
 swarm uninstall                  # typed confirmation; prints what remains
 ```
 
-A teammate (not the owner) then runs the D28 line with `deployment_url=https://swarm.example.com`, `sc login`, and `/sc:submit` to a PR. P5 repeats into `swarmcloud-dayone-2`, then run 2b into `swarmcloud-dayone-1`, then `swarm upgrade --to <v1 candidate>`. CLD keeps the snag log (brief §10).
+A candidate is installed from `channels/rc.install.sh`: a candidate's publish never writes the root `install.sh`, which only a final release writes (release.md § Each release, step 3), so before the first final release the root script does not exist. `--version <RC>` on `swarm install` still pins the candidate.
+
+A teammate (not the owner) then runs the D28 line with `deployment_url=https://swarm.example.com`, `sc login`, and `/sc run --issue owner/repo#N` (or the same work asked for in plain words) to a PR. The teammate needs `sc` on `PATH` first: `curl -fsSL https://storage.googleapis.com/swarmcloud/channels/rc.install.sh | SWARM_CHANNEL=rc sh` for a candidate (`install.sh` at the root for a final release) installs it. P5 repeats into `swarmcloud-dayone-2`, then run 2b into `swarmcloud-dayone-1`, then `swarm upgrade --to <v1 candidate>`. CLD keeps the snag log (brief §10).
 
 ---
 
