@@ -1,3 +1,4 @@
+# source-text: contract - lifecycle.py must prepare the quality gates for claude-code only, with the profile's secret names, and record them
 """The lane quality gates: jev-belay and jev-enforce, keyed with the workspace's TypeSafe key (JEV-LANES).
 
 the owner decided 2026-10-31. With `workspace_settings/{tenant}.quality_gates.jev`

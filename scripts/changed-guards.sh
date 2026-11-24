@@ -134,7 +134,12 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # them as readers (CI-GUARDS-THREE, part of archived issue 1822). After
 # test_verify_deployer_trust: test_check_test_pointers (about 2.5 s), which
 # refuses a comment under apps/ that names a test -- a new one names no test,
-# so only a whole-tree run reaches it (part of issue 69). Then the inventory
+# so only a whole-tree run reaches it (part of issue 69). After it:
+# test_check_source_text (about 10 s, most of it one read and parse of the
+# test trees), which refuses a malformed source-text marker on a test that
+# reads .py/.ts source as text and a hit of a forbidden-pattern rule in
+# scripts/source_text_rules/ -- either can sit in any file, so no diff
+# selects it (part of issue 73). Then the inventory
 # walkers the merge train ejected for (owner's improvement plan, 2026-11-23)
 # -- test_runbook_index (every docs/runbooks/*.md is linked from its README;
 # 0.1 s) and test_plugin_agents_ignore_chat (every plugin/agents/*.md is a
@@ -194,6 +199,7 @@ GUARD_TESTS=(
   tests/unit/scripts/test_issue_forms.py
   tests/unit/scripts/test_verify_deployer_trust.py
   tests/unit/scripts/test_check_test_pointers.py
+  tests/unit/scripts/test_check_source_text.py
   tests/unit/scripts/test_runbook_index.py
   tests/unit/mcp/test_plugin_agents_ignore_chat.py
   tests/unit/install/test_manifest_complete.py

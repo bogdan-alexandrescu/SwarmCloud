@@ -1123,3 +1123,11 @@ class Workflow:
     on_step_failure: str = "fail_workflow"   # or "continue"
     priority: int = 0
     cancel_requested: bool = False
+    #: The pause is in force. The equality key: `workflows where paused ==
+    #: true` is how the scheduler's sweep and the reconciler find paused
+    #: workflows without a scan. Contract request 160.
+    paused: bool = False
+    #: When the pause started; kept on a repeat pause, cleared on resume.
+    paused_at: datetime | None = None
+    #: Who paused it (the caller's email, as `submitted_by`).
+    paused_by: str | None = None

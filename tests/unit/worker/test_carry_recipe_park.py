@@ -1,3 +1,4 @@
+# source-text: contract - every name the worker package imports or reads from lifecycle, lazy imports included, must stay bound in lifecycle.py
 """The acceptance `workflow: carry` recipe parks, offline, with the exact input dev is sent (issue 202).
 
 WHY IT EXISTS. Dev acceptance of 2026-11-23 22:30 UTC read the recipe's parent

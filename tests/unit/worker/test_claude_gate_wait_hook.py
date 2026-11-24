@@ -170,12 +170,10 @@ def test_an_attempt_without_the_live_browser_gets_no_hook(tmp_path, monkeypatch,
     assert "PostToolUse" not in settings["hooks"]  # MUTATION: an empty PostToolUse list is written -- differs.
 
 
-def test_the_hook_is_standard_library_only():
+def test_the_hook_ships_readable():
     # `-I` drops the package's path: an import from the worker would fail
     # every call, silently (fail open), and the agent would never be told.
-    source = HOOK.read_text(encoding="utf-8")
-    imports = {line.split()[1].split(".")[0] for line in source.splitlines()
-               if line.startswith(("import ", "from "))}
-    # MUTATION: the hook imports agent_worker.handoff for GATE_ORIGIN -- differs.
-    assert imports <= {"json", "os", "re", "stat", "sys", "__future__"}, imports
+    # That the hook imports only the standard library is the rule
+    # `gate-wait-hook-standard-library-only` in
+    # scripts/source_text_rules/worker.py (issue 73).
     assert os.access(HOOK, os.R_OK)

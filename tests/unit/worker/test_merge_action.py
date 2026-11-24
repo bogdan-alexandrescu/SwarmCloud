@@ -1,3 +1,4 @@
+# source-text: contract - merge.py must spell each split refusal code (its `not_mergeable` absence is a rule); the test also reads the files the action wrote, as fixtures, for the token
 """The merge action on the tenant's `-git` token, in any repository (contract request 47).
 
 Owner decisions of 2026-10-04 (archived issue 295): merging moves off the GitHub-side App
@@ -1139,11 +1140,12 @@ def test_checks_pending_inside_merge_ci_max_seconds_still_park(tmp_path):
 def test_each_split_refusal_code_is_a_new_code_not_the_old_one(tmp_path):
     """`from_fork` and `merge_conflict` were folded into
     `pull_request_not_this_workflows` and `not_mergeable`; nothing ends on
-    `not_mergeable` any more."""
+    `not_mergeable` any more: that absence is the rule
+    `merge-no-not-mergeable-code` in scripts/source_text_rules/worker.py
+    (issue 73)."""
     import inspect
 
     source = inspect.getsource(merge)
-    assert '"not_mergeable"' not in source
     for code in ("from_fork", "base_not_default", "protection_refused", "merge_conflict",
                  "checks_timeout", "behind_too_often"):
         assert f'"{code}"' in source, code

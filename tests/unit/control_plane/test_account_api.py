@@ -1,3 +1,4 @@
+# source-text: contract - every /v1/accounts path api.ts and Accounts.tsx call must be a route the accounts router serves
 """swarm-api's account routes: a proxy with a tenant boundary on it.
 
 These routes exist so a browser can manage the account pool, and they add

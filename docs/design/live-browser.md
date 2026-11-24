@@ -274,6 +274,83 @@ against that is the note's "only for test suites". A test Chromium also has the
 pod's own egress, not the live browser's gate: the same egress the agent's
 `curl` already has.
 
+#### When Chromium exits: started again, and the agent told why (BROWSER-RELAUNCH; part of issue 272)
+
+The gate starts Chromium again when it exits unexpectedly, on the same
+profile and CDP address, at most `RELAUNCH_LIMIT` (3) times in
+`RELAUNCH_WINDOW_SECONDS` (600 s); past that it leaves it closed
+(`livegate/__main__.py`, `_browser_exited` -> `_relaunch` / `_give_up`).
+
+**Why the exit now leaves the sidecar.** MEASURED 2026-11-23: two review tasks
+on the browser runner profile in a row lost the hosted browser, one after its
+first page comparison and one before any page loaded ("connect_over_cdp:
+Connection closed"). The cause of each exit was in the display sidecar's log
+only; the agent saw its CDP connection close, could not tell a browser being
+started again from one that never would be, and reported an incomplete
+review on a task that looked as if it had worked. So:
+
+* the gate keeps the last unexpected exit and serves it in `status` as
+  `browser_exit`: `exit_cause` (`signal_SIGKILL`, `exit_code_21`, ...),
+  `exit_code`, `signal`, `at` (the gate's wall time) and `oom_kills`, how far
+  the sidecar's own cgroup `oom_kill` counter (cgroup v2 `memory.events`) has
+  risen since the gate started, null when it cannot be read. A SIGKILL with
+  `oom_kills` above zero is the sidecar's memory limit; a SIGKILL without is
+  something else. Never Chromium's stderr, a URL or a credential: those stay
+  in the sidecar's redacted log line. A wipe or a stop is not an exit;
+* the worker writes what that status says to
+  `$SWARM_HANDOFF/live-browser.json` on its control poll, only when it changes:
+  `state` (`running`, `restarting`, or `crashed` -- the relaunch budget spent,
+  or the gate's channel lost because the gate itself restarted), `restarts`,
+  `last_exit` and a one-sentence `message`. It keeps one note per restart or
+  loss for the task's events and, once the browser is gone, `browser_gone`,
+  from which the lifecycle ends the attempt retryably (below).
+  This holds with **no hand-off offered** too (an unprotected heap, no
+  attempt key, no live session): the agent still has its browser, so the
+  worker goes on reading the gate's `status` once per poll after the start-up
+  steps settle (`HandoffPath._poll_startup`), and stops only once the browser
+  is gone. **Why:** a status read that stopped with start-up left a Chromium
+  exit mid-task unseen on those attempts, and the task ended as if it worked.
+  The read is one local `ctl.sock` call per poll.
+  The file is **not** `browser.json`: that name in the spool is the runner's
+  browser-tool state (BSTATUS-API, §3.2.4), forwarded to the gate on every
+  poll, and two writers on one file would lose one of them;
+* the agent's guide says a CDP connection that closes or is refused means
+  Chromium exited and points at the file, and `swarm_browser.live()` reads it
+  when a connection fails: it tries again while it says `restarting` (60 s by
+  default) and otherwise raises with the file's message.
+
+**The display sidecar's memory share is NOT changed here.** It is 5 GiB of the
+`browser` class's 8 (`apps/scheduler/scheduler/dispatch.py::LIVE_DISPLAY_SHARE`,
+§8.2). The issue's guess is memory -- two console builds beside the hosted
+browser, while a low-memory local headless run of the same brief worked --
+but the two tasks' sidecar logs were not read, so nothing says the sidecar
+was OOM-killed rather than the worker container or Chromium crashing on its
+own. `oom_kills` in `browser_exit` is what will say whether the share should
+move; until a task reports it above zero, moving memory from the worker (which
+builds the console) to the display would be a guess.
+
+**When the browser is gone for good, the attempt ends, retryably (issue 272).**
+Each restart and the loss go on the task's events as marks
+(`live_browser_restarted`, `live_browser_crashed`: restarts, exit cause,
+signal, exit code, `oom_kills`), which is where an operator reads why the
+browser died. Once `browser_gone` is set while the agent runs, the worker
+(`Worker._live_browser_after_tick`) ends an open hand-off, stops the agent,
+checkpoints, and fails the attempt with cause `live_browser_crashed`,
+`result_summary.live_browser` and an error that says how Chromium exited and,
+with `oom_kills` above zero, that the display sidecar ran out of memory. **Why
+end it rather than let the agent finish:** a browser review without its
+browser is the incomplete result the issue's two tasks reported on tasks that
+looked successful, and nothing about this pod's sidecar gets better by
+waiting; only a new attempt brings a new sidecar, as for
+`live_gate_unavailable` before the agent starts (NOLIVE-GUARD). The task goes
+back to READY with its lease and capacity released, and while it has attempts
+left the next one starts on a new pod from the checkpoint; on its last it ends
+FAILED as `runner_error`, since no frozen end cause names the browser (a
+contract request). Not on a fenced attempt, nor when a hand-off's hold has
+just run out or its channel dropped with a person waited for: that still parks
+for the person. The owner was asked (the plan's `questions.json`) whether to
+stop at once, as built, or at the agent's own exit.
+
 ### 3.2.1 dev-browser (opt-in)
 
 Owner decision 2026-10-14 (DEVB-INSTALL, part of archived issue 1030): the browser image

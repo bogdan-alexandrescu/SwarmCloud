@@ -1,3 +1,4 @@
+# source-text: contract - issueci's head-update cap and GitHub committer email must equal the worker's merge.py, which the API image does not carry
 """An `auto_merge` run accepts the base merges its own merge step made (part of archived issue 900).
 
 Measured 2026-10-10: every sweeper issue run that opened a pull request

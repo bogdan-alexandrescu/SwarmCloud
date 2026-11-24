@@ -1,3 +1,4 @@
+# source-text: fixture - reads notes/agent.py the simulated agent wrote into a scratch clone
 """The pre-publish checks run uv outside the clone and leave the tree as they found it (archived issue 1964).
 
 Lane PREPUB-UV-OUTSIDE. Measured 2026-10-22 on example-org/peer-app

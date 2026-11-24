@@ -1,3 +1,4 @@
+# source-text: contract - the outcome classifier's words must be the exact strings the worker, scheduler and reconciler sources write
 """The outcome classifier reads other components' words. Every one is pinned here.
 
 `swarm_api.outcomes.classify_failure` and `cancel_cause` sort a task's end into a

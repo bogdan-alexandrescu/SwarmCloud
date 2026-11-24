@@ -78,14 +78,17 @@ function merge(over: Json = {}): Json {
   }
 }
 
+// The list keeps the kinds the Pipeline board does not draw (plans-pipeline
+// §2.2): its cards are a firing and specs. The decision pages below open a
+// merge by its address, which still works.
 const INBOX = [
   item('apr_newest', { kind: 'run', requested_at: hoursFromNow(-1), approvers: 'members', may_decide: { approve: true, reject: true, why: null, deciders: ['members'] } }),
-  item('apr_oldest', { requested_at: hoursFromNow(-30), expires_at: hoursFromNow(42) }),
-  item('apr_mid', { kind: 'plan', requested_at: hoursFromNow(-6), may_decide: MAY_NOT }),
-  item('apr_r', { state: 'rejected', decided_by: 'teammate@example.com', decided_at: hoursFromNow(-3), reason: 'keep the workflow change in its own pull request' }),
-  item('apr_a', { state: 'approved', decided_by: 'owner@example.com', decided_at: hoursFromNow(-4) }),
-  item('apr_x', { state: 'expired', expires_at: hoursFromNow(-1) }),
-  item('apr_s', { state: 'superseded', decided_at: hoursFromNow(-2) }),
+  item('apr_oldest', { kind: 'spec', requested_at: hoursFromNow(-30), expires_at: hoursFromNow(42) }),
+  item('apr_mid', { kind: 'spec', requested_at: hoursFromNow(-6), may_decide: MAY_NOT }),
+  item('apr_r', { kind: 'spec', state: 'rejected', decided_by: 'teammate@example.com', decided_at: hoursFromNow(-3), reason: 'keep the workflow change in its own pull request' }),
+  item('apr_a', { kind: 'spec', state: 'approved', decided_by: 'owner@example.com', decided_at: hoursFromNow(-4) }),
+  item('apr_x', { kind: 'spec', state: 'expired', expires_at: hoursFromNow(-1) }),
+  item('apr_s', { kind: 'spec', state: 'superseded', decided_at: hoursFromNow(-2) }),
 ]
 
 function routes(inbox: Json[], detail: Json | null = null): Handler {
@@ -167,7 +170,7 @@ describe('the Approvals list, as cards', () => {
     await screen.findByTestId('apl-waiting', undefined, WAIT)
     const chips = within(screen.getByRole('group', { name: 'Kind' }))
     expect(visible(chips.getByRole('button', { name: /^Every kind/ }))).toBe('Every kind · 3')
-    expect(visible(chips.getByRole('button', { name: /^Merge/ }))).toBe('Merge · 1')
+    expect(visible(chips.getByRole('button', { name: /^Spec/ }))).toBe('Spec · 2')
   })
 
   it('lays the cards out on one column at 390px and three on a desktop', async () => {

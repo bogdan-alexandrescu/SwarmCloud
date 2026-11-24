@@ -1,3 +1,4 @@
+# source-text: contract - SubmitWorkflow.tsx's step input must match types.ts and Submit.tsx, and the profiles declaring a prompt must be those whose runner calls run_cli_agent
 """The New Workflow screen's per-step `input` and `input_from`, and the seam under them.
 
 THE DEFECT THIS FILE PINS. `SubmitWorkflow.tsx` built each step as exactly

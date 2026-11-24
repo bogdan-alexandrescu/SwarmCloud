@@ -1,3 +1,4 @@
+# source-text: forbidden-pattern - lifecycle.py may keep no `NAME = <mod>_mod.NAME` binding that nothing reads; it stays a test because a binding is read when ANY file in apps/ or tests/ reads it, and a rule sees one file at a time
 """`lifecycle.py` binds only the moved names something still reads (issue 193).
 
 The split of issue 68 moved the heartbeat, checkpointing and usage helpers out

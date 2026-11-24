@@ -41,7 +41,7 @@ LOG_METRICS = (
     "attempt-peak-rss-bytes", "attempt-oom-near-miss", "scheduler-tick-delivered", "dispatch-failures",
     "spec-signature-invalid-v2", "spec-upstream-invalid-v2", "worker-action-ended", "schedule-auto-paused",
     "schedule-needs-owner", "workspace-stuck", "reconciler-backend-unavailable", "reconciler-not-repairing",
-    "pr-stranded", "tenant-namespace-mismatch",
+    "pr-stranded", "tenant-namespace-mismatch", "reconciler-pass-duration",
 )
 
 DESCRIPTORS = WaitSpec(

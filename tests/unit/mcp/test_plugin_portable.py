@@ -1,3 +1,4 @@
+# source-text: forbidden-pattern - the shipped plugin files are scanned by the deployment-values guard module and the private pattern list from the environment, which a pure parse cannot run
 """The plugin runs without a checkout and names no live deployment.
 
 DAYONE-PLUGIN-1 (plan review finding 17). The plugin is published to the

@@ -17,9 +17,10 @@ HOSTNAME = "swarm.acme.example"
 RELEASE = "2026.11.1"
 
 
-def walk(world: World, monkeypatch: pytest.MonkeyPatch, tmp_path, capsys) -> int:
+def walk(world: World, monkeypatch: pytest.MonkeyPatch, tmp_path, capsys, *,
+         refuses_directory_scopes: bool = False) -> int:
     harness.install(world, monkeypatch, tmp_path)
-    world.cloud = google.Cloud()
+    world.cloud = google.Cloud(refuses_directory_scopes=refuses_directory_scopes)
     world.cloud.publish(RELEASE)
     google.register(world, world.cloud)
     services.commands(world)
@@ -58,7 +59,20 @@ def person(mode: str, members: int = 5) -> Person:
     ], confirms=[], pages=[
         (r"toolbox\.googleapps\.com/apps/dig", set_a_record),
         (r"/admin/setup$", console.admin_setup),
+        (r"admin\.google\.com/ac/roles", assign_groups_reader),
     ])
+
+
+def assign_groups_reader(url: str, world: World) -> None:
+    """In the Admin console's admin roles page, the person assigns Groups
+    Reader to swarm-api's account (Groups Reader > Admins > Assign service
+    accounts), as the page the install opened says."""
+    cloud = world.cloud
+    unique = cloud.accounts[f"swarm-api@{PROJECT}.iam.gserviceaccount.com"]["uniqueId"]
+    reader = next(r["roleId"] for r in cloud.admin_roles if r["roleName"] == "_GROUPS_READER_ROLE")
+    if not any(a["roleId"] == reader and a["assignedTo"] == unique for a in cloud.role_assignments):
+        cloud.role_assignments.append({"roleId": reader, "assignedTo": unique, "scopeType": "CUSTOMER",
+                                       "roleAssignmentId": str(len(cloud.role_assignments) + 1)})
 
 
 def set_a_record(url: str, world: World) -> None:
@@ -72,10 +86,10 @@ REPO = Path(__file__).resolve().parents[4]
 MODES = [pytest.param("team", id="team-of-5"), pytest.param("individual", id="one-person")]
 
 
-def walked(mode: str, monkeypatch, tmp_path, capsys) -> tuple[World, int]:
+def walked(mode: str, monkeypatch, tmp_path, capsys, *, refuses_directory_scopes: bool = False) -> tuple[World, int]:
     world = World()
     world.person = person(mode)
-    return world, walk(world, monkeypatch, tmp_path, capsys)
+    return world, walk(world, monkeypatch, tmp_path, capsys, refuses_directory_scopes=refuses_directory_scopes)
 
 
 @pytest.mark.parametrize("mode", MODES)
@@ -106,6 +120,43 @@ def test_the_walk_reaches_ready(mode, monkeypatch, tmp_path, capsys):
         assert "How many people" not in asked
         assert not any(m.startswith(("domain:", "group:")) for m in members), members
         assert f"user:{world.installer}" in members
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_the_walk_reaches_ready_when_stage_0_went_without_the_directory_scopes(mode, monkeypatch, tmp_path, capsys):
+    """Issue 368: Google refuses gcloud's client the two Directory scopes at
+    stage 0, so the install goes on with Cloud Platform alone. On a first
+    install the deployment's Desktop client is made only in Admin > Setup's
+    Sign-in client step, which stage 13 waits for, so stage 8 never signs in
+    through it: the groups are created with stage 0's own sign-in under the
+    organisation's customer id, the Groups Reader role is assigned on the
+    Admin console's roles page, and the walk goes on to READY."""
+    world, code = walked(mode, monkeypatch, tmp_path, capsys, refuses_directory_scopes=True)
+    said = world.said[-1]
+    assert code == 0, said[-3000:]
+    assert "READY: SwarmCloud answers at https://" + HOSTNAME in said
+    assert world.unhandled == []
+    assert world.person.unscripted == []
+    assert world.person.asked_to_run_elsewhere() == []
+    # Stage 0 went on without the Directory scopes.
+    assert not any("admin.directory" in scope for scope in world.cloud.adc_scopes), world.cloud.adc_scopes
+    # Stage 8 neither asks for the Desktop client's secret nor opens its consent page.
+    stage_8 = [(step, prompt) for step, prompt in world.person.asked if step.startswith("identity.")]
+    assert not any(prompt.startswith("(hidden)") for _, prompt in stage_8), stage_8
+    assert not any("Desktop client" in what for what in world.person.secrets_typed), world.person.secrets_typed
+    assert not any(url.startswith("https://accounts.google.com/o/oauth2") for url in world.pages), world.pages
+    # The groups were created through the Groups API, so their Admin console page never opened.
+    assert not any(url.startswith("https://admin.google.com/ac/groups") for url in world.pages), world.pages
+    customers = {g["parent"] for g in world.cloud.groups.values()}
+    assert customers == {"customers/C0abc123"}, customers
+    # identity.groups-reader-role opens the Admin console's roles page once, with
+    # its plain sentence; identity.group-read opens it as its own page, as in
+    # every walk, so the walk sees it twice and no more.
+    assert said.count("So on a first install the assignment is made here") == 1, said[-3000:]
+    roles = [url for url in world.pages if url.startswith("https://admin.google.com/ac/roles")]
+    assert len(roles) == 2, world.pages
+    reader = next(r["roleId"] for r in world.cloud.admin_roles if r["roleName"] == "_GROUPS_READER_ROLE")
+    assert [a["roleId"] for a in world.cloud.role_assignments] == [reader]
 
 
 @pytest.mark.parametrize("mode", MODES)

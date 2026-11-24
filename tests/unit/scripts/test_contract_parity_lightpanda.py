@@ -1,3 +1,4 @@
+# source-text: fixture - it edits copies of profiles.py and lightpanda.py in a temporary tree to prove check-contract-parity.sh refuses each drift
 """Section 18 of `scripts/lib/check-contract-parity.sh`: claude-code-lightpanda.
 
 docs/design/lightpanda-runtime.md §6.5 lists five things the profile depends
@@ -101,14 +102,20 @@ def _profile_missing(root):
           '"claude-code-lightpanda-gone": RunnerProfile(\n        name="claude-code-lightpanda-gone",')
 
 
+#: The lightpanda profile's `inputs` line in the catalogue, as it reads since
+#: contract request 158 added `context_ceiling` (2026-11-24).
+LIGHTPANDA_INPUTS = ("inputs={**_CLI_AGENT_MCP_INPUTS, **_CONTEXT_CEILING_INPUTS},   "
+                     "# claude-code's; no browser_tool; request 158")
+
+
 def _live_browser(root):
-    _edit(root, CATALOGUE, "inputs=_CLI_AGENT_MCP_INPUTS,   # claude-code's; no browser_tool",
-          "inputs=_CLI_AGENT_MCP_INPUTS, live_browser=True,")
+    _edit(root, CATALOGUE, LIGHTPANDA_INPUTS,
+          "inputs={**_CLI_AGENT_MCP_INPUTS, **_CONTEXT_CEILING_INPUTS}, live_browser=True,")
 
 
 def _browser_tool(root):
-    _edit(root, CATALOGUE, "inputs=_CLI_AGENT_MCP_INPUTS,   # claude-code's; no browser_tool",
-          "inputs=_CLAUDE_CODE_BROWSER_INPUTS,")
+    _edit(root, CATALOGUE, LIGHTPANDA_INPUTS,
+          "inputs={**_CLAUDE_CODE_BROWSER_INPUTS, **_CONTEXT_CEILING_INPUTS},")
 
 
 def _locals_missing(root):

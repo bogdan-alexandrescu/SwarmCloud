@@ -32,14 +32,24 @@ carries Chromium's first tab, Playwright MCP's, and every tab the agent opened
 "in its own tab", and their order is whatever CDP reports. `handoff_page`
 picks the tab whose address is the one `swarm-handoff wait` returned
 (`$SWARM_HANDOFF/status.json`).
+
+A CONNECTION THAT CLOSES OR IS REFUSED (part of issue 272): Chromium exited.
+The gate starts it again (BROWSER-RELAUNCH) or, past its budget, leaves it
+closed, and the worker writes which to `$SWARM_HANDOFF/live-browser.json` on its
+control poll. `live()` reads that file when a connection fails: while it says
+`restarting` (or still `running`, the file being some seconds behind) it tries
+again, for at most `wait_seconds`; then it raises with the file's message.
+Two review tasks lost the browser and saw only "connect_over_cdp: Connection
+closed".
 """
 
 from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit
 
 #: Set by the dispatcher on the worker container, and by the claude-code
@@ -48,10 +58,44 @@ ENDPOINT_ENV = "SWARM_CDP_ENDPOINT"
 #: The hand-off spool (`swarm-handoff`); its `status.json` is the last
 #: returned hand-off's summary, with the url of the page the person left.
 HANDOFF_ENV = "SWARM_HANDOFF"
+#: The worker's note of the live browser's own state in the spool
+#: (agent_worker.handoff.BROWSER_STATE_NAME): `running`, `restarting` or `crashed`.
+BROWSER_STATE_NAME = "live-browser.json"
+#: How long `live()` waits, by default, for a browser that is being started
+#: again. WHY 60 s: a relaunch waits 1, 3 then 10 s before each try
+#: (livegate RELAUNCH_DELAYS) and the worker's poll writes the file up to a
+#: control poll (10 s) late; a minute covers a relaunch or two with margin.
+RECONNECT_WAIT_SECONDS = 60.0
+#: Between two connection tries while waiting.
+RECONNECT_STEP_SECONDS = 2.0
+#: How long a failed connection is retried while the file still says
+#: `running`: one control poll and a little, for the file to catch up.
+STALE_RUNNING_SECONDS = 15.0
 
 
-def live(endpoint: str | None = None, *, timeout_ms: float = 30_000) -> tuple[Any, Any, Any]:
-    """Connect to the live browser; return `(playwright, browser, context)`."""
+def browser_state() -> dict[str, Any] | None:
+    """`$SWARM_HANDOFF/live-browser.json`, or None when there is none to read."""
+    spool = os.environ.get(HANDOFF_ENV, "").strip()
+    if not spool:
+        return None
+    try:
+        document = json.loads((Path(spool) / BROWSER_STATE_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return document if isinstance(document, dict) else None
+
+
+def live(endpoint: str | None = None, *, timeout_ms: float = 30_000,
+         wait_seconds: float = RECONNECT_WAIT_SECONDS,
+         sleep: Callable[[float], None] = time.sleep,
+         clock: Callable[[], float] = time.monotonic) -> tuple[Any, Any, Any]:
+    """Connect to the live browser; return `(playwright, browser, context)`.
+
+    When the connection fails, `$SWARM_HANDOFF/live-browser.json` says why:
+    while it says `restarting` the connection is tried again until
+    `wait_seconds` is spent; then, or for a `crashed` browser, RuntimeError
+    carries the file's state and message. With no file, the original error.
+    """
     endpoint = endpoint or os.environ.get(ENDPOINT_ENV, "").strip()
     if not endpoint:
         raise RuntimeError(
@@ -62,7 +106,27 @@ def live(endpoint: str | None = None, *, timeout_ms: float = 30_000) -> tuple[An
 
     playwright = sync_playwright().start()
     try:
-        browser = playwright.chromium.connect_over_cdp(endpoint, timeout=timeout_ms)
+        started = clock()
+        while True:
+            try:
+                browser = playwright.chromium.connect_over_cdp(endpoint, timeout=timeout_ms)
+                break
+            except Exception as exc:
+                state = browser_state()
+                if state is None:
+                    raise
+                said = str(state.get("state") or "unknown")
+                waited = clock() - started
+                bound = {"restarting": wait_seconds,
+                         "running": min(wait_seconds, STALE_RUNNING_SECONDS)}.get(said, 0.0)
+                if waited < bound:
+                    sleep(min(RECONNECT_STEP_SECONDS, bound - waited))
+                    continue
+                message = str(state.get("message") or "no message")
+                raise RuntimeError(
+                    f"the live browser did not accept the connection: live-browser.json says {said!r} "
+                    f"({message}); waited {waited:.0f} s; the connection's error: {exc}"
+                ) from exc
         context = browser.contexts[0] if browser.contexts else browser.new_context()
     except BaseException:
         playwright.stop()

@@ -1,3 +1,4 @@
+# source-text: contract - swarm_install/tools.py's KUBECTL_VERSION must equal the base image's pinned kubectl
 """Every image passes the release's image scan on the pins that can pass it.
 
 WHY THIS EXISTS. On 2026-10-31 the acceptances for CVE-2026-78667,

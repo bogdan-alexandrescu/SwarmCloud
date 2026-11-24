@@ -82,9 +82,10 @@ from swarm_common.states import (
     can_transition,
 )
 from swarm_rollup import _TERMINAL_SEVERITY
-from swarm_rollup import settled_unpin
+from swarm_rollup import settled_unpause, settled_unpin
 
 from .codec import (
+    as_datetime,
     attempt_from_dict,
     event_from_dict,
     event_to_firestore,
@@ -396,6 +397,51 @@ class CancelContended(RateLimited):
         self.result = result
         if result:
             self.detail = {**self.detail, **result}
+
+
+def _step_task_ids(workflow: dict[str, Any]) -> list[str]:
+    """The task ids of a stored workflow's steps, in step order."""
+    return [
+        str(step["task_id"])
+        for step in (workflow.get("steps") or [])
+        if isinstance(step, dict) and step.get("task_id")
+    ]
+
+
+class WorkflowTerminal(Conflict):
+    """A finished workflow cannot be paused or resumed (docs/design/workflow-pause.md
+    section 3). A new refusal on a new route, behind its switch
+    (`refusals.SWITCHES["workflow_terminal"]`)."""
+
+    code = "workflow_terminal"
+
+
+class WorkflowCancelRequested(Conflict):
+    """A workflow being cancelled cannot be paused or resumed: cancel wins, and a
+    pause would only delay it (docs/design/workflow-pause.md section 3). A new
+    refusal on a new route, behind its switch."""
+
+    code = "workflow_cancel_requested"
+
+
+class PauseContended(RateLimited):
+    """A pause or resume reached every step but some, whose transactions stayed
+    contended through every retry. 503, retryable: the workflow's own record is
+    already written, and a retry finishes the steps without moving `paused_at`
+    (docs/design/workflow-pause.md section 3.1). Not a 4xx, so not a new
+    refusal behind a switch, for the reason `CancelContended` gives."""
+
+    status_code = 503
+    code = "pause_contended"
+
+    def __init__(self, message: str, *, result: dict[str, Any]) -> None:
+        super().__init__(message, CANCEL_RETRY_AFTER_SECONDS)
+        self.result = result
+        self.detail = {**self.detail, **result}
+
+
+class _StepContended(Exception):
+    """One step's pause or resume transaction stayed contended (internal)."""
 
 
 def _is_contention(exc: BaseException) -> bool:
@@ -2283,7 +2329,8 @@ class Store:
         (
             self._db.collection(WORKFLOWS)
             .document(workflow_id)
-            .update({"state": state.value, "updated_at": self._now(), **settled_unpin(state)})
+            .update({"state": state.value, "updated_at": self._now(), **settled_unpin(state),
+                     **settled_unpause(state)})
         )
 
     def rerun_workflow_steps(
@@ -2397,11 +2444,13 @@ class Store:
         # member reaches this, and a full member may cancel any of its
         # tenant's workflows.
         workflow = self.get_workflow(tenant_id, workflow_id, submitted_by=None)
-        (
-            self._db.collection(WORKFLOWS)
-            .document(workflow_id)
-            .update({"cancel_requested": True, "updated_at": self._now()})
-        )
+        patch: dict[str, Any] = {"cancel_requested": True, "updated_at": self._now()}
+        if workflow.paused:
+            # Cancel wins over pause (docs/design/workflow-pause.md section 3.3),
+            # and a cancelled workflow leaves `workflows where paused == true`,
+            # so the reconciler's pause rule never reads it again.
+            patch["paused"] = False
+        self._db.collection(WORKFLOWS).document(workflow_id).update(patch)
         cancelled, already_terminal, contended = [], [], []
         for step in workflow.steps:
             if not step.task_id:
@@ -2437,6 +2486,333 @@ class Store:
                 result={**result, "tasks_contended": contended},
             )
         return result
+
+    # -- workflow pause and resume (docs/design/workflow-pause.md) ---------
+
+    def pause_workflow(
+        self,
+        tenant_id: str,
+        workflow_id: str,
+        *,
+        by: str,
+        reason: str = "",
+        tenant_member: str = "",
+    ) -> dict[str, Any]:
+        """Pause a workflow: record it on the workflow, then signal each step.
+
+        STAGE 1, ONE TRANSACTION ON THE WORKFLOW DOCUMENT, the one authority the
+        scheduler's admission gate and the reconciler read (`paused == true`, an
+        equality on the automatic single-field index). A finished workflow is
+        refused `workflow_terminal` and one being cancelled
+        `workflow_cancel_requested`. An already paused workflow is not written:
+        a repeat pause NEVER moves `paused_at`, so it cannot extend the
+        reconciler's overdue bound.
+
+        STAGE 2, ONE TRANSACTION PER NON-TERMINAL STEP, as cancel does and for
+        the same reason (one transaction over every step would contend with
+        every worker's writes): the raw mirror `pause_requested_at = paused_at`
+        and one PAUSE_REQUESTED event. A step whose mirror already equals
+        `paused_at` is skipped, so a retry finishes what a contended call left.
+        The mirror is a signal for the step's worker; it never writes the step's
+        state, generation or lease (invariants 2, 3 and 5). READY steps are
+        parked by the scheduler at admission, not here.
+        """
+        self.get_workflow(tenant_id, workflow_id, submitted_by=None)
+        ref = self._db.collection(WORKFLOWS).document(workflow_id)
+
+        @firestore.transactional
+        def _apply(txn: Any) -> tuple[bool, datetime | None, list[str]]:
+            data = self._workflow_in_txn(txn, ref, tenant_id, workflow_id)
+            self._refuse_unpausable(data, workflow_id, cancel_first=False)
+            task_ids = _step_task_ids(data)
+            if data.get("paused") is True:
+                return False, as_datetime(data.get("paused_at")), task_ids
+            now = self._now()
+            patch: dict[str, Any] = {
+                "paused": True,
+                "paused_at": now,
+                "paused_by": by,
+                "updated_at": now,
+            }
+            if reason:
+                # Raw, as `superseded_task_ids` is (request 160 types only the
+                # three fields); a later full-document write must keep it.
+                patch["pause_reason"] = reason
+            txn.update(ref, patch)
+            return True, now, task_ids
+
+        written, paused_at, task_ids = _apply(self._db.transaction())
+        signalled, terminal, contended = self._for_each_step(
+            task_ids,
+            lambda task_id: self._signal_step_pause(
+                tenant_id, task_id, workflow_id=workflow_id, paused_at=paused_at,
+                by=by, tenant_member=tenant_member,
+            ),
+        )
+        result: dict[str, Any] = {
+            "workflow_id": workflow_id,
+            "paused": True,
+            "paused_at": paused_at,
+            "steps_signalled": signalled,
+            "steps_already_terminal": terminal,
+        }
+        if not written:
+            result["already_paused"] = True
+        if contended:
+            raise PauseContended(
+                f"pausing {len(contended)} step(s) of workflow {workflow_id!r} met "
+                "concurrent writes on every attempt; the workflow is paused, retry the "
+                "pause to signal them",
+                result={**result, "steps_contended": contended},
+            )
+        return result
+
+    def resume_workflow(
+        self,
+        tenant_id: str,
+        workflow_id: str,
+        *,
+        by: str,
+        tenant_member: str = "",
+    ) -> dict[str, Any]:
+        """Resume a paused workflow: lift the pause, then clear each step's mirror.
+
+        Stage 1 writes `paused: false`, clears `paused_at` (so a later pause
+        starts a fresh clock) and records `resumed_at`, `resumed_by` and the
+        pause it lifted (`resumed_paused_at`, raw). A workflow that is not
+        paused is not written. Stage 2 clears a step's mirror only where it
+        equals the lifted `paused_at`, so a resume never clears a later pause's
+        mirror, with one RESUME_REQUESTED each. A retry after a contended stage
+        2 finishes it from `resumed_paused_at`, writing nothing for a step
+        already cleared.
+
+        The parked steps are NOT promoted here: the scheduler's workflow-pause
+        sweep is the one writer of PARKED(WORKFLOW_PAUSED) -> READY, and it
+        clears a stale mirror in the same guarded write as the backstop.
+        """
+        self.get_workflow(tenant_id, workflow_id, submitted_by=None)
+        ref = self._db.collection(WORKFLOWS).document(workflow_id)
+
+        @firestore.transactional
+        def _apply(txn: Any) -> tuple[bool, datetime | None, datetime | None, list[str]]:
+            data = self._workflow_in_txn(txn, ref, tenant_id, workflow_id)
+            self._refuse_unpausable(data, workflow_id, cancel_first=True)
+            task_ids = _step_task_ids(data)
+            if data.get("paused") is not True:
+                return (
+                    False, as_datetime(data.get("resumed_paused_at")),
+                    as_datetime(data.get("resumed_at")), task_ids,
+                )
+            now = self._now()
+            lifted = as_datetime(data.get("paused_at"))
+            txn.update(ref, {
+                "paused": False,
+                "paused_at": None,
+                "resumed_at": now,
+                "resumed_by": by,
+                "resumed_paused_at": lifted,
+                "updated_at": now,
+            })
+            return True, lifted, now, task_ids
+
+        written, lifted, resumed_at, task_ids = _apply(self._db.transaction())
+        cleared: list[str] = []
+        terminal: list[str] = []
+        contended: list[str] = []
+        if lifted is not None:
+            cleared, terminal, contended = self._for_each_step(
+                task_ids,
+                lambda task_id: self._clear_step_pause(
+                    tenant_id, task_id, workflow_id=workflow_id, paused_at=lifted,
+                    by=by, tenant_member=tenant_member,
+                ),
+            )
+        result: dict[str, Any] = {
+            "workflow_id": workflow_id,
+            "paused": False,
+            "resumed_at": resumed_at,
+            "steps_cleared": cleared,
+            "steps_already_terminal": terminal,
+        }
+        if not written:
+            result["already_running"] = True
+        if contended:
+            raise PauseContended(
+                f"resuming {len(contended)} step(s) of workflow {workflow_id!r} met "
+                "concurrent writes on every attempt; the workflow is resumed, retry the "
+                "resume to clear their pause signal",
+                result={**result, "steps_contended": contended},
+            )
+        return result
+
+    def _workflow_in_txn(
+        self, txn: Any, ref: Any, tenant_id: str, workflow_id: str
+    ) -> dict[str, Any]:
+        snap = _snapshot(txn.get(ref))
+        data = (snap.to_dict() or {}) if snap.exists else None
+        if data is None or data.get("tenant_id") != tenant_id:
+            raise NotFound(f"workflow {workflow_id!r} not found")
+        return data
+
+    @staticmethod
+    def _refuse_unpausable(data: dict[str, Any], workflow_id: str, *, cancel_first: bool) -> None:
+        """The pause and resume refusals, in the design's order for each route.
+
+        Through `refusals.refuse`: both ship ON (`default=True`, the lane's
+        question in its pull request), and switched off the request goes on,
+        which records a pause no step of a finished or cancelled workflow can
+        act on.
+        """
+        terminal = data.get("state") in {s.value for s in TERMINAL_STATES}
+        checks = [
+            (bool(data.get("cancel_requested")), WorkflowCancelRequested(
+                f"workflow {workflow_id!r} is being cancelled; cancel wins over pause",
+                detail={"workflow_id": workflow_id},
+            )),
+            (terminal, WorkflowTerminal(
+                f"workflow {workflow_id!r} has finished ({data.get('state')}); there is "
+                "nothing to pause or resume",
+                detail={"workflow_id": workflow_id, "state": data.get("state")},
+            )),
+        ]
+        if not cancel_first:
+            checks.reverse()
+        for failed, error in checks:
+            if failed:
+                refusals.refuse(error)
+
+    def _for_each_step(
+        self, task_ids: list[str], apply: Any
+    ) -> tuple[list[str], list[str], list[str]]:
+        """Run one step transaction per task: (applied or already so, terminal, contended)."""
+        done: list[str] = []
+        terminal: list[str] = []
+        contended: list[str] = []
+        for task_id in task_ids:
+            try:
+                if apply(task_id):
+                    done.append(task_id)
+                else:
+                    terminal.append(task_id)
+            except _StepContended:
+                contended.append(task_id)
+        return done, terminal, contended
+
+    def _signal_step_pause(
+        self, tenant_id: str, task_id: str, *, workflow_id: str,
+        paused_at: datetime | None, by: str, tenant_member: str,
+    ) -> bool:
+        """Mirror the pause onto one step. False for a terminal or missing step."""
+        ref = self._db.collection(TASKS).document(task_id)
+
+        @firestore.transactional
+        def _apply(txn: Any) -> bool:
+            snap = _snapshot(txn.get(ref))
+            data = (snap.to_dict() or {}) if snap.exists else None
+            if data is None or data.get("tenant_id") != tenant_id:
+                return False
+            state = str(data.get("state") or "")
+            if state in {s.value for s in TERMINAL_STATES}:
+                return False
+            try:
+                mirror = as_datetime(data.get("pause_requested_at"))
+            except (TypeError, ValueError):
+                mirror = None   # unreadable: rewritten with this pause's time
+            if mirror == paused_at:
+                return True
+            now = self._now()
+            txn.update(ref, {"pause_requested_at": paused_at})
+            event = TaskEvent(
+                event_id=new_id("ev"),
+                task_id=task_id,
+                tenant_id=tenant_id,
+                type=EventType.PAUSE_REQUESTED,
+                at=now,
+                detail=_with_tenant_member(
+                    {
+                        "requested_by": by,
+                        "workflow_id": workflow_id,
+                        "paused_at": paused_at.isoformat() if paused_at else None,
+                        "from_state": state,
+                    },
+                    tenant_member,
+                ),
+            )
+            txn.set(ref.collection(EVENTS).document(event.event_id), event_to_firestore(event))
+            return True
+
+        return self._step_transaction(_apply, task_id, "pause")
+
+    def _clear_step_pause(
+        self, tenant_id: str, task_id: str, *, workflow_id: str,
+        paused_at: datetime, by: str, tenant_member: str,
+    ) -> bool:
+        """Clear one step's mirror if it is the lifted pause's. False for a
+        terminal or missing step; True otherwise, cleared or already clear."""
+        ref = self._db.collection(TASKS).document(task_id)
+
+        @firestore.transactional
+        def _apply(txn: Any) -> bool:
+            snap = _snapshot(txn.get(ref))
+            data = (snap.to_dict() or {}) if snap.exists else None
+            if data is None or data.get("tenant_id") != tenant_id:
+                return False
+            state = str(data.get("state") or "")
+            if state in {s.value for s in TERMINAL_STATES}:
+                return False
+            try:
+                mirror = as_datetime(data.get("pause_requested_at"))
+            except (TypeError, ValueError):
+                mirror = None
+            if mirror is None or mirror != paused_at:
+                # Already cleared, or another pause's: not this resume's to clear.
+                return True
+            now = self._now()
+            txn.update(ref, {"pause_requested_at": None})
+            event = TaskEvent(
+                event_id=new_id("ev"),
+                task_id=task_id,
+                tenant_id=tenant_id,
+                type=EventType.RESUME_REQUESTED,
+                at=now,
+                detail=_with_tenant_member(
+                    {
+                        "requested_by": by,
+                        "workflow_id": workflow_id,
+                        "paused_at": paused_at.isoformat(),
+                    },
+                    tenant_member,
+                ),
+            )
+            txn.set(ref.collection(EVENTS).document(event.event_id), event_to_firestore(event))
+            return True
+
+        return self._step_transaction(_apply, task_id, "resume")
+
+    def _step_transaction(self, apply: Any, task_id: str, what: str) -> bool:
+        """Run `apply` in fresh transactions on contention, as the cancel does
+        (`request_cancel_with_target`): jittered, inside the same budget; then
+        `_StepContended`. Anything that is not contention is raised as is."""
+        deadline = time.monotonic() + CANCEL_RETRY_BUDGET_SECONDS
+        last: BaseException | None = None
+        for attempt in range(CANCEL_TRANSACTION_ATTEMPTS):
+            try:
+                return bool(apply(self._db.transaction()))
+            except Exception as exc:
+                if not _is_contention(exc):
+                    raise
+                last = exc
+            if attempt + 1 == CANCEL_TRANSACTION_ATTEMPTS:
+                break
+            pause = random.uniform(0, CANCEL_RETRY_BASE_SECONDS * 2**attempt)
+            if time.monotonic() + pause >= deadline:
+                break
+            _contention_sleep(pause)
+        log.warning(
+            "%s of task %s stayed contended after %d attempts: %s",
+            what, task_id, attempt + 1, type(last).__name__,
+        )
+        raise _StepContended(task_id)
 
     # -- pools, quota, control -------------------------------------------
 

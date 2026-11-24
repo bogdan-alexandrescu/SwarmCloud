@@ -33,7 +33,6 @@ import pytest
 from swarm_mcp import sc, server, workflows
 from swarm_mcp.client import SwarmError
 
-_PACKAGE = Path(server.__file__).resolve().parent
 _REPO = Path(__file__).resolve().parents[3]
 
 
@@ -287,18 +286,12 @@ def test_no_tool_schema_accepts_a_registration_or_a_store_value():
     ]), credential_paths
 
 
-def test_the_bridge_only_reads_the_mcp_server_registry_and_never_writes_a_workspace_secret():
-    """Read off the source, because a write could hide behind any tool: the
-    package names `/v1/mcp-servers` only in a GET, and the workspace secret
-    store only as its one-time link mint (SSC-SC, secrets-scopes.md §6.4),
-    which takes no value: never a route that stores one."""
-    sources = {p.name: p.read_text(encoding="utf-8") for p in _PACKAGE.glob("*.py")}
-    reads = [name for name, text in sources.items() if "/v1/mcp-servers" in text]
-    assert reads == ["sc.py"], reads
-    assert re.findall(r'request\(\s*"(\w+)",\s*"/v1/mcp-servers', sources["sc.py"]) == ["GET"]
-    named = {name: sorted(set(re.findall(r"/v1/workspace/secrets[^\"'\s]*", text)))
-             for name, text in sources.items() if "/v1/workspace/secrets" in text}
-    assert named == {"secrets.py": ["/v1/workspace/secrets/links"]}, named
+# Read off the source, because a write could hide behind any tool: the package
+# names `/v1/mcp-servers` only in a GET, and the workspace secret store only as
+# its one-time link mint (SSC-SC, secrets-scopes.md §6.4), which takes no value:
+# never a route that stores one. The rule
+# mcp-reads-the-server-registry-and-mints-only-secret-links in
+# scripts/source_text_rules/services.py.
 
 
 def test_swarm_mcp_servers_lists_by_name_and_reads_only():

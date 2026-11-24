@@ -1,3 +1,4 @@
+# source-text: fixture - edits a module of the sample repository the test built, so a history row on it turns stale
 """swarm-graph's `similar_changes` and `rules_for` (docs/design/context-quality.md
 §4.2 layers H and R, §4.4; lane CTXQ-T).
 

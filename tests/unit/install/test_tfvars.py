@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import builtins
 import copy
-import inspect
 import json
 import re
 from pathlib import Path
@@ -75,9 +74,8 @@ def test_generated_never_from_committed_tfvars(monkeypatch: pytest.MonkeyPatch) 
     assert infra["tenants"] == {}, "design §5.6: installs declare no Terraform tenants"
     assert not _foreign_names(_strings(boot) + _strings(infra), state), (
         "lesson 5: a generated input names a deployment the install state did not give")
-    source = inspect.getsource(tfvars)
-    assert "terraform.tfvars\"" not in source and "environments/" not in source.replace(
-        "terraform/environments/`", "")
+    # Nor does tfvars.py name either: the rule tfvars-reads-no-committed-tfvars
+    # in scripts/source_text_rules/services.py.
 
 
 def test_no_dash_var_ever(tmp_path: Path) -> None:

@@ -782,28 +782,8 @@ def test_the_image_installs_the_extractor_and_proves_it_runs() -> None:
     assert "/opt/repo-index" in text
 
 
-def test_the_script_has_no_dependency_outside_its_pins() -> None:
-    source = SCRIPT.read_text(encoding="utf-8")
-    imported = set(re.findall(r"^\s*(?:import|from)\s+([a-zA-Z_][\w]*)", source, re.MULTILINE))
-    third_party = {name for name in imported if name not in sys.stdlib_module_names}
-    allowed = {
-        "tree_sitter", "tree_sitter_python", "tree_sitter_javascript",
-        "tree_sitter_typescript", "tree_sitter_go", "tree_sitter_hcl", "__future__",
-        # The LSP pass (RI10), shipped beside the script in the image.
-        "lsp",
-        # The shard writer's tokenizer (KG2), shipped beside the script too.
-        "repo_graph_shards",
-    }
-    assert third_party <= allowed, third_party - allowed
-    writer = TOOL_DIR / "repo_graph_shards.py"
-    names = set(re.findall(r"^\s*(?:import|from)\s+([a-zA-Z_][\w]*)",
-                           writer.read_text(encoding="utf-8"), re.MULTILINE))
-    assert {n for n in names if n not in sys.stdlib_module_names} <= {"__future__"}
-    # And the LSP package itself is standard library only: its servers are
-    # child processes, not Python dependencies.
-    for module in sorted((TOOL_DIR / "lsp").glob("*.py")):
-        names = set(re.findall(r"^\s*(?:import|from)\s+([a-zA-Z_][\w]*)",
-                               module.read_text(encoding="utf-8"), re.MULTILINE))
-        outside = {n for n in names if n not in sys.stdlib_module_names} - {"__future__"}
-        assert not outside, f"{module.name} imports {sorted(outside)}"
+def test_the_script_has_git_to_run() -> None:
+    # Which modules the script, its shard writer and its LSP package may
+    # import is the rule `repo-index-imports-only-its-pins` in
+    # scripts/source_text_rules/worker.py (issue 73).
     assert shutil.which("git") is not None

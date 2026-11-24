@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import dataclasses
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -113,12 +112,9 @@ def test_the_catalogue_says_which_runners_declare_their_cost():
     assert flags["mock"] is True, f"mock does not declare its cost: {flags}"
     assert all(flag is False for name, flag in flags.items() if name != "mock"), flags
     assert outcomes.DECLARED_COST_PROFILES == frozenset(n for n, f in flags.items() if f)
-    # The ledger reads the flag; it names no profile of its own any more.
-    source = Path(outcomes.__file__).read_text()
-    assert '"mock"' not in source and "'mock'" not in source, (
-        "swarm_api/outcomes.py still names a profile; DECLARED_COST_PROFILES must come "
-        "from RunnerProfile.cost_declared"
-    )
+    # The ledger reads the flag; that it names no profile of its own any more
+    # is the source-text rule `outcomes-names-no-runner-profile`
+    # (scripts/source_text_rules/control_plane_nz.py).
 
 
 def test_every_end_cause_has_exactly_one_class():

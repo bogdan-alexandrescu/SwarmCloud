@@ -1,3 +1,4 @@
+# source-text: fixture - reads the MCP config file the claude-code runner wrote under tmp_path, to show no key is in it
 """Agents use the tools switched on for them (owner's choice, 2 November 2026; part of archived issue 2688).
 
 The first experiment batch (2 November 2026, eight workflows, 56 steps) found

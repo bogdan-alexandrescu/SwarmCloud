@@ -1,3 +1,4 @@
+# source-text: fixture - reads back types.ts in a throwaway git repository after apply_patch, for the applied text or the conflict markers
 """The bridge: dispatching to SwarmCloud the way you dispatch a local subagent.
 
 Offline by construction. Every test here uses a fake control plane -- no

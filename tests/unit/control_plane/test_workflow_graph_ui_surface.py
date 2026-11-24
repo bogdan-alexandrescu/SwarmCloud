@@ -1,3 +1,4 @@
+# source-text: contract - Workflows.tsx, dag.ts and the stylesheets must draw one edge per dependency and print only the derived workflow state
 """The workflow graph, and the one state its heading is allowed to print.
 
 Two findings from the 2026-09-22 audit of the live deployment, and the open
@@ -252,17 +253,11 @@ def test_the_graph_renders_an_svg_path_for_every_edge():
     for library in ("d3", "recharts", "reactflow", "react-flow", "cytoscape"):
         assert f'"{library}' not in package, f"{library} was added to draw six boxes"
     # vis-network is a dependency, but of the repository graph's Network view
-    # (force physics over up to 2,000 modules), not of this DAG. It may reach
-    # the bundle through RepoGraphNetwork.tsx alone, and never this view.
-    importers = sorted(
-        path.name
-        for path in UI.rglob("*.ts*")
-        if "__tests__" not in path.parts
-        and re.search(r"""(from|import\()\s*['"]vis-network""", path.read_text())
-    )
-    assert importers in ([], ["RepoGraphNetwork.tsx"]), (
-        f"vis-network is imported from {importers}: only the repository graph's Network view may draw with it"
-    )
+    # (force physics over up to 2,000 modules), not of this DAG. That it
+    # reaches the bundle through RepoGraphNetwork.tsx alone is the rule
+    # `vis-network-only-in-the-repository-graph` of
+    # scripts/source_text_rules/control_plane_nz.py, over the *.ts and *.tsx
+    # of apps/swarm-ui/src outside __tests__ as this test globbed them.
 
 
 

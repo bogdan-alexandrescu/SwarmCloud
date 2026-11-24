@@ -1,3 +1,4 @@
+# source-text: contract - the acceptance prompts' gitmcp commands must use only the tool names and options the worker's git shim and CLI source define, and the planted file's digest must match
 """The git-tools acceptance group's judge, offline (G7, part of archived issue 1225).
 
 tests/acceptance/test_runner_git_tools.py judges what scripts/acceptance/

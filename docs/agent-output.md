@@ -543,8 +543,13 @@ context, so a long session costs roughly the square of its length, and
   the next turn boundary, when that turn's tool results are in, and never
   mid-tool-call. `CONTEXT_CEILING_TOKENS` and `TOOL_CALL_CEILING` are the
   values. A profile (`PROFILE_LIMITS`) or a step
-  (`input.context_ceiling = {"tokens", "tool_calls"}`) may lower them, and
-  nothing raises them past the hard caps the module states.
+  (`input.context_ceiling = {"type": "limits", "tokens", "tool_calls"}`,
+  declared on the claude-code runner's profiles by contract request 158,
+  accepted 2026-11-24) may lower them, and nothing raises them past the hard
+  caps the module states. swarm-api stamps a per-role default on the planner,
+  review, re-review, fix, CI-fix and conflict-fix steps it compiles
+  (`swarm_api/stepceiling.py`, `ROLE_CEILINGS`, each value's reason beside
+  it); a build step keeps the owner's ceilings, and a caller's own value wins.
 * **A fresh session, never `--resume`.** On a stop the runner commits the
   tree as work in progress (`git add --all`, the same as the publish), then
   starts a new CLI session whose prompt begins with a handoff: why the last
