@@ -1420,9 +1420,10 @@ function keptKeys(sectionId: string, tab: string): readonly string[] {
   // One schedule rides on the list's address (`/automate/schedules/<id>`,
   // paths.ts), with its tab and its editor (AUT-11).
   // `scope=all` is the admin's All tenants view (SCHED-ONE-PAGE), linkable.
+  // `proposes` narrows the list to the sources that propose (`?proposes=1`).
   // `type` is New schedule's preselected type (a starter card's Use opens
   // `/automate/schedules/new?type=<name>`); without it the form opens bare.
-  if (sectionId === AUTOMATE && tab === 'schedules') return ['schedule', 'tab', 'edit', 'scope', 'type']
+  if (sectionId === AUTOMATE && tab === 'schedules') return ['schedule', 'tab', 'edit', 'scope', 'type', 'proposes']
   // One inbox item rides on the page's address (`/automate/approvals/<id>`, paths.ts),
   // and the inbox's kind filter beside it (AUT-15).
   if (sectionId === AUTOMATE && tab === 'approvals') return ['approval', 'kind']
