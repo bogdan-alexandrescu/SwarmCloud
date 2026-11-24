@@ -1485,7 +1485,7 @@ if args[:1] == ["api"]:
         if parts[2] == "check-runs":
             rows = at.get("check_runs", [])
             per, page = int(query.get("per_page", 30)), int(query.get("page", 1))
-            print(json.dumps({"total_count": world.get("check_runs_total", len(rows)),
+            print(json.dumps({"total_count": at.get("check_runs_total", world.get("check_runs_total", len(rows))),
                               "check_runs": rows[(page - 1) * per:page * per]}))
         else:
             print(json.dumps({"statuses": at.get("statuses", [])}))

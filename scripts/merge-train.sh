@@ -98,13 +98,17 @@
 #      culprit is found in log2(N) trains and the innocent land on the way.
 #      A CODE-SCANNING RED first (issue 377): when a failing check run is
 #      GitHub code scanning's (app `github-advanced-security`), its
-#      annotations are read and each annotated path is mapped to the members
-#      whose changed files hold it (`pulls/<N>/files`, paginated and bounded,
-#      the only way a path names a pull request). Those members are ejected
-#      at once, each told the alert's rule, file and line, and the rest board
-#      the next train, which runs every check again. A mapping that names no
-#      member or every member, or a list not read whole, bisects as above,
-#      and the alerts read are still named. A red train never lands.
+#      annotations are read and the path of each FAILURE-level annotation is
+#      mapped to the members whose changed files hold it (`pulls/<N>/files`,
+#      paginated and bounded, the only way a path names a pull request);
+#      warning and notice annotations never eject anyone. Those members are
+#      ejected at once, each told the alert's rule, file and line, and the
+#      rest board the next train, which runs every check again. A mapping
+#      that names no member or every member bisects as above and still names
+#      the check and its alerts. Check runs are read whole (every page,
+#      compared with total_count): a read that is not whole is unreadable,
+#      never green, and a list of annotations or files not read whole
+#      bisects as above. A red train never lands.
 #   Every failing check is named, whichever app made it, with its title, in
 #   each comment and on one line of the log.
 #

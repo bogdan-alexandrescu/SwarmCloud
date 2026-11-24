@@ -228,14 +228,17 @@ order, and every comment and step-summary line names the rule that acted:
    three cycles bisecting to what the annotations already said. So when a
    failing check run is code scanning's, the train reads its annotations
    (`check-runs/<id>/annotations`, 50 a page, at most
-   `MERGE_TRAIN_ANNOTATIONS_MAX_PAGES`, 20) and maps each annotated path to
-   the members that change it, through each member's changed files
+   `MERGE_TRAIN_ANNOTATIONS_MAX_PAGES`, 20) and maps the path of each
+   failure-level annotation (warning and notice annotations never eject
+   anyone) to the members that change it, through each member's changed files
    (`pulls/<N>/files`, 100 a page, at most `MERGE_TRAIN_FILES_MAX_PAGES`,
    30: GitHub lists no more than 3,000). The members it names are ejected at
    once, each told the alert's rule, file and line; the rest board the next
    train, which runs every check again. When the mapping names no member, or
-   every member, or a list could not be read whole, the train bisects exactly
-   as before and still names the check and its alerts. Nothing here lets a
+   every member, or a list of annotations or files could not be read whole, the
+   train bisects exactly as before and still names the check and its alerts.
+   Check runs (a train's and main's) are read whole too, every page compared
+   with `total_count`: a read that is not whole is unreadable, never green. Nothing here lets a
    red train land: a train with any failing check never does.
 
 Every failing check is named in each comment, and on one line of the job

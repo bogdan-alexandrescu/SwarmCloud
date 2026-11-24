@@ -34,7 +34,7 @@ import pytest
 import json
 
 from .test_merge_train import (REQUIRED, REQUIRED_TICK, SCRIPT, TRAIN_PR, UNIT, RedTick, _at, _green_train, _main,
-                               _required_file, _run)
+                               _red_at_head, _required_file, _run)
 
 TRIVY = "Trivy"
 TRIVY_TITLE = "2 new alerts including 2 high severity security vulnerabilities"
@@ -257,3 +257,37 @@ def test_an_unreadable_annotation_list_bisects(train):
 def test_the_script_documents_the_judge_s_new_columns():
     header = SCRIPT.read_text().split("\nset -euo pipefail\n", 1)[0]
     assert "`failed\\t<name>\\t<url>\\t<title>\\t<app>\\t<check run id>`" in header
+
+
+# --------------------------------------------------------------------------
+# main's check runs are read whole (read_check_runs), never one page
+# --------------------------------------------------------------------------
+
+
+def _main_with_unit_failing_past_page_one(t: RedTick) -> None:
+    """Main's head holds 100 passing runs before the failing UNIT: page 2."""
+    fill = [f"filler job {i}" for i in range(100)]
+    t.world["checks"][t.main] = _at([*fill, *REQUIRED_TICK], [UNIT], suite_base=2000)
+
+
+def test_main_red_on_a_later_check_runs_page_holds_the_train(train):
+    t = train([101, 102, 103], suspects="104")
+    t.extra = [f"retry={int(time.time()) - 600}:{t.head}"]
+    _red_at_head(t, [UNIT])
+    _main_with_unit_failing_past_page_one(t)
+    out = t.run()
+    log = (t.tmp / "gh.log").read_text()
+    assert f"commits/{t.main}/check-runs?per_page=100&page=2" in log
+    assert t.comments().startswith(f"Held: main is red on {UNIT}\n"), out
+    assert not t.ejected()
+
+
+def test_main_check_runs_not_read_whole_are_unreadable_never_green(train):
+    t = train([101, 102, 103], suspects="104")
+    t.extra = [f"retry={int(time.time()) - 600}:{t.head}"]
+    _red_at_head(t, [UNIT])
+    _main(t, [*REQUIRED_TICK, UNIT])  # every run on main is green ...
+    t.world["checks"][t.main]["check_runs_total"] = 105  # ... but 5 are not in the pages read
+    out = t.run()
+    assert "could not read main's checks" in out, out
+    assert not t.comments().startswith("Held: main is red")
