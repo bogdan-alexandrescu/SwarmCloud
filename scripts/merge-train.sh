@@ -76,9 +76,20 @@
 # red train goes through three rules, in order (red_rules), and every comment
 # and summary line names the rule that acted:
 #   1. RETRY ONCE. The first red at a train head re-runs only the failed jobs
-#      of its failing Actions runs, once (rerun-failed-jobs), once every run
-#      at the head has finished, and the train stays open; the state block records `retry=<epoch>:<head>`, and the
-#      age bound counts from then. A green after it lands every member as a
+#      of its failing Actions runs, once, and the train stays open; the state
+#      block records `retry=<epoch>:<head>`, and the age bound counts from
+#      then. It does not wait for unrelated jobs still running (issue 387: a
+#      test that failed in five minutes waited forty for the image build of
+#      its run): each failed job of a run still in progress is re-run on its
+#      own (actions/jobs/<id>/rerun) and each failed run that has finished
+#      through rerun-failed-jobs, at once (retry_early). If GitHub refuses a
+#      job's re-run while its run is in progress, the train waits for every
+#      run at the head as before, says so in one line, and the refused re-run
+#      spends no retry; once they have all finished it re-runs the failed jobs
+#      of each failed run (retry_failed_runs). The log gives the seconds from
+#      the first failed job's end to the retry's start (retry_delay). A retry
+#      started early never judges anything: green is still every required
+#      check green at the head (cmd_judge). A green after it lands every member as a
 #      first green does. A re-run GitHub refuses (no `actions: write`), or one
 #      that cannot be recorded, falls through to the next rules this tick. A
 #      failing check that is not an Actions job (a code-scanning result, a
@@ -1793,6 +1804,122 @@ retry_failed_runs() {
   done
 }
 
+failing_job_ids() {
+  # The check-run ids of the failing checks judged into file $1 that are (or
+  # may be) Actions jobs, as a JSON array of strings. An Actions check run's
+  # id is its job's id. A failing job with no id read prints "null".
+  awk -F'\t' '$1 == "failed" && ($5 == "" || $5 == "github-actions") { print $6 }' "$1" \
+    | jq -Rsc 'split("\n") | .[:-1] | if any(.[]; test("^[0-9]+$") | not) then null else . end'
+}
+
+retry_delay() {
+  # Rule 1's measure (issue 387): sets RETRY_DELAY to the log phrase giving the
+  # seconds from the end of the first failed job judged into file $1 (its
+  # `completed_at` in the check runs at the head, file $2) to now, the start
+  # of the retry.
+  local verdict_file="$1" cr="$2" ids first ended delay
+  RETRY_DELAY="the first failed job's end could not be read, so the wait before this retry is not measured"
+  ids="$(failing_job_ids "${verdict_file}")"
+  [[ "${ids}" != "null" && "${ids}" != "[]" ]] || return 0
+  first="$(jq -r --argjson ids "${ids}" '
+      [ (.check_runs // [])[]
+        | select((.id | tostring) as $i | $ids | index($i) != null)
+        | (.completed_at // "") | select(type == "string" and . != "")
+        | sub("\\.[0-9]+Z$"; "Z") | {at: ., epoch: (fromdateiso8601? // empty)} ]
+      | min_by(.epoch) // empty | "\(.epoch)\t\(.at)"' "${cr}" 2>/dev/null)" || first=""
+  [[ "${first}" =~ ^[0-9]+$'\t' ]] || return 0
+  ended="${first#*$'\t'}"
+  delay=$(($(date +%s) - ${first%%$'\t'*}))
+  [[ "${delay}" -ge 0 ]] || delay=0
+  RETRY_DELAY="${delay} seconds from the first failed job's end (${ended}) to this retry"
+}
+
+retry_early() {
+  # Rule 1 while some runs at the head still run (issue 387): re-runs every
+  # failed job judged into file $4 at train $1's head $3 (body $2) now, from
+  # the Actions runs at the head in file $5 and its check runs in file $6,
+  # instead of waiting for unrelated jobs. A failed job whose run is still in
+  # progress is re-run on its own (POST actions/jobs/<id>/rerun: the job and
+  # its dependents, the gate among them); a failed run that has finished,
+  # through rerun-failed-jobs. Returns 1, with EARLY_WHY, when that cannot be
+  # done for every failed job (a job whose run was not read, or GitHub
+  # refusing the first re-run of a job in a run in progress): nothing was
+  # re-run, no retry is recorded, and the train waits as before. Returns 0
+  # once GitHub accepted a re-run: EARLY_JOBS and EARLY_RUNS name what it
+  # accepted, EARLY_REFUSED what it refused after that (those are not re-run
+  # again: the retry is spent), EARLY_UNRECORDED is set when the state block
+  # could not be written.
+  #
+  # The retry is recorded AFTER GitHub accepts, unlike retry_failed_runs: a
+  # refused re-run must never spend it. A tick that dies between the two
+  # leaves the retry unrecorded, and a later tick may re-run once more.
+  local number="$1" body="$2" head="$3" verdict_file="$4" runs="$5" cr="$6"
+  local ids plan="${WORK}/early-plan.tsv" err="${WORK}/rerun-early.err" job run status name accepted=0
+  local run_list="" refused=""
+  EARLY_JOBS=""
+  EARLY_RUNS=""
+  EARLY_REFUSED=""
+  EARLY_UNRECORDED=""
+  EARLY_WHY=""
+  ids="$(failing_job_ids "${verdict_file}")"
+  if [[ "${ids}" == "null" || "${ids}" == "[]" ]]; then
+    EARLY_WHY="a failing job's id could not be read"
+    return 1
+  fi
+  # One line per failing job: its id, its run's id and status (empty when no
+  # run read at the head holds its check suite), its name.
+  if ! jq -rn --slurpfile cr "${cr}" --slurpfile wf "${runs}" --argjson ids "${ids}" '
+      ($wf[0].workflow_runs // []) as $runs
+      | $ids[] as $id
+      | ([ ($cr[0].check_runs // [])[] | select((.id | tostring) == $id) ][0] // {}) as $c
+      | ($c.check_suite.id // null) as $suite
+      | ([ $runs[] | select($suite != null and .check_suite_id == $suite and (.id | type) == "number") ][0] // {}) as $r
+      | [ $id, (($r.id // "") | tostring), ($r.status // "" | tostring), ($c.name // "" | tostring) ]
+      | map(gsub("[\\t\\r\\n]"; " ")) | join("\t")' >"${plan}" 2>/dev/null; then
+    EARLY_WHY="the failing jobs could not be matched to their runs"
+    return 1
+  fi
+  while IFS=$'\t' read -r job run status name; do
+    if [[ ! "${run}" =~ ^[0-9]+$ ]]; then
+      EARLY_WHY="the run of failing job ${name:-${job}} was not among the Actions runs read at ${head:0:12}"
+      return 1
+    fi
+  done <"${plan}"
+  # The jobs of runs still in progress first: GitHub may refuse those, and a
+  # refusal of the first is nothing re-run and nothing spent.
+  while IFS=$'\t' read -r job run status name; do
+    [[ "${status}" != "completed" ]] || continue
+    if rerun_gh api -X POST "repos/${GH_REPO}/actions/jobs/${job}/rerun" >/dev/null 2>"${err}" </dev/null; then
+      accepted=$((accepted + 1))
+      EARLY_JOBS="${EARLY_JOBS:+${EARLY_JOBS}, }${name} (job ${job} of run ${run})"
+    elif [[ "${accepted}" -eq 0 ]]; then
+      EARLY_WHY="GitHub refused to re-run job ${name} (${job}) while its run ${run} is in progress: $(head -c 300 "${err}" | tr '\n' ' ' | redact)"
+      return 1
+    else
+      refused="${refused:+${refused}, }${name} (job ${job}): $(head -c 200 "${err}" | tr '\n' ' ' | redact)"
+    fi
+  done <"${plan}"
+  while IFS=$'\t' read -r job run status name; do
+    [[ "${status}" == "completed" ]] || continue
+    case " ${run_list} " in *" ${run} "*) continue ;; esac
+    run_list="${run_list:+${run_list} }${run}"
+    if rerun_gh api -X POST "repos/${GH_REPO}/actions/runs/${run}/rerun-failed-jobs" >/dev/null 2>"${err}" </dev/null; then
+      accepted=$((accepted + 1))
+      EARLY_RUNS="${EARLY_RUNS:+${EARLY_RUNS} }${run}"
+    elif [[ "${accepted}" -eq 0 ]]; then
+      EARLY_WHY="GitHub refused to re-run the failed jobs of run ${run}: $(head -c 300 "${err}" | tr '\n' ' ' | redact)"
+      return 1
+    else
+      refused="${refused:+${refused}, }the failed jobs of run ${run}: $(head -c 200 "${err}" | tr '\n' ' ' | redact)"
+    fi
+  done <"${plan}"
+  EARLY_REFUSED="${refused}"
+  if ! state_patch "${number}" "${body}" "retry=$(date +%s):${head}"; then
+    EARLY_UNRECORDED="could not record the retry in train #${number}'s state, so a later tick may re-run once more"
+  fi
+  return 0
+}
+
 red_rules() {
   # Which rule acts on red train $1 (body $2, head $3, judged into $4, its
   # identity $5, its age in seconds $6). Sets RED_RULE: `retry` (rule 1 re-ran the failed jobs; the
@@ -1823,9 +1950,44 @@ red_rules() {
     && jq -e 'any((.workflow_runs // [])[]; .status != "completed")' "${runs}" >/dev/null; then
     if [[ -n "${retried}" && "${retried#*:}" == "${head}" ]]; then
       summary "train ${id}: rule 1 (retry once): its re-run at ${head:0:12} is still running: waiting"
-    else
-      summary "train ${id}: rule 1 (retry once): red at ${head:0:12} while some of its runs still run: waiting for them before re-running the failed jobs"
+      RED_RULE="wait"
+      return 0
     fi
+    # Issue 387: re-run the failed jobs now rather than wait for unrelated
+    # jobs of their runs. Only when some failing check is an Actions job: a
+    # red no re-run changes waits, as before, for rule 1 to name it.
+    local why_wait=""
+    if some_actions_job_failed "${verdict_file}"; then
+      retry_delay "${verdict_file}" "${WORK}/check-runs.json"
+      if retry_early "${number}" "${body}" "${head}" "${verdict_file}" "${runs}" "${WORK}/check-runs.json"; then
+        local early_others what=""
+        early_others="$(not_actions_jobs "${verdict_file}")"
+        [[ -z "${EARLY_JOBS}" ]] || what="job(s) ${EARLY_JOBS}"
+        [[ -z "${EARLY_RUNS}" ]] || what="${what:+${what}; }the failed jobs of finished run(s) ${EARLY_RUNS}"
+        local note="${WORK}/retry-${number}.md"
+        {
+          echo "**Red. Rule 1 (retry once):** re-running ${what}, once, at this head, without waiting for the runs still going; the train stays open and is judged again when every check has finished. Failing:"
+          echo
+          failing_list "${verdict_file}"
+          if [[ -n "${EARLY_REFUSED}" ]]; then
+            echo
+            echo "GitHub refused, so not re-run: ${EARLY_REFUSED}."
+          fi
+          if [[ -n "${early_others}" ]]; then
+            echo
+            echo "Not an Actions job, so no re-run changes it: ${early_others}."
+          fi
+          echo
+          echo "(scripts/merge-train.sh, run ${RUN_URL})"
+        } >"${note}"
+        comment_on "${number}" "${note}" || warn "could not say on #${number} that it retries"
+        summary "train ${id}: rule 1 (retry once): re-running ${what} while other runs at ${head:0:12} still run; ${RETRY_DELAY}; the train stays open${EARLY_REFUSED:+ (GitHub refused: ${EARLY_REFUSED})}${EARLY_UNRECORDED:+ (${EARLY_UNRECORDED})}${early_others:+ (not an Actions job, so not re-run: ${early_others})}"
+        RED_RULE=retry
+        return 0
+      fi
+      why_wait=" (${EARLY_WHY}; the retry is not spent)"
+    fi
+    summary "train ${id}: rule 1 (retry once): red at ${head:0:12} while some of its runs still run: waiting for them before re-running the failed jobs${why_wait}"
     RED_RULE="wait"
     return 0
   fi
@@ -1838,7 +2000,8 @@ red_rules() {
     summary "train ${id}: rule 1 (retry once): red again at ${head:0:12} after its retry: on to rule 2"
   elif ! some_actions_job_failed "${verdict_file}"; then
     summary "train ${id}: rule 1 (retry once): not an Actions job: ${others}; no re-run can change it, so nothing is re-run: on to rule 2"
-  elif retry_failed_runs "${number}" "${body}" "${head}"; then
+  elif retry_delay "${verdict_file}" "${WORK}/check-runs.json" \
+    && retry_failed_runs "${number}" "${body}" "${head}"; then
     local note="${WORK}/retry-${number}.md"
     {
       echo "**Red. Rule 1 (retry once):** the failed jobs of run(s) ${RETRY_RUNS} are re-run, once, at this head; the train stays open and is judged again when they finish. Failing:"
@@ -1852,7 +2015,7 @@ red_rules() {
       echo "(scripts/merge-train.sh, run ${RUN_URL})"
     } >"${note}"
     comment_on "${number}" "${note}" || warn "could not say on #${number} that it retries"
-    summary "train ${id}: rule 1 (retry once): re-running the failed jobs of run(s) ${RETRY_RUNS}; the train stays open${others:+ (not an Actions job, so not re-run: ${others})}"
+    summary "train ${id}: rule 1 (retry once): re-running the failed jobs of run(s) ${RETRY_RUNS}; ${RETRY_DELAY}; the train stays open${others:+ (not an Actions job, so not re-run: ${others})}"
     RED_RULE=retry
     return 0
   else

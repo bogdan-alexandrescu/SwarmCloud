@@ -4751,7 +4751,15 @@ bisects as before and still names the check. Check runs are read whole, every
 page compared with `total_count`; a read that is not whole is unreadable,
 never green. Every failing check is named with its title, whichever app
 made it, and rule 1 says a check that is not an Actions job is one no re-run
-changes. [The runbook](runbooks/merge-train.md#a-red-train) states the rules.
+changes. Rule 1 (retry once) re-runs a failed job at once, without waiting
+for unrelated jobs of the same run such as `build changed images without
+pushing` (issue 387): one job of a run still in progress through
+`actions/jobs/<id>/rerun`, a finished failed run through `rerun-failed-jobs`.
+If GitHub refuses a job's re-run while its run is in progress, the train waits
+for every run as before, says so on one log line, and spends no retry. Its log
+gives the seconds from the first failed job's end to the retry, and a train
+still lands only when every required check at its head is green.
+[The runbook](runbooks/merge-train.md#a-red-train) states the rules.
 
 **What a lane gives up.** A lane's pull request no longer catches a lint,
 format or contract slip before the train does: the lane's agent runs the
