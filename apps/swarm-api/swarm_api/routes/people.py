@@ -161,7 +161,7 @@ def workspace_labels(ctx: AppContext, tenant_ids: Any) -> dict[str, str]:
     for tenant_id in sorted(set(tenant_ids)):
         try:
             tenant = ctx.store.get_tenant(tenant_id)
-        except Exception:  # noqa: BLE001, S112
+        except Exception:  # noqa: BLE001, S112 - a label, never the answer
             continue
         name = getattr(tenant, "display_name", None) if tenant is not None else None
         if isinstance(name, str) and name.strip():

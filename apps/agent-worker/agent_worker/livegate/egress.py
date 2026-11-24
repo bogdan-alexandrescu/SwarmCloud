@@ -455,7 +455,7 @@ class LocalForwarder:
         self._told.add(cause)
         try:
             self._on_unavailable(cause)
-        except Exception:  # noqa: BLE001, S110
+        except Exception:  # noqa: BLE001, S110 -- a notice never stops the forwarder
             pass
 
     async def probe(self) -> bool:
@@ -518,7 +518,7 @@ class LocalForwarder:
             self._live.add(task)
         try:
             await self._handle(reader, writer)
-        except Exception:  # noqa: BLE001, S110
+        except Exception:  # noqa: BLE001, S110 -- one connection's failure is never the gate's
             pass
         finally:
             if task is not None:

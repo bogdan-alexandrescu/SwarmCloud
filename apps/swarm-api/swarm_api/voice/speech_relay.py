@@ -338,7 +338,7 @@ class SpeechRelay:
     async def _tell(self, frame: dict[str, Any] | str) -> None:
         try:
             await self._browser.send(frame if isinstance(frame, str) else json.dumps(frame))
-        except Exception:  # noqa: BLE001, S110
+        except Exception:  # noqa: BLE001, S110 -- the browser went; its pump sees it
             pass
 
     async def _to_vm(self, data: str | bytes) -> bool:

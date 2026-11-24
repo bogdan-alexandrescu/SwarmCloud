@@ -489,7 +489,7 @@ async def _metrics_loop(engine: Engine, every: float) -> None:
         for sock in list(engine.sockets):
             try:
                 await sock.send(frame)
-            except Exception:  # noqa: BLE001, S112
+            except Exception:  # noqa: BLE001, S112 -- a socket closing mid-send; its own loop ends it
                 continue
 
 

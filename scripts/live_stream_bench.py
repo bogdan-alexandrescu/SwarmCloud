@@ -148,7 +148,7 @@ class WsStream:
                         await asyncio.sleep(len(message) * self._seconds_per_byte)
                     self.bytes_in += len(message)
                     self.reader.feed_data(message)
-        except Exception:  # noqa: BLE001, S110
+        except Exception:  # noqa: BLE001, S110 -- a closed link is read as EOF
             pass
         self.reader.feed_eof()
 

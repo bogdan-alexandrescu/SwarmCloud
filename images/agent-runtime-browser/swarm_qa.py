@@ -1574,7 +1574,7 @@ class _Errors:
         try:
             if message.type == "error":
                 self.console.append(str(message.text)[:MAX_MESSAGE_CHARS])
-        except Exception:  # noqa: BLE001, S110
+        except Exception:  # noqa: BLE001, S110 -- a listener must never break the capture
             pass
 
     def _page_error(self, error):
@@ -1890,7 +1890,7 @@ def _masked_screenshot(page) -> tuple[bytes, int]:
     except Exception as exc:  # any failure refuses the shot
         try:
             _clear_mask(page)
-        except Exception:  # noqa: BLE001, S110
+        except Exception:  # noqa: BLE001, S110 -- the shot is refused either way
             pass
         raise _MaskFailed(f"the credential mask could not be drawn, so no shot was stored: "
                           f"{type(exc).__name__}: {_one_line(exc)}") from exc
@@ -2037,7 +2037,7 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
                 for href in list(page.evaluate(LINKS_JS) or [])[:MAX_LINKS]:
                     if href not in bucket and len(bucket) < MAX_LINKS:
                         bucket.append(href)
-            except Exception:  # noqa: BLE001, S110
+            except Exception:  # noqa: BLE001, S110 -- unread links are the crawl's to find, never a failed route
                 pass
         step = "measure"
         measured = page.evaluate(MEASURE_JS, ready)
@@ -2802,7 +2802,7 @@ class _Walk:
                 return entry["stored"]
             try:
                 page.wait_for_load_state("networkidle", timeout=NETWORK_IDLE_MS)
-            except Exception:  # noqa: BLE001, S110
+            except Exception:  # noqa: BLE001, S110 -- an app that polls may never be idle
                 pass
             hrefs = list(page.evaluate(LINKS_JS) or [])
         except Exception:  # noqa: BLE001 -- a page that failed is listed; its capture says so
@@ -2839,7 +2839,7 @@ class _Walk:
                 before = _fingerprint(page.evaluate(TEXT_JS))
                 at = time.time()
                 answer = page.evaluate(CLICK_JS, {"css": css, "text": text})
-            except Exception:  # noqa: BLE001, S112
+            except Exception:  # noqa: BLE001, S112 -- a click that threw is no click
                 continue
             if answer is not True:
                 continue
@@ -2895,7 +2895,7 @@ class _Walk:
                 self.admit(path, depth, reveal)
         try:
             page.keyboard.press("Escape")
-        except Exception:  # noqa: BLE001, S110
+        except Exception:  # noqa: BLE001, S110 -- a page with nothing open has nothing to close
             pass
         return True
 

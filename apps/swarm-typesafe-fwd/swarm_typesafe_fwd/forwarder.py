@@ -279,7 +279,7 @@ def _closing(chunks: Iterator[bytes], close: Callable[[], None]) -> Iterator[byt
     finally:
         try:
             close()
-        except Exception:  # noqa: BLE001, S110
+        except Exception:  # noqa: BLE001, S110 - closing is best effort
             pass
 
 

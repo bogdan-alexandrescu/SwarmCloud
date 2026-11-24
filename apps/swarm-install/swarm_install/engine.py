@@ -375,7 +375,7 @@ class Engine:
                 except LeaseLost as exc:
                     lost.append(exc)
                     return
-                except Exception:  # noqa: BLE001, S112
+                except Exception:  # noqa: BLE001, S112 - a missed beat is retried on the next tick
                     continue
 
         thread = threading.Thread(target=beat, name="swarm-install-heartbeat", daemon=True)

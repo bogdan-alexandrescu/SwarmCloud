@@ -148,7 +148,7 @@ def test_call_is_compute_then_page_and_compute_is_pure(snapshots):
     for tool, arguments in battery(snap):
         try:
             first = tools.compute(tool, snap, arguments)
-        except Exception:  # noqa: BLE001, S112
+        except Exception:  # noqa: BLE001, S112 -- error answers are covered by `call`
             continue
         again = tools.compute(tool, snap, arguments)
         assert first.head == again.head and first.materialised().rows == \

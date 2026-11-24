@@ -5674,7 +5674,7 @@ def _workflow_created(
             "submit", title=workflows.workflow_title(named, len(given) if given is not None else len(steps)),
             workflow_id=str(workflow_id), repository=repository.get("url"), name=named,
         )
-    except Exception:  # noqa: BLE001, S110
+    except Exception:  # noqa: BLE001, S110 - the workflow is in SwarmCloud; a lost record line never fails its answer
         pass
     created: dict[str, Any] = with_console({"workflow_id": workflow_id}, workflow)
     created.update({

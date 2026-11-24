@@ -433,7 +433,7 @@ class Browser:
         if self._stderr_task is not None:
             try:
                 await asyncio.wait_for(asyncio.shield(self._stderr_task), 1.0)
-            except Exception:  # noqa: BLE001, S110
+            except Exception:  # noqa: BLE001, S110 -- a timeout or a failed read: what was read is kept
                 pass
         return self.proc.returncode, list(self.stderr)
 
@@ -1089,7 +1089,7 @@ class PageFollower:
             if old_session is not None:
                 try:
                     await self._cdp.call("Target.detachFromTarget", {"sessionId": old_session})
-                except Exception:  # noqa: BLE001, S110
+                except Exception:  # noqa: BLE001, S110 -- already gone with its page
                     pass
             self.current = target
             self._origin(None)
@@ -1117,7 +1117,7 @@ class PageFollower:
                     self._children.clear()
                 try:
                     await self._cdp.call("Target.detachFromTarget", {"sessionId": session})
-                except Exception:  # noqa: BLE001, S110
+                except Exception:  # noqa: BLE001, S110 -- already gone
                     pass
                 raise
             if self._session != session:

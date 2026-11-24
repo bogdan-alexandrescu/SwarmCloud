@@ -158,7 +158,7 @@ def open_page(url: str, *, why: str, say: Callable[[str], None] = print,
     env = os.environ if env is None else env
     try:
         say(f"{why}\n  {url}")
-    except Exception:  # noqa: BLE001, S110
+    except Exception:  # noqa: BLE001, S110 - printing a page must never stop the install
         pass
     try:
         if str(env.get(NO_BROWSER, "")).strip() in ("1", "true", "yes"):
