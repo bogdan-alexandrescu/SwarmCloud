@@ -4,8 +4,11 @@ Read by introspection of the frozen contract (`swarm_common`): every member of
 `TaskState`, `ParkReason`, `BlockedReason`, `EventType` and `EndCause` in
 declaration order, `TERMINAL_STATES` and `CONCURRENCY_STATES` as sorted lists
 (they are sets), the event each terminal state is announced with,
-`CREDENTIAL_TIERS`, each resource class's capacity units (the weights the
-global budget charges), every `ProviderState` member, the pool names
+`CREDENTIAL_TIERS`, each resource class's capacity units at the code
+DEFAULT sizes (`default_sizes()`, version 0: an admin may resize a class
+since contract requests 109-111 and the live weights are served by
+GET /v1/resource-classes, so a bundled console copy can only match the
+defaults, and is held to them), every `ProviderState` member, the pool names
 `pool_names_for` gives one sample task (the console parses the family off each
 name and spells the provider-and-tenant pool the same way), and the quota
 broker's sweep interval.
@@ -48,7 +51,7 @@ POOL_SAMPLE = {
 
 def build() -> dict[str, Any]:
     from swarm_common.models import CREDENTIAL_TIERS, EndCause, ProviderState, pool_names_for
-    from swarm_common.profiles import RESOURCE_CLASSES
+    from swarm_common.profiles import default_sizes
     from swarm_common.states import (
         CONCURRENCY_STATES,
         TERMINAL_STATES,
@@ -68,7 +71,7 @@ def build() -> dict[str, Any]:
         "terminal_events": sorted(EventType[s.name].value for s in TERMINAL_STATES),
         "concurrency_states": sorted(s.value for s in CONCURRENCY_STATES),
         "credential_tiers": list(CREDENTIAL_TIERS),
-        "resource_class_units": {name: rc.units for name, rc in RESOURCE_CLASSES.items()},
+        "resource_class_units": {name: size.units for name, size in default_sizes().items()},
         "provider_state": [m.value for m in ProviderState],
         "pool_names": {**POOL_SAMPLE, "pools": list(pool_names_for(**POOL_SAMPLE))},
         "quota_sweep_interval_seconds": QUOTA_SWEEP_INTERVAL_SECONDS,
