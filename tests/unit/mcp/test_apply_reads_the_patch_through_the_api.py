@@ -1,3 +1,4 @@
+# source-text: fixture - reads back the .ts file a patch wrote into a throwaway git repository, to check what swarm_apply applied
 """`swarm_apply` reads a task's patch through swarm-api's artifact route (archived issue 2834).
 
 WHAT BROKE. `swarm_apply` downloaded `swarm-work.patch` straight from Cloud

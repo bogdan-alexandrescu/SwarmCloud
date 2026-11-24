@@ -315,11 +315,13 @@ tf-test: ## Native `terraform test` over terraform/ (mock provider, offline, no 
 ## Quality
 ## ---------------------------------------------------------------------------
 
-lint: ## shellcheck, doc links, terraform fmt/validate, tflint, kubernetes manifests
+lint: ## shellcheck, doc links, source-text tests, terraform fmt/validate, tflint, kubernetes manifests
 	@echo "==> shellcheck"
 	@shellcheck -x $(SCRIPTS)/*.sh $(SCRIPTS)/lib/*.sh
 	@echo "==> documentation links"
 	@$(SCRIPTS)/lib/check-doc-links.sh
+	@echo "==> source-text tests"
+	@python3 $(SCRIPTS)/check_source_text.py --root .
 	@echo "==> terraform fmt"
 	@# BOTH roots. `terraform fmt` takes one directory, and for a long time the
 	@# only one named here was terraform/ -- so tests/terraform/, the 87

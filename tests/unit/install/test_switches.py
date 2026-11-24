@@ -3,9 +3,6 @@ R8, §5.5; review findings 2 and 10; lesson 39)."""
 
 from __future__ import annotations
 
-import ast
-from pathlib import Path
-
 import pytest
 
 from swarm_install import tfvars
@@ -16,8 +13,6 @@ from swarm_install.steps.github_switches import HookStep, Pass3Step, Pass4Step
 
 from .test_state_store import FakeClock
 from .test_terraform_runner import FakeCtx, install_state
-
-PACKAGE = Path(github_switches.__file__).resolve().parent.parent
 
 
 class SecretMetadata:
@@ -222,20 +217,6 @@ def test_hook_raises_other_refusals(status, body) -> None:
     assert hook.check(ctx).status == "unmet"
 
 
-def _only_the_desktop_secret_is_read(path: Path) -> None:
-    """preflight.py defines `access_secret_version`; edge.py calls it, and
-    every call names `DESKTOP_SECRET`, never an App secret."""
-    tree = ast.parse(path.read_text())
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str) and ":access" in node.value:
-            assert path.name == "preflight.py", f"{path.name} reads a secret's value"
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
-                and "access_secret" in node.func.attr:
-            names = {n.id for a in node.args for n in ast.walk(a) if isinstance(n, ast.Name)}
-            assert "DESKTOP_SECRET" in names, f"{path.name} reads a secret other than the Desktop client's"
-            assert not names & {"APP_SECRETS"}, f"{path.name} reads an App secret"
-
-
 def test_engine_never_reads_an_app_secret() -> None:
     gcp = SecretMetadata(set(tfvars.APP_SECRETS))
     ctx = FakeCtx()
@@ -245,15 +226,5 @@ def test_engine_never_reads_an_app_secret() -> None:
 
     # No module of the installer names a secret-value read (`:access`,
     # `access_secret_version`) but the one the Desktop client's secret needs
-    # (archived issue 2964): preflight's reader, called only with DESKTOP_SECRET.
-    for path in PACKAGE.rglob("*.py"):
-        if path.name in {"preflight.py", "edge.py"}:
-            _only_the_desktop_secret_is_read(path)
-            continue
-        tree = ast.parse(path.read_text())
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                assert ":access" not in node.value, f"{path.name} reads a secret's value"
-            if isinstance(node, (ast.Attribute, ast.Name)):
-                name = node.attr if isinstance(node, ast.Attribute) else node.id
-                assert "access_secret" not in name, f"{path.name} reads a secret's value"
+    # (archived issue 2964): the rule install-reads-only-the-desktop-secret in
+    # scripts/source_text_rules/services.py.

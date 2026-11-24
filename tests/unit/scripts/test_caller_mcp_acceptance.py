@@ -106,9 +106,9 @@ def test_the_suite_mints_its_own_token_and_impersonates_nobody(tmp_path: Path) -
     # A runtime identity that is not the invoker gets no credential.
     other = "swarm-accept@example-project.iam.gserviceaccount.com"
     assert mcp.token(base, other, mcp.fake_google(AUD, INVOKER)) is False
-    src = JUDGE_PATH.read_text()
-    assert "generateIdToken" not in src and "serviceAccountOpenIdTokenCreator" not in src.split(
-        "def mint_id_token", 1)[1]
+    # That the judge's source names no generateIdToken, and no
+    # serviceAccountOpenIdTokenCreator from mint_id_token on, is the lint rule
+    # `caller-mcp-judge-impersonates-nobody` (scripts/source_text_rules/scripts_tree.py).
 
 
 def test_a_call_without_the_token_passes_only_on_cloud_runs_403(tmp_path: Path) -> None:

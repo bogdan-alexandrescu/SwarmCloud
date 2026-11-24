@@ -1,3 +1,4 @@
+# source-text: contract - the unit shard plan must cover every test file pytest collects under tests/unit, sized by unit_shards.py's SHARD_TARGET_SECONDS and MAX_SHARDS
 """The unit suite and the vitest suite run in shards, under the check names they had.
 
 OWNER REQUEST, 2026-10-07. With strict up-to-date merging, one pull request

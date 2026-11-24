@@ -1,3 +1,4 @@
+# source-text: contract - every argument server._call reads in a tool's branch must be declared in that tool's server.TOOLS input schema
 """The bridge half of running a Claude Code workflow step in SwarmCloud.
 
 Owner decision, 2026-09-26: build both modes -- a single step dispatched by the

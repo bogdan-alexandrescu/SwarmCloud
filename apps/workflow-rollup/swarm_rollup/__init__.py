@@ -551,6 +551,25 @@ def settled_unpin(state: Any, stored: Mapping[str, Any] | None = None) -> dict[s
     return {GRAPH_PINS: {}, GRAPH_PIN_REPOS: []}
 
 
+def settled_unpause(state: Any, stored: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The fields that lift a workflow's pause when `state` settles it.
+
+    A pause on a finished workflow can never be resumed (resume refuses a
+    terminal workflow), so every writer of a terminal `workflows/{id}.state`
+    adds this to the same write, beside `settled_unpin`. Empty while `state`
+    is live, and when `stored` (if the caller has it) is not paused.
+    """
+    try:
+        terminal = TaskState(getattr(state, "value", state)) in TERMINAL_STATES
+    except ValueError:
+        return {}
+    if not terminal:
+        return {}
+    if stored is not None and stored.get("paused") is not True:
+        return {}
+    return {"paused": False, "paused_at": None}
+
+
 # --------------------------------------------------------------------------
 # Writing the derived state where a step's state is written (archived issue 2838)
 # --------------------------------------------------------------------------
@@ -656,4 +675,5 @@ def derived_state_write(
     if rollup.state == data.get("state"):
         return None
     return ref, {"state": TaskState(rollup.state).value, "updated_at": now,
-                 **settled_unpin(rollup.state, data)}
+                 **settled_unpin(rollup.state, data),
+                 **settled_unpause(rollup.state, data)}

@@ -1,3 +1,4 @@
+# source-text: contract - each node id in tests/flaky.txt must name a test (and class) the listed file still defines, read by ast.parse
 """The flaky-test quarantine: tests/flaky.txt, read and applied to collection.
 
 WHY THIS EXISTS. Owner decision, 2026-10-14: "Fix the known flakes and

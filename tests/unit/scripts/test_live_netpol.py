@@ -1,3 +1,4 @@
+# source-text: fixture - reads only rendered manifests, fake tool logs and a copied relay.yaml from a scratch cluster dir; the checker selects it through a variable name that elsewhere in the file holds a .py path (render.py and network_parity.py, imported, not read)
 """The live browser's network path: only TCP 8080 (plain ws), only to the relay, only from
 a live-browser pod (docs/design/live-browser.md §8.3; lane LB-L6, part of archived issue 1030).
 

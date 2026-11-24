@@ -1,3 +1,4 @@
+# source-text: fixture - read_bytes copies the graph shards the indexer writer wrote for a synthetic index under tmp_path; the detector follows a `path` name that holds a synthetic .py name
 """Search, communities and territory over a promoted graph (docs/design/knowledge-graph.md §6, lane KG3).
 
 What is held here:

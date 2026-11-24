@@ -1,3 +1,4 @@
+# source-text: contract - plugin_intake/main.py must read the PLUGINS_BUCKET env the plugins.tf job sets; the grant checks parse Terraform, not source
 """The plugin intake job reaches the bucket through the API, with get and create only.
 
 Live QA finding, 10 November 2026: every plugin install stayed "Installing..."
@@ -88,7 +89,8 @@ def test_the_program_reads_the_bucket_the_job_is_given_and_no_mount(job):
     reads = _env_reads(INTAKE / "main.py")
     assert re.search(r'env\s*\{\s*name\s*=\s*"PLUGINS_BUCKET"\s*value\s*=\s*google_storage_bucket\.plugins\.name\s*\}', job)
     assert "PLUGINS_BUCKET" in reads
-    assert "SWARM_INTAKE_MOUNT" not in reads
+    # And no `.get("SWARM_INTAKE_MOUNT")`: the rule plugin-intake-reads-no-mount in
+    # scripts/source_text_rules/services.py.
 
 
 def test_the_job_mounts_nothing(job):

@@ -1,3 +1,4 @@
+# source-text: fixture - appends a line to a scratch copy of select_unit_tests.py so the edge cache must notice the selector changed
 """related-tests' import-edge cache (EdgeCache) reads a corrupt file as no
 cache, writes a repaired entry back, never serves an edge across a change of
 the selector's rules, and keeps its default directory private to the user.

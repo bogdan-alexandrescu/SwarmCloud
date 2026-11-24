@@ -301,8 +301,5 @@ def test_debug_reads_only_the_api():
     api = FakeTaskApi()
     _debug(api)
     assert set(api.calls) <= {"task", "attempts", "events", "logs"}
-    import inspect
-
-    source = inspect.getsource(sc.debug_report)
-    for forbidden in ("storage.googleapis", "logging.googleapis", "gs://", "download("):
-        assert forbidden not in source
+    # And `sc.debug_report` names no GCS or Cloud Logging route: the rule
+    # sc-debug-report-reads-only-the-api in scripts/source_text_rules/services.py.

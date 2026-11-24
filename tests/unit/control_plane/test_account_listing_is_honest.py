@@ -1,3 +1,4 @@
+# source-text: contract - api.ts, types.ts, Accounts.tsx and Overview.tsx must read the served skipped-account verdict, a TypeScript shape the Python suite cannot run
 """The account listing must not describe a pool that is not there.
 
 THE COMPLAINT THIS ANSWERS: "account quotas are not even accurate in the UI."

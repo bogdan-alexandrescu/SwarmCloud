@@ -598,7 +598,12 @@ each step started and ended.
      with Enter.
   2. At the admin-role question that ends
      `Type ASSIGN to approve, or delegation for the fallback:`, type `ASSIGN`.
-  3. If stage 0 deferred the Directory scopes, a consent page opens; sign in.
+  3. If stage 0 deferred the Directory scopes, no consent page opens: the
+     Desktop client is made only in the console's **Sign-in client** step,
+     which stage 13 waits for. The groups are created with stage 0's
+     sign-in. After `ASSIGN`, `https://admin.google.com/ac/roles` opens:
+     assign Groups Reader to swarm-api's account there
+     (`SI/steps/identity.py`, `GroupsReaderRoleStep`).
 - **Cannot be undone:** the Workspace groups and the org-wide Groups Reader
   assignment (or delegation) stay after `swarm uninstall` (`workspace-groups`;
   section 2.4).

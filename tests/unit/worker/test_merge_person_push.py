@@ -1,3 +1,4 @@
+# source-text: contract - Worker._worker_commit_message must build its trailer line from merge.WORKER_COMMIT_LINE
 """A person's push to a merge step's pull request supersedes the step (archived issue 2505).
 
 the owner's decision, 2026-10-27 (issue triage, epic archived issue 2525): "A distinct

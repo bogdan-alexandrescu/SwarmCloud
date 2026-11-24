@@ -9,9 +9,7 @@ crashed server cannot keep a GPU running.
 
 from __future__ import annotations
 
-import ast
 import json
-from pathlib import Path
 
 import pytest
 
@@ -77,17 +75,7 @@ def test_the_server_refreshes_well_inside_the_watchdogs_freshness():
     assert activity.REFRESH_SECONDS * 3 <= w.FRESH_SECONDS
 
 
-def test_the_watchdog_needs_only_the_hosts_python_and_standard_library():
-    """It runs with the VM's Python 3.10 when the container cannot: no import
-    from the package or from anything outside the standard library."""
-    source = Path(w.__file__).read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    imported = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported |= {a.name.split(".")[0] for a in node.names}
-        elif isinstance(node, ast.ImportFrom):
-            assert node.level == 0, "a relative import would need the package on the host"
-            imported.add((node.module or "").split(".")[0])
-    assert imported <= {"__future__", "json", "logging", "subprocess", "sys", "time", "pathlib"}
-    ast.parse(source, feature_version=(3, 10))
+# The watchdog runs with the VM's Python 3.10 when the container cannot: no
+# import from the package or from anything outside the standard library, and
+# 3.10 syntax: the rule speech-watchdog-stdlib-only in
+# scripts/source_text_rules/services.py.

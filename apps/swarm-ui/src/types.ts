@@ -3011,10 +3011,10 @@ export type ParkReason =
   | 'SCHEDULED_RETRY' | 'DEPENDENCY_INCOMPLETE' | 'MANUAL_PAUSE'
   | 'BUDGET_EXHAUSTED' | 'CREDENTIAL_MISSING' | 'CHILDREN_INCOMPLETE'
   | 'CI_PENDING' | 'HUMAN_REQUIRED' | 'AWAITING_INPUT'
-  | 'FIX_ROUNDS_RUNNING' | 'PLATFORM_REFUSED'
+  | 'FIX_ROUNDS_RUNNING' | 'PLATFORM_REFUSED' | 'WORKFLOW_PAUSED'
 
 /**
- * The same fourteen as a value, so a test can compare the list against
+ * The same fifteen as a value, so a test can compare the list against
  * `swarm_common.states.ParkReason` and the three sets below can be checked for
  * covering it. A union type erases at build time and can be checked against
  * nothing.
@@ -3040,6 +3040,7 @@ export const PARK_REASONS = [
   'AWAITING_INPUT',
   'FIX_ROUNDS_RUNNING',
   'PLATFORM_REFUSED',
+  'WORKFLOW_PAUSED',
 ] as const
 
 /**
@@ -3065,6 +3066,8 @@ export const PARK_NEEDS_A_PERSON: ReadonlySet<string> = new Set<ParkReason>([
   'CREDENTIAL_MISSING',
   'BUDGET_EXHAUSTED',
   'MANUAL_PAUSE',
+  // A step of a paused workflow: only a resume by a person lifts it.
+  'WORKFLOW_PAUSED',
   // A live-browser hand-off nobody answered within the hold (contract request
   // 68). Only a person promotes it, from the console, when they are ready to
   // sign in; no sweep or timer does, and past a day it is dead-lettered.
@@ -3165,6 +3168,7 @@ export const REASON_COPY: Readonly<Record<string, string>> = {
   AWAITING_INPUT: 'A workflow step waits for a member of its workspace to answer. Holds no capacity; it ends on the first answer or at its declared expiry.',
   FIX_ROUNDS_RUNNING: 'A fix loop waits while its review and fix rounds run as steps of their own. Holds no capacity.',
   PLATFORM_REFUSED: 'The cluster refused to start it (its job quota is full, or a policy said no). Holds no capacity; retried automatically, at most ten minutes apart.',
+  WORKFLOW_PAUSED: 'The workflow is paused. This step waits, holding no capacity, until a person resumes the workflow.',
   POOL_LIMIT_UNSET: 'This pool has no limit set, so it admits nothing. Nobody set it to 0: somebody has to set a limit.',
 }
 
@@ -3809,6 +3813,10 @@ export interface Workflow {
   submitted_by: string | null
   /** The submitter's display name (`people.add_names`); null when none is set. */
   submitted_by_name?: string | null
+  /** True while a person has paused the workflow (docs/design/workflow-pause.md). */
+  paused?: boolean
+  paused_at?: string | null
+  paused_by?: string | null
   priority: number
   on_step_failure: string
   cancel_requested: boolean
@@ -5795,6 +5803,15 @@ export interface PlanLintRecord {
   replan_error: string | null
 }
 
+/** `issueruns.served_readiness`: the readiness pre-pass (owner, 2026-11-24). */
+export interface RunReadiness {
+  task_id: string | null
+  /** Null while it runs. `unreadable`: no valid answer, so the planner ran. */
+  outcome: 'ready' | 'not_ready' | 'unreadable' | null
+  reason: string | null
+  cost_usd: number | null
+}
+
 /** `IssueRun.to_api()`. */
 export interface IssueRun {
   id: string
@@ -5815,6 +5832,8 @@ export interface IssueRun {
    *  person after a re-plan that failed too, the findings (code and sentence).
    *  Null on a run whose plan was never refused. */
   plan_lint?: PlanLintRecord | null
+  /** `issueruns.served_readiness`; null on a run that started its planner at once. */
+  readiness?: RunReadiness | null
   /** `issueruns.plan_shape`: `8 steps in 4 stages (1 → 3 → 3 → 1), then review and fix`; null without a plan. */
   plan_shape?: string | null
   /** Null until approval creates the workflow. */

@@ -178,7 +178,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.states import TaskState
 
-from . import approvals, refusals, reviewgate, stepclass
+from . import approvals, refusals, reviewgate, stepceiling, stepclass
 from .cirerun import (
     RERUN_REFUSALS_MAX,
     RERUN_SETTLE_SECONDS,
@@ -1467,7 +1467,10 @@ def ci_fix_continuation(
         "steps": [{
             "step_id": CI_FIX_STEP,
             "runner_profile": STEP_PROFILE,
-            "input": {"prompt": prompt, **step_input},
+            # The CI-fix role's session limits (contract request 158), unless
+            # the step input carries its own.
+            "input": stepceiling.stamp(stepclass.ROLE_CI_FIX, STEP_PROFILE,
+                                       {"prompt": prompt, **step_input}),
             **({"resource_class": resource_class} if resource_class else {}),
             **choice.fields(),
             "metadata": choice.metadata(),

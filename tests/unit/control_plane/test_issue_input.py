@@ -63,8 +63,11 @@ DOORS = {"POST /v1/tasks": _task, "POST /v1/tasks/batch": _batch, "a workflow st
 def test_the_cli_agent_profiles_declare_issue_and_nothing_else(name):
     declared = RUNNER_PROFILES[name].inputs
     # `mcp_servers` is contract request 88's (MCP-CONTRACT), and `pull_request`
-    # the owner's pick on archived pull request 3470, not this file's.
-    assert declared is not None and set(declared) == {"issue", "mcp_servers", "pull_request"}, (
+    # the owner's pick on archived pull request 3470, and `context_ceiling`
+    # contract request 158's (accepted 2026-11-24, claude-code only), not this file's.
+    ceiling = {"context_ceiling"} if name == "claude-code" else set()
+    assert declared is not None and set(declared) == {"issue", "mcp_servers",
+                                                      "pull_request"} | ceiling, (
         declared
     )
     spec = declared["issue"]

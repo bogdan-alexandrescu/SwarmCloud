@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# source-text: fixture - reads only a run's saved evidence (secrets, token and log JSON) by path; the checker selects it through a variable name that elsewhere in the file holds a .py path (the echo server's server.py, imported, not read)
 """A task's agent queries its caller's registered MCP server: archived issue 1433's four checks, on a deployed environment.
 
 docs/design/registered-mcp-servers.md §6, lanes MCP-ACCEPT and MCP-ACCEPT-B,

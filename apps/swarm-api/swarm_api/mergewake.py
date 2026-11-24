@@ -423,7 +423,7 @@ from .redaction import redact
 from .repositories import parse_repository
 from .rollup import SKIPPED_SUMMARY_KEY, derived_state_write
 from .schemas import WorkflowCreate
-from . import sessiontag, stepclass
+from . import sessiontag, stepceiling, stepclass
 from .validation import (
     CONFLICT_ROUND_METADATA_KEY,
     DISPATCH_METADATA_KEY,
@@ -2137,7 +2137,9 @@ def conflict_fix_continuation(
         "steps": [{
             "step_id": CONFLICT_FIX_STEP,
             "runner_profile": STEP_PROFILE,
-            "input": {"prompt": prompt},
+            # The conflict-fix role's session limits (contract request 158).
+            "input": stepceiling.stamp(stepclass.ROLE_CONFLICT_FIX, STEP_PROFILE,
+                                       {"prompt": prompt}),
             **({"resource_class": resource_class} if resource_class else {}),
             **choice.fields(),
             "metadata": choice.metadata(),

@@ -1,3 +1,4 @@
+# source-text: contract - the plugins bucket CORS response_header list must equal the headers routes/plugin_catalogue.py signs
 """The console can PUT a plugin archive to its signed URL, and nothing else can.
 
 Config > Plugins > Add plugin > Upload asks swarm-api for an intake and a V4

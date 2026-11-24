@@ -1,3 +1,4 @@
+# source-text: contract - the comment beside compact.MAX_WAIT_SECONDS must name the MCP tool-call timeout it sits under
 """A `progress` follow wakes on a STATE change, and an unstarted step does not poll.
 
 MEASURED, 2026-10-01 (archived issue 448). The largest `sc:step` row of that evening made 20

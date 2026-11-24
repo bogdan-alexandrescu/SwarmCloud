@@ -226,6 +226,15 @@ class GuardedWrite:
 
 
 @dataclass(frozen=True)
+class WorkflowPause:
+    """A workflow's pause in force (contract request 160,
+    docs/design/workflow-pause.md section 4.1): when it started and who asked."""
+
+    paused_at: datetime | None
+    paused_by: str | None
+
+
+@dataclass(frozen=True)
 class ParentEnd:
     """One `depends_on` parent as the dependency rule reads it: its state, and
     -- for one that ended -- why (contract request 23).
@@ -592,6 +601,37 @@ class SchedulerStore:
         if value is None:
             return _ON_STEP_FAILURE_DEFAULT
         return str(value).strip().lower()
+
+    def workflow_pause(self, workflow_id: str, tenant_id: str) -> WorkflowPause | None:
+        """The workflow's pause, or None when it is not paused.
+
+        One point read of the workflow document, the pause's one authority
+        (docs/design/workflow-pause.md section 2.1); the caller caches it for
+        the drain, as `workflow_on_step_failure` is. Only a stored `paused`
+        that `is True` is a pause, so a workflow written before contract
+        request 160 is not paused. None as well for a missing document and for
+        one of ANOTHER TENANT than the step asking (invariant 9): the API
+        never writes either, so both mean a corrupt or forged task, and a
+        pause read across tenants must not hold this tenant's work.
+        """
+        snap = self._db.collection(WORKFLOWS).document(workflow_id).get()
+        if not snap.exists:
+            return None
+        data = snap.to_dict() or {}
+        if data.get("tenant_id") != tenant_id:
+            log.warning(
+                "workflow %s belongs to tenant %r, not %r; its pause is not applied to "
+                "that tenant's step", workflow_id, data.get("tenant_id"), tenant_id,
+            )
+            return None
+        if data.get("paused") is not True:
+            return None
+        try:
+            paused_at = as_datetime(data.get("paused_at"))
+        except (TypeError, ValueError):
+            paused_at = None
+        by = data.get("paused_by")
+        return WorkflowPause(paused_at=paused_at, paused_by=str(by) if by else None)
 
     def tasks_in_state(self, state: TaskState, limit: int) -> list[Task]:
         """Every tenant's tasks in one state, up to `limit`. Equality filter only.

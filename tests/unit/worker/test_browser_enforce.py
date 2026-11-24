@@ -1,3 +1,4 @@
+# source-text: contract - the browser image's selftest.py must try every launch path and the --cdp-endpoint flag the runner passes
 """BROWSER-ENFORCE (owner decisions 2026-10-13; part of archived issue 1030).
 
 task_7cda0d5335f049b4b442: on `claude-code-browser` the agent launched its own

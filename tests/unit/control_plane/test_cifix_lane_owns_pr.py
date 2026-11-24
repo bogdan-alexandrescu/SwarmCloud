@@ -308,6 +308,9 @@ def test_the_issue_runs_own_rounds_are_not_gated(fix_client, db):
     # The test's profile, which declares no `issue` input; the metadata is the run's own.
     payload["steps"][0]["runner_profile"] = "mock"
     payload["steps"][0]["input"].pop("issue")
+    # Nor the CI-fix role's session limits (contract request 158), which only
+    # the claude-code runner's profiles declare.
+    payload["steps"][0]["input"].pop("context_ceiling")
     assert "issue_run" in payload["metadata"] and cifix.CI_FIX_METADATA_FIELD not in payload["metadata"]
     # Inside the issue-run code's exemption, as `issueci` submits it:
     # `metadata.issue_run` is reserved (the owner, 2026-11-04).

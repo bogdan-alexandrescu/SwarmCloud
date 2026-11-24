@@ -1,3 +1,4 @@
+# source-text: fixture - the repository's tests/unit test_*.py files are the input to the selector's doc-reader rule checked here; the env dumps it reads are the script's own output
 """`scripts/changed-guards.sh` picks the guard tests a diff can break (archived issue 642).
 
 25% of lane PRs were red on their first CI run, mostly on repo-wide guard
