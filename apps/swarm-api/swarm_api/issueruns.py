@@ -773,7 +773,7 @@ _DIAGRAM_STATEMENT = re.compile(
 _DIAGRAM_STATEMENTS = re.compile(r"[;{}]")
 _DIAGRAM_LINES = re.compile(r"\r\n|\r|\n")
 #: `#name;`, Mermaid's entity form. Decoded before the tokens are looked for.
-_DIAGRAM_ENTITY = re.compile(r"#(x?[0-9a-z]+);", re.IGNORECASE)
+_DIAGRAM_ENTITY = re.compile(r"&?#(x?[0-9a-z]+);", re.IGNORECASE)
 _DIAGRAM_QUOTED = re.compile(r'"[^"\n]*"')
 _FLOW_TEXT_EDGE = re.compile(
     r"(?<![-=.])(?:--|==|-\.)\s+[^-=.<>|&\[\](){}\n]+?\s+(?:--|==|\.-)(?=[->=xo.])")
@@ -921,7 +921,7 @@ class DiagramExplains(_PlanModel):
 class PlanDiagram(_PlanModel):
     """One diagram of a plan (§6.2): Mermaid text, never an uploaded image."""
 
-    diagram_id: str = Field(max_length=40, pattern=r"^d-[a-z0-9][a-z0-9-]*\Z")
+    diagram_id: str = Field(max_length=40, pattern=r"^d-[a-z0-9][a-z0-9-]*$")
     kind: DiagramKind
     title: str = Field(min_length=1, max_length=120, pattern=r"^[^\x00-\x1f\x7f]+$")
     #: The one language, named so that a second can be added.
@@ -6500,7 +6500,7 @@ def parse_chat_answer(content: str, anchor: Mapping[str, Any],
     cannot be kept."""
     try:
         data = json.loads(content)
-    except ValueError:
+    except (ValueError, RecursionError):
         raise InvalidPlan(f"{CHAT_ANSWER_FILE} is not JSON") from None
     if not isinstance(data, Mapping):
         raise InvalidPlan(f"{CHAT_ANSWER_FILE} is not a JSON object")

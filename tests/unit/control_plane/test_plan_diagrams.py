@@ -767,6 +767,7 @@ def test_a_diagram_answer_changes_no_digest(client, db, objects):
      "SUCCEEDED", "line 3"),
     ({"text": "nothing to draw", "diagrams": []}, "SUCCEEDED", "no diagram"),
     ("not json", "SUCCEEDED", "JSON"),
+    ("[" * 20_000, "SUCCEEDED", "JSON"),
     (None, "SUCCEEDED", "chat-answer.json"),
     (None, "FAILED", "FAILED"),
     (None, "CANCELLED", "cancelled"),
@@ -911,6 +912,8 @@ def test_the_digest_names_one_of_the_runs_revisions(client, db, objects):
     assert edited.status_code == 200, edited.text
     older = _asked(client, run)  # the first revision's digest
     assert older["on_revision"] == 1 and older["on_digest"] == run["plan_digest"]
+    # One ask in flight per run: the first is answered before the next.
+    _finish(db, objects, older["task_id"], {"text": "x", "diagrams": [diagram()]})
     unknown = _ask(client, run, anchor={"part": "step", "ref": "nope"})
     assert unknown.status_code == 422 and _code(unknown) == "anchor_unknown"
 
@@ -934,7 +937,7 @@ def test_an_ask_that_could_not_be_submitted_is_not_counted(client, db, objects, 
     run = _planned_with(client, db, objects)
 
     def refuse(*_args, **_kwargs):
-        raise RateLimited("the day's budget is spent")
+        raise RateLimited("the day's budget is spent", retry_after_seconds=1.0)
 
     monkeypatch.setattr(api_context.submissions, "submit_tasks", refuse)
     assert _ask(client, run).status_code == 429
@@ -995,7 +998,7 @@ def test_add_diagram_is_refused_plan_changed_on_a_stale_digest(client, db, objec
 def test_add_diagram_is_refused_past_the_cap_of_four(client, db, objects):
     four = {**PLAN, "diagrams": [diagram(f"d-{i}") for i in range(4)]}
     run = _planned_with(client, db, objects, four)
-    entry = _answered(client, db, objects, run)
+    entry = _answered(client, db, objects, run, drawn=diagram("d-new", title="Another"))
     response = _add(client, run, entry["entry_id"])
     assert response.status_code == 422 and _code(response) == "diagrams_cap"
     assert _stored(db, run["id"])["plan_revision"] == 1
@@ -1005,7 +1008,7 @@ def test_the_cap_of_four_holds_with_the_refusal_switched_off(client, db, objects
     monkeypatch.setenv(refusals.env_name("diagrams_cap"), "off")
     four = {**PLAN, "diagrams": [diagram(f"d-{i}") for i in range(4)]}
     run = _planned_with(client, db, objects, four)
-    entry = _answered(client, db, objects, run)
+    entry = _answered(client, db, objects, run, drawn=diagram("d-new", title="Another"))
     response = _add(client, run, entry["entry_id"])
     assert response.status_code == 422 and _code(response) == "invalid_plan"
 

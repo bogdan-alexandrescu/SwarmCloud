@@ -159,6 +159,7 @@ from ..repositories import (
     workflow_files_of,
 )
 from ..plancontext import read_plan_context
+from ..redaction import redact_detail
 from ..reviewcontext import read_review_context
 from ..specsigning import SpecSigningUnavailable
 from ..schemas import PlanApprove, PlanEdit, PlanReject, RunCreate, StrictModel
@@ -2768,9 +2769,9 @@ class DiagramSource(StrictModel):
     one chat turn, of this run. Never a source text: only what an agent drew,
     and the API checked, is added this way."""
 
-    entry_id: str | None = Field(default=None, max_length=64, pattern=r"^pth_[0-9a-z_]+\Z")
-    chat_turn_id: str | None = Field(default=None, max_length=64, pattern=r"^pct_[0-9a-z_]+\Z")
-    diagram_id: str | None = Field(default=None, max_length=40, pattern=r"^d-[a-z0-9-]+\Z")
+    entry_id: str | None = Field(default=None, max_length=64, pattern=r"^pth_[0-9a-z_]+$")
+    chat_turn_id: str | None = Field(default=None, max_length=64, pattern=r"^pct_[0-9a-z_]+$")
+    diagram_id: str | None = Field(default=None, max_length=40, pattern=r"^d-[a-z0-9-]+$")
 
     @model_validator(mode="after")
     def _names_one(self) -> "DiagramSource":
