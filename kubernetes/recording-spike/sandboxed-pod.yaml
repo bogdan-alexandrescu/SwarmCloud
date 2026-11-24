@@ -1,0 +1,180 @@
+# The recording-runner spike's SANDBOXED pod (docs/design/recording-runner.md
+# §5.2 option C, the owner's decision of 2026-11-24; runbook:
+# docs/runbooks/recording-runner-spike.md).
+#
+# A template, not something to `kubectl apply` by hand:
+# scripts/recording-runner-spike.sh fills every double-underscore placeholder
+# from validated values, refuses to render one it missed, creates this pod only
+# after a typed confirmation, and deletes it (and its disk claim) only by the
+# run label below.
+#
+# WHAT IS THE SAME AS EVERY AGENT POD (apps/scheduler/scheduler/dispatch.py,
+# POD_SECURITY_CONTEXT and CONTAINER_SECURITY_CONTEXT): the pod-level security
+# context field for field; no mounted API token; no privilege; no privilege
+# escalation; a read-only root filesystem; every capability dropped first;
+# seccomp RuntimeDefault; no Spot (no toleration, no node selector: the
+# platform's swarm-worker-pod-constraints policy refuses both); request equal
+# to limit for CPU, memory and ephemeral storage. The pod carries
+# `app.kubernetes.io/part-of: swarm`, so it lands under the platform's own
+# admission policies (kubernetes/policies/pod-security.yaml) exactly as an
+# agent pod does, and no label any NetworkPolicy keys on, so the tenant
+# namespace's namespace-wide policies (swarm-default-deny,
+# swarm-deny-cross-tenant-ingress, swarm-allow-worker-egress) are all that
+# applies to it, as to a worker.
+#
+# WHAT THE DESIGN SAYS THE SANDBOX NEEDS, AND NOTHING ELSE (§5.2 C): the
+# runtime class `gvisor`; the daemon container runs as root, which exists only
+# inside the sandbox's user-space kernel; it adds back the capabilities the
+# daemon needs (below); Docker's image store is a per-pod disk claim (§5.3).
+# Whether the cluster ADMITS these three differences in a tenant namespace is
+# the spike's first check, so they are written here plainly rather than
+# softened to something that would be admitted and prove nothing.
+#
+# Shape (the owner, 2026-11-24): a Guaranteed pod, CPU request == limit == 16,
+# memory request == limit == 64Gi.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: recording-spike-__RUN_ID__-sandboxed
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-spike
+    swarm-tenant: __TENANT_ID__
+    swarm-spike: recording-runner
+    swarm-spike-run: __RUN_ID__
+    swarm-spike-arm: sandboxed
+    app.kubernetes.io/part-of: swarm
+    app.kubernetes.io/component: recording-spike
+  annotations:
+    # As every worker pod: a scale-down must not evict a measurement.
+    cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+spec:
+  # THE ONE RUNTIME DIFFERENCE from the control pod.
+  runtimeClassName: gvisor
+  restartPolicy: Never
+  # A backstop for a run nobody cleaned up: the pod ends after four hours. Its
+  # claim is deleted with the pod object, not with the pod's end, so the
+  # runbook's rollback still deletes both by the run label.
+  activeDeadlineSeconds: 14400
+  # The namespace's `default` account, disarmed by
+  # kubernetes/service-accounts/worker-serviceaccount.yaml and bound to no
+  # Google account: the spike needs no Google identity, so it gets none.
+  serviceAccountName: default
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: spike
+      image: __DAEMON_IMAGE__
+      # The design's shape: the worker starts `dockerd` as its child, the
+      # socket on a pod-local emptyDir. Here a shell stands in for the worker,
+      # so a daemon that fails to start leaves the pod up for the workload arm
+      # and its log readable at /run/dockerd.log.
+      command:
+        - sh
+        - -c
+        - >-
+          dockerd --host=unix:///run/docker.sock --pidfile=/run/docker.pid
+          --exec-root=/run/docker --data-root=/var/lib/docker
+          >/run/dockerd.log 2>&1 &
+          exec sleep 14400
+      env:
+        - name: DOCKER_HOST
+          value: unix:///run/docker.sock
+        - name: HOME
+          value: /tmp
+        - name: SPIKE_WORK_DIR
+          value: /work
+      resources:
+        requests:
+          cpu: "16"
+          memory: 64Gi
+          ephemeral-storage: 10Gi
+        limits:
+          cpu: "16"
+          memory: 64Gi
+          ephemeral-storage: 10Gi
+      securityContext:
+        allowPrivilegeEscalation: false
+        privileged: false
+        readOnlyRootFilesystem: true
+        # The sandbox's root (§5.2 C): uid 0 inside gVisor's user-space kernel,
+        # one unprivileged sandbox process to the node.
+        runAsNonRoot: false
+        runAsUser: 0
+        runAsGroup: 0
+        capabilities:
+          drop: ["ALL"]
+          # Docker's default container set, which the inner containers can only
+          # be given if the daemon holds it, plus the daemon's own two:
+          # SYS_ADMIN (mounts and namespaces for the image store and runc) and
+          # NET_ADMIN (the bridge, veth pairs and its packet filter).
+          add:
+            - AUDIT_WRITE
+            - CHOWN
+            - DAC_OVERRIDE
+            - FOWNER
+            - FSETID
+            - KILL
+            - MKNOD
+            - NET_BIND_SERVICE
+            - NET_RAW
+            - SETFCAP
+            - SETGID
+            - SETPCAP
+            - SETUID
+            - SYS_CHROOT
+            - SYS_ADMIN
+            - NET_ADMIN
+        seccompProfile:
+          type: RuntimeDefault
+      volumeMounts:
+        - name: image-store
+          mountPath: /var/lib/docker
+        # The socket, pid file and exec root, all on the pod-local emptyDir
+        # (§5.2 C), so the read-only root filesystem stays read-only.
+        - name: run
+          mountPath: /run
+        - name: tmp
+          mountPath: /tmp
+        - name: work
+          mountPath: /work
+  volumes:
+    # §5.3: Docker's image store on a per-pod disk claim, created with the pod
+    # in this namespace and deleted with it. Its size is fixed by the claim, so
+    # there is no request/limit gap, and it is not ephemeral-storage (Autopilot
+    # caps that at 10 GiB per pod, dispatch.py::AUTOPILOT_MAX_EPHEMERAL_GIB).
+    - name: image-store
+      ephemeral:
+        volumeClaimTemplate:
+          metadata:
+            labels:
+              managed-by: swarm-spike
+              swarm-tenant: __TENANT_ID__
+              swarm-spike: recording-runner
+              swarm-spike-run: __RUN_ID__
+          spec:
+            accessModes: ["ReadWriteOnce"]
+            storageClassName: __STORAGE_CLASS__
+            resources:
+              requests:
+                storage: 50Gi
+    - name: run
+      emptyDir:
+        sizeLimit: 1Gi
+    - name: tmp
+      emptyDir:
+        sizeLimit: 2Gi
+    # The worker's work/ is memory-backed tmpfs (docs/design/recording-runner.md
+    # §6, invariant 8), so the workload runs on one here too, charged to the
+    # 64 GiB: the comparison is the one a recording would see.
+    - name: work
+      emptyDir:
+        medium: Memory
+        sizeLimit: 8Gi
