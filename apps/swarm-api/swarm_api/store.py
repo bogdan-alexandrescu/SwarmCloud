@@ -82,7 +82,7 @@ from swarm_common.states import (
     can_transition,
 )
 from swarm_rollup import _TERMINAL_SEVERITY
-from swarm_rollup import settled_unpin
+from swarm_rollup import settled_unpause, settled_unpin
 
 from .codec import (
     as_datetime,
@@ -2329,7 +2329,8 @@ class Store:
         (
             self._db.collection(WORKFLOWS)
             .document(workflow_id)
-            .update({"state": state.value, "updated_at": self._now(), **settled_unpin(state)})
+            .update({"state": state.value, "updated_at": self._now(), **settled_unpin(state),
+                     **settled_unpause(state)})
         )
 
     def rerun_workflow_steps(
