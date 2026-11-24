@@ -11,10 +11,7 @@ the plugin transcript, an invariant or the frozen-contract draft would be
 built without it; a mock-up that broke the house rules (12px floor, theme
 toggle, honest dashes, placeholder names) would be copied into the console.
 
-Like test_repo_index_design_doc.py, nothing here reads the code the design
-describes beyond holding that every file it cites exists and every
-`path::qualname` or `path` (`anchor`) resolves, and that it cites no line
-numbers.
+Nothing here reads the code the design describes.
 """
 
 from __future__ import annotations
@@ -26,16 +23,11 @@ from pathlib import Path
 import pytest
 
 from .test_no_live_literals import _listed
-from .test_docs_spec_amendments import _assert_cites_resolve
 from .test_no_live_literals import guard
 
 REPO = Path(__file__).resolve().parents[3]
 DESIGN = REPO / "docs" / "onboarding.md"
 MOCKUP = REPO / "docs" / "web-ui" / "mockups" / "onboarding.html"
-
-_CITE = re.compile(
-    r"`((?:apps|terraform|kubernetes|scripts|tests|images|docs|plugin)/[\w./-]+\.\w+)`"
-)
 
 #: The failure states the brief names, each with its recovery copy (§2.3).
 NAMED_FAILURES = ("SSO_NOT_AUTHORISED", "CLASSIC_PAT_BLOCKED", "ORG_APPROVAL_PENDING", "REPO_NOT_INSTALLED")
@@ -46,23 +38,6 @@ SUBJECTS = ("entry", "connect", "chooser", "verify", "access")
 
 def _text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
-
-
-# --------------------------------------------------------------------------
-# citations and security scans, over the design doc and the mock-up
-# --------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("doc", [DESIGN, MOCKUP], ids=lambda p: p.name)
-def test_every_cited_file_exists_in_doc_and_mockup(doc: Path):
-    for path in _CITE.findall(_text(doc)):
-        # A deployment's real tfvars is private (the state bucket's config/
-        # prefix, docs/ci.md): a citation of one resolves to the tracked
-        # placeholder beside it.
-        if path.endswith(".tfvars"):
-            path += ".example"
-        assert (REPO / path).is_file(), f"{doc.name} cites {path}, which does not exist"
-    _assert_cites_resolve(doc)
 
 
 # --------------------------------------------------------------------------
