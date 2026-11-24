@@ -62,6 +62,9 @@ pytestmark = pytest.mark.usefixtures("fix_loop_off")
 
 MEMBER_SWITCH = refusals.env_name("role_member_required")
 THREAD_SWITCHES = (refusals.env_name("anchor_unknown"), refusals.env_name("plan_thread_closed"))
+#: The lane's own refusals ship off (refusals.SWITCHES); these tests run them on.
+REVISE_SWITCHES = tuple(refusals.env_name(code) for code in (
+    "edit_level_required", "nothing_to_revise", "replan_cap", "replan_running"))
 
 REVISED = {
     "summary": "Make the widget list sortable by name, stably.",
@@ -76,7 +79,7 @@ REVISED = {
 
 @pytest.fixture(autouse=True)
 def thread_refusals_on(monkeypatch):
-    for name in THREAD_SWITCHES:
+    for name in (*THREAD_SWITCHES, *REVISE_SWITCHES):
         monkeypatch.setenv(name, "on")
 
 
@@ -645,3 +648,22 @@ def test_a_replan_left_submitting_is_adopted_or_failed_by_a_later_read(client, d
     else:
         assert record["state"] == "failed"
         assert _revise(client, run["id"], {"plan_digest": run["plan_digest"]}).status_code == 202
+
+
+@pytest.mark.parametrize("code", ["edit_level_required", "nothing_to_revise", "replan_cap",
+                                  "replan_running"])
+def test_the_lanes_refusals_ship_off(code):
+    assert refusals.SWITCHES[code].default is False
+
+
+def test_with_replan_running_off_a_second_ask_cancels_the_first(client, db, objects,
+                                                                monkeypatch):
+    monkeypatch.setenv(refusals.env_name("replan_running"), "off")
+    run = _planned(client, db, objects)
+    _comment(client, run)
+    first = _asked(client, run)
+    second = _asked(client, run)
+    assert second["replan_id"] != first["replan_id"]
+    task = _task(db, first["task_id"])
+    assert task["state"] == "CANCELLED" or task.get("cancel_requested") is True
+    assert _stored(db, run["id"])["plan_replan"]["replan_id"] == second["replan_id"]

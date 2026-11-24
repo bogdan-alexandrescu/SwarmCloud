@@ -521,7 +521,11 @@ re-plan of a revision nobody is reading would answer the wrong plan); 409
 state when it is not `PLANNED`; 422 `nothing_to_revise` with no open comment;
 429 `replan_cap` past the per-run cap (§5.4); 403 `role_member_required` below
 the role floor and `edit_level_required` for a member who may comment but not
-edit (Q6). Who: the edit level. **Owner:
+edit (Q6). The four codes new with this route (`edit_level_required`,
+`nothing_to_revise`, `replan_cap`, `replan_running`) ship off behind
+`refusals.SWITCHES`, as every new refusal does; off, the request goes ahead,
+the digest still keeps an answer off a plan that moved, and a second re-plan
+cancels the one it replaces. Who: the edit level. **Owner:
 `issueruns.py`** (the prompt, the answer's validation, the revision) and
 **`routes/runs.py`** (the route, the submission through `submit_tasks`).
 

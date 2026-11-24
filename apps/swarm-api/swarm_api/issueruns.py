@@ -6232,9 +6232,10 @@ class IssueRuns:
                     detail={"plan_digest": current.plan_digest, "sent": digest[:128]})
             active = current.plan_replan or {}
             if active.get("state") in REPLAN_ACTIVE_STATES:
-                raise replan_running(current)
+                # Off (refusals.SWITCHES), the newer ask replaces the record.
+                refusals.refuse(replan_running(current))
             if current.plan_replans >= cap:
-                raise ReplanCap(current.plan_replans, cap)
+                refusals.refuse(ReplanCap(current.plan_replans, cap))
             return {
                 "plan_replan": {**record, "from_revision": current.plan_revision or 1,
                                 "caps": {"replans": cap, "used": current.plan_replans}},

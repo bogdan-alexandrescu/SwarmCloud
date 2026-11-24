@@ -2104,13 +2104,15 @@ def edit_plan(
         )
 
     if issueruns_module.replan_active(current):
-        raise issueruns_module.replan_running(current)
+        refusals.refuse(issueruns_module.replan_running(current))
 
     def edited(latest: IssueRun) -> dict:
         if issueruns_module.replan_active(latest):
             # §5.3: two writers making revision N+1 from N is the overwrite
             # the digest exists to stop; checked again in the transaction.
-            raise issueruns_module.replan_running(latest)
+            # Off, the edit goes ahead and the re-plan's answer, landing on a
+            # plan that moved, is the "not applied" entry.
+            refusals.refuse(issueruns_module.replan_running(latest))
         if planless and latest.plan_digest is not None:
             raise PlanChanged(
                 f"the plan of run {run_id!r} has changed since it was shown; read the run "
@@ -2270,11 +2272,11 @@ def _require_edit_level(ctx: AppContext, auth: AuthContext, tenant_id: str, run:
     needs (`may_decide.edit`); a member who may only comment is refused."""
     levels = run_may_decide(ctx, auth, tenant_id, run) or {}
     if levels.get("edit") is not True:
-        raise issueruns_module.EditLevelRequired(
+        refusals.refuse(issueruns_module.EditLevelRequired(
             f"you may comment on run {run.id!r}'s plan but not edit it, and a re-plan is an "
             "edit the planner makes; write a comment instead, which the next re-plan carries",
             detail={"may_decide": {"edit": levels.get("edit"), "comment": levels.get("comment")}},
-        )
+        ))
 
 
 @router.post("/{run_id}/plan:revise")
@@ -2327,17 +2329,22 @@ def revise_plan(
             detail={"plan_digest": run.plan_digest, "sent": body.plan_digest},
         )
     if issueruns_module.replan_active(run):
-        raise issueruns_module.replan_running(run)
+        refusals.refuse(issueruns_module.replan_running(run))
+        # Off: this ask replaces the one that runs, which is cancelled first
+        # so no agent is left running that nothing reads.
+        _cancel_replan(ctx, auth, tenant_id, run, why="superseded", by=auth.email)
+        run = runs.get(tenant_id, run_id)
     cap = _replan_caps(ctx)
     if run.plan_replans >= cap:
-        raise issueruns_module.ReplanCap(run.plan_replans, cap)
+        refusals.refuse(issueruns_module.ReplanCap(run.plan_replans, cap))
     comments = runs.open_comments(run, body.entries)
     if not comments:
-        raise issueruns_module.NothingToRevise(
+        # Off, the planner re-plans with an empty comments fence.
+        refusals.refuse(issueruns_module.NothingToRevise(
             f"run {run_id!r}'s plan has no open comment to send to the planner; comment on "
             "it first (plan:comment), then ask for changes",
             detail={"entries": []},
-        )
+        ))
     try:
         planner = ctx.store.get_task(tenant_id, run.planner_task_id, submitted_by=None)
     except NotFound:
