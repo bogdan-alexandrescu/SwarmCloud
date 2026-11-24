@@ -7,6 +7,9 @@
     POST /v1/runs/{run_id}/plan:approve   {"plan_digest"}  -> a new workflow
     POST /v1/runs/{run_id}/plan:edit      {"plan_digest", "plan"}
     POST /v1/runs/{run_id}/plan:reject    {"plan_digest"?, "reason"?}
+    POST /v1/runs/{run_id}/plan:revise    {"plan_digest", "entries"?} -> one re-plan agent
+                                          answering the open comments, or
+                                          {"cancel": "<replan_id>"} (plans-pipeline §5)
     POST /v1/runs/{run_id}:end            {"reason"}  the workspace's admin: an
                                           APPROVED run whose workflow was never
                                           stored ends FAILED (archived issue 3612)
@@ -2469,10 +2472,10 @@ def _adopt_replan(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
             .where(filter=FieldFilter(
                 f"metadata.{issueruns_module.REPLAN_METADATA_KEY}", "==", replan_id))
             .limit(1).stream())
-    found = [snap.to_dict() or {} for snap in rows]
-    found = [doc for doc in found if doc.get("tenant_id") == tenant_id]
+    found = [(snap.to_dict() or {}, snap.id) for snap in rows]
+    found = [(doc, sid) for doc, sid in found if doc.get("tenant_id") == tenant_id]
     if found:
-        task_id = str(found[0].get("task_id") or found[0].get("id") or "")
+        task_id = str(found[0][0].get("id") or found[0][1] or "")
         if task_id:
             return _runs(ctx).update_replan(tenant_id, run.id, replan_id, states={"submitting"},
                                             changes={"state": "running", "task_id": task_id})

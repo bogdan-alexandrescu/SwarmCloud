@@ -504,14 +504,24 @@ which returns a whole plan. §5 is the round trip; the route is:
 ```
 POST /v1/runs/{run_id}/plan:revise
 {"plan_digest": "sha256:…", "entries": ["pth_…", …] | null}   // null: every open comment on this revision
-→ 202 {"replan": {"replan_id", "task_id", "from_digest", "entries", "requested_by", "at"}}
+→ 202 {"replan": {"replan_id", "task_id", "from_digest", "entries", "requested_by", "at", "state", …}}
+POST /v1/runs/{run_id}/plan:revise
+{"cancel": "rpl_…"}
+→ 200 {"replan": {…, "state": "cancelling", "cancelled": "cancelled"}}
 ```
+
+The body has no other field: any other key (an image, a command, a resource,
+a profile, a model class) is 422, because the agent's shape is the run's
+planner's (invariant 10). The run keeps the latest re-plan as `plan_replan`
+and the count the cap reads as `plan_replans`.
 
 Refused: 409 `plan_changed` on a digest that is not the current one (a
 re-plan of a revision nobody is reading would answer the wrong plan); 409
 `replan_running` while one runs (one at a time per run); 409 with the run's
 state when it is not `PLANNED`; 422 `nothing_to_revise` with no open comment;
-429 `replan_cap` past the per-run cap (§5.4). Who: the edit level. **Owner:
+429 `replan_cap` past the per-run cap (§5.4); 403 `role_member_required` below
+the role floor and `edit_level_required` for a member who may comment but not
+edit (Q6). Who: the edit level. **Owner:
 `issueruns.py`** (the prompt, the answer's validation, the revision) and
 **`routes/runs.py`** (the route, the submission through `submit_tasks`).
 
@@ -746,11 +756,12 @@ the run's owner, the first prompt plus a delimited section as data) whose
 `PLANNING`, so it is not a revision of a plan a person is reading; a second
 failure holds the run `PLANNED` for a person.
 
-Left as designed here and not built: `POST plan:revise` and a person's request
-for changes, the plan thread and its answers, revision N+1 of a plan already
-`PLANNED`, §5.3's interplay with an open Approve, §5.4's cost record and the
-per-run cap of 5 (the automatic re-plan is capped at one, counted on
-`plan_lint.replans`, not in `plan_review_caps`).
+A person's request for changes (`POST plan:revise`, §3.5) is lane P4, built
+beside it as §5.1-§5.4 describe: revision N+1 of a plan already `PLANNED`, the
+answers in the plan thread, §5.3's interplay with an open Approve, §5.4's cost
+record and the per-run cap of 5. The two are counted apart: the automatic
+re-plan is capped at one, on `plan_lint.replans`; a person's on
+`plan_replans`, against `plan_review_caps.replans`.
 
 ### 5.2 What comes back
 
@@ -801,9 +812,9 @@ on revision N is `D:P2c`: revision N stays on screen, Approve leaves it, "Read
 revision N+1" is offered.
 
 **Approval expiry** (§4.7 of docs/schedules.md) counts from the newest
-revision, not from revision 1: `_planned_at` reads the last transition into
-`PLANNED`, and a revision is written as a `PLANNED → PLANNED` history entry,
-which `_planned_at` skips today. It changes to take the newest revision's `at`.
+revision, not from revision 1: a revision is written as a `PLANNED → PLANNED`
+history entry, and `_planned_at` takes the newest transition into `PLANNED`,
+that one included (built in P4; it skipped it before).
 A new revision is a new question; the reviewer gets the schedule's
 `approval_ttl_hours` to answer it.
 
