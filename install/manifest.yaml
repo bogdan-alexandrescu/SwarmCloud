@@ -3463,9 +3463,9 @@ entries:
   stage: 5
   provider: engine
   check: gcloud firestore fields list --database=${firestore_database} --project=$P | grep -i ttl
-  apply: 'grouped: terraform/modules/firestore/indexes.tf:626 reconciler_passes_ttl, :652 reconciler_wedged_executions_ttl, :674 outcome_days_unindexed, :687 events_ttl, :710 account_holds_ttl, :732 schedule_records_ttl; terraform/modules/firestore/workspace_secrets_ttl.tf:15 workspace_secret_release_ttl; terraform/infra/github_hooks.tf:186 github_deliveries_ttl'
+  apply: 'grouped: terraform/modules/firestore/indexes.tf:626 reconciler_passes_ttl, :652 reconciler_wedged_executions_ttl, :674 outcome_days_unindexed, :687 events_ttl, :710 account_holds_ttl, :732 schedule_records_ttl; terraform/modules/firestore/workspace_secrets_ttl.tf:15 workspace_secret_release_ttl; terraform/modules/firestore/indexes.tf:885 submission_keys_ttl; terraform/infra/github_hooks.tf:186 github_deliveries_ttl'
   verify: a document older than its TTL window disappears from the collection without a manual sweep
-  explain: TTL policies are how reconciler passes, wedged-execution records, account holds, schedule records, workspace-secret release grace, and GitHub webhook delivery dedup records are garbage-collected without a Cloud Run job.
+  explain: TTL policies are how reconciler passes, wedged-execution records, account holds, schedule records, workspace-secret release grace, stored idempotency keys, and GitHub webhook delivery dedup records are garbage-collected without a Cloud Run job.
   guards: null
   secret_entry: null
   depends_on:
@@ -3473,6 +3473,7 @@ entries:
   evidence:
   - terraform/modules/firestore/indexes.tf:626-733
   - terraform/modules/firestore/workspace_secrets_ttl.tf:15
+  - terraform/modules/firestore/indexes.tf:885
   - terraform/infra/github_hooks.tf:186
   step: infra.pass-1
   refs:
@@ -3484,6 +3485,7 @@ entries:
     - modules/firestore/google_firestore_field.account_holds_ttl
     - modules/firestore/google_firestore_field.schedule_records_ttl
     - modules/firestore/google_firestore_field.workspace_secret_release_ttl
+    - modules/firestore/google_firestore_field.submission_keys_ttl
     - infra/google_firestore_field.github_deliveries_ttl
 - id: workspace-group.tenant-namespace
   kind: namespace-object
