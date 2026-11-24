@@ -42,7 +42,7 @@ for _path in (str(_HERE.parent), str(_HERE)):
         sys.path.insert(0, _path)
 
 from control_plane.fakes import FakeFirestore  # noqa: E402
-from test_claude_front import BROKER, Broker, FakeClaude, Sleeper  # noqa: E402
+from test_claude_front import BROKER, Broker, FakeClaude, FakeConversation, Sleeper  # noqa: E402
 from test_speech_machine import CONFIG, Clock, FakeCompute, _machine  # noqa: E402
 
 from swarm_api import modelprices  # noqa: E402
@@ -50,6 +50,7 @@ from swarm_api.errors import ApiError  # noqa: E402
 from swarm_api.voice import budget as vbudget  # noqa: E402
 from swarm_api.voice import cards as vcards  # noqa: E402
 from swarm_api.voice import grant as vgrant  # noqa: E402
+from swarm_api.voice import projectbrief as vbrief  # noqa: E402
 from swarm_api.voice import ledger as vledger  # noqa: E402
 from swarm_api.voice import sessions as vs  # noqa: E402
 from swarm_api.voice import speech_catalogue as cat  # noqa: E402
@@ -70,6 +71,10 @@ FIRST_WORDS = "plan the release checklist for the billing service"
 LATER_WORDS = "plan one more review of the release"
 #: The planner's spoken summary.
 PLANNER_LINE = "The release checklist has four steps."
+#: The note the planner leaves for the project's next turn (the `speak` brief).
+PLANNER_BRIEF = "Checklist drafted: four steps, billing owner to confirm."
+#: A status question: answered by the front from the project's own view.
+STATUS_WORDS = "what is running on this project right now"
 #: The ledger's cap check runs once per simulated hour of talk.
 HOUR = 3600.0
 
@@ -92,9 +97,34 @@ class PlannerModel:
     async def run(self, *, prompt: str, system: str, token: str, tools: list[dict], handler: Any,
                   known: tuple[str, ...], done: asyncio.Event) -> claudeturn.ChildOutcome:
         self.prompts.append(prompt)
-        await handler(prompts.SPEAK_TOOL, {"summary": PLANNER_LINE, "point_at": None})
+        await handler(prompts.SPEAK_TOOL, {"summary": PLANNER_LINE, "point_at": None,
+                                            "brief": PLANNER_BRIEF})
         return claudeturn.ChildOutcome(exit_code=0, usage={"input_tokens": 1200, "output_tokens": 300},
                                        stopped=True)
+
+
+class StatusConversation(FakeConversation):
+    """The front's child: a status question is one `project_status` read, any
+    other turn goes the scripted way (a work request delegates)."""
+
+    async def say(self, text: str) -> claudeturn.ChildOutcome:
+        if "running" in text:
+            self.said.append(text)
+            answer, is_error = await self.handler("project_status", {})
+            reply = "I couldn't look." if is_error else f"Read: {answer}"
+            return claudeturn.ChildOutcome(result_text=reply,
+                                           usage={"input_tokens": 5, "output_tokens": 1})
+        return await super().say(text)
+
+
+class StatusClaude(FakeClaude):
+    async def converse(self, *, system, token, tools, handler, known, model=None):  # noqa: ANN001
+        self.models.append(model or self.model)
+        self.systems.append(system)
+        self.tools.append(tools)
+        conversation = StatusConversation(handler, token, self)
+        self.started.append(conversation)
+        return conversation
 
 
 class SwarmApiEdge:
@@ -120,6 +150,24 @@ class SwarmApiEdge:
                 return httpx.Response(200, json=vcards.catalogue())
             if request.method == "POST" and path == f"/v1/voice/sessions/{session.session_id}/work":
                 return httpx.Response(200, json=self._work(session, _json(request)))
+            if request.method == "GET" and path == f"/v1/voice/projects/{session.project_id}/status":
+                store = vstore.VoiceStore(self.db, now=self.clock.now)
+                return httpx.Response(200, json=vbrief.status(
+                    self.db, store, tenant_id=session.tenant_id, person=session.person,
+                    project_id=session.project_id))
+            if request.method == "POST" and path == f"/v1/voice/sessions/{session.session_id}/brief":
+                state = self.guard.enforce(tenant_id=session.tenant_id, person=session.person,
+                                           project_id=session.project_id, session_id=session.session_id)
+                if state.get("capped") is not None:
+                    return httpx.Response(409, json={"code": "conflict",
+                                                     "detail": {"reason": vledger.SESSION_CAPPED}})
+                store = vstore.VoiceStore(self.db, now=self.clock.now)
+                brief = vbrief.write_brief(
+                    store, tenant_id=session.tenant_id, person=session.person,
+                    project_id=session.project_id, session_id=session.session_id,
+                    text=_json(request)["text"], now=self.clock.now)
+                return httpx.Response(200, json={"session_id": session.session_id, "brief": brief,
+                                                 "budget": state})
             return httpx.Response(404, json={"code": "not_found", "message": "not in this scenario"})
         except ApiError as exc:
             return httpx.Response(exc.status_code, json=exc.to_payload())
@@ -218,7 +266,7 @@ class World:
                                accounts=plannerlease.PlannerAccounts(voice_broker), claude=self.planner_model,
                                updates=None)
         self.sink = worksink.WorkSink(self.http, api_base=API, id_tokens=id_token)
-        self.front_model = FakeClaude()
+        self.front_model = StatusClaude()
         self.front = claudefront.FrontSessions(
             accounts=plannerlease.PlannerAccounts(voice_broker, holder=plannerlease.FRONT_HOLDER),
             planner=self.planner, claude=self.front_model, clock=self.clock.clock, sleep=Sleeper(),
@@ -333,6 +381,27 @@ def test_one_speech_session_is_answered_delegated_costed_capped_and_ended(world:
     assert sum(1 for p, _ in world.broker.calls if p.endswith("/release")) == 1
     # swarm-api admitted it through the session's grant, and the session's
     # stream says it started and then finished, in that order.
+    assert _delegation_states(world, answer) == [(front_line.delegation_id, vwork.STARTED),
+                                                 (front_line.delegation_id, vwork.DONE)]
+    assert all(status < 300 for _m, _p, status in world.api.seen)
+    # The planner's turn left its brief on the project, written once.
+    brief_posts = [p for m, p, _s in world.api.seen if m == "POST" and p.endswith("/brief")]
+    assert len(brief_posts) == 1
+
+    # ---- a status question is answered by the front itself, no delegation -----
+    world.clock.advance(60)
+    reads_before = [p for m, p, _s in world.api.seen if m == "GET" and p.endswith("/status")]
+    assert len(reads_before) == 1  # the planner's own read of the brief, at its turn
+    status_line = world.relay.turn(session_id, STATUS_WORDS, None)
+    assert status_line.delegation_id is None
+    # It read the project's own status view, which carries the planner's brief.
+    assert status_line.reply.startswith("Read: ") and PLANNER_BRIEF in status_line.reply
+    assert [p for m, p, _s in world.api.seen if m == "GET" and p.endswith("/status")] == (
+        reads_before * 2)
+    assert reads_before == [f"/v1/voice/projects/{answer['project_id']}/status"]
+    # Nothing was handed to the planner: no second model call, no second lease, no new stream event.
+    assert len(world.planner_model.prompts) == 1
+    assert world.broker_holders("/assign") == [plannerlease.FRONT_HOLDER, plannerlease.HOLDER]
     assert _delegation_states(world, answer) == [(front_line.delegation_id, vwork.STARTED),
                                                  (front_line.delegation_id, vwork.DONE)]
     assert all(status < 300 for _m, _p, status in world.api.seen)
