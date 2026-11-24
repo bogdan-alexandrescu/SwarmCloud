@@ -684,6 +684,22 @@ above, unchanged, from `routes/last_admin.py`:
   group check are read fresh, and any of them that cannot be read is a 503
   (`role_unavailable`, `upstream_unavailable`, `membership_unavailable`),
   never a permissive answer.
+* **Member removal fails closed when the role is unreadable, for a
+  non-admin too** (epic 21, decided deliberately). `DELETE
+  /v1/workspace/members/person` reads the removed person's role from the
+  roles store before the transaction (`last_admin.lookups_ahead`) and again
+  inside it (`last_admin.admin_by_override`), so a roles-store outage makes
+  removing ANY member -- an ordinary member or viewer included -- 503
+  `role_unavailable`. Why not skip the read for someone who "is not an
+  admin": without it the route cannot know that. Treating an unreadable
+  role as "not an admin" is the one guess that removes a workspace's last
+  admin with no guard, and an outage must not be the moment the guard is
+  off. What the caller sees: the 503's message says whether that person
+  holds the admin role could not be read, to retry shortly, and that
+  nothing was written -- no `removed` grant, no guard document, no audit
+  row (`tests/unit/control_plane/test_last_admin_guard.py`,
+  `test_removing_a_non_admin_with_the_roles_store_unreadable_is_a_503`).
+  The removal succeeds again as soon as the roles store answers.
 * **Every other admin is found, and the directory is asked before the
   transaction** (epic 21). The other admins are read as the workspace's
   `admin` grants themselves (`RoleStore.admin_subjects`, each confirmed by
@@ -717,7 +733,12 @@ above, unchanged, from `routes/last_admin.py`:
   and removal, `role_unavailable` for the roles routes), nothing written.
 * **Every refusal writes nothing but its audit row**:
   `workspace_last_admin_refused`, written after the transaction rolled back
-  (§4.7). A row that cannot be written is logged, and the 409 stands.
+  (§4.7). A row that cannot be written is logged, and the 409 stands. A
+  scoped probe admin refused on these routes -- 403
+  `probe_admin_not_permitted` on a removal, 403 `role_admin_required` on a
+  change of a person who holds `admin` -- leaves one
+  `workspace_probe_admin_refused` row the same way
+  (`workspace-roles.md` §8, "A refused probe-admin change is recorded").
 
 ### 4.5 Tenant resolution: the change, exactly
 
@@ -822,6 +843,7 @@ change and its row both land or neither does:
 | `workspace_member_removed` | a removal, or the person leaving | `{via, still_in_group}`; `via: "self"` when the person left |
 | `join_link_changed` | link on, off or rotated | `{on, rotated: true\|false}`. **Never the code or its hash** |
 | `workspace_last_admin_refused` | a leave, removal, demotion or approval refused 409 `workspace_leave_last_admin` (§4.4) | `{route: "leave"\|"member_removed"\|"role_set"\|"role_cleared"\|"join_approved", via, to?, refused}`. The one row written with no change beside it: it is written after the refused transaction rolled back. `RoleStore.audit` serves it in the workspace's role events, which Admin › People and roles labels |
+| `workspace_probe_admin_refused` | a scoped probe admin's member removal refused 403 `probe_admin_not_permitted`, or its approval, role set or role clear of a person who holds `admin` refused 403 `role_admin_required` (§4.4) | `{route: "member_removed"\|"role_set"\|"role_cleared"\|"join_approved", via: "probe_admin", to?, refused}`. Written after the refused transaction rolled back, like the row above; served in the workspace's role events too |
 
 Expiry writes no row, because it is derived. These rows appear in Admin ›
 People and roles › Recent admin actions and in the workspace's own role

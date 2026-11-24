@@ -145,6 +145,44 @@ as a change of its host does, its bypass value removed first. Why per leg:
 staging and production commonly call different API hosts, and an approval
 of one leg's API host must never open the other's.
 
+Every origin is stored as a browser writes it: `qaspec.base_url` drops
+https's own port, so `https://h:443` is stored `https://h`, and the gate
+reads a served origin stored with `:443` before that (`origin_of`,
+`livegate/qatarget.py`) as the bare one, so it matches without a new
+registration; `patch` compares origins bare, so that rewrite resets no
+approval (epic 21). The answer names the login's origin beside the IdP
+token path (`idp_token_origin`), and the gate binds the path to that origin
+only, refusing one that is not a served, non-base https origin: the
+list's order decides nothing.
+
+**A host that later resolves private** (epic 21). A leg's base host and
+each extra origin's host are resolved, and refused when any address is not
+public, at registration and again at every approval (`check_public_host`,
+`swarm_api/qatargets.py`); nothing resolves them again at issue time,
+deliberately: a third resolution is another check-then-use gap, since the
+browser resolves on its own afterwards, and it would make every issue
+depend on DNS. What stops a run from reaching a private address after the
+name moves is the backend's egress, and it differs by backend. **GKE:**
+`kubernetes/network-policies/allow-egress.yaml` allows the public internet
+only as `0.0.0.0/0` minus 10/8, 172.16/12, 192.168/16, 169.254/16,
+100.64/10 and the cluster's pod and service ranges, behind
+`default-deny.yaml`; the metadata server's /32 is allowed on 80 and 8080
+only, never on 443. **Cloud Run Jobs (the primary backend): no such
+control exists.** A worker Job egresses `ALL_TRAFFIC` into the VPC
+(`apps/scheduler/scheduler/dispatch.py`, `_tenant_job_vpc_access`;
+`terraform/modules/cloud_run_jobs`); the VPC firewall
+(`terraform/modules/network/firewall.tf`) denies ingress TO workers but
+leaves their egress open, and `restrict_egress` is a list of ports to
+`0.0.0.0/0`, not of addresses. A QA host that resolves to a VPC address
+after approval is reachable from a Cloud Run worker on the approved port.
+**`apps/swarm-egress`** (the optional residential proxy) refuses an IP
+literal that is not public and an internal name at CONNECT
+(`swarm_egress/policy.py`, `check_target`); it does not resolve a public
+name, so it is not a defence here. Loopback is outside every one of these:
+it reaches only the worker's own listeners. Closing the Cloud Run gap is an
+egress-firewall change (a deny of the private ranges for the worker tag),
+not a resolution in swarm-api.
+
 ### 1.4 The credential secret: still one secret per tenant, no IAM change
 
 Under (a) the tenant's one QA secret stays one secret, read and written by

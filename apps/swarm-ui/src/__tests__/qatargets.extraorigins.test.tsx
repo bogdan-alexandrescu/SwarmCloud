@@ -308,3 +308,41 @@ describe('Approve host names each declared extra origin', () => {
     ])
   })
 })
+
+// Epic 21: a mutating flow on a non-production leg writes to each approved
+// extra origin as well as the base one, so the approval says so, once.
+describe('Approve host says where a non-production leg’s writes reach', () => {
+  const PENDING = { host_state: 'pending', approved_by: null, approved_at: null, approved_origins: [] }
+
+  async function openApprove(target: Json): Promise<HTMLFormElement> {
+    live(target, { role: 'member', platformAdmin: true })
+    await mountPage()
+    await waitFor(() => expect(button(document, 'Approve host')).not.toBeNull(), WAIT)
+    fireEvent.click(button(document, 'Approve host')!)
+    const f = document.querySelector<HTMLFormElement>('form.qa-approve')
+    if (f === null) throw new Error('no approve form')
+    return f
+  }
+
+  function notices(form: HTMLFormElement): string[] {
+    return Array.from(form.querySelectorAll('[data-writes-notice]')).map((n) => visible(n))
+  }
+
+  it('shows one sentence for a non-production leg with extra origins', async () => {
+    const form = await openApprove(oneOrigin({ ...PENDING, environment: 'non_production' }))
+    // MUTATION: drop the sentence, or show it for every leg, and this or the next test fails.
+    expect(notices(form)).toEqual([
+      'Flows on this environment may write, and their writes reach each ticked host as well as shop.example.com, a shared API among them.',
+    ])
+  })
+
+  it('is absent for a production leg', async () => {
+    const form = await openApprove(oneOrigin({ ...PENDING, environment: 'production' }))
+    expect(notices(form)).toEqual([])
+  })
+
+  it('is absent for a non-production leg that declares no extra origins', async () => {
+    const form = await openApprove(oneOrigin({ ...PENDING, environment: 'non_production', extra_origins: [] }))
+    expect(notices(form)).toEqual([])
+  })
+})

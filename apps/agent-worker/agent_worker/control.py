@@ -73,6 +73,7 @@ from __future__ import annotations
 
 import functools
 import json
+import random
 import re
 import sys
 import time
@@ -698,6 +699,34 @@ _ABORT_BACKOFF_SECONDS = 0.25
 _abort_sleep: Callable[[float], None] = time.sleep
 _abort_clock: Callable[[], float] = time.monotonic
 
+#: Rounds of one PARK when the runner has spent its `TRANSACTION_ABORTED_RUNS`
+#: on contention (issue 313), each round being the runner's runs again, on
+#: fresh reads. The runs cover about 3.75 s of contention, and contention on
+#: the pools document every admission and release writes can outlast that:
+#: the same measure the terminal write's rounds were sized by
+#: (`lifecycle.TERMINAL_CONTENTION_ROUNDS`, archived issue 2650). FOUR, the
+#: terminal write's number, so a park and a finish ride out the same storm.
+PARK_CONTENTION_ROUNDS = 4
+
+#: The pause before a park's next round, times the round number and a jitter
+#: of 0.5-1.5 (`_park_contention_jitter`), as the terminal write's.
+#: WORST CASE, waiting only: the pauses 2 x (1 + 2 + 3) x 1.5 = 18 s, plus each
+#: round's own backoff between runs, 4 x 3.75 = 15 s: 33 s in all. The RPCs of
+#: each round are still bounded by that round's own call deadline
+#: (`_aborted_deadline`). Not a long wait (invariant 4): a park that cannot
+#: land in that raises, and the worker's crash path ends the attempt.
+PARK_CONTENTION_PAUSE_SECONDS = 2.0
+
+
+def _park_contention_jitter() -> float:
+    """The jitter of one pause between park rounds: so the writers that met
+    each other do not meet again on the same beat."""
+    return random.uniform(0.5, 1.5)
+
+
+#: Module seam, so a unit test does not sleep.
+_park_contention_sleep: Callable[[float], None] = time.sleep
+
 
 def _aborted_deadline(call_options: Mapping[str, Any] | None) -> float:
     """Seconds an aborted transaction may be run again for: the call's own deadline.
@@ -839,18 +868,45 @@ def _contention_exhausted(
     error can carry. `deadline` is the call's deadline when that, and not
     the bound on runs, is what stopped it.
     """
-    from google.api_core import exceptions as core_exceptions  # lazy: grpc
-
     why = (
         f"stopped at the call's {deadline:.1f} s deadline"
         if deadline is not None
         else f"its bound of {TRANSACTION_ABORTED_RUNS} runs reached"
     )
-    return core_exceptions.Aborted(
+    return _contention_types()[0](
         f"Firestore aborted this transaction on contention on each of {runs} runs "
         f"over {elapsed:.1f} s ({why}); nothing was committed. "
         f"Last: {type(last).__name__}: {last}"
     )
+
+
+@functools.lru_cache(maxsize=None)
+def _contention_types() -> tuple[type, type]:
+    """The two `Aborted`s contention ends in here, built once, lazily (grpc).
+
+    `RunsSpentOnContention` is what `_contention_exhausted` builds: the
+    runner's runs were all aborted, so nothing was committed. Its own class,
+    so a park's rounds (`ControlPlane._park_transaction`) recognise exactly
+    it -- by class, never by text or by anything in a cause chain -- and no
+    other `Aborted` is run again there. `ParkContentionExhausted` is what a
+    park raises once its rounds are spent too; a different class, so nothing
+    reads it as one more round's worth. Both are `Aborted`, so every caller
+    that already treats contention as contention goes on doing so.
+    """
+    from google.api_core import exceptions as core_exceptions  # lazy: grpc
+
+    class RunsSpentOnContention(core_exceptions.Aborted):
+        """The transaction runner's runs were each aborted on contention."""
+
+    class ParkContentionExhausted(core_exceptions.Aborted):
+        """A park's rounds were each the runner's runs spent on contention."""
+
+    return RunsSpentOnContention, ParkContentionExhausted
+
+
+def _runs_spent_on_contention(exc: BaseException) -> bool:
+    """Whether `exc` is the runner's own `_contention_exhausted`, and only that."""
+    return type(exc) is _contention_types()[0]
 
 
 def _commit_retry(retry: Any) -> Any:
@@ -2638,6 +2694,69 @@ class ControlPlane:
         for document in written:
             self._log.info("event", event_type=document["type"], detail=document["detail"])
 
+    def _park_transaction(self, fn: Callable[[Any], Any], *, reason: ParkReason) -> Any:
+        """A park's body through the runner, in up to `PARK_CONTENTION_ROUNDS`
+        rounds (issue 313). EVERY park of this control plane commits here:
+        `park`, `park_awaiting_children`, `park_release_wait`,
+        `park_ci_pending` and `handoff.park_human_required`.
+
+        Only contention is run again: the `Aborted` the runner raises once
+        its runs are spent (`_runs_spent_on_contention`, by class). A fence
+        (`FencedError`, `FencedWriteRefused`) and every other error, another
+        `Aborted` among them, go up as they are, on the round that met them.
+        Between two rounds, `PARK_CONTENTION_PAUSE_SECONDS` times the round
+        number times a jitter; one warning line per extra round, naming the
+        park's reason and the round, never its detail.
+
+        WHY A LATER ROUND CANNOT PARK TWICE, REFUND TWICE OR RELEASE TWICE.
+        A round that raised committed nothing: the runner raises its
+        contention `Aborted` only when EVERY run was aborted -- a read, the
+        begin, or each of the library's commits -- and Firestore applies a
+        transaction's writes all at once or not at all, ABORTED being the
+        "not at all". So the PARKED state, the refund, the release and the
+        pools coming down, the attempt's end and the events of that round
+        are nowhere. The next round is the whole body again, on new
+        transactions that read every document afresh: the body's own fence
+        comes first, so a task a newer attempt has taken meanwhile is
+        refused and nothing is written (invariant 5); the refund is computed
+        from the `attempt_count` and resume counter stored now, which no
+        earlier round changed; the release reads the lease and its pools
+        now, and releases what is still held. Of all the rounds, at most one
+        commits, and that one commit carries all of it once. The events'
+        ids are minted once, before the first round, so even their
+        documents are the same ones in every round.
+
+        When the rounds are spent, `ParkContentionExhausted` (an `Aborted`)
+        names the rounds and the seconds spent, with the last round's abort
+        as its cause. Bounded (`PARK_CONTENTION_PAUSE_SECONDS`): a park is
+        never a long wait (invariant 4).
+        """
+        started = _abort_clock()
+        rounds = 1
+        while True:
+            try:
+                return self._run_transaction(fn)
+            except Exception as exc:
+                if not _runs_spent_on_contention(exc):
+                    raise
+                last: BaseException = exc
+            if rounds >= PARK_CONTENTION_ROUNDS:
+                raise _contention_types()[1](
+                    f"the {reason.value} park met Firestore contention on each of "
+                    f"{rounds} rounds over {_abort_clock() - started:.1f} s; nothing "
+                    f"was committed. Last: {last}"
+                ) from last
+            self._log.warning(
+                "the park met Firestore contention past the transaction runner's "
+                "runs; running it again on fresh reads",
+                reason=reason.value,
+                round=rounds,
+            )
+            _park_contention_sleep(
+                PARK_CONTENTION_PAUSE_SECONDS * rounds * _park_contention_jitter()
+            )
+            rounds += 1
+
     # -- terminal outcomes -------------------------------------------------
     def park(
         self,
@@ -2777,7 +2896,7 @@ class ControlPlane:
                 self._record_parked_uploads(txn, index, uploads, at=now)
             return refund, written
 
-        refunded, written = self._run_transaction(_apply)
+        refunded, written = self._park_transaction(_apply, reason=reason)
         self._ended(TaskState.PARKED, written)
         return refunded
 
@@ -2870,7 +2989,7 @@ class ControlPlane:
                 self._record_parked_uploads(txn, index, uploads, at=now)
             return refund, written
 
-        refunded, written = self._run_transaction(_apply)
+        refunded, written = self._park_transaction(_apply, reason=reason)
         self._ended(TaskState.PARKED, written)
         return refunded
 
@@ -2959,7 +3078,7 @@ class ControlPlane:
                 self._record_parked_uploads(txn, index, uploads, at=now)
             return refund, written
 
-        refunded, written = self._run_transaction(_apply)
+        refunded, written = self._park_transaction(_apply, reason=reason)
         self._ended(TaskState.PARKED, written)
         return refunded
 
@@ -3146,7 +3265,7 @@ class ControlPlane:
             )
             return refund, written
 
-        refunded, written = self._run_transaction(_apply)
+        refunded, written = self._park_transaction(_apply, reason=reason)
         self._ended(TaskState.PARKED, written)
         return refunded
 

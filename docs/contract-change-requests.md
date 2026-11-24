@@ -162,6 +162,8 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 155 | `specsign.py`: a `"plans"` block in `SETTINGS_MAC_FIELDS`, `("diagrams", "chat_model_class")`, so a workspace's plan-review settings (`workspace_settings/{tenant_id}.plans`, docs/design/plans-pipeline.md sections 6.4 and 7.8) are signed by the frozen list (PLAN-SETTINGS) | REQUESTED 2026-11-13 by the pull request that adds this line; not applied. Until it is, `canonical_settings_block` refuses the block and swarm-api cannot sign it through the frozen list |
 | 157 | `states.py`: the scheduler may end a re-review whose verdict gate is shut PARKED -> SUCCEEDED, guarded on its own promotion write, without a lease (re-review gate) | REQUESTED 2026-11-23 by the pull request that adds this line; not applied. Until it is, a re-review whose gate is shut is leased and dispatched as today |
 | 158 | `profiles.py`: declare `context_ceiling` as an optional object input on the claude-code runner family, so a step may carry its own lower session limits (per-role session limits) | ACCEPTED by the owner 2026-11-24 and APPLIED by the pull request that adds this status (requested 2026-11-23): declared on the seven claude-code-runner profiles, and stamped per role by `swarm_api.stepceiling` |
+| 159 | `profiles.py`: an `xlarge` resource class (16 CPU requested and limit, 64 GiB, GKE only, outside the admin-sized `CLASS_ORDER`) and a `recording` runner profile (no agent, a Docker daemon in a sandboxed pod, 86,400 s), shipped `available=False` (recording runner, docs/design/recording-runner.md, part of #8) | NOT ACCEPTED: waiting for the owner. REQUESTED 2026-11-24 by the pull request that adds this line; not applied. Until it is, no class is above 8 CPU or 32 GiB and no profile runs longer than 14,400 s |
+| 160 | `states.py` / `models.py`: `ParkReason.WORKFLOW_PAUSED`, `Workflow.paused`, `paused_at` and `paused_by`, and `EventType.PAUSE_REQUESTED` and `RESUME_REQUESTED`, so a workflow can be paused and resumed (docs/design/workflow-pause.md, part of issue 7) | NOT ACCEPTED: REQUESTED 2026-11-24 by the pull request that adds this line; not applied. Nothing is built on it; until the owner decides there is no workflow pause |
 
 ---
 
@@ -2488,7 +2490,7 @@ The frozen catalogue says nothing about this. It lists the names, and the
 meaning of one of them is decided outside it:
 
 * `agent_worker.accountlease.ACCOUNT_TOKEN_ENV`, which the worker checks before
-  it asks the broker for an account (`lifecycle._lease_account`);
+  it asks the broker for an account (`accountpool._lease_account`);
 * `scheduler.credentials.SUBSCRIPTION_TOKEN_ENV`, which admission checks before
   it lets a tenant with no key of its own through on the pool.
 
@@ -15888,7 +15890,7 @@ a comment that it is a READ-SIDE VIEW ONLY.
   the totals in the same transaction as the attempt's end (`finish`, `park`,
   `retry`), and after its start, its spend and a bare `record_attempt_end`;
   the account in the same transaction as each `account_assigned` /
-  `account_unreadable` event (`emit`, which `lifecycle._lease_account`, the
+  `account_unreadable` event (`emit`, which `accountpool._lease_account`, the
   swap and `_reject_account` all go through). The rules are swarm-api's,
   restated in the worker's separate image, and a parity test holds the two
   equal. Only while the writer's attempt is the task document's current
@@ -18400,3 +18402,302 @@ resolved role and never from caller metadata.
 ### Who decides
 
 The owner: accepted 2026-11-24.
+
+---
+
+## 159. `profiles.py`: an `xlarge` resource class (16 CPU, 64 GiB, GKE only) and a `recording` runner profile (no agent, a Docker daemon in a sandboxed pod, 86,400 s) (recording runner)
+
+**Status:** NOT ACCEPTED: waiting for the owner. REQUESTED 2026-11-24 by the
+pull request that adds this section; not applied. Nothing in
+`apps/common/swarm_common/` was changed for it, and nothing is built until the
+owner decides. The design it comes from, with the reasons for every choice and
+the open questions, is
+[docs/design/recording-runner.md](design/recording-runner.md) (part of #8).
+
+### What is true today
+
+Read on 2026-11-24 at `0f256b6`.
+
+- **No class is above 8 CPU or 32 GiB.**
+  `apps/common/swarm_common/profiles.py::ResourceClass.__post_init__` raises
+  "exceeds the Cloud Run Jobs ceiling" for any class whose `cpu` is above 8 or
+  whose `memory_gib` is above 32, whatever its backend. The admin-editable
+  bounds repeat the same ceiling: `CPU_REQUEST_MAX = 8` and
+  `MEMORY_GIB_MAX = 32` (`profiles.py`, beside `CPU_REQUEST_MIN`), which
+  `profiles.py::check_size` applies to every class named in `CLASS_ORDER`.
+  The largest class is `large`: 8 CPU requested, a 16 CPU limit, 32 GiB, 4
+  units (`profiles.py::RESOURCE_CLASSES`).
+- **No profile runs longer than 14,400 s.** `claude-code-large` declares
+  `timeout_seconds=14400` (`profiles.py::RUNNER_PROFILES`); the
+  `RunnerProfile.timeout_seconds` default is 3,600, which `generic` takes
+  (`profiles.py::_GENERIC_PROFILE`). The frozen contract has no timeout bound
+  of its own: swarm-api's `schemas.py` caps a request's `timeout_seconds` at
+  86,400 (`le=86_400`), and `swarm_api/validation.py::validate_timeout` clamps
+  it to the profile's own `timeout_seconds`, so the profile is the ceiling.
+- **The no-agent profile runs only named commands.** `generic`'s `command`
+  input must be one of `_GENERIC_COMMANDS` (`profiles.py`), and
+  `RunnerProfile.__post_init__` holds the `generic` profile's choices equal to
+  that tuple.
+- **No profile can run a container daemon.** Nothing in `RunnerProfile`
+  describes a pod runtime; every GKE pod is rendered with
+  `apps/scheduler/scheduler/dispatch.py::POD_SECURITY_CONTEXT` and
+  `CONTAINER_SECURITY_CONTEXT` (non-root, every capability dropped, no
+  privilege escalation), and docs/security.md states that no Docker socket is
+  ever mounted.
+
+### Why this is a contract request
+
+`profiles.py` is frozen (CLAUDE.md rule 1). A class above the Cloud Run
+ceiling, a profile's catalogue entry, and a new field on `RunnerProfile` are
+each a change to it. The runner catalogue and the classes are also mirrored in
+`terraform/infra/locals.tf` (`resource_classes`, `runner_profiles`) and held
+equal by `tests/terraform/catalogue_mirror/`, so the mirror moves in the same
+build.
+
+### The requested change
+
+All in `apps/common/swarm_common/profiles.py`:
+
+1. **`ResourceClass.gke_only: bool = False`.** In `__post_init__`, the Cloud
+   Run ceiling check is skipped for a `gke_only` class and replaced by two new
+   constants, `GKE_ONLY_CPU_MAX = 16` and `GKE_ONLY_MEMORY_GIB_MAX = 64`, and a
+   `gke_only` class must have `cpu_limit == cpu` (dedicated cores: no burst;
+   invariant 7 allows a limit equal to the request).
+2. **The class:** `RESOURCE_CLASSES["xlarge"] = ResourceClass("xlarge",
+   cpu=16, memory_gib=64, disk_gib=16, units=8, cpu_limit=16,
+   gke_only=True)`. `units_for(16, 64)` is `max(4, 8) = 8`, so the import-time
+   units check passes unchanged.
+3. **`xlarge` stays out of `CLASS_ORDER`.** `check_size` judges every class in
+   `CLASS_ORDER` against `CPU_REQUEST_MAX` and `MEMORY_GIB_MAX`, which are
+   Cloud Run's ceiling, so adding it there would make every size version
+   invalid. Left out, it is a fixed class: an admin cannot resize it,
+   `effective_size` returns its default, and `CPU_REQUEST_MAX` and
+   `MEMORY_GIB_MAX` keep their values and their meaning.
+4. **`RunnerProfile.pod_runtime: str = "runc"`** (`"runc"` or `"gvisor"`) and
+   **`RunnerProfile.container_daemon: bool = False`.** `__post_init__` refuses
+   `container_daemon=True` unless `pod_runtime == "gvisor"` and the backend is
+   `GKE_AUTOPILOT`, and refuses a `gke_only` class on any profile whose backend
+   is not `GKE_AUTOPILOT`. The rule "a pod that runs a container daemon is
+   sandboxed" is then a fact the catalogue cannot be written without, not a
+   convention in the dispatcher.
+5. **The profile**, written as a literal constructor call so the Terraform
+   mirror test can read it:
+
+```diff
++    # CONTRACT REQUEST 159 (recording runner, docs/design/recording-runner.md):
++    # no agent; runs the repository's own named recording plan end to end,
++    # with a Docker daemon inside a gVisor sandbox. GKE Autopilot, on-demand
++    # only (invariant 6), the catalogue's checkpoint interval (invariant 8).
++    "recording": RunnerProfile(
++        name="recording",
++        image="recording-runtime",
++        resource_class="xlarge",
++        backend=Backend.GKE_AUTOPILOT,
++        runner_argv=("python", "-m", "agent_worker.runners.recording"),
++        provider=None,
++        timeout_seconds=86400,
++        pod_runtime="gvisor",
++        container_daemon=True,
++        inputs={
++            "plan": RunnerInput(
++                "argument",
++                required=True,
++                means="names .swarm/recordings/<plan>.json at the pinned commit",
++            ),
++        },
++        available=False,
++        disabled_reason="recording runner: built behind contract request 159",
++    ),
+```
+
+   `secrets` is empty (no provider key); `spot`, `supports_checkpoint` and
+   `checkpoint_interval_seconds` keep their defaults (`ON_DEMAND_ONLY`, `True`,
+   120). `plan` is kind `argument`, so `RunnerInput.check` already holds it
+   to `_ARGUMENT` (no leading `-`, no `..`), as it holds `generic`'s `target`;
+   the runner narrows it further to `^[a-z0-9][a-z0-9-]{0,63}$` and resolves
+   it only under `.swarm/recordings/`. The image name and the runner module
+   are new and built by the lanes in the design's section 10.
+
+No new timeout bound is requested: `timeout_seconds=86400` is within
+swarm-api's existing `le=86_400`, and the backend deadline becomes
+86,400 + 480 + 300 = 87,180 s
+(`apps/scheduler/scheduler/dispatch.py::backend_deadline_seconds`), inside
+Autopilot extended run time's seven days (docs/execution-backends.md).
+
+**If the owner picks the design's option D** (one Compute Engine VM per task
+instead of a sandboxed pod), items 4 and 5 change: `Backend` gains a value,
+`pod_runtime` is not needed, and this request is amended before it is applied.
+
+### What it enables
+
+A tenant the owner allows can run a fixed, repository-owned list of commands
+for up to 24 hours on 16 dedicated cores and 64 GiB, with Docker available to
+those commands, and the same clone, checkpoint and artifact upload as every
+other profile.
+
+### What it would break if accepted
+
+Nothing that exists. Every current class and profile keeps its values;
+`CLASS_ORDER`, `check_size`, `CPU_REQUEST_MAX` and `MEMORY_GIB_MAX` are
+unchanged; the new fields default to today's behaviour (`"runc"`, `False`). The
+new profile ships `available=False`, so swarm-api refuses it until a later
+change turns it on. Downstream that must follow in the same build: the
+Terraform mirror (`locals.tf`), a `GKE_DISK` row for `xlarge` in
+`apps/scheduler/scheduler/dispatch.py` (which refuses a class with none), and
+any UI or MCP list that enumerates classes.
+
+### Invariants
+
+- **1-3.** The profile adds `resource:xlarge` and `runner:recording` to the
+  pools a task acquires (`apps/common/swarm_common/models.py::pool_names_for`),
+  reserved in the same one transaction
+  (`apps/common/swarm_common/admission.py::acquire_lease_in_transaction`); a
+  task charges 8 units from LEASED, like any other.
+- **5.** Unchanged: the worker's fencing check runs before the runner starts.
+- **6.** `spot` stays `ON_DEMAND_ONLY`; `__post_init__` still refuses anything
+  else.
+- **7.** Memory and ephemeral storage stay request == limit; CPU request ==
+  limit (16 and 16) is within `CPU_BURST_MAX_RATIO`.
+- **8.** `supports_checkpoint` stays `True` at the 120 s default; the design's
+  section 6.3 says what a no-agent job checkpoints.
+- **9.** Nothing tenant-shaped is in the profile; the pod runs in the tenant's
+  namespace as the tenant's service account, like every GKE profile.
+- **10.** The caller names `recording` and a plan name. The plan is data that
+  selects a file the tenant's own repository holds at the pinned commit, the
+  same trust boundary as `generic`'s `npm-test`; the caller sends no image, no
+  argv, no resources and no backend parameter.
+
+### If it is declined
+
+The work stays where it is today: off the platform, or split to fit 8 CPU,
+32 GiB and 4 hours, which the issue says does not fit (its suites hit their
+own 600 s limits on 8 shared cores).
+
+### How it would be tested
+
+Not built here. If accepted: `xlarge` constructs and a 17-CPU or 65-GiB
+`gke_only` class is refused; a non-`gke_only` class above 8 CPU or 32 GiB is
+still refused; `check_size` over the current table is unchanged; a profile with
+`container_daemon=True` and `pod_runtime="runc"`, or on `CLOUD_RUN_JOB`, is
+refused at construction; `recording` is refused by swarm-api while
+`available=False`; the Terraform mirror test passes with the new rows.
+
+### Who decides
+
+The owner. Accepting it lets the design's lane 1 apply it; the design's
+questions (section 11) decide the parts this request depends on.
+
+---
+
+## 160. `states.py` / `models.py`: `ParkReason.WORKFLOW_PAUSED`, the workflow's pause fields and two pause events (workflow pause)
+
+**Status:** NOT ACCEPTED. REQUESTED 2026-11-24 by the pull request that adds
+this section (docs/design/workflow-pause.md, part of issue 7); not applied.
+Nothing in `apps/common/swarm_common/` was edited for it, and nothing is built
+on it: until the owner decides, there is no workflow pause.
+
+### What is true today
+
+A workflow can be cancelled (`swarm_api/routes/workflows.py::cancel_workflow`)
+but not paused. The frozen package has one pause park reason,
+`states.py::ParkReason.MANUAL_PAUSE`, written by the scheduler for a missing or
+disabled tenant and for a runner profile the catalogue no longer has
+(`scheduler/loop.py::Scheduler._prepare_admission`), and promoted by
+`Scheduler._promote_manual_pauses` once the tenant, the profile and every
+required pool are clear. `models.py::Workflow` carries `cancel_requested` and
+no pause field. `states.py::EventType` has `CANCEL_REQUESTED` (request 17) and
+no pause event.
+
+### Why this is a contract request
+
+The design (docs/design/workflow-pause.md sections 2, 4 and 6) needs:
+
+* a park reason that only a workflow's resume clears. Reusing `MANUAL_PAUSE`
+  would have `_promote_manual_pauses` re-ready a paused workflow's steps every
+  drain, once tenant and pools are clear, for admission to park them again: two
+  guarded writes per step per drain for the whole pause. Avoiding that means
+  the sweep reads workflows, mixing two owners' pauses under one reason, and
+  `swarm_api/waiting_detail.py::_pause` would describe a workflow pause in a
+  tenant pause's words. This is the argument that gave `HUMAN_REQUIRED` its own
+  reason (request 68);
+* a typed place on the workflow for the pause, queryable by equality, so the
+  reconciler's pause-overdue rule reads paused workflows without a full scan;
+* event types for the request, as request 17 gave cancel one, so no reader of
+  a type mistakes "asked to pause" for "parked".
+
+### The requested change
+
+In `states.py`:
+
+```python
+class ParkReason(str, Enum):
+    ...
+    #: A step of a paused workflow (docs/design/workflow-pause.md). Written by
+    #: the scheduler at admission (READY -> PARKED) and by the step's worker at
+    #: its control poll (RUNNING -> PARKED, checkpointed, lease released).
+    #: Promoted ONLY by the scheduler's workflow-pause sweep once the
+    #: workflow's `paused` is false; never by `_promote_manual_pauses`. Holds
+    #: no capacity (invariant 1). Contract request 160.
+    WORKFLOW_PAUSED = "WORKFLOW_PAUSED"
+
+
+class EventType(str, Enum):
+    ...
+    #: A person asked the step's workflow to pause. The step's state is
+    #: unchanged by this event; the PARKED that follows is written by whoever
+    #: parks it (the scheduler, the worker). Contract request 160.
+    PAUSE_REQUESTED = "pause_requested"
+    #: A person resumed the step's workflow; the scheduler's READY follows for
+    #: a parked step. Contract request 160.
+    RESUME_REQUESTED = "resume_requested"
+```
+
+In `models.py`, at the end of `Workflow` (defaults keep every stored workflow
+readable):
+
+```python
+    #: The pause is in force. The equality key: `workflows where paused ==
+    #: true` is how the scheduler's sweep and the reconciler find paused
+    #: workflows without a scan. Contract request 160.
+    paused: bool = False
+    #: When the pause started; kept on a repeat pause, cleared on resume.
+    paused_at: datetime | None = None
+    #: Who paused it (the caller's email, as `submitted_by`).
+    paused_by: str | None = None
+```
+
+No change to `_ALLOWED`, `WORKER_TRANSITIONS`, `admission.py` or `Task`: the
+design uses only existing edges, and the step's `pause_requested_at` stays a
+raw field, as `cancel_requested_at` does.
+
+### What it would break if accepted
+
+Nothing stored: the new fields default to not paused. Every exhaustive match
+over `ParkReason` or `EventType` (the TypeScript `types.ts` restatement and
+`check-contract-parity.sh`, swarm-api's waiting-line tables) gains a member and
+must name it. `swarm_api/codec.py::workflow_to_firestore` and
+`workflow_from_dict` carry the three fields.
+
+### If it is declined
+
+Either no workflow pause, or pause built on `MANUAL_PAUSE` with the costs
+above, the pause recorded as untyped workflow fields beside
+`superseded_task_ids`, and its events as `PARKED`/`READY` details only.
+
+### Invariants
+
+A `WORKFLOW_PAUSED` park holds no lease and no pool units (invariant 1); the
+reason is written only before a lease (scheduler) or with the lease's release
+in one fenced transaction (worker, invariants 2 and 5); the worker parks and
+exits rather than waiting for resume (invariant 4).
+
+### How it would be tested
+
+Not built here. If accepted: the reason and both events exist with those
+values; `Workflow` round-trips the three fields; a stored workflow without them
+reads as not paused; the parity check names the new members.
+
+### Who decides
+
+The owner, together with question Q5 of docs/design/workflow-pause.md (a new
+reason, recommended, or reuse `MANUAL_PAUSE`). Awaiting the owner's decision.

@@ -2516,6 +2516,6 @@ def park_human_required(
             control._record_parked_uploads(txn, index, uploads, at=now)
         return refund, state, written
 
-    refunded, state, written = control._run_transaction(_apply)
+    refunded, state, written = control._park_transaction(_apply, reason=reason)
     control._ended(state, written)
     return HumanPark(refunded, returned.get("by"))
