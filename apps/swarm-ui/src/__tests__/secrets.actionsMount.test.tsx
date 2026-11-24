@@ -184,7 +184,7 @@ describe('an Actions one-time link', () => {
     await act(async () => {
       fireEvent.click(within(dialog).getByRole('button', { name: /^set secret$/i }))
     })
-    await screen.findByText(/MERGE_APP_PRIVATE_KEY was set/i)
+    await screen.findByText(/MERGE_APP_PRIVATE_KEY was set/i, { ignore: '[data-help-description]' })
     const puts = calls.filter((c) => c.method === 'PUT')
     expect(puts).toHaveLength(1)
     // MUTATION: lose the token on its way to the pane, or mint a second link -> fails.

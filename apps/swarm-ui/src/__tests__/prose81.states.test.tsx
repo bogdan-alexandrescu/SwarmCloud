@@ -688,7 +688,7 @@ describe('Secrets: the workspace store’s confirmations and forms are one short
       fireEvent.change(form.querySelector('input[type="password"]')!, { target: { value: made('val') } })
       await act(async () => { fireEvent.submit(form) })
     }
-    await rotated({ status: 200, body: { ...RECORD, current_version: '2' } })
+    await rotated({ status: 200, body: { secret: { ...RECORD, current_version: '2' } } })
     const said = await waitFor(() => {
       const el = document.querySelector('.pk-saved')
       expect(el).not.toBeNull()

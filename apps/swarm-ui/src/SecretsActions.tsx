@@ -13,7 +13,7 @@ import {
 } from './api'
 import { Banner, Button, ButtonLink, Card, Chip, Dialog, TypedConfirm } from './components'
 import type { ApiError } from './fetch'
-import { InfoTip } from './InfoTip'
+import { InfoTip, SaidLine, type Said } from './InfoTip'
 import { UrRegion, useUrRead } from './RepositoriesParts'
 import { timeAgo } from './types'
 import './styles/keys.css'
@@ -122,12 +122,6 @@ function NoCreateNote() {
       />
     </p>
   )
-}
-
-/** What a write did: one short line, its sentence behind the (i). */
-interface Said {
-  line: string
-  tip?: string
 }
 
 /** Who can read a secret written there, in one line. */
@@ -315,8 +309,7 @@ export function SecretsActions({
           )}
           {said !== null && (
             <p className="pk-saved" role="status">
-              {said.line}
-              {said.tip !== undefined && <>{' '}<InfoTip about="what was written" tip={said.tip} /></>}
+              <SaidLine said={said} about="what was written" />
             </p>
           )}
           <UrRegion state={list.state} route={LIST_ROUTE} what="This repository's GitHub Actions secrets" plural onRetry={list.reload}>

@@ -38,7 +38,7 @@ import type { RepoRecord } from './RepositoriesData'
 import { JevBackendCard } from './JudgmentBackend'
 import { SecretsActions, nameProblem, readersOf, ruleWords, scLine, type ActionsFormLink } from './SecretsActions'
 import { PageHead } from './Shell'
-import { InfoTip } from './InfoTip'
+import { InfoTip, SaidLine, type Said } from './InfoTip'
 import { AboutTip } from './Profile'
 import { timeAgo } from './types'
 import {
@@ -386,11 +386,11 @@ export function SecretsScreen({ view, token = null }: { view: string | null; tok
   const personalSelected = ov !== null && ov.personal_tenant_id !== null && ov.personal_tenant_id === ov.tenant_id
   const [draft, setDraft] = useState<Draft | null>(null)
   const [wizard, setWizard] = useState<WizardStart | null>(null)
-  const [done, setDone] = useState<string | null>(null)
+  const [done, setDone] = useState<Said | null>(null)
   const [again, setAgain] = useState(0)
   const go = (next: Partial<SecretsAt>) => goView(viewOf(next))
-  const back = (words: string | null = null) => {
-    setDone(words)
+  const back = (said: Said | null = null) => {
+    setDone(said)
     go({ scope: at.scope, repo: repoId, dest: at.dest })
   }
 
@@ -485,7 +485,7 @@ export function SecretsScreen({ view, token = null }: { view: string | null; tok
             setDone(null)
             go({ scope, repo: scope === 'repository' ? repoId : null })
           }} onRepo={(repo) => go({ scope: 'repository', repo })} />
-          {done !== null && <p className="pk-saved" role="status">{done}</p>}
+          {done !== null && <p className="pk-saved" role="status"><SaidLine said={done} about="what was written" /></p>}
           {at.scope === 'repository' && known === false ? (
             <Banner tone="warn" title="That repository is not registered in this workspace">
               Pick one above, or <AppLink address="config/repositories">register it</AppLink>.{' '}
@@ -782,7 +782,7 @@ function NeedLead({ rows, keyNeeded, manages, scope, tenant, repository, repoId,
       await navigator.clipboard.writeText(note)
       setCopied('Note copied: send it to a workspace admin.')
     } catch {
-      setCopied('The note was not copied: this browser refused the clipboard.')
+      setCopied('Not copied: this browser refused the clipboard.')
     }
   }
   const step = scope === 'repository' ? 'This repository' : 'Step 3'
@@ -1415,7 +1415,7 @@ function AddWizard({
       onActions(repo, name, env, r.data.token)
       return
     }
-    setMintFailed(r.status === 'error' ? `The form was not opened: ${r.error.message}` : 'The form was not opened: the API answered without a link.')
+    setMintFailed(r.status === 'error' ? `The form was not opened: ${r.error.message}` : 'The form was not opened: no link came.')
   }
   const ok1 = scope !== 'repository' || repo !== null
   const ok2 = !actions || (env !== undefined && listed?.can_write !== false)
@@ -1724,15 +1724,15 @@ function OneTimeForm({
   /** Opened from a link a tool minted, rather than from a button here. */
   fromLink: boolean
   onBack: () => void
-  onDone: (words: string) => void
+  onDone: (said: Said) => void
   onAnother: () => void
   /** S4d: a fresh one-time form for the same place. */
   onAgain: () => void
 }) {
-  const [written, setWritten] = useState<string | null>(null)
-  const done = (words: string) => {
-    setWritten(words)
-    onDone(words)
+  const [written, setWritten] = useState<Said | null>(null)
+  const done = (said: Said) => {
+    setWritten(said)
+    onDone(said)
   }
   const after = (
     <Card title={written === null ? 'After you press Set' : 'Written'} action={
@@ -1747,7 +1747,7 @@ function OneTimeForm({
         </>
       ) : (
         <>
-          <p className="pk-saved" role="status">{written}</p>
+          <p className="pk-saved" role="status"><SaidLine said={written} about="what was written" /></p>
           <p className="pk-lead">The link is used up.</p>
           <span className="sec-acts">
             <Button kind="secondary" size="sm" onClick={onAgain}>Set another in this place</Button>
@@ -1844,7 +1844,7 @@ function StoreForm({
   repository: string | null
   takeLink: () => string | null
   onBack: () => void
-  onDone: (words: string) => void
+  onDone: (said: Said) => void
   written: boolean
 }) {
   const store: SecretStoreApi = secretStore(target)
@@ -1874,7 +1874,19 @@ function StoreForm({
       if (r.status === 'error') failed.push(`${consumer} (${r.error.message})`)
     }
     const granted = grants.length - failed.length
-    onDone(`${name} was written at ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}${granted > 0 ? `, and granted to ${granted === 1 ? grants.find((g) => !failed.some((f) => f.startsWith(g))) : `${granted} consumers`}` : ''}.${failed.length > 0 ? ` Not granted: ${failed.join(', ')}; tick it in the grant matrix.` : grants.length === 0 ? ' Grant it to a profile, tool or component before an agent can use it.' : ''}`)
+    const at = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    onDone({
+      line: [
+        `${name} was written at ${at}`,
+        ...(granted > 0 ? [`granted to ${granted === 1 ? grants.find((g) => !failed.some((f) => f.startsWith(g))) : `${granted} consumers`}`] : []),
+        // What was refused stays on the surface, one fact each, in the API's own words.
+        ...failed.map((f) => `Not granted: ${f}`),
+        ...(grants.length === 0 ? ['granted to nothing yet'] : []),
+      ].join(' · '),
+      tip: failed.length > 0
+        ? `Not granted: ${failed.join(', ')}; tick it in the grant matrix.`
+        : grants.length === 0 ? 'Grant it to a profile, tool or component before an agent can use it.' : undefined,
+    })
   }
   return (
     <Card title={draft?.name ?? 'Add a secret'}>
@@ -1904,12 +1916,12 @@ function KeyForm({
   written,
 }: {
   title: string
-  where: string
+  where: Said
   label: string
   takeLink: () => string | null
   mint: () => Promise<Result<MintedLink>>
   save: (value: string, token: string | null) => Promise<Result<unknown>>
-  onDone: (words: string) => void
+  onDone: (said: Said) => void
   written: boolean
 }) {
   const id = useId()
@@ -1917,7 +1929,7 @@ function KeyForm({
   const field = useRef<HTMLInputElement>(null)
   const [filled, setFilled] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [failed, setFailed] = useState<string | null>(null)
+  const [failed, setFailed] = useState<(Said & { why?: string }) | null>(null)
   if (state.status !== 'open') return <Card title={title}><Opening state={state} /></Card>
   if (written) return <Card title={title}><p className="pk-lead">This form is used up.</p></Card>
   async function submit(e: FormEvent) {
@@ -1933,15 +1945,19 @@ function KeyForm({
     setBusy(false)
     if (r.status === 'error') {
       setFailed(r.error.code === 'KEY_LINK_INVALID'
-        ? `${title} was not set: the one-time link is used, expired or not yours. Nothing was written.`
-        : `${title} was not set: ${r.error.message}`)
+        ? {
+            line: `${title} was not set.`,
+            why: 'Its one-time link is spent.',
+            tip: `${title} was not set: the one-time link is used, expired or not yours. Nothing was written.`,
+          }
+        : { line: `${title} was not set: ${r.error.message}` })
       return
     }
-    onDone(`${title} was written at ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`)
+    onDone({ line: `${title} was written at ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.` })
   }
   return (
     <Card title={title}>
-      <dl className="sec-kv"><dt>Where</dt><dd>{where}</dd></dl>
+      <dl className="sec-kv"><dt>Where</dt><dd><SaidLine said={where} about="where it is read" /></dd></dl>
       <form className="pk-form" autoComplete="off" aria-label={`Set ${title}`} onSubmit={(e) => void submit(e)}>
         <label htmlFor={`${id}-v`}>{label}</label>
         <input id={`${id}-v`} ref={field} className="ur-search pk-input" type="password" autoComplete="off" autoCapitalize="off"
@@ -1951,16 +1967,22 @@ function KeyForm({
           <Button kind="primary" size="sm" type="submit" busy={busy ? 'Setting…' : false} disabled={!filled}>Set secret</Button>
         </div>
       </form>
-      {failed !== null && <Banner tone="bad" title={failed} role="alert" />}
+      {failed !== null && (
+        <Banner tone="bad" title={failed.line} role="alert">
+          {failed.why === undefined ? undefined : <SaidLine said={{ line: failed.why, tip: failed.tip }} about="the spent link" />}
+        </Banner>
+      )}
     </Card>
   )
 }
 
-function TypeSafeForm({ scope, takeLink, onDone, written }: { scope: 'user' | 'tenant'; takeLink: () => string | null; onDone: (w: string) => void; written: boolean }) {
+function TypeSafeForm({ scope, takeLink, onDone, written }: { scope: 'user' | 'tenant'; takeLink: () => string | null; onDone: (said: Said) => void; written: boolean }) {
   return (
     <KeyForm
       title={scope === 'user' ? 'Your TypeSafe key' : 'The workspace’s TypeSafe key'}
-      where={scope === 'user' ? 'yours: your own submissions read it, before the workspace’s' : 'the workspace: Jev and browser agents read it'}
+      where={scope === 'user'
+        ? { line: 'yours, before the workspace’s', tip: 'yours: your own submissions read it, before the workspace’s' }
+        : { line: 'the workspace: Jev and browser agents read it' }}
       label="TypeSafe key"
       takeLink={takeLink}
       mint={() => mintProviderKeyLink('typesafe', scope)}
@@ -1971,11 +1993,14 @@ function TypeSafeForm({ scope, takeLink, onDone, written }: { scope: 'user' | 't
   )
 }
 
-function RunnerKeyForm({ provider, takeLink, onDone, written }: { provider: string; takeLink: () => string | null; onDone: (w: string) => void; written: boolean }) {
+function RunnerKeyForm({ provider, takeLink, onDone, written }: { provider: string; takeLink: () => string | null; onDone: (said: Said) => void; written: boolean }) {
   return (
     <KeyForm
       title={`The ${provider} runner key`}
-      where={`the workspace: the runner profiles that call ${provider} read it`}
+      where={{
+        line: `the workspace: profiles that call ${provider}`,
+        tip: `the workspace: the runner profiles that call ${provider} read it`,
+      }}
       label={`${provider} API key`}
       takeLink={takeLink}
       mint={() => mintRunnerKeyLink(provider)}

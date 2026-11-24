@@ -17,6 +17,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { helpIn, shownIn } from './proseruns'
 import { serve, visible } from './repofixture'
 
 /** A credential-shaped value, built at runtime: it must reach the PUT body and nothing else. */
@@ -200,9 +201,11 @@ describe('the grant matrix', () => {
     await act(async () => {
       fireEvent.click(box(m, 'typesafe-key', 'component:judge'))
     })
-    const status = await screen.findByText(/takes effect at the next attempt/i)
-    // MUTATION: drop the note -> fails.
-    expect(visible(status)).toMatch(/component:judge/)
+    const note = await screen.findByText(/takes effect at the next attempt/i)
+    // MUTATION: drop the note -> fails. The line stays on the surface, its sentence behind the (i).
+    const status = note.closest('[role="status"]')
+    expect(shownIn(status)).toMatch(/component:judge.*From the next attempt\./)
+    expect(helpIn(status)).toContain('This takes effect at the next attempt; an attempt already running keeps what it was given.')
     const sent = writes(calls)
     // MUTATION: write the whole row (one PUT per consumer) or use `use-in` -> fails.
     expect(sent).toHaveLength(1)
