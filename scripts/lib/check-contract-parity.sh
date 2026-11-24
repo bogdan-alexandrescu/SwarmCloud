@@ -682,7 +682,9 @@ from swarm_common import models as frozen_models          # noqa: E402
 
 attempt_fields = set(f.name for f in dataclasses.fields(frozen_models.Attempt))
 run_on = ["account_id", "credential_source", "credential_tier"]
-row = re.search(r"export interface AttemptRow \{(.*?)\n\}", SRC, re.S)
+# `extends ApiAttemptRow` since the console's AttemptRow extends the generated
+# one (part of #72); the three fields stay declared in types.ts.
+row = re.search(r"export interface AttemptRow(?: extends \w+)? \{(.*?)\n\}", SRC, re.S)
 if row is None:
     emit("MISSING", "AttemptRow.credential_*", "no export interface AttemptRow block")
 elif not set(run_on) <= attempt_fields:

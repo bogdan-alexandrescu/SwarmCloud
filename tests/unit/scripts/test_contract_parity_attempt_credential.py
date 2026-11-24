@@ -117,7 +117,8 @@ def test_an_attempt_row_without_a_field_fails_naming_it(tmp_path, field):
     root = _fixture(tmp_path)
     path = root / TYPES
     text = path.read_text()
-    row = re.search(r"export interface AttemptRow \{(.*?)\n\}", text, re.S)
+    # The console's AttemptRow extends the generated one (part of #72).
+    row = re.search(r"export interface AttemptRow(?: extends \w+)? \{(.*?)\n\}", text, re.S)
     assert row is not None
     body, count = re.subn(r"\n\s*%s\?:[^\n]*" % field, "", row.group(1))
     assert count == 1, (field, count)

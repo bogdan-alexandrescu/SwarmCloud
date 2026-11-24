@@ -1968,6 +1968,7 @@ export interface AttemptRow extends ApiAttemptRow {
    * older API.
    */
   account_id?: string | null
+  credential_source?: string | null
   credential_tier?: CredentialTier | null
   /**
    * archived issue 379. THIS attempt's account and the accounts it gave back. Served beside
