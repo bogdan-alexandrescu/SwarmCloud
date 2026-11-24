@@ -345,7 +345,7 @@ class MembershipStore:
                      .order_by("at", direction=firestore.Query.DESCENDING)
                      .limit(SCAN_LIMIT))
             snaps = list(query.stream() if transaction is None else transaction.get(query))
-        except Exception as exc:  # noqa: BLE001 - any Firestore failure is "unknown"
+        except Exception as exc:  # any Firestore failure is "unknown"
             if transaction is not None and isinstance(exc, gexc.Aborted):
                 raise  # contention: the transaction runs again or reports it
             log.warning("memberships unreadable (%s)", type(exc).__name__)

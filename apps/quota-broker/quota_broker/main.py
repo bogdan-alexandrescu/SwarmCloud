@@ -1425,7 +1425,7 @@ def mark_duplicates(store: Any) -> list[str]:
     """
     try:
         accounts = store.list()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         log.error("could not list accounts to find duplicates",
                   extra={"error": type(exc).__name__})
         return []
@@ -1443,7 +1443,7 @@ def mark_duplicates(store: Any) -> list[str]:
             continue
         try:
             store.set_duplicate(account.account_id, other, withheld)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.error(
                 "could not record an account's duplicate mark",
                 extra={"account_id": account.account_id, "error": type(exc).__name__},
@@ -1470,7 +1470,7 @@ def mark_possible_duplicates(store: Any) -> list[str]:
     """
     try:
         accounts = store.list()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         log.error("could not list accounts to compare their readings",
                   extra={"error": type(exc).__name__})
         return []
@@ -1482,7 +1482,7 @@ def mark_possible_duplicates(store: Any) -> list[str]:
         if (getattr(account, "identical_readings", None), before) != (count, possible):
             try:
                 store.set_identical_readings(account.account_id, count, possible)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 log.error(
                     "could not record an account's identical-readings count",
                     extra={"account_id": account.account_id, "error": type(exc).__name__},
@@ -1556,7 +1556,7 @@ def step_for(db: Any, tenant_id: str, task_id: str | None) -> tuple[Any, str | N
     try:
         snap = db.collection(TASKS_COLLECTION).document(task_id).get()
         data = snap.to_dict() if getattr(snap, "exists", False) else None
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         log.warning(
             "could not read a task's model class; only an account that serves "
             "every class may take it",
@@ -3442,7 +3442,7 @@ def _sweep_account_pool(
             keep_going=keep_going,
             held=held,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         log.error(
             "account pool sweep failed",
             extra={"error": type(exc).__name__, "detail": str(exc)[:200]},
@@ -3524,7 +3524,7 @@ def _sweep_account_pool(
             recorded = store.mark_reauth_required(
                 account_id, f"refresh failed: {second.reason}"
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.error(
                 "could not record that an account's credential is dead",
                 extra={"account_id": account_id, "error": type(exc).__name__},
@@ -3587,7 +3587,7 @@ def _record_refreshes(store: Any, outcomes: Any, now: datetime) -> int:
                 organisation=getattr(outcome, "organisation", None),
             ):
                 written += 1
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.error(
                 "could not record an account's refresh outcome",
                 extra={"account_id": outcome.tenant_id, "error": type(exc).__name__},
@@ -3606,7 +3606,7 @@ def _sweep_block(run: Any, failure_message: str) -> dict[str, Any]:
     """
     try:
         outcomes = run()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         log.error(failure_message, extra={"error": type(exc).__name__, "detail": str(exc)[:200]})
         return {"error": type(exc).__name__}
     return {
@@ -3652,7 +3652,7 @@ def _poll_block(run: Any, failure_message: str) -> dict[str, Any]:
     """
     try:
         outcomes = run()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         log.error(failure_message, extra={"error": type(exc).__name__, "detail": str(exc)[:200]})
         return {"error": type(exc).__name__}
     return {
@@ -4010,7 +4010,7 @@ def create_app(
     def readyz(request: Request, response: Response) -> dict[str, Any]:
         try:
             request.app.state.broker.list(limit=1)
-        except Exception as exc:  # pragma: no cover - depends on live Firestore
+        except Exception as exc:  # pragma: no cover - depends on live Firestore  # noqa: BLE001
             response.status_code = 503
             return {"status": "not-ready", "detail": type(exc).__name__}
         return {"status": "ready"}
@@ -4524,7 +4524,7 @@ def create_app(
         lease = getattr(request.app.state, "sweep_lease", None)
         try:
             data = lease.read() if lease is not None else None
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # A listing must not fail over a liveness read. Unknown is said
             # as unknown, never as "never ran".
             log.warning(
@@ -4608,7 +4608,7 @@ def create_app(
             )
         except BrokerValidationError:
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.error(
                 "an account's lending was recorded but a dropped borrower's "
                 "read access to its secret could not be revoked",
@@ -4720,7 +4720,7 @@ def create_app(
             secrets.add_version(base, access_token)
         except BrokerValidationError:
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.error(
                 "could not provision an account's secrets",
                 extra={
@@ -4745,7 +4745,7 @@ def create_app(
         if ledger is not None:
             try:
                 ledger.record(base, publish_fingerprint(access_token))
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 log.warning(
                     "provisioned an account but could not record which access "
                     "token was published; the next sweep may add one "
@@ -5860,7 +5860,7 @@ def create_app(
                 )
             except BrokerValidationError:
                 raise
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 log.error(
                     "could not grant a borrower its account's secret; lending unchanged",
                     extra={"secret": secret, "error": type(exc).__name__},
@@ -6236,7 +6236,7 @@ def create_app(
                 expires_at=getattr(outcome, "expires_at", None),
                 organisation=getattr(outcome, "organisation", None),
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.error(
                 "could not record an account's refresh outcome",
                 extra={"account_id": account_id, "error": type(exc).__name__},
@@ -7765,7 +7765,7 @@ def create_app(
                     account_store,
                     datetime.now(timezone.utc),
                 )
-            except Exception as exc:  # pragma: no cover - defence in depth
+            except Exception as exc:  # pragma: no cover - defence in depth  # noqa: BLE001
                 log.error(
                     "account hold sweep failed",
                     extra={"error": type(exc).__name__, "detail": str(exc)[:200]},
@@ -7779,7 +7779,7 @@ def create_app(
                 result["ended_holds"] = _release_ended_attempt_holds(
                     request.app.state.broker.db, datetime.now(timezone.utc)
                 )
-            except Exception as exc:  # pragma: no cover - defence in depth
+            except Exception as exc:  # pragma: no cover - defence in depth  # noqa: BLE001
                 log.error(
                     "ended-attempt hold sweep failed",
                     extra={"error": type(exc).__name__, "detail": str(exc)[:200]},
@@ -7805,7 +7805,7 @@ def create_app(
             ):
                 try:
                     result[key] = run()
-                except Exception as exc:  # pragma: no cover - defence in depth
+                except Exception as exc:  # pragma: no cover - defence in depth  # noqa: BLE001
                     log.error(
                         "an API key housekeeping block failed",
                         extra={"block": key, "error": type(exc).__name__},
@@ -7830,7 +7830,7 @@ def create_app(
             holder = new_holder()
             try:
                 taken = lease.acquire(holder)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 # FAIL CLOSED. No proof of exclusion, no exchange: skipping one
                 # tick costs five minutes on a token refreshed hours before it
                 # expires, and an unexcluded exchange can cost the token.

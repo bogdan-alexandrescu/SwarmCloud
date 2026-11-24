@@ -841,7 +841,7 @@ def list_leases(
             # (the archived pull request 229 review): this row crosses tenants, and `last_error`
             # can be the agent's stderr tail.
             errors[lease.task_id] = masking_for(task).text(task.last_error)[0]
-        except Exception:
+        except Exception:  # noqa: BLE001
             # A lease whose task is gone is itself a finding -- the reconciler
             # calls it task_missing. Do not let it fail the whole listing.
             tasks[lease.task_id] = None
@@ -1252,7 +1252,7 @@ def rollup_workflows(
         else:
             try:
                 sealed = ctx.outcomes.seal_recent(tenant_id=tenant_id)
-            except Exception:  # noqa: BLE001 -- the next tick seals what this one did not
+            except Exception:  # the next tick seals what this one did not
                 log.exception("outcome seal failed tenant=%s", tenant_id)
                 sealed = {"tenant_id": tenant_id, "error": "seal_failed"}
         ctx.metrics.admin_actions.labels(action="outcomes_seal").inc()
@@ -1621,14 +1621,14 @@ def task_finished_push(
     try:
         QaTargets(ctx.db, now=ctx.now).settle_discovery(
             task_id, ctx.inspection, tenant_id=fields.get("tenant_id"))
-    except Exception:  # noqa: BLE001 -- a doorbell: the target's next read settles it
+    except Exception:  # a doorbell: the target's next read settles it
         log.exception("qa target discovery settle failed task=%s", task_id)
     # A step of a leg's QA run ended: once its capture steps all have, merge
     # what their crawls found into that leg's `discovered` (qa-environments.md
     # §5, lane QAENV-SETTLE). Never raises: the run's next step to end rings again.
     try:
         QaTargets(ctx.db, now=ctx.now).settle_run(task_id, ctx.inspection, tenant_id=fields.get("tenant_id"))
-    except Exception:  # noqa: BLE001 -- a doorbell: the run's next ended step settles it
+    except Exception:  # a doorbell: the run's next ended step settles it
         log.exception("qa run settle failed task=%s", task_id)
     # A personal workflow that this step ended loses its browser session
     # carry now (docs/design/live-browser.md §5.5.1, lane LB-L9b). Never

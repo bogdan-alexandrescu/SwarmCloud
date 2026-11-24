@@ -589,7 +589,7 @@ def _project(environ: dict[str, str] | None = None) -> tuple[Path, str] | None:
     if config.repo_mode(environ):
         try:
             return _checkout(), "the repo-local bridge's checkout"
-        except Exception:  # noqa: BLE001 - no checkout is no project, never a failed launch
+        except Exception:  # noqa: BLE001, S110 - no checkout is no project, never a failed launch
             pass
     here = checkout.directory()
     try:
@@ -1429,7 +1429,7 @@ def _read_tasks(client: SwarmClient, entries: list[dict[str, Any]]) -> None:
     def read(entry: dict[str, Any]) -> None:
         try:
             entry["task"] = client.task(str(entry["task_id"]))
-        except Exception:  # noqa: BLE001 - details are never worth a failed launch
+        except Exception:  # noqa: BLE001, S110 - details are never worth a failed launch
             pass
 
     with ThreadPoolExecutor(max_workers=min(8, len(missing))) as pool:

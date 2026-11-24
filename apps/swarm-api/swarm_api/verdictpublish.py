@@ -1000,7 +1000,7 @@ def _step_token(ctx: Any, tenant: Any, doc: Mapping[str, Any], ref: IssueRef) ->
     suffix = _forge_slot(doc)
     try:
         refused = grant_refusal(ctx.store.db, tenant.tenant_id, suffix, ref)
-    except Exception as exc:  # unreadable is not revoked, but it is not a grant either
+    except Exception as exc:  # unreadable is not revoked, but it is not a grant either  # noqa: BLE001
         raise Decline("credential", f"the submitter's grant could not be read "
                                     f"({type(exc).__name__})") from None
     if refused:
@@ -1008,7 +1008,7 @@ def _step_token(ctx: Any, tenant: Any, doc: Mapping[str, Any], ref: IssueRef) ->
     secret = secret_name_for(tenant.tenant_id, suffix)
     try:
         return ctx.forge_tokens.read_slot(tenant, suffix).value
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
         raise Decline("credential", f"{secret} could not be read ({code})") from None
 

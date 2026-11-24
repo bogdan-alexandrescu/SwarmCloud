@@ -265,7 +265,7 @@ class Trigger:
                 if runner_is_working(worker):
                     try:
                         action()
-                    except BaseException as exc:  # surfaced by `join`
+                    except BaseException as exc:  # surfaced by `join`  # noqa: BLE001
                         self.error = exc
                     self.fired.set()
                     return

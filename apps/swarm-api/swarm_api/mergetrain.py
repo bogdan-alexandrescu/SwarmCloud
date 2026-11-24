@@ -395,7 +395,7 @@ def tick_tenant(ctx: Any, tenant_id: str, *, limit: int) -> TrainReport:
             try:
                 _Lane(ctx, tenant_id, repository, base, lane_id, lane_settings, token,
                       report).step(entries, board=(repository, base) in boarding)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
                 log.warning("merge train lane=%s tenant=%s: not advanced (%s)",
                             lane_id, tenant_id, code)
@@ -791,7 +791,7 @@ class _Lane:
                 "DELETE", self.writer._url(self.ref, f"issues/{number}/labels/{READY_LABEL}"),
                 self.token(), f"the {READY_LABEL} label of {self.repository}#{number}",
                 needs=ISSUES_WRITE, ok=(200, 204))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
             log.info("merge train lane=%s: %s not removed from #%d (%s)", self.lane_id,
                      READY_LABEL, number, code)
@@ -802,7 +802,7 @@ class _Lane:
             self.writer.create_comment(
                 IssueRef(owner=self.ref.owner, repo=self.ref.repo, number=number),
                 body, self.token())
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
             log.info("merge train lane=%s: comment on #%d failed (%s)", self.lane_id,
                      number, code)
@@ -1004,7 +1004,7 @@ class _Lane:
         try:
             for run_id in run_ids:
                 self.writer.rerun_failed_jobs(self.ref, run_id, self.token())
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
             log.info("merge train %s tenant=%s: re-run refused (%s)", train["id"],
                      self.tenant_id, code)
@@ -1163,7 +1163,7 @@ class _Lane:
                 self.writer.close_pull(self.ref, pull_request, self.token())
             if isinstance(branch, str) and branch.startswith(BRANCH_PREFIX):
                 self.writer.delete_branch(self.ref, branch, self.token())
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
             log.warning("merge train lane=%s: cleanup of %s failed (%s)",
                         self.lane_id, branch, code)

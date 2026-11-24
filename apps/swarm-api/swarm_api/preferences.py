@@ -258,7 +258,7 @@ class Preferences:
                 for snap in self._db.get_all(refs)
                 if snap.exists
             }
-        except Exception as exc:  # noqa: BLE001 - any Firestore failure is a 503
+        except Exception as exc:  # any Firestore failure is a 503
             raise PreferencesUnavailable() from exc
         out: dict[str, StoredPreferences] = {}
         for email in wanted:
@@ -388,7 +388,7 @@ class Preferences:
             raise UpstreamUnavailable(SAVE_UNAVAILABLE) from exc
         except ApiError:
             raise
-        except Exception as exc:  # noqa: BLE001 - any Firestore failure: nothing was written
+        except Exception as exc:  # any Firestore failure: nothing was written
             raise UpstreamUnavailable(SAVE_UNAVAILABLE) from exc
         finally:
             self.forget(email)

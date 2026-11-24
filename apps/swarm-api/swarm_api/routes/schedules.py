@@ -539,7 +539,7 @@ def _inbox(ctx: AppContext, tenant_id: str) -> list[dict[str, Any]] | None:
     are still listed, and the summary says what it could not count."""
     try:
         return approvals.inbox(ctx, tenant_id)
-    except Exception as exc:  # one read's failure does not blank the list
+    except Exception as exc:  # one read's failure does not blank the list  # noqa: BLE001
         log.warning("schedules: the approvals inbox of %s not read: %s", tenant_id, type(exc).__name__)
         return None
 
@@ -1604,7 +1604,7 @@ def list_firing_spans(
                     continue
                 try:
                     attempts = ctx.store.list_attempts(tenant_id, task_id, limit=SPAN_ATTEMPTS + 1)
-                except Exception as exc:  # one task's read does not blank the page
+                except Exception as exc:  # one task's read does not blank the page  # noqa: BLE001
                     log.warning("schedule spans: attempts of %s not read: %s", task_id, type(exc).__name__)
                     shown["tasks"].append(_span_task(task, label, None, "its attempts could not be read"))
                     continue

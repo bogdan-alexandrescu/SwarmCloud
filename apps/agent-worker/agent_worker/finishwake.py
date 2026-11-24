@@ -118,6 +118,6 @@ class PubSubFinishAnnouncer:
                 json=body,
                 timeout=PUBLISH_TIMEOUT_SECONDS,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001
             return False
         return 200 <= int(getattr(response, "status_code", 0)) < 300
