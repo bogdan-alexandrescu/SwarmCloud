@@ -748,16 +748,15 @@ Admin › Setup › Health, the hourly doctor's checks once setup is done.
 
    **`sc` must be on the teammate's `PATH` for `sc login`.** The plugin line
    above installs the plugin only; its server runs the bridge through
-   `uv tool run` and puts nothing on `PATH`. On a machine where `sc login`
-   answers `sc: command not found`, either install the command line from the
-   deployment's release
-   (`curl -fsSL https://storage.googleapis.com/swarmcloud/install.sh | SWARMCLOUD_VERSION=<version> sh`,
+   `uv tool run` from the release's wheel and puts nothing on `PATH`, and a
+   SwarmCloud tool called before sign-in answers
+   `sign-in required for <context>: run sc login ...` all the same. On a
+   machine where `sc login` answers `sc: command not found`, install the
+   command line from the deployment's release first
+   ([step 1](#step-1-install-the-command-line)):
+   `curl -fsSL https://storage.googleapis.com/swarmcloud/install.sh | SWARMCLOUD_VERSION=<version> sh`,
    or for a release candidate
-   `curl -fsSL https://storage.googleapis.com/swarmcloud/channels/rc.install.sh | SWARMCLOUD_VERSION=<version> SWARM_CHANNEL=rc sh`;
-   [step 1](#step-1-install-the-command-line)), or call any SwarmCloud tool
-   from Claude Code first: its answer
-   `sign-in required for <context>: run ... sc login` spells the command so
-   it runs on that machine.
+   `curl -fsSL https://storage.googleapis.com/swarmcloud/channels/rc.install.sh | SWARMCLOUD_VERSION=<version> SWARM_CHANNEL=rc sh`.
 
 9. **Add a plugin**, optional and last. It is drawn only when this
    deployment's swarm-api serves the step. It is never needed: the count

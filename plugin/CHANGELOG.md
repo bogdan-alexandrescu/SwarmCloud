@@ -8,15 +8,13 @@ here.
 
 ## 0.5.91 (2026-11-24)
 
-The setup command no longer tells a plugin-only teammate to type a bare
+The setup command tells a plugin-only teammate how to get `sc` before
 `sc login`.
 
 * `/sc:setup` tells the person to run the sign-in command exactly as the
-  tool's `sign-in required` answer spells it. That answer is spelled for the
-  install that is running (`invocation.terminal_command`): a bare `sc login`
-  only where SwarmCloud's `install.sh` put `sc` on PATH, and a longer
-  command that runs the plugin's own bridge with the plugin alone, where a
-  bare `sc` is not found (K9 of the
+  tool's `sign-in required` answer spells it, and, where that is a bare
+  `sc login`, that `sc` comes from the release's `install.sh`: the plugin
+  alone puts nothing on PATH, so a bare `sc` is not found (K9 of the
   proof-install runbook's known disagreements). The bridge is unchanged.
 
 ## 0.5.90 (2026-11-24)

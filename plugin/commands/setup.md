@@ -131,7 +131,8 @@ terminal without Claude Code as `sc setup`, and
 
 If a tool answers that the person is not signed in, tell them to run the
 sign-in command exactly as that answer spells it, themselves (it opens a
-browser and waits for them), and stop. It is a bare `sc login` only where
-SwarmCloud's `install.sh` put `sc` on their PATH; with the plugin alone the
-answer spells a longer command that runs the plugin's own bridge, and a bare
-`sc login` answers `sc: command not found`.
+browser and waits for them), and stop. Where it is a bare `sc login`, it
+needs `sc` on their PATH, which the plugin alone does not put there: if
+their terminal answers `sc: command not found`, they first install
+SwarmCloud's command line with the deployment release's `install.sh` line
+(docs/install.md, Step 1), then run `sc login`.
