@@ -2276,11 +2276,17 @@ jobs:
     # time goes"), so a job on the pool would queue the shards it runs beside.
     # ubuntu-24.04 has the 4 vCPUs the pin of PYRIGHT_THREADS assumes, and the
     # pool's VM count per pull request (test_ci_fold.py) is unchanged.
+    # Read-only, no secret, no persisted credentials: the reason
+    # test_fork_prs_off_self_hosted.py checks for keeping it off the pool.
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     needs: changes
     if: needs.changes.outputs.full == 'true' && needs.changes.outputs.python == 'all' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'pyright') && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
