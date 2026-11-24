@@ -19,7 +19,6 @@
  * A catalogue without `proposes` (an API before plans-pipeline P5) cannot
  * narrow, and says so rather than listing every schedule as a source.
  */
-import type { ReactNode } from 'react'
 import { loadScheduleTypes, loadSchedules, type Schedule, type ScheduleTypeRow } from './api'
 import { Info } from './AccountsVerdict'
 import { Button, EmptyState, Segmented, Tag, buttonClass } from './components'
@@ -163,12 +162,11 @@ function SourceCard({ s, go }: Readonly<{ s: Source; go: (to: string) => void }>
   )
 }
 
-function SourcesBody({ d, go, bar }: Readonly<{ d: Sources; go: (to: string) => void; bar: ReactNode }>) {
+function SourcesBody({ d, go }: Readonly<{ d: Sources; go: (to: string) => void }>) {
   const roleGate = useRoleGate('member', 'create schedules')
   if (!d.narrowed) {
     return (
       <div className="acd-page" data-testid="src-not-served">
-        <div className="acd-bar-row">{bar}</div>
         <EmptyState kind="failed" heading="Proposing types are not served here">
           <span className="acd-mono">GET /v1/schedule-types</span>{' '}
           <Info about="Not served" tip="This API's schedule types do not say which ones propose, so the list cannot be narrowed." />
@@ -189,10 +187,9 @@ function SourcesBody({ d, go, bar }: Readonly<{ d: Sources; go: (to: string) => 
       )
     return (
       <div className="acd-page">
-        <div className="acd-bar-row">{bar}</div>
         <div data-testid="src-none">
           <EmptyState kind="empty" heading="No schedule proposes work" action={action}>
-            <Info about="Proposing" tip="Only schedules of a type that proposes work for approval are listed." />
+            Only schedules of a type that proposes work for approval are listed.
           </EmptyState>
         </div>
       </div>
@@ -200,7 +197,6 @@ function SourcesBody({ d, go, bar }: Readonly<{ d: Sources; go: (to: string) => 
   }
   return (
     <div className="acd-page">
-      <div className="acd-bar-row">{bar}</div>
       <div className="acd-grid">
         {d.rows.map((s) => (
           <SourceCard key={s.schedule_id} s={s} go={go} />
@@ -240,14 +236,18 @@ async function loadSources(): Promise<Result<Sources>> {
 
 /** The sources' screen: the Schedules page narrowed, with the switch back to the full list. */
 export function ScheduleSources({ go }: Readonly<{ go: (to: string) => void }>) {
-  const bar = <SourcesSwitch on go={go} />
   return (
-    <Screen
-      title="Schedules"
-      load={loadSources}
-      summary={(d) => (d.narrowed ? `${pluralise(d.rows.length, 'schedule')} proposing` : 'proposing: — not served by this API')}
-    >
-      {(d) => <SourcesBody d={d} go={go} bar={bar} />}
-    </Screen>
+    <>
+      <div className="acd-bar-row">
+        <SourcesSwitch on go={go} />
+      </div>
+      <Screen
+        title="Schedules"
+        load={loadSources}
+        summary={(d) => (d.narrowed ? `${pluralise(d.rows.length, 'schedule')} proposing` : 'proposing: — not served by this API')}
+      >
+        {(d) => <SourcesBody d={d} go={go} />}
+      </Screen>
+    </>
   )
 }
