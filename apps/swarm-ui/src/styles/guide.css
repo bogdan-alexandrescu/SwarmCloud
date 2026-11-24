@@ -165,9 +165,3 @@
   outline: 2px solid var(--ctl-bd);
   outline-offset: 2px;
 }
-/* Help's line pointing here (HelpSection.tsx). */
-.help-guide {
-  margin: var(--ctl-s2) 0 var(--ctl-s3);
-  font-size: var(--t-meta);
-  color: var(--text-dim);
-}

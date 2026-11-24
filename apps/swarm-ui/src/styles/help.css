@@ -112,3 +112,12 @@
   .help-rows > div > dt { padding-top: var(--ctl-s1); }
   .help-topic-anchor { margin-left: 0; }
 }
+
+/* Help's line pointing to the Guide (HelpSection.tsx). Here and not in
+   guide.css: Help imports this sheet, and Guide's loads only with Guide's
+   lazy screen. */
+.help-guide {
+  margin: var(--ctl-s2) 0 var(--ctl-s3);
+  font-size: var(--t-meta);
+  color: var(--text-dim);
+}

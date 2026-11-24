@@ -37,7 +37,7 @@ import {
   type AgentQuestion, type QuestionOption, type TaskQuestions,
 } from './api'
 import { Markdown } from './ArtifactViewer'
-import { InfoTip } from './People'
+import { InfoTip } from './InfoTip'
 import { apiHeaders, chosenTenant, dropRefusedTenant, type ApiError, type Result } from './fetch'
 import { Button, Chip } from './components'
 import { FailedPanel, PageHead, Screen } from './Shell'

@@ -2629,6 +2629,53 @@ send instead. `expected_outputs` was first reserved by a check of its own,
 so as not to collide with the `input_from` change. That check heard about one
 key per round trip, and it was folded into the tuple once both had merged.
 
+## Sending a submission twice: `idempotency_key`
+
+A submission POST can time out after swarm-api has already accepted it. Sending
+the same body again used to create a second copy of every task in it. The
+bridge's own duplicate guard was held in memory, so a restarted bridge lost it.
+So `POST /v1/tasks`, `POST /v1/tasks/batch` and `POST /v1/workflows` each take
+an optional body field, `idempotency_key`. It must be 16 to 128 characters of
+letters, digits and `_ . : -`, chosen at random for each logical submission
+(`swarm_api.idempotency`).
+
+| What arrives | Answer |
+| --- | --- |
+| A key this workspace and this submitter have not used in the last 24 hours | 201. The submission is created and the claim recorded. |
+| The same key with the same body on the same route | 200 with `idempotent_replay: true` and the FIRST submission's task or workflow ids. Nothing is created and the scheduler is not woken. |
+| The same key with a different body, or on another route | 409 `idempotency_key_reused`. Nothing is created. |
+| A key on a task inside a batch | 422. One key names the whole batch. |
+| No key | As before: two identical submissions are two. |
+
+**Scope.** The claim's document id is the SHA-256 of the workspace that
+`tenant_for` checked, the verified submitter email and the key. Nothing from
+the body goes into that id. Two workspaces, or two members of one workspace,
+can use the same key without colliding, and neither can read or replay the
+other's submission. The key itself is never stored and never served. The
+claim stores a fingerprint of the body, never the body. A per-run MCP
+credential's value is left out of that fingerprint.
+
+**Why it cannot admit twice.** The claim is written with a create-if-absent
+`create` in the same Firestore write batch as the submission's first chunk of
+tasks, and a batch commits whole. A batch is at most `max_batch_size` (100)
+tasks, all inside that one chunk. When two sends with one key both pass the
+first read, only one batch commits. The other batch is refused
+ALREADY_EXISTS, so none of its tasks is written, and that send answers with
+the winner's ids. Admission is untouched: the claim sits beside QUEUED tasks,
+which hold no lease and no capacity.
+
+**Window.** A claim holds for 24 hours (`KEY_WINDOW`). A bridge re-sends
+within minutes, but a suspended laptop or a restarted session can come back
+hours later to the same pending send. A day covers that, and a key a day old
+is one no caller is still retrying. Past its window, a claim is treated as
+absent and replaced, and Firestore's TTL on `submission_keys.expires_at`
+deletes it.
+
+**The bridge.** `swarm_mcp.client.send_submission` gives every dispatch, batch
+and workflow submission a fresh key. When a send times out, it sends the same
+body with the same key once more. It never re-sends a refusal. The key is
+added to a copy of the body, so it never appears in a tool reply.
+
 ## Failure behaviour
 
 | `on_step_failure` | Effect when a step is FAILED or DEAD_LETTERED |

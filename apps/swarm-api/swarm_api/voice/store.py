@@ -800,10 +800,13 @@ class VoiceStore:
 
         refs: list[Any] = []
         from . import trace as vtrace  # trace.py imports this module
+        from . import record as vrecord  # record.py imports this module
         for snap in sessions:
             refs.extend(e.reference for e in snap.reference.collection(EVENTS).stream())
             # Debug mode's trace of the session (voice/trace.py) goes with it.
             refs.extend(vtrace.refs_for(self._db, snap.id))
+            # And its transcript (voice/record.py).
+            refs.extend(vrecord.refs_for(self._db, snap.id))
             refs.append(snap.reference)
         # The visuals lane's documents (visuals.py names them; imported here
         # because visuals.py imports this module). A visual's notes go before

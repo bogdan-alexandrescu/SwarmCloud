@@ -227,7 +227,7 @@ from .schemas import (
 )
 from swarm_common.profiles import MODEL_CLASSES, RUNNER_PROFILES, step_model_class
 
-from . import planhistory, reviewgate, sessiontag, stepclass, workcontract
+from . import planfiles, planhistory, reviewgate, sessiontag, stepclass, workcontract
 from .plansections import (
     MAX_CHANGES,
     MAX_GRAPH_EDGES,
@@ -2955,7 +2955,8 @@ def expected_cost(plan: Mapping[str, Any] | None, rates: Mapping[str, float], *,
 
 
 def compile_plan(run: "IssueRun", review_context: str | None = None, *,
-                 class_models: Mapping[str, str] | None = None) -> WorkflowCreate:
+                 class_models: Mapping[str, str] | None = None,
+                 changed: planfiles.ChangedFiles = planfiles.AT_APPROVAL) -> WorkflowCreate:
     """The approved plan as a workflow: implementers, review, gated fix, then
     the fix loop or, while it is unavailable, the re-review (`_with_review_rounds`).
 
@@ -2969,14 +2970,18 @@ def compile_plan(run: "IssueRun", review_context: str | None = None, *,
     delimited and bounded. None is today's review prompt. `class_models` is
     the deployment's pinned classes (`Settings.worker_class_models`): the
     requirements check runs the cheap class only where it is pinned
-    (`_check_class`).
+    (`_check_class`). The review and the fix also carry each plan step's
+    files and tests, and the files `changed` lists outside the plan
+    (`planfiles.plan_files_section`): at approval no build has run, so it is
+    `planfiles.AT_APPROVAL` and the section says the list is missing and why.
     """
     refuse_auto_merge(run.auto_merge)
     if run.plan is None:
         raise InvalidPlan("this run has no plan to compile")
     plan = parse_plan(run.plan, stored=True)
     if _uses_dependencies(plan["steps"]):
-        staged = _compile_staged(run, plan, review_context, class_models=class_models)
+        staged = _compile_staged(run, plan, review_context, class_models=class_models,
+                                 changed=changed)
         return _workflow(run, _with_security_review(run, staged))
     ref = run.issue
     steps: list[dict[str, Any]] = []
@@ -3031,6 +3036,7 @@ def compile_plan(run: "IssueRun", review_context: str | None = None, *,
             "prompt": (
                 f"Review the change on this branch for GitHub issue {ref.short} against the "
                 f"approved plan: {plan['summary']}\n\n" + _requirements_text(plan)
+                + _review_plan_files(run, plan, changed)
                 + _review_impact(review_context)
                 + f"{PATCH_FILE} holds the last step's diff; "
                 "the whole change is this branch against the default branch. Do not edit "
@@ -3052,11 +3058,11 @@ def compile_plan(run: "IssueRun", review_context: str | None = None, *,
             "issue": ref.number,
             "prompt": (
                 f"Fix every finding in {VERDICT_FILE} for GitHub issue {ref.short}. "
-                "Change nothing else. " + NO_CLOSING_KEYWORD
+                "Change nothing else." + _fix_plan_files(run, plan, changed) + NO_CLOSING_KEYWORD
             ),
         },
     })
-    steps = _with_security_lens(run, plan, steps, by_parent=False)
+    steps = _with_security_lens(run, plan, steps, by_parent=False, changed=changed)
     return _workflow(run, _with_security_review(
         run, _with_review_rounds(run, steps, class_models=class_models)))
 
@@ -3128,7 +3134,9 @@ def _security_lens_prompt(ref: IssueRef, plan: Mapping[str, Any], hits: list[str
 
 
 def _with_security_lens(run: "IssueRun", plan: Mapping[str, Any], steps: list[dict[str, Any]],
-                        *, by_parent: bool) -> list[dict[str, Any]]:
+                        *, by_parent: bool,
+                        changed: planfiles.ChangedFiles = planfiles.AT_APPROVAL,
+                        ) -> list[dict[str, Any]]:
     """`steps`, with the security lens beside the first review when the plan's
     files touch a risk path (`risk_path_hits`); exactly `steps` otherwise.
 
@@ -3173,7 +3181,8 @@ def _with_security_lens(run: "IssueRun", plan: Mapping[str, Any], steps: list[di
                     f"Fix every finding in {VERDICT_FILE} (the code review's verdict) and "
                     f"in {SECURITY_VERDICT_FILE} (the security review's) for GitHub issue "
                     f"{ref.short}; a file whose verdict is MERGE has no blocker for you. "
-                    "Change nothing else. " + NO_CLOSING_KEYWORD
+                    "Change nothing else." + _fix_plan_files(run, plan, changed)
+                    + NO_CLOSING_KEYWORD
                 )},
             }
         out.append(step)
@@ -3343,6 +3352,21 @@ def _step_prompt(ref: IssueRef, plan: Mapping[str, Any], index: int, step: Mappi
     )
 
 
+def _review_plan_files(run: "IssueRun", plan: Mapping[str, Any],
+                       changed: planfiles.ChangedFiles) -> str:
+    """Each plan step's files and tests (`planfiles`) and a blank line, or nothing."""
+    section = planfiles.plan_files_section(run.id, plan, changed)
+    return f"{section}\n" if section else ""
+
+
+def _fix_plan_files(run: "IssueRun", plan: Mapping[str, Any],
+                    changed: planfiles.ChangedFiles) -> str:
+    """The fix's copy of the same section, between blank lines; one space when
+    there is none, so a plan that declares nothing compiles as it did."""
+    section = planfiles.plan_files_section(run.id, plan, changed)
+    return f"\n\n{section}\n" if section else " "
+
+
 def _review_impact(review_context: str | None) -> str:
     """The review's IMPACT block (lane KG6) and a blank line, or nothing."""
     return f"{review_context.rstrip()}\n\n" if review_context else ""
@@ -3378,7 +3402,9 @@ def _attach_plan_contract(spec: dict[str, Any], run: "IssueRun", plan: Mapping[s
 
 def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
                     review_context: str | None = None, *,
-                    class_models: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
+                    class_models: Mapping[str, str] | None = None,
+                    changed: planfiles.ChangedFiles = planfiles.AT_APPROVAL,
+                    ) -> list[dict[str, Any]]:
     """Implementers wired by the plan's `depends_on`, then review and the gated fix.
 
     A step with no dependency starts from the default branch at once. A step
@@ -3474,6 +3500,7 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
             "prompt": (
                 f"Review the change for GitHub issue {ref.short} against the approved plan: "
                 f"{plan['summary']}\n\n" + _requirements_text(plan)
+                + _review_plan_files(run, plan, changed)
                 + _review_impact(review_context)
                 + f"The plan's steps ran in {len(plan_stages(plan))} stages, "
                 "some side by side on separate branches, and the pull request will carry ALL "
@@ -3502,11 +3529,11 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
             "issue": ref.number,
             "prompt": (
                 f"Fix every finding in {VERDICT_FILE} for GitHub issue {ref.short}. "
-                "Change nothing else. " + NO_CLOSING_KEYWORD
+                "Change nothing else." + _fix_plan_files(run, plan, changed) + NO_CLOSING_KEYWORD
             ),
         },
     })
-    steps = _with_security_lens(run, plan, steps, by_parent=True)
+    steps = _with_security_lens(run, plan, steps, by_parent=True, changed=changed)
     return _with_review_rounds(run, steps, class_models=class_models)
 
 
