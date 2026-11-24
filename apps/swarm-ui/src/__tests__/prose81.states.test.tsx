@@ -16,15 +16,36 @@
 //
 // Every token- or password-shaped value is built at runtime.
 
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { AccountsBoard } from '../api'
 import type { PoolAccount } from '../accountsPool'
-import type { Result } from '../fetch'
-import type { Account, AccountsPage } from '../types'
-import { allIn, around, helpIn, longRuns, oneIn, shownIn } from './proseruns'
-import { repo, serve } from './repofixture'
+import { allIn, around, oneIn, shownIn } from './proseruns'
+import {
+  AT,
+  BLOG,
+  DAY,
+  HOUR,
+  MIN,
+  OWN_LOGIN,
+  PORTAL,
+  SHOP,
+  UNSET,
+  WAIT,
+  account,
+  holds,
+  made,
+  mount,
+  ok,
+  qaServe,
+  target,
+  unmountAll,
+  week,
+  type Json,
+  type Reply,
+} from './prose81states'
+import { serve } from './repofixture'
 
 const api = vi.hoisted(() => ({
   loadAccountsBoard: vi.fn(),
@@ -37,25 +58,13 @@ vi.mock('../api', async (importOriginal) => ({
   ...api,
 }))
 
-type Json = Record<string, unknown>
-type Reply = { status: number; body: unknown } | null
-
-const WAIT = { timeout: 5000 } as const
-const MIN = 60_000
-const HOUR = 60 * MIN
-const DAY = 24 * HOUR
-const AT = '2026-10-20T09:30:00+00:00'
-
-/** A password- or token-shaped value, built at runtime. */
-const made = (s: string) => [s, 'demo'].join('-') + 'Qx7'.repeat(9)
-
 beforeEach(() => {
   api.loadAccountHealth.mockReset()
   api.loadAccountsBoard.mockReset()
 })
 
 afterEach(() => {
-  cleanup()
+  unmountAll()
   vi.unstubAllEnvs()
   vi.unstubAllGlobals()
   window.history.replaceState(null, '', '/')
@@ -63,64 +72,13 @@ afterEach(() => {
   window.sessionStorage.clear()
 })
 
-/** `root` shows no long run but the `data` it only shows, shows each line, and keeps each moved sentence behind a mark. */
-function holds(root: Element, want: { lines?: string[]; moved?: string[]; data?: string[] }): void {
-  const el = root as HTMLElement
-  const runs = longRuns(el).filter((r) => !(want.data ?? []).some((d) => r.includes(d)))
-  expect(runs, 'a long run is on the surface').toEqual([])
-  for (const line of want.lines ?? []) expect(shownIn(el), `"${line}" left the surface`).toContain(line)
-  for (const s of want.moved ?? []) {
-    expect(shownIn(el), `"${s}" is on the surface`).not.toContain(s)
-    expect(helpIn(el), `"${s}" is behind no mark`).toContain(s)
-  }
-}
-
 // ---------------------------------------------------------------------------
 // QA targets
 // ---------------------------------------------------------------------------
 
-const REPO_ID = 'repo_' + '0'.repeat(16)
-const SHOP = 'qat_' + 'a1'.repeat(8)
-const BLOG = 'qat_' + 'b2'.repeat(8)
-const PORTAL = 'qat_' + 'c3'.repeat(8)
-const UNSET = { set: false, set_at: null, set_by: null, version: null }
-const OWN_LOGIN = { kind: 'own_login', login_path: '/login', signed_in_selector: '#me' }
-
-function target(id: string, name: string, over: Json = {}): Json {
-  return {
-    id, tenant_id: 'eng', revision: 1, name,
-    base_url: `https://${name}.example.test/`, host: `${name}.example.test`, host_state: 'approved',
-    approved_by: 'ops@example.com', approved_at: AT, approved_origins: [],
-    repo_id: REPO_ID, repository: 'https://github.com/example-org/example-api',
-    sign_in: { kind: 'none' }, credential: UNSET, challenge_bypass_value: UNSET,
-    authorized_by: "the app's owner", screens: [{ id: 'home', path: '/' }], ...over,
-  }
-}
-
-function qaServe(list: Json[], opts: { role?: string; write?: (m: string, path: string) => Reply } = {}) {
-  serve((m, url) => {
-    const path = url.split('?')[0] ?? ''
-    if (m === 'GET' && path === '/v1/tenants/me') {
-      return {
-        status: 200,
-        body: {
-          tenant: { tenant_id: 'eng', kind: 'group', principal: 'eng@example.com', display_name: null },
-          principal: { email: 'vera@example.com', domain: 'example.com', groups: [], is_admin: true, is_admin_unresolved: false },
-          environment: 'dev', environment_declared: true, role: { name: opts.role ?? 'admin', source: 'override' },
-        },
-      }
-    }
-    if (m === 'GET' && path === '/v1/qa-targets') return { status: 200, body: { qa_targets: list } }
-    if (m === 'GET' && path === '/v1/repositories') return { status: 200, body: { repositories: [repo({ repo_id: REPO_ID })] } }
-    return opts.write?.(m, path) ?? null
-  })
-  vi.stubEnv('VITE_LIVE', '1')
-  vi.resetModules()
-}
-
 async function qaPage(view = 'page=qa-targets'): Promise<HTMLElement> {
   const { RepositoriesScreen } = await import('../Repositories')
-  render(<RepositoriesScreen view={view} go={vi.fn()} />)
+  mount(<RepositoriesScreen view={view} go={vi.fn()} />)
   return waitFor(() => {
     const el = oneIn<HTMLElement>(document, '.qa-page')
     expect(el).not.toBeNull()
@@ -166,7 +124,7 @@ describe('QA targets: each state is one short line', () => {
       return el!
     }, WAIT)
     holds(line, { lines: ['Showing the QA targets that file in example-org/example-api', 'Show every QA target'] })
-    cleanup()
+    unmountAll()
     qaServe([target(SHOP, 'shop')])
     const page = await qaPage('page=qa-targets&repository=example-org/other')
     await screen.findByText('No QA target files in example-org/other', undefined, WAIT)
@@ -185,7 +143,7 @@ describe('QA targets: each state is one short line', () => {
       return el!
     }, WAIT)
     holds(await lead(), { lines: ['Tick environments on a target, press Run.'], moved: ['Tick the environments on a target and press Run.'] })
-    cleanup()
+    unmountAll()
     qaServe([target(PORTAL, 'portal', { sign_in: OWN_LOGIN })])
     await qaPage()
     holds(await lead(), {
@@ -197,13 +155,13 @@ describe('QA targets: each state is one short line', () => {
       lines: ['Cannot run: no test credential is set'],
       moved: ['It signs in with its own login and no test credential is set; a workspace admin sets it.'],
     })
-    cleanup()
+    unmountAll()
     qaServe([target(BLOG, 'blog', { host_state: 'pending' })])
     await qaPage()
     const pending = 'blog.example.test is waiting for a platform admin to approve it; no run starts against a host until then.'
     holds(await lead(), { lines: ['blog cannot run', 'Its host waits for a platform admin’s approval'], moved: [pending] })
     holds(oneIn(card(BLOG), '[data-cannot-run]')!, { lines: ['Cannot run: its host is not approved yet'], moved: [pending] })
-    cleanup()
+    unmountAll()
     qaServe([target(BLOG, 'blog', { host_state: 'revoked' })])
     await qaPage()
     const revoked = "blog.example.test's approval was revoked; a platform admin approves it again before a run."
@@ -350,7 +308,7 @@ describe('QA targets: each state is one short line', () => {
     fireEvent.submit(form)
     const said = around(await screen.findByText('Credential saved', undefined, WAIT), '.c-banner')!
     holds(said, { lines: ['Never shown again.'], moved: ['The test credential for portal is set. No page, route or log can show it again.'] })
-    cleanup()
+    unmountAll()
     window.history.replaceState(null, '', '/')
     qaServe([target(SHOP, 'shop')], {
       write: (m, path) => (m === 'PATCH' && path.startsWith('/v1/qa-targets/') ? { status: 200, body: { qa_target: target(SHOP, 'shop', { host_state: 'pending' }) } } : null),
@@ -384,6 +342,8 @@ function rule(environment: string, kind: string | null): Json {
   }
 }
 
+const RULE_OF: Readonly<Record<string, string>> = { 'repo-secrets': 'main_only', staging: 'any_branch' }
+
 function listBody(over: Json = {}): Json {
   const secret = (name: string) => ({ name, created_at: AT, updated_at: AT, set_by_swarmcloud: true, set_by: 'operator@example.com', set_at: AT })
   return {
@@ -406,7 +366,7 @@ async function actions(opts: { list?: () => Reply; write?: (m: string) => Reply;
     const ruled = m === 'GET' ? /\/actions\/environments\/([^/]+)\/rule/.exec(url) : null
     if (ruled !== null) {
       const env = decodeURIComponent(ruled[1]!)
-      return { status: 200, body: { repo_id: ACTIONS_REPO, ...rule(env, env === 'repo-secrets' ? 'main_only' : env === 'staging' ? 'any_branch' : null) } }
+      return { status: 200, body: { repo_id: ACTIONS_REPO, ...rule(env, RULE_OF[env] ?? null) } }
     }
     if (m === 'POST' && url.startsWith(`${BASE}/links`)) {
       const b = body as Json
@@ -420,7 +380,7 @@ async function actions(opts: { list?: () => Reply; write?: (m: string) => Reply;
   vi.stubEnv('VITE_LIVE', '1')
   vi.resetModules()
   const { SecretsActions } = await import('../SecretsActions')
-  render(<SecretsActions repoId={ACTIONS_REPO} repository={REPOSITORY} {...(opts.link === undefined ? {} : { link: opts.link as never })} />)
+  mount(<SecretsActions repoId={ACTIONS_REPO} repository={REPOSITORY} {...(opts.link === undefined ? {} : { link: opts.link as never })} />)
   return waitFor(() => {
     const el = oneIn<HTMLElement>(document, '.sa-pane')
     expect(el).not.toBeNull()
@@ -456,7 +416,7 @@ describe('Secrets › GitHub Actions: each state is one short line', () => {
       const pane = await actions({ list: () => refusedWith(reason) })
       await waitFor(() => expect(oneIn(pane, '.c-banner.is-warn')).not.toBeNull(), WAIT)
       holds(pane, { lines, moved })
-      cleanup()
+      unmountAll()
     }
   })
 
@@ -492,7 +452,7 @@ describe('Secrets › GitHub Actions: each state is one short line', () => {
       lines: ['Who may write here', 'Takes workspace admin and GitHub admin.'],
       moved: [`Setting or deleting takes both: you manage this workspace, and GitHub calls you admin of ${REPOSITORY}. SwarmCloud asks GitHub at each write, with your own GitHub connection.`],
     })
-    cleanup()
+    unmountAll()
     const because = 'GitHub does not call you an admin of this repository; ask a workspace admin'
     pane = await actions({ list: () => ({ status: 200, body: listBody({ can_write: false, cannot_write_because: because }) }) })
     await within(pane).findByRole('table', { name: /repository secrets of/i }, WAIT)
@@ -509,18 +469,18 @@ describe('Secrets › GitHub Actions: each state is one short line', () => {
     await within(pane).findByRole('table', { name: /repository secrets of/i }, WAIT)
     const form = () => within(pane).getByRole('form', { name: "Check an environment's rule" })
     fireEvent.click(within(pane).getAllByRole('button', { name: 'Check rule' })[0]!)
-    const check = async (env: string) => {
+    const check = (env: string) => {
       fireEvent.change(within(form()).getByRole('combobox'), { target: { value: env } })
-      await act(async () => { fireEvent.submit(form()) })
+      fireEvent.submit(form())
     }
     const box = () => oneIn(pane, '.sa-check')!
-    await check('repo-secrets')
+    check('repo-secrets')
     await waitFor(() => expect(shownIn(box())).toContain('Only main deploys to it.'), WAIT)
     holds(box(), { moved: ['Only main deploys to it: a secret written there reaches workflows on main alone.'] })
-    await check('staging')
+    check('staging')
     await waitFor(() => expect(shownIn(box())).toContain('Not main only.'), WAIT)
     holds(box(), { moved: ['Not main only: writing there asks you to type staging.'] })
-    await check('brand-new')
+    check('brand-new')
     await waitFor(() => expect(shownIn(box())).toContain('Create it on GitHub, then check again.'), WAIT)
     holds(box(), { moved: ['Create it on GitHub with its deployment branches set to main only, then check its rule here again.'] })
   })
@@ -572,7 +532,7 @@ describe('Secrets › GitHub Actions: each state is one short line', () => {
       fireEvent.click(within(dialog()).getByRole('button', { name: /open the one-time form/i }))
       const value = await within(dialog()).findByLabelText(/^value$/i, undefined, WAIT)
       fireEvent.change(value, { target: { value: made('val') } })
-      await act(async () => { fireEvent.click(within(dialog()).getByRole('button', { name: /^set secret$/i })) })
+      fireEvent.click(within(dialog()).getByRole('button', { name: /^set secret$/i }))
       return pane
     }
     const pane = await set()
@@ -585,7 +545,7 @@ describe('Secrets › GitHub Actions: each state is one short line', () => {
       lines: ['DEPLOY_KEY was set', 'the value is not shown again'],
       moved: [`DEPLOY_KEY was set in ${REPOSITORY} › repo-secrets. The link is used up; the value is not shown again, here or anywhere.`],
     })
-    cleanup()
+    unmountAll()
     await set((m) => (m === 'PUT' ? { status: 403, body: { code: 'SECRET_LINK_INVALID', message: 'unknown' } } : null))
     const bad = await waitFor(() => {
       const el = oneIn(dialog(), '.c-banner.is-bad')
@@ -654,7 +614,7 @@ async function secrets(view: string, rows: Json[], write?: (m: string, u: string
   vi.stubEnv('VITE_LIVE', '1')
   vi.resetModules()
   const { SecretsScreen } = await import('../Secrets')
-  render(<SecretsScreen view={view} />)
+  mount(<SecretsScreen view={view} />)
 }
 
 describe('Secrets: the workspace store’s confirmations and forms are one short line', () => {
@@ -686,7 +646,7 @@ describe('Secrets: the workspace store’s confirmations and forms are one short
         moved: ['the previous one stays enabled for 24 hours, for attempts already running.'],
       })
       fireEvent.change(oneIn(form, 'input[type="password"]')!, { target: { value: made('val') } })
-      await act(async () => { fireEvent.submit(form) })
+      fireEvent.submit(form)
     }
     await rotated({ status: 200, body: { secret: { ...RECORD, current_version: '2' } } })
     const said = await waitFor(() => {
@@ -698,7 +658,7 @@ describe('Secrets: the workspace store’s confirmations and forms are one short
       lines: ['brave-key was rotated', 'version 2 is current', 'the previous stays enabled 24 hours'],
       moved: ['The previous version stays enabled for 24 hours, then is disabled.'],
     })
-    cleanup()
+    unmountAll()
     await rotated({ status: 403, body: { code: 'SECRET_LINK_INVALID', message: 'unknown' } })
     const bad = await waitFor(() => {
       const el = oneIn(document, '.c-banner.is-bad')
@@ -718,7 +678,7 @@ describe('Secrets: the workspace store’s confirmations and forms are one short
     const where = around(screen.getByText('Where'), 'dl')!
     holds(where, { lines: ['the workspace: profiles that call anthropic'], moved: ['the workspace: the runner profiles that call anthropic read it'] })
     fireEvent.change(oneIn(form, 'input')!, { target: { value: made('val') } })
-    await act(async () => { fireEvent.submit(form) })
+    fireEvent.submit(form)
     const bad = await waitFor(() => {
       const el = oneIn(document, '.c-banner.is-bad')
       expect(el).not.toBeNull()
@@ -742,7 +702,7 @@ describe('MCP servers: the register form', () => {
     vi.stubEnv('VITE_LIVE', '1')
     vi.resetModules()
     const { McpServersScreen } = await import('../McpServers')
-    render(<McpServersScreen />)
+    mount(<McpServersScreen />)
     fireEvent.click((await screen.findAllByRole('button', { name: /register an mcp server/i }, WAIT))[0]!)
     const form = await waitFor(() => {
       const el = oneIn<HTMLElement>(document, 'form')
@@ -756,28 +716,6 @@ describe('MCP servers: the register form', () => {
 // ---------------------------------------------------------------------------
 // Accounts
 // ---------------------------------------------------------------------------
-
-function account(over: Partial<PoolAccount> = {}): PoolAccount {
-  const now = Date.now()
-  return {
-    account_id: 'eng:laptop', owner_tenant: 'eng', label: 'laptop', provider: 'anthropic', state: 'AVAILABLE', reason: '',
-    lend_to: [], assigned: 0, observed_at: new Date(now - 5 * MIN).toISOString(), stale: false, unreadable_by: [], unreadable_now: [],
-    last_assigned_at: new Date(now - 26 * MIN).toISOString(),
-    windows: {
-      five_hour: { utilization: 0.4, resets_at: new Date(now + 2 * HOUR).toISOString(), reset: false },
-      seven_day: { utilization: 0.5, resets_at: new Date(now + 3 * DAY).toISOString(), reset: false },
-    },
-    max_agents: 6, can_take_new_agent: true, blocked_by: [], next_eligible_at: null, organisation: { name: 'Acme', plan: 'Team' },
-    ...over,
-  } as PoolAccount
-}
-
-const week = (used: number, resetsIn: number, reset = false) => ({
-  five_hour: { utilization: 0.4, resets_at: new Date(Date.now() + 2 * HOUR).toISOString(), reset: false },
-  seven_day: { utilization: used, resets_at: new Date(Date.now() + resetsIn).toISOString(), reset },
-})
-
-const ok = <T,>(data: T): Result<T> => ({ status: 'ok', data, fetchedAt: Date.now(), serverAt: new Date().toISOString() }) as Result<T>
 
 const KINDS = ['rate_limit', 'exhausted', 'auth', 'overloaded', 'server_error', 'network', 'assign_refused', 'reauth', 'refresh_failed']
 const counts = (over: Json = {}): Json => ({ ...Object.fromEntries(KINDS.map((k) => [k, 0])), ...over })
@@ -794,11 +732,13 @@ const event = (kind: string, over: Json = {}): Json => ({
   message: `${kind} here`, own: true, ...over,
 })
 
+const busyHealth = () => screen.getByRole('region', { name: 'Health' }).getAttribute('aria-busy')
+
 async function health(res: unknown, owned = true): Promise<HTMLElement> {
   api.loadAccountHealth.mockResolvedValue(res)
   const { SheetHealth } = await import('../AccountSheet')
-  render(<SheetHealth a={account()} owned={owned} />)
-  await waitFor(() => expect(screen.getByRole('region', { name: 'Health' }).getAttribute('aria-busy')).toBeNull(), WAIT)
+  mount(<SheetHealth a={account()} owned={owned} />)
+  await waitFor(() => expect(busyHealth()).toBeNull(), WAIT)
   return screen.getByRole('region', { name: 'Health' })
 }
 
@@ -809,30 +749,30 @@ describe('the account sheet: the no-reading states are one short line', () => {
   it('the forecast: no reading, a passed reset, a reset with nothing read, and each measured pace', async () => {
     const { SheetForecast } = await import('../AccountSheet')
     const draw = (a: PoolAccount) => {
-      cleanup()
-      return render(<SheetForecast a={a} now={Date.now()} />).container
+      unmountAll()
+      return mount(<SheetForecast a={a} now={Date.now()} />).container
     }
     holds(draw(account({ windows: {}, observed_at: null })), {
       lines: ['no 7-day reading to take a pace from', 'Laptop sessions spend the same window.'],
       moved: ['Laptop sessions on this subscription spend the same window.'],
     })
-    holds(draw(account({ windows: week(0.94, -HOUR) as never })), {
+    holds(draw(account({ windows: week(0.94, -HOUR) })), {
       lines: ['Its week should have reset', 'nothing has been read since'],
       moved: ['passed, and nothing has been read since. The forecast waits for a fresh reading.'],
     })
-    holds(draw(account({ windows: week(0, 6 * DAY, true) as never })), {
+    holds(draw(account({ windows: week(0, 6 * DAY, true) })), {
       lines: ['Nothing read since its week reset'],
       moved: ['Its week reset and nothing has been read since, so there is no pace yet. The next reset is'],
     })
-    holds(draw(account({ windows: week(0.99, 3 * DAY) as never })), {
+    holds(draw(account({ windows: week(0.99, 3 * DAY) })), {
       lines: ['Under its 5% floor now'],
       moved: ['Its 7-day window is under its 5% floor now, and its week resets'],
     })
-    holds(draw(account({ windows: week(0.1, 3 * DAY) as never })), {
+    holds(draw(account({ windows: week(0.1, 3 * DAY) })), {
       lines: ['Stays above its 5% floor', 'of the week a day'],
       moved: ['At this pace it stays above its 5% floor until its week resets', 'of the week a day, its 7-day share used over the hours since its week opened.'],
     })
-    holds(draw(account({ windows: week(0.9, 3 * DAY) as never })), {
+    holds(draw(account({ windows: week(0.9, 3 * DAY) })), {
       lines: ['Reaches its 5% floor near'],
       moved: ['At this pace it reaches its 5% floor near'],
     })
@@ -843,12 +783,12 @@ describe('the account sheet: the no-reading states are one short line', () => {
       lines: ['Not served here: unknown, not zero.'],
       moved: ['This deployment does not serve the account health record: ', 'answered 404. Its quota broker predates the record (ACCOUNT-429-SCOPE). Rate-limit hits, errors and refusals are unknown here, not zero.'],
     })
-    cleanup()
+    unmountAll()
     holds(await health(failure('server_error', 'the broker did not answer')), {
       lines: ['Could not be read: unknown, not zero.', 'the broker did not answer'],
       moved: ['The health record could not be read: the broker did not answer. Its counts and events are unknown until a read succeeds, not zero.'],
     })
-    cleanup()
+    unmountAll()
     holds(await health(ok(record())), {
       lines: ['No events in 7 days.', 'Read and empty: a measured zero.'],
       moved: [
@@ -864,7 +804,7 @@ describe('the account sheet: the no-reading states are one short line', () => {
     holds(oneIn(await health(reauth), '.acct-hs-callout')!, {
       lines: ['Nothing is assigned until someone signs in.', 'Sign in again is below'], moved,
     })
-    cleanup()
+    unmountAll()
     holds(oneIn(await health(reauth, false), '.acct-hs-callout')!, {
       lines: ['Nothing is assigned until someone signs in.', 'Its owner, eng, signs in again.'], moved,
     })
@@ -890,7 +830,7 @@ describe('the account sheet: the no-reading states are one short line', () => {
       ],
       data: ['None in 7 days:'],
     })
-    cleanup()
+    unmountAll()
     const e = counts({ overloaded: 2, server_error: 1 })
     holds(await health(ok(record({ status: 'erroring', counts: { last_1h: e, last_24h: e, last_7d: e }, events: [event('overloaded'), event('overloaded'), event('server_error')] }))), {
       lines: ['3 provider errors in the last hour', '2 of them 529 overloaded', 'still takes work', 'All 3 events of 7 days, newest first'],
@@ -908,8 +848,8 @@ describe('the account sheet: the no-reading states are one short line', () => {
     const { SheetDuplicate } = await import('../AccountSheet')
     const props = { accounts: [account({ account_id: 'eng:team', label: 'team' })], scope: 'eng', owned: true } as unknown as Omit<Parameters<typeof SheetDuplicate>[0], 'a'>
     const draw = (a: PoolAccount, over: Json = {}) => {
-      cleanup()
-      return render(<SheetDuplicate a={a} {...props} {...over} />).container
+      unmountAll()
+      return mount(<SheetDuplicate a={a} {...props} {...over} />).container
     }
     const withheld = { duplicate_of: 'eng:team', blocked_by: [{ duplicate_of: 'eng:team', reason: 'one' }] } as Partial<PoolAccount>
     const FIX = 'Replace the credential below, signed in to the organisation you meant from that organisation’s browser profile (one claude.ai login can hold two, and the sign-in takes the one that is selected). Or remove laptop.'
@@ -922,7 +862,7 @@ describe('the account sheet: the no-reading states are one short line', () => {
       lines: ['The pool keeps handing out laptop.', 'Nothing here.'],
       moved: ['team was signed in to the same organisation later. The pool keeps handing out laptop and withholds the other, which adds no capacity.'],
     })
-    holds(draw(account({ possible_duplicate: { of: 'eng:team', reason: 'same' } } as Partial<PoolAccount>)), {
+    holds(draw(account({ possible_duplicate: { of: 'eng:team', reason: 'same' } })), {
       lines: ['The pool still hands out both.'],
       moved: ['laptop and team read identically on two polls. The pool still hands out both; if they are one subscription, the second adds no capacity.', FIX],
     })
@@ -931,8 +871,8 @@ describe('the account sheet: the no-reading states are one short line', () => {
   it('the cap: its line, its editor’s hint, and a broker that does not say', async () => {
     const { AgentCap } = await import('../AccountSheet')
     const draw = (a: PoolAccount) => {
-      cleanup()
-      return render(<AgentCap a={a} owned reload={vi.fn()} />).container
+      unmountAll()
+      return mount(<AgentCap a={a} owned reload={vi.fn()} />).container
     }
     const silent = account({ observed_at: null })
     delete (silent as { max_agents?: number }).max_agents
@@ -953,8 +893,8 @@ describe('the accounts pool: its empty, unread and withheld states are one short
   it('the verdict with nothing to count', async () => {
     const { Verdict } = await import('../AccountsVerdict')
     const draw = (accounts: PoolAccount[], shortfall = 0) => {
-      cleanup()
-      return oneIn(render(<Verdict accounts={accounts} scope="eng" shortfall={shortfall} now={Date.now()} waiting={{ status: 'loading' } as never} />).container, '.acct-verdict-say')!
+      unmountAll()
+      return oneIn(mount(<Verdict accounts={accounts} scope="eng" shortfall={shortfall} now={Date.now()} waiting={{ status: 'loading' } as never} />).container, '.acct-verdict-say')!
     }
     holds(draw([]), {
       lines: ['No account is registered.'],
@@ -982,8 +922,8 @@ describe('the accounts pool: its empty, unread and withheld states are one short
   it('what blocks an account, and an unmeasured window', async () => {
     const { whyOf, WindowCell } = await import('../AccountsTable')
     const draw = (a: PoolAccount) => {
-      cleanup()
-      return render(<div>{whyOf(a, 'eng', Date.now())}</div>).container
+      unmountAll()
+      return mount(<div>{whyOf(a, 'eng', Date.now())}</div>).container
     }
     holds(draw(account({ state: 'REAUTH_REQUIRED', can_take_new_agent: false })), {
       lines: ['Signed out: its sign-in expired'],
@@ -997,8 +937,8 @@ describe('the accounts pool: its empty, unread and withheld states are one short
       lines: ['Waiting for its first reading'],
       moved: ['a new account takes 1 agent until it is measured, and it holds 1'],
     })
-    cleanup()
-    const { container } = render(<WindowCell a={account({ provider: 'openai-api-key', windows: {}, observed_at: null })} k="five_hour" now={Date.now()} />)
+    unmountAll()
+    const { container } = mount(<WindowCell a={account({ provider: 'openai-api-key', windows: {}, observed_at: null })} k="five_hour" now={Date.now()} />)
     if ((container.textContent ?? '').includes('not measured')) {
       holds(container, { lines: ['not measured'], moved: ['not measured: OpenAI gives an API key no usage window'] })
     }
@@ -1008,13 +948,13 @@ describe('the accounts pool: its empty, unread and withheld states are one short
     const page = {
       status: 'ok', fetchedAt: Date.now(), serverAt: new Date().toISOString(),
       data: {
-        page: { accounts: [account({ assigned: 2 }) as Account], tenant_id: 'eng', unreadable_documents: [], unreadable_document_count: 0 } as AccountsPage,
+        page: { accounts: [account({ assigned: 2 })], tenant_id: 'eng', unreadable_documents: [], unreadable_document_count: 0 },
         tenants: [], tenantsDetail: null, readAt: Date.now(),
       } as AccountsBoard,
     }
     api.loadAccountsBoard.mockResolvedValue(page)
     const { AccountsScreen } = await import('../Accounts')
-    render(<AccountsScreen />)
+    mount(<AccountsScreen />)
     await waitFor(() => expect(oneIn(document, 'button.acct-open')).not.toBeNull(), WAIT)
     fireEvent.click(oneIn<HTMLButtonElement>(document, 'button.acct-open')!)
     const remove = await waitFor(() => {

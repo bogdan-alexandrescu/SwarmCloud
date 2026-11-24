@@ -11,7 +11,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
-import { helpIn, shownIn } from './proseruns'
+import { allIn, helpIn, oneIn, shownIn } from './proseruns'
 import { repo, serve, visible } from './repofixture'
 
 const WAIT = { timeout: 4000 }
@@ -253,7 +253,7 @@ describe('a QA leg’s extra origins in the edit form', () => {
 
 describe('Approve host names each declared extra origin', () => {
   function approveForm(): HTMLFormElement {
-    const f = document.querySelector<HTMLFormElement>('form.qa-approve')
+    const f = oneIn<HTMLFormElement>(document, 'form.qa-approve')
     if (f === null) throw new Error('no approve form')
     return f
   }
@@ -320,19 +320,19 @@ describe('Approve host says where a non-production leg’s writes reach', () => 
     await mountPage()
     await waitFor(() => expect(button(document, 'Approve host')).not.toBeNull(), WAIT)
     fireEvent.click(button(document, 'Approve host')!)
-    const f = document.querySelector<HTMLFormElement>('form.qa-approve')
+    const f = oneIn<HTMLFormElement>(document, 'form.qa-approve')
     if (f === null) throw new Error('no approve form')
     return f
   }
 
   function notices(form: HTMLFormElement): string[] {
-    return Array.from(form.querySelectorAll('[data-writes-notice]')).map((n) => visible(n))
+    return allIn(form, '[data-writes-notice]').map((n) => visible(n))
   }
 
   it('shows one sentence for a non-production leg with extra origins', async () => {
     const form = await openApprove(oneOrigin({ ...PENDING, environment: 'non_production' }))
     // MUTATION: drop the sentence, or show it for every leg, and this or the next test fails.
-    const notice = form.querySelector('[data-writes-notice]')
+    const notice = oneIn(form, '[data-writes-notice]')
     expect(shownIn(notice)).toBe('Flows here may write to each ticked host.')
     // Its detail sits behind the line's (i) (issue 81).
     expect(helpIn(notice)).toBe(

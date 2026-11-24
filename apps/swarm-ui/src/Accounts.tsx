@@ -5297,6 +5297,7 @@ function Reauth({
  * schedule.
  */
 function Remove({ account, reload }: { account: Account; reload: () => void }) {
+  const held = account.assigned === 1 ? '1 agent currently holds' : `${account.assigned} agents currently hold`
   const [typed, setTyped] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<ApiError | null>(null)
@@ -5342,7 +5343,7 @@ function Remove({ account, reload }: { account: Account; reload: () => void }) {
           tip={
             'Removal takes the account out of the pool. The credential in the secret store is retained rather than deleted, so this is reversible by signing in again under the same label.' +
             (account.assigned > 0
-              ? ` ${account.assigned} agent${account.assigned === 1 ? '' : 's'} currently hold${account.assigned === 1 ? 's' : ''} this account. Move it to DRAINING first if you want them off it before it goes.`
+              ? ` ${held} this account. Move it to DRAINING first if you want them off it before it goes.`
               : '')
           }
         />

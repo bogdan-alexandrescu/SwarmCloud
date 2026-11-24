@@ -32,7 +32,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
-import { helpIn } from './proseruns'
+import { around, helpIn, oneIn } from './proseruns'
 import { repo, serve, visible } from './repofixture'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
@@ -635,7 +635,7 @@ describe('QA targets: registration', () => {
       return f
     }, WAIT)
     // Behind the (i) over the box (issue 81), its button named by the field.
-    const help = helpIn(form.querySelector('textarea[name="more"]')!.parentElement)
+    const help = helpIn(around(oneIn(form, 'textarea[name="more"]')!, ':has(> textarea)'))
     // MUTATION: leave the field out of the More settings help and nobody finds it.
     expect(help).toContain('file.label_rules')
     expect(help).toContain('"paths"')

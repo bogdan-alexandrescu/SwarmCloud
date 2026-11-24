@@ -14,7 +14,7 @@
 // in the duplicate banner, or put "available" back in the head -- a case below
 // turns red.
 
-import { helpIn, shownIn } from './proseruns'
+import { helpIn, oneIn, shownIn } from './proseruns'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -255,7 +255,7 @@ describe('the verdict', () => {
     expect(verdict.textContent).not.toContain('No account is registered')
     expect(verdict.querySelector('.acct-verdict-big')?.textContent).toBe('0 of at least 1')
     // One short line; the sentences are its (i) (issue 81).
-    const head = verdict.querySelector('.acct-verdict-head')
+    const head = oneIn(verdict, '.acct-verdict-head')
     expect(shownIn(head)).toContain('No account here could be read.')
     expect(shownIn(head)).not.toContain('so no agent that needs the pool can start')
     expect(helpIn(head)).toContain('No account here could be read, so no agent that needs the pool can start.')

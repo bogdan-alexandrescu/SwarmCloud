@@ -227,7 +227,7 @@ export function SecretsActions({
       ) : (
         <>
           {writable === true && data !== null ? (
-            <Banner tone="info" title={`You may write here${data.checked_at === null ? '' : ` · checked ${timeAgo(data.checked_at)}`}`}>
+            <Banner tone="info" title={['You may write here', ...(data.checked_at === null ? [] : [`checked ${timeAgo(data.checked_at)}`])].join(' · ')}>
               GitHub is asked again at each write.{' '}
               <InfoTip
                 about="who may write here"
@@ -672,7 +672,7 @@ function SetSheet({
             </Button>
           </div>
           {env !== null && env !== undefined && rules[env] !== undefined && (
-            <p className="sa-note" role="status"><b>{env}</b> <RuleChip rule={rules[env]!} /> read from GitHub just now.</p>
+            <p className="sa-note" role="status"><b>{env}</b> <RuleChip rule={rules[env]} /> read from GitHub just now.</p>
           )}
           {checkFailed !== null && (appRefusalOf(checkFailed) !== null
             ? <AppRefusalBanner refusal={appRefusalOf(checkFailed)!} repository={repository} />
