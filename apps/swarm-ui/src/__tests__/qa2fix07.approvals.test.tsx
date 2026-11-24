@@ -18,7 +18,8 @@ const hoursFromNow = (h: number) => new Date(Date.now() + h * 3_600_000).toISOSt
 const PENDING = {
   approval_id: 'apr_wait',
   tenant_id: 'eng',
-  kind: 'plan',
+  // A spec: a plan is the Pipeline board's card, not this list's (plans-pipeline §2.2).
+  kind: 'spec',
   subject: { run_id: 'run_wait', issue: 'example-org/example-api#2364' },
   digest: { plan: 'p1' },
   summary: 'example-org/example-api#2364: the plan that waits',
@@ -93,11 +94,11 @@ describe('automate2-01: the list reads the inbox and its history', () => {
 
   it('asks `state=all` with the kind on a filtered page, and the default beside it', async () => {
     // MUTATION: drop `state` from the filtered read and the first read has none.
-    const seen = await mount('kind=plan')
+    const seen = await mount('kind=spec')
     const card = await screen.findByTestId('apl-decided', undefined, WAIT)
     expect(visible(card)).toContain('the plan already approved')
     const asked = reads(seen)
-    expect(asked.find((q) => q.get('kind') === 'plan')?.get('state')).toBe('all')
+    expect(asked.find((q) => q.get('kind') === 'spec')?.get('state')).toBe('all')
     expect(asked.filter((q) => q.get('kind') === null).map((q) => q.get('state'))).toEqual([null])
   })
 })
