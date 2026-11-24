@@ -126,14 +126,14 @@ function JevSwitch({
           <span id={`${id}-sent`} className="jb-note">
             {backend === null ? (
               <>
-                On: sends excerpts to the{' '}
+                Sends excerpts to the{' '}
                 <a className="ctl-link" href={addressToPath(CONFIG_SECRETS_ADDRESS)}>
                   Jev backend
                 </a>
                 .
               </>
             ) : (
-              `On: sends excerpts to ${DESTINATION[backend]}.`
+              `Sends excerpts to ${DESTINATION[backend]}.`
             )}
           </span>
         </span>

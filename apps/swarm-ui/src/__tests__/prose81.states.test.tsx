@@ -642,7 +642,8 @@ describe('Secrets: the workspace store’s confirmations and forms are one short
       await secrets('scope=workspace&action=rotate&name=brave-key', [storeRow()], (m, u) => (m === 'PUT' && u.includes('/value') ? reply : null))
       const form = await screen.findByRole('form', { name: 'Rotate brave-key' }, WAIT)
       holds(form, {
-        lines: ['A new version of brave-key.'],
+        // Said before Rotate is pressed, not only after it.
+        lines: ['The old value works 24 more hours.'],
         moved: ['the previous one stays enabled for 24 hours, for attempts already running.'],
       })
       fireEvent.change(oneIn(form, 'input[type="password"]')!, { target: { value: made('val') } })

@@ -738,9 +738,9 @@ export function RotateSecret({
   return (
     <>
       <form className="pk-form" autoComplete="off" aria-label={`Rotate ${secret.name}`} onSubmit={(e) => void save(e)}>
-        {/* ISSUE 81: one short line; what happens to running attempts is behind the (i), word for word. */}
+        {/* ISSUE 81: the old value's 24 hours is said before the action; what happens to running attempts is behind the (i), word for word. */}
         <p className="pk-lead">
-          A new version of <code>{secret.name}</code>.{' '}
+          The old value works 24 more hours.{' '}
           <InfoTip
             about="a new version"
             tip="Attempts that start after this read the new value; the previous one stays enabled for 24 hours, for attempts already running."
