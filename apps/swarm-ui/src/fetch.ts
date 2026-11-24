@@ -297,8 +297,7 @@ export function errorReassurance(e: ApiError): string {
 // be forged as an object literal either.
 //
 // The template keeps its `{placeholders}` and any literal query: the seam
-// tests (`test_runtimes_screen.py`, `test_account_api.py`,
-// `test_checkpoint_content.py`) read the path literals out of the source and
+// tests (the runtimes screen, account API and checkpoint content tests) read the path literals out of the source and
 // compare their SHAPE with the routers' declarations, `{id}` and all.
 
 declare const ROUTE: unique symbol
@@ -649,7 +648,7 @@ export function probeSnapshot(): ProbeRecord[] {
  * `lastSuccessAt` behind, and the NEXT test in that file sees a head that says
  * "newest read just now" over a render in which nothing has read anything.
  *
- * That is not hypothetical. `shell.test.tsx`'s B3 head assertion -- "a head
+ * That is not hypothetical. The shell test's B3 head assertion -- "a head
  * that rendered a zero age against no successful read would be the defining
  * bug of this product, in the frame" -- failed for exactly this reason on
  * every run of that file on its own, and passed in the full suite only because

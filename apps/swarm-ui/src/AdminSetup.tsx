@@ -124,7 +124,7 @@ export function AdminSetupScreen({ now, callback }: { now?: number; callback?: s
 
 function SetupFirstRunScreen({ now }: { now?: number }) {
   // The Setup tab's page: the record read every 5 s, and drawn. (No doc
-  // comment above it: test_nav_headings_agree.py follows AdminSetupScreen's
+  // comment above it: the nav-headings test follows AdminSetupScreen's
   // last return here only when that return ends its body.)
   const read = useSetupRead(now)
   return (

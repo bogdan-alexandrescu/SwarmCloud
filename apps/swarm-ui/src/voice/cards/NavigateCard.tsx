@@ -4,7 +4,7 @@
  *
  * NO ADDRESS COMES FROM THE CARD. `destination` is a key of paths.ts's
  * `FIXED` (swarm_api/voice/cards.py `NAVIGATE_DESTINATIONS`, held to it by
- * test_voice_navigate.py) and `object` one id the console builds its own page
+ * the voice navigate test) and `object` one id the console builds its own page
  * for; a card that maps to neither is not drawn.
  *
  * ONLY A PERSON'S CLICK OPENS IT. Open posts the accept route on the person's

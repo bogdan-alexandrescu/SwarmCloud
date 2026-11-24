@@ -26,7 +26,7 @@ import {
  * burn tokens on the wrong thing cannot stop it from the console."
  *
  * EVERY SENTENCE THIS FILE PUTS ON SCREEN IS PINNED BY A TEST.
- * `tests/unit/control_plane/test_cancel_semantics.py` exists because a
+ * The cancel-semantics test exists because a
  * confirmation dialog is a set of claims about what is about to happen, and
  * the first draft of these claims was wrong in two ways that only running the
  * scheduler exposed:
@@ -57,8 +57,8 @@ import {
  * STOP does: a stop ends in CANCELLED, and neither setting treats CANCELLED as a
  * failure (`scheduler.loop._WORKFLOW_FAILING_STATES`). So for this dialog the
  * two settings behave identically, and it describes the behaviour rather than
- * the setting. `test_on_step_failure_does_not_change_what_a_stop_does` pins that
- * under both settings. See that test file's module docstring for the finding.
+ * the setting. A cancel-semantics test pins that under both settings, and its
+ * module records the finding.
  */
 
 /** Which steps of this workflow die with the one being stopped. */
@@ -424,9 +424,9 @@ export function StopRun({
 
   // FOUR PARAGRAPHS BECAME FOUR FACTS, AND EVERY CLAIM SURVIVES.
   //
-  // This dialog's claims are pinned by `test_cancel_semantics.py` for a real
+  // This dialog's claims are pinned by the cancel-semantics test for a real
   // reason -- the first draft of them was wrong twice, and only running the
-  // scheduler showed it. What that file holds is that the dialog does not
+  // scheduler showed it. What that test holds is that the dialog does not
   // OVERSTATE: not "this cancels the following steps" but "these are cancelled
   // once this one has stopped"; not "it stops" but "the request is recorded".
   // Those distinctions are in the values below, word for word.
@@ -560,7 +560,7 @@ export function StopRun({
       </ul>
 
       {/* WHAT ELSE GOES WITH IT. Named, never counted -- and the tense is the
-          part `test_cancel_semantics.py` holds: the scheduler cancels these
+          part the cancel-semantics test holds: the scheduler cancels these
           when the parent reaches CANCELLED, which is after the worker has
           acted, not when the button is pressed. So the key is `once stopped`
           and not `also cancels`. */}

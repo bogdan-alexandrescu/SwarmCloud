@@ -36,7 +36,7 @@ export function ProfilesScreen() {
          profile are one page, headed "Pools", with the in-page strip below
          naming the view -- the panel lists By runner profile under Pools for
          the same reason. It was headed "By runner profile", as a page of its
-         own. test_nav_headings_agree.py holds a nested view's heading to its
+         own. The nav-headings test holds a nested view's heading to its
          parent tab's label and its strip to its own label.
          Every count here is still the CALLING tenant's: built from
          `pool_names_for(tenant_id=ctx.tenant_id)` unconditionally, admin

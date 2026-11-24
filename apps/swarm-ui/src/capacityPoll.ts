@@ -177,7 +177,7 @@ export function poolViewer(capacity: Pick<Capacity, 'tenant_id' | 'pools'>): str
  * NEAR ITS CEILING: this share of it in use, or more. Pool limits' rule
  * (AdminSettings `NEAR_CEILING`, its lead and the panel's `near ceiling`
  * count), restated here only because AdminSettings imports this module and
- * the import cannot run the other way; `vq.capacity.pools.test.tsx` holds the
+ * the import cannot run the other way; a capacity pools test holds the
  * two equal. Pools draws a pool past it `near ceiling` in the full mark's
  * amber (VQ-031): `anthropic · eng` at 46 of 50 read `ok` in the same grey as
  * an idle pool.

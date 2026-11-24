@@ -98,7 +98,7 @@ export function UtilisationPanel({
       : head.text
   // THE SUMMARY ON THE GLASS, THE CHART ONE CLICK AWAY. Details keeps every
   // chart behind a disclosure so its first 900px stay Now, the strip and the
-  // column heads (details.v3.test.tsx). Time at the limit and throttled are
+  // column heads (a details test holds that). Time at the limit and throttled are
   // the disclosure's own summary, so they are read without opening anything,
   // and live; the mean of the limit is the chart's caption, inside.
   return (

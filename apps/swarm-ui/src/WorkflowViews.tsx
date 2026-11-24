@@ -1118,7 +1118,7 @@ function RoundAgentLink({ row }: { row: StepRowModel }) {
  * its `--surface-2` as one inset-shadow rectangle, which Chrome draws once
  * for the whole head (archived issue 178, owner decision 2026-09-26; styles.css
  * `.ctl-table thead`). None of the head cells here declares a fill of its
- * own, and shell.test.tsx renders this head -- `data-col`, `aria-sort`, the
+ * own, and a shell test renders this head -- `data-col`, `aria-sort`, the
  * sort buttons -- to hold that.
  * A failed step's row takes `is-bad` (a full-height rule down its first cell,
  * which survives greyscale); an unread one takes `is-warn`. EVERY ROW also takes

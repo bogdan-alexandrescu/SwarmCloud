@@ -85,12 +85,12 @@ import { backLabel, filterQueryString, parseWorkflowQuery } from './workflowlist
  * `WaitingOnYouCard`, `InApp`, `InfoTip` and `GuideLink` are their own
  * modules. A screen still re-exports what moved, but every importer reads it
  * from its helper module: in an import cycle, a name re-exported through a
- * screen that is still evaluating is undefined (__tests__/screensplit.test.ts).
+ * screen that is still evaluating is undefined (a test holds this).
  *
  * THE GITHUB CALLBACK STAYS EAGER. `GitHubCallbackScreen` reads the code and
  * the state from the address as it mounts, and the router takes that query
  * out of the bar (`canonical`). Loaded lazily it mounts after the rewrite and
- * finds nothing to finish (github.callback.test.tsx, the router case).
+ * finds nothing to finish (a callback test covers the router case).
  */
 const ActivityScreen = lazy(() => import('./Activity').then((m) => ({ default: m.ActivityScreen })))
 const TenantsScreen = lazy(() => import('./Activity').then((m) => ({ default: m.TenantsScreen })))
@@ -276,7 +276,7 @@ const WorkflowsScreen = lazy(() => import('./Workflows').then((m) => ({ default:
  * that goes stale silently, which is why this one now names the argument
  * rather than the lines.)
  *
- * tests/unit/control_plane/test_nav_headings_agree.py reads this array, the
+ * A guard test reads this array, the
  * SectionBody switch and every screen's `Screen title=` / `<h1>`, and fails on
  * any route where the two differ — including a route added later, which is the
  * case a one-off audit does not cover.
@@ -337,7 +337,7 @@ export const CAPACITY = 'capacity'
 /**
  * EXPORTED FOR THE SWEEPS, which is not the same as exported for reuse.
  *
- * `__tests__/spacing.test.tsx` held its own hand-written copy of every route
+ * The spacing sweep held its own hand-written copy of every route
  * the rail can reach -- under a comment saying "a screen added without being
  * added here would be a screen nothing measures, which is the hole this
  * repository keeps producing". It was right, and it was itself the hole: when
@@ -363,16 +363,16 @@ export const SECTIONS: SectionDef[] = [
     // under a section called Work is the same two-spellings defect in a
     // quieter place: SECTION_ALIASES would keep every old href working, and
     // because it would, nothing would ever make anyone update one. Every
-    // internal link was moved with it, and `nav.links.test.tsx` fails the
+    // internal link was moved with it, and a nav-links test fails the
     // build if an internal href ever uses an alias again.
     // A LITERAL, not the WORK constant, and the reason is a gate rather than a
-    // preference: `tests/unit/control_plane/test_nav_headings_agree.py` reads
+    // preference: the nav-headings guard test reads
     // this array out of the TypeScript with a regex -- it cannot import it,
     // because it is a Python test asserting that every SectionBody case has a
     // tab and every tab has a case. `id: WORK` made it fail to COLLECT, which
     // took the whole unit-test job down rather than one assertion. The
     // constant is still used everywhere a comparison happens; the
-    // `nav.links.test.tsx` assertion that the two constants name real sections
+    // nav-links assertion that the two constants name real sections
     // is what stops these drifting apart.
     id: 'work',
     // WAS 'Agents', which made the rail read `Agents > Agents` and the
@@ -430,7 +430,7 @@ export const SECTIONS: SectionDef[] = [
   {
     // docs/schedules.md §6.1 (SD1, owner decision 2026-10-08): the section
     // that holds what runs by itself. A LITERAL id for the reason given on
-    // Work: test_nav_headings_agree.py reads this array with a regex.
+    // Work: the nav-headings guard test reads this array with a regex.
     // Approvals is its second page, `/automate/approvals` (§6.1; moved from
     // `/approvals` by APPROVALS-MOVE, VQ-030), and the question's
     // last clause is its. ONE SCHEDULES PAGE (SCHED-ONE-PAGE, owner decision
@@ -506,7 +506,7 @@ export const SECTIONS: SectionDef[] = [
       // contract and invariant 10 is the reason this screen exists, so the
       // ADDRESS keeps the contract's noun while the LABEL says which of the
       // two questions it answers. The screen's `<h1>` moved with the tab;
-      // test_nav_headings_agree.py fails the build if it had not.
+      // the nav-headings guard test fails the build if it had not.
       // "By runner profile" since the rebrand (navigation.html, 2026-10-01):
       // Profile headroom folds into Pools as its profile-by-pool view, and the
       // panel lists it under Pools by this name.
@@ -624,7 +624,7 @@ export const SECTIONS: SectionDef[] = [
     // done" -- which is a list of things to do rather than what a reader
     // arrives wanting to know. It asks what each tab answers, in tab order.
     // docs/web-ui/redesign.md §2 carries the same words, and
-    // tests/sections.test.ts holds the two together.
+    // a sections test holds the two together.
     // The cross-tenant schedules view sat here from 2026-10-11 until the owner
     // asked why schedules were in Admin and in Automate (SCHED-ONE-PAGE,
     // 2026-10-13, docs/schedules.md §6.1): it is Automate › Schedules' "All
@@ -988,7 +988,7 @@ const SECTION_ALIASES: Record<string, string> = {
  * fails, so nobody updates one, and the old name outlives the rename by years.
  * That is the defect that put `Agents > Agents` in the rail in the first place.
  *
- * `__tests__/nav.links.test.tsx` reads every `#`-href literal in
+ * The nav-links test reads every `#`-href literal in
  * `apps/swarm-ui/src` and fails if one starts with a key of this map, or names
  * a section or tab that does not exist.
  */
@@ -1115,7 +1115,7 @@ function firstTab(s: SectionDef): string {
  * EXPORTED FOR THE ROUTE TESTS. `#help/<topic>` is a new destination and the
  * links to it are generated, so a typo in this function would produce a `?`
  * card whose "Full explanation" link lands on Home -- silently, and only for
- * the reader who followed it. `tests/route.test.ts` drives it directly.
+ * the reader who followed it. A route test drives it directly.
  */
 export function fromHash(): Route {
   return fromAddress(window.location.hash.replace(/^#/, ''))
@@ -2477,7 +2477,7 @@ const PAGE_TOPIC: Readonly<Record<string, TopicId>> = {
   'automate/approvals': 'approvals',
   // Admin › People and roles answers differently by reader (ADMIN-PEOPLE-ROLES):
   // its topic rides the section's `?` rather than a second glyph by the title,
-  // which the console's glyph ceiling (tests/help.test.ts) has no room for.
+  // which the console's glyph ceiling (a help test holds it) has no room for.
   'admin/people': 'people-and-roles-scope',
   // VQ-055 (visual QA 2026-10-26): every Config page's `?` opened the same
   // section card, whose `Help →` led to Help's first group. Each page now
@@ -2678,7 +2678,7 @@ function SectionBody({
   // THE FIRST FIX WAS WRONG. These were rewritten as `` case `${WORK}/running` ``
   // so a rename could not separate them from the section declaration. That
   // broke the thing that actually catches this:
-  // `tests/unit/control_plane/test_nav_headings_agree.py` reads this switch out
+  // the nav-headings guard test reads this switch out
   // of the source with a regex -- it is a Python test and cannot import
   // TypeScript -- and asserts in BOTH directions that every tab has a case and
   // every case has a tab. A template literal is opaque to it, so the test
@@ -2692,7 +2692,7 @@ function SectionBody({
   //
   // That is a better guarantee than matching constants, because it checks the
   // whole mapping rather than one spelling of one half of it. The chain that
-  // holds it together: `nav.links.test.tsx` binds WORK/CAPACITY to SECTIONS,
+  // holds it together: the nav-links test binds WORK/CAPACITY to SECTIONS,
   // SECTIONS declares its ids as literals, and the Python gate binds SECTIONS
   // to these cases. Nothing in it can move alone.
   // Timeline's second page, Outcomes (`/timeline/outcomes`): today's ledger, unchanged.

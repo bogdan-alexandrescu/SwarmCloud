@@ -11,7 +11,7 @@
 //    use its classes: Help's `help-guide` line (guide.css), `sb-note` on a
 //    schedule's page, the admin counts page and the voice Talk page
 //    (submit.css), Admin settings' `jb-*` options (keys.css), and more that
-//    __tests__/lazycss.test.ts lists;
+//    the lazy-CSS test lists;
 //  * applied AFTER styles.css, so where a rule here ties styles.css on
 //    specificity it now won: `.adm-changed-none` (admin.css) took the colour
 //    from `.ctl-em` (styles.css), and the admin limits and secrets pages
@@ -21,7 +21,7 @@
 // place it had in the one stylesheet. A screen still imports its own sheet,
 // which says what it depends on; the import here only fixes where the rules
 // land. A sheet added for a new screen goes here too, in import order, or
-// lazycss.test.ts fails if another screen uses its classes.
+// the lazy-CSS test fails if another screen uses its classes.
 import './styles/components.css'
 import './diff/diff.css'
 import './styles/primitives.css'

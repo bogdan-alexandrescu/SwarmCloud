@@ -14,7 +14,7 @@
  *     admin only, and reads nothing for anyone else: the list route is
  *     `require_admin`, and a non-admin's 403 drawn as a red panel would read
  *     as a fault. No nav section is added, so the issue forms' Where list
- *     does not move (`tests/unit/scripts/test_issue_forms.py`).
+ *     does not move (the issue-forms test holds it).
  *   * `QaIdentityOption`, the Submit form's checkbox. It is drawn from the
  *     profile's DECLARATION (`input_contract.inputs.qa_identity`, contract
  *     request 106), never from a list of ours -- swarm-api refuses an

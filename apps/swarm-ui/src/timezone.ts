@@ -319,7 +319,7 @@ export function setZone(next: string): string | null {
  * `load` is `loadMe` from `api.ts`, passed in by `useTimeZone.ts`. The API is
  * imported only when the read is made, never at load: `overviewReads.ts` --
  * and through it the pure check layer that `node --test` loads
- * (test/checks.test.mjs) -- reads the zone from here, and this module stays
+ * (the checks test) -- reads the zone from here, and this module stays
  * free of React and of the API's own imports.
  */
 export function learnPerson(load: (options: { frame?: boolean }) => Promise<Result<Me>>): void {

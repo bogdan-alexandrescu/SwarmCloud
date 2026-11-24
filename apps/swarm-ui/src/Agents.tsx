@@ -456,7 +456,7 @@ export async function loadAgentsPage(held: { current: HeldPage | null }): Promis
   const asked = phoneWidth() ? PHONE_PAGE_LIMIT : TASK_PAGE_LIMIT
   // The summary view (archived issue 168): no row on this screen draws `input`, `metadata`
   // or `result_summary` -- the inspector reads its own task, full, through
-  // `loadTask` -- and the trap in `drawer.reread.test.tsx` holds that.
+  // `loadTask` -- and the trap in the drawer re-read test holds that.
   // BOTH READS START HERE, before the first `await`.
   // A FIXTURE LIST IS ONE PAGE (`loadTasks`): it never hands out a token, so
   // there is no capped page to read the states beside, and the state read would
@@ -1716,7 +1716,7 @@ function AgentsBody({
                 platform rule no label can carry -- and it is not met by an
                 empty Waiting or Recent tab, which make no claim about cost:
                 the capacity topic opened from those answered a question
-                nobody there was asking. `prose.runs.test.tsx` pins it. */}
+                nobody there was asking. The runs prose test pins it. */}
             {stateFilter !== null ? `nothing ${stateFilter} in ${shown}` : `nothing in ${shown}`}
             {needle !== '' && ` matching “${query.trim()}”`}
             {shown === 'live' && needle === '' && <HelpCard topic="capacity" />}

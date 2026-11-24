@@ -93,7 +93,7 @@ export function sheetHref(accountId: string): string {
  * NO LONGER A FOOTER (QA1-FIX-24, capacity-13, part of archived issue 2596). It was a
  * `Reading this screen:` row of underlined monospace links at the foot of
  * both layouts, because the console's glyph count is capped (B7.4,
- * `tests/help.test.ts`). VQ-033 (owner 2026-10-26: "Move the topics behind the
+ * held by a help test). VQ-033 (owner 2026-10-26: "Move the topics behind the
  * page's one ?") moved Pools', Accounts' and Provider quota's behind the `?`
  * the title already draws -- the section's question, which a list joins
  * rather than replaces -- so this costs no glyph, and Account health does the
