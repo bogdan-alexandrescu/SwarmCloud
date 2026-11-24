@@ -205,7 +205,7 @@ async function timeline(
   serve(payload, opts)
   const { container } = render(<ActivityScreen {...props} />)
   await waitFor(() => expect(container.querySelector('.ol-ledger, .ctl-empty')).not.toBeNull())
-  return container as HTMLElement
+  return container
 }
 
 /** The query the ledger was last read with. */
@@ -1501,7 +1501,7 @@ function serveRows(d: Outcomes, rows: EndedRows | Result<Outcomes>): void {
   serve(d)
   api.loadOutcomes.mockImplementation((q: URLSearchParams) =>
     Promise.resolve(
-      q.has('rows') ? ('status' in rows ? rows : ok({ ...d, ended_rows: rows } as Outcomes)) : ok(d),
+      q.has('rows') ? ('status' in rows ? rows : ok({ ...d, ended_rows: rows })) : ok(d),
     ),
   )
 }
@@ -1541,7 +1541,7 @@ describe('a figure lists the tasks behind it (#116)', () => {
     // The read asked for exactly that figure, under the page's own filters.
     const q = rowReads().at(-1)!
     expect(q.get('rows')).toBe('failed')
-    expect(q.get('rows_at')).toBe(d.buckets[10]!.start)
+    expect(q.get('rows_at')).toBe(d.buckets[10].start)
     expect(q.get('tz')).toBe((api.loadOutcomes.mock.calls[0]![0] as URLSearchParams).get('tz'))
     expect(rowSections().at(-1)).toEqual(['totals'])
   })
@@ -1550,7 +1550,7 @@ describe('a figure lists the tasks behind it (#116)', () => {
     const d = ledgerFixture()
     serveRows(d, endedRows({ total: 740, rows_max: 2, rows: [endedRow(1), endedRow(2)] }))
     const { container } = render(<ActivityScreen view="rows=failed&at=2026-09-22T00%3A00%3A00%2B03%3A00" onView={() => {}} />)
-    const c = await rowsCard(container as HTMLElement)
+    const c = await rowsCard(container)
     const note = c.querySelector('.ol-rows-note')!.textContent ?? ''
     // MUTATION (VOCAB-AGENTS): put back `every task that ended` in TimelineRows.tsx.
     expect(note).toMatch(/every agent that ended failed in /)
@@ -1564,11 +1564,11 @@ describe('a figure lists the tasks behind it (#116)', () => {
     d.scope = { kind: 'platform', tenants: ['eng', 'personal'], excluded: [], tenants_complete: true }
     serve(d, { admin: true })
     const rows = endedRows({ total: 1, group: 'tenant_id', key: 'eng', rows: [endedRow(3)] })
-    api.loadOutcomes.mockImplementation((q: URLSearchParams) => Promise.resolve(ok(q.has('rows') ? ({ ...d, ended_rows: rows } as Outcomes) : d)))
+    api.loadOutcomes.mockImplementation((q: URLSearchParams) => Promise.resolve(ok(q.has('rows') ? ({ ...d, ended_rows: rows }) : d)))
     const { container } = render(
       <ActivityScreen view="scope=platform&group=tenant_id&rows=failed&at=2026-09-22T00%3A00%3A00%2B03%3A00&rows_key=eng" onView={() => {}} />,
     )
-    const c = await rowsCard(container as HTMLElement)
+    const c = await rowsCard(container)
     const heads = [...c.querySelectorAll('thead th')].map((th) => th.textContent)
     expect(heads).toEqual(['Agent', 'Workspace', 'Profile', 'Submitted by', 'Ended', 'Why'])
     expect(c.querySelector('tbody td')!.textContent).toBe('eng')
@@ -1580,7 +1580,7 @@ describe('a figure lists the tasks behind it (#116)', () => {
     const d = ledgerFixture()
     serveRows(d, endedRows({ total: 1, rows: [endedRow(7, { state: 'DEAD_LETTERED' })] }))
     const { container } = render(<ActivityScreen view="rows=failed&at=2026-09-22T00%3A00%3A00%2B03%3A00" onView={() => {}} />)
-    const c = await rowsCard(container as HTMLElement)
+    const c = await rowsCard(container)
     expect(c.querySelectorAll('tbody tr')).toHaveLength(1)
     expect(c.textContent).toContain('dead-lettered')
     expect(rowReads().at(-1)!.get('rows_at')).toBe('2026-09-22T00:00:00+03:00')
@@ -1633,7 +1633,7 @@ describe('a figure lists the tasks behind it (#116)', () => {
     }
     serveRows(d, refused)
     const { container } = render(<ActivityScreen view="rows=failed&at=2026-08-01T00%3A00%3A00%2B03%3A00" onView={() => {}} />)
-    const c = await rowsCard(container as HTMLElement)
+    const c = await rowsCard(container)
     expect(c.textContent).toMatch(/not in this span any more/)
   })
 
@@ -1651,7 +1651,7 @@ describe('a figure lists the tasks behind it (#116)', () => {
     serveRows(d, endedRows({ total: 1, rows: [endedRow(1)] }))
     const onView = vi.fn()
     const { container } = render(<ActivityScreen view="rows=failed&at=2026-09-22T00%3A00%3A00%2B03%3A00" onView={onView} />)
-    const root = container as HTMLElement
+    const root = container
     await rowsCard(root)
     fireEvent.mouseEnter(cols(root)[10]!)
     fireEvent.click(within(root.querySelector<HTMLElement>('.ol-actions')!).getByRole('button', { name: /^zoom to / }))
@@ -1665,7 +1665,7 @@ describe('a figure lists the tasks behind it (#116)', () => {
     serveRows(d, endedRows({ total: 1, rows: [endedRow(1)] }))
     const onView = vi.fn()
     const { container } = render(<ActivityScreen view="span=7d&rows=failed&at=2026-09-22T00%3A00%3A00%2B03%3A00" onView={onView} />)
-    const c = await rowsCard(container as HTMLElement)
+    const c = await rowsCard(container)
     fireEvent.click(within(c).getByRole('button', { name: 'close' }))
     const q = new URLSearchParams(onView.mock.calls.at(-1)![0] as string)
     expect(q.get('span')).toBe('7d')
