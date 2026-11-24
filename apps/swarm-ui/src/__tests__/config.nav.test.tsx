@@ -329,15 +329,13 @@ describe('Admin is drawn only for an admin (CONFIG-NAV)', () => {
     expect(css).toMatch(/\n\.app \{[^}]*padding: 0 var\(--app-pad\) 48px;/)
   })
 
-  it('refuses a member in place at every Admin address, deep links included', async () => {
-    for (const path of ['/admin/tenants', '/admin/people', '/admin/workspaces', '/admin']) {
-      serve(ME(false), [PERSONAL])
-      await app(path)
-      await waitFor(() => expect(document.querySelector('[data-refused="admin"]'), path).not.toBeNull())
-      // `/admin` is written as its first page; either way it stays in Admin.
-      expect(window.location.pathname, path).toBe(path === '/admin' ? '/admin/limits' : path)
-      cleanup()
-    }
+  // One test per address: each has its own time limit and a failure names the address.
+  it.each(['/admin/tenants', '/admin/people', '/admin/workspaces', '/admin'])('refuses a member in place at the Admin address %s, deep links included', async (path) => {
+    serve(ME(false), [PERSONAL])
+    await app(path)
+    await waitFor(() => expect(document.querySelector('[data-refused="admin"]'), path).not.toBeNull())
+    // `/admin` is written as its first page; either way it stays in Admin.
+    expect(window.location.pathname, path).toBe(path === '/admin' ? '/admin/limits' : path)
   })
 
   it('does not redirect while either read is in flight', async () => {
