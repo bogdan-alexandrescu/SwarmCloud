@@ -350,11 +350,17 @@ run "no_session_in_state_and_every_resource_labelled" {
   # worker one. And in this root, browser_logins.tf alone does.
   # broker_workspace_keys.tf spells it only to REFUSE browser logins in the
   # quota broker's read of provider keys; it is held to that just below.
+  # terraform/modules/monitoring is the other exception, read by the two
+  # assertions after that: its browser_secret_grant alert must name the
+  # secrets it watches, so the prefix may appear there ONLY inside an alert
+  # policy's log filter. A filter selects audit entries for a page; it grants
+  # nothing, and the module may declare no IAM, secret or secret-version
+  # resource that could carry the pattern into a grant.
   assert {
     condition = var.enable_browser_logins && length(flatten([
       for f in concat(
         [for p in fileset("../../terraform/infra", "**/*.tf") : "../../terraform/infra/${p}"],
-        [for p in fileset("../../terraform/modules", "**/*.tf") : "../../terraform/modules/${p}"],
+        [for p in fileset("../../terraform/modules", "**/*.tf") : "../../terraform/modules/${p}" if !startswith(p, "monitoring/")],
         [for p in fileset("../../terraform/bootstrap", "**/*.tf") : "../../terraform/bootstrap/${p}" if !contains(["browser_logins.tf", "broker_workspace_keys.tf"], p)],
       ) : regexall("-browser-", file(f))
     ])) == 0
@@ -370,6 +376,47 @@ run "no_session_in_state_and_every_resource_labelled" {
       startswith(trimspace(line), "#") || length(regexall("-browser-", line)) == length(regexall("-browser-\\\\\"\\) == \\\\\"\\\\\"", line))
     ])
     error_message = "terraform/bootstrap/broker_workspace_keys.tf spells -browser- outside a comment other than as an extract(...-browser-) == \"\" refusal; a grant on a browser session must be made in browser_logins.tf"
+  }
+
+  # In terraform/modules/monitoring, every -browser- (comments included) lies
+  # inside the `filter` of a google_monitoring_alert_policy's
+  # condition_matched_log: the count in the module's files equals the count
+  # inside those filters, so none sits in a local, a variable, an output, a
+  # display name or any other resource. The policy blocks and filters are
+  # read in `terraform fmt` layout (`make lint` holds it); a layout this does
+  # not recognise counts nothing as inside a filter and fails closed.
+  assert {
+    condition = var.enable_browser_logins && sum(concat([0], [
+      for p in fileset("../../terraform/modules/monitoring", "**/*.tf") :
+      length(regexall("-browser-", file("../../terraform/modules/monitoring/${p}")))
+      ])) == sum(concat([0], flatten([
+        for p in fileset("../../terraform/modules/monitoring", "**/*.tf") : [
+          for policy in regexall("(?s)\nresource \"google_monitoring_alert_policy\" \"[^\"]+\" \\{\n.*?\n\\}", "\n${file("../../terraform/modules/monitoring/${p}")}") : [
+            for filter in regexall("(?s)\n    condition_matched_log \\{\n      filter += (.*?)\n(?:      [a-z_]+ += |    \\})", policy) :
+            length(regexall("-browser-", filter[0]))
+          ]
+        ]
+      ]))) && length(flatten([
+      for p in fileset("../../terraform/modules/monitoring", "**/*.tf") : [
+        for policy in regexall("(?s)\nresource \"google_monitoring_alert_policy\" \"[^\"]+\" \\{\n.*?\n\\}", "\n${file("../../terraform/modules/monitoring/${p}")}") :
+        regexall("(?s)\n    condition_matched_log \\{\n      filter += (.*?)\n(?:      [a-z_]+ += |    \\})", policy)
+      ]
+    ])) > 0
+    error_message = "terraform/modules/monitoring spells a -browser- secret prefix outside an alert policy's log filter; the only exception to browser_logins.tf is a filter, which matches audit entries and grants nothing"
+  }
+
+  # ...and the monitoring module declares no IAM, secret or secret-version
+  # resource (or data source) that spells the prefix or reads an alert
+  # policy, where the prefix now lives: the filter exception cannot become a
+  # grant.
+  assert {
+    condition = var.enable_browser_logins && length(fileset("../../terraform/modules/monitoring", "**/*.tf")) > 0 && length(flatten([
+      for p in fileset("../../terraform/modules/monitoring", "**/*.tf") : [
+        for block in regexall("(?s)\n(?:resource|data) \"(?:google_[a-z0-9_]*_iam_[a-z_]+|google_secret_manager_(?:regional_)?secret(?:_version)?)\" \"[^\"]+\" \\{\n.*?\n\\}", "\n${file("../../terraform/modules/monitoring/${p}")}") :
+        block if strcontains(block, "-browser-") || strcontains(block, "google_monitoring_alert_policy.")
+      ]
+    ])) == 0
+    error_message = "terraform/modules/monitoring declares an IAM, secret or secret-version resource that names the -browser- prefix or reads an alert policy; a grant on a browser session must be made in terraform/bootstrap/browser_logins.tf"
   }
 
   assert {
