@@ -1665,3 +1665,11 @@ locals {
     var.enable_console_app_setup ? { GITHUB_HOOKS_URL = "https://${local.github_hooks_name}-${data.google_project.this.number}.${var.region}.run.app/github/events" } : {},
   )
 }
+
+locals {
+  # Seconds a new log-based metric that an alert policy reads waits after it
+  # is created (doctor.tf, voice_alerts.tf), read from the monitoring module
+  # rather than restated: why there is a wait, and why this many seconds, is
+  # in terraform/modules/monitoring/metrics.tf beside log_metric_settle_seconds.
+  log_metric_settle_seconds = module.monitoring.log_metric_settle_seconds
+}

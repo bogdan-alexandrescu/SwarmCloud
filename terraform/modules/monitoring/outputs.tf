@@ -63,3 +63,8 @@ output "alert_policy_names" {
     google_monitoring_alert_policy.tenant_namespace_mismatch[*].display_name,
   )
 }
+
+output "log_metric_settle_seconds" {
+  description = "Seconds a new log-based metric that an alert policy reads waits after it is created (metrics.tf), so the infra root's own metrics wait the same."
+  value       = local.log_metric_settle_seconds
+}
