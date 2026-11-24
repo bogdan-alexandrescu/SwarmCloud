@@ -2253,6 +2253,47 @@ jobs:
           uv run pytest tests/integration -q -n auto -m "not serial"
           uv run pytest tests/integration -q -m serial
 
+  pyright:
+    # PYRIGHT (BASIC) OVER THE PYTHON APPS, AGAINST ITS BASELINE (issue 55;
+    # docs/ci.md "pyright runs beside the unit shards"). scripts/typecheck.sh
+    # runs the exactly pinned pyright with [tool.pyright] from pyproject.toml
+    # and fails only on an error a (file, rule) has over
+    # scripts/lib/pyright-baseline.json -- a dead `# type: ignore` among them
+    # (reportUnnecessaryTypeIgnoreComment).
+    #
+    # ITS OWN JOB, BESIDE THE SHARDS, SO IT ADDS NO WALL-CLOCK TIME (owner:
+    # fast CI is a hard constraint). Measured 2026-11-24 in a container pinned
+    # to 4 cores: 89-91 s for the whole script, cold or warm, against a unit
+    # shard's ~212 s median run. It needs only `changes`, as the shards do, and
+    # reaches the same runs: HEAVY in scripts/lib/ci_reuse.py (a full run only)
+    # and only when the change reaches Python whole (python == 'all'), never a
+    # docs- or swarm-ui-only change. Reusable by tree like every check here.
+    name: pyright (basic, baseline)
+    # A full run takes ~1.5 minutes; anything near 15 is a hang, not a check.
+    timeout-minutes: 15
+    # SELF-HOSTED (owner decision 2026-10-12), fork PRs on a GitHub-hosted
+    # image: the expression tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces.
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    needs: changes
+    if: needs.changes.outputs.full == 'true' && needs.changes.outputs.python == 'all' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'pyright') && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version: "0.12.15"  # the uv images/*/Dockerfile UV_IMAGE pins (test_ci_tool_versions.py)
+          enable-cache: true
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: pyright over the apps, against the baseline
+        # The script syncs the venv from uv.lock (--frozen) and runs
+        # pyright[nodejs]==PYRIGHT_VERSION through `uv tool run`, so the pin
+        # lives in one place and pyright brings its own Node.
+        run: scripts/typecheck.sh
+
   manifests:
     # NAME-KEEPER (CI-FOLD, archived issue 1799): the `kubernetes manifests · ...` steps of
     # `quick-checks` run the check; this passes only on its verdict `success`.
@@ -2748,7 +2789,7 @@ jobs:
     # upload is not: a failed upload costs main one full run, never a merge.
     name: record the tested tree
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
-    needs: [changes, shell, workflows, ruff, python-checks, python-unit, ui-build, ui-tests, integration, manifests]
+    needs: [changes, shell, workflows, ruff, python-checks, python-unit, ui-build, ui-tests, integration, pyright, manifests]
     if: always() && needs.changes.result == 'success' && github.ref != 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
     permissions:
       contents: read
@@ -2838,7 +2879,7 @@ jobs:
     # the gate's.
     name: ci-gate
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
-    needs: [shell, workflows, ruff, changes, quick-checks, python-checks, python-unit, ui-build, ui-tests, integration, manifests, build-check, build, tested-tree, plugin-tag]
+    needs: [shell, workflows, ruff, changes, quick-checks, python-checks, python-unit, ui-build, ui-tests, integration, pyright, manifests, build-check, build, tested-tree, plugin-tag]
     if: ${{ !cancelled() }}
     # The script gives up at 90 minutes (CI_GATE_WAIT) and says what was still
     # pending; this is only the backstop behind it.

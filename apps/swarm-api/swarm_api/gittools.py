@@ -2046,7 +2046,7 @@ def _workflow_tokens_of(ctx: Any) -> "WorkflowTokens | None":
     (`build_installation_tokens` builds no client). None without a project."""
     source = getattr(ctx, "forge_installations", None)
     if callable(getattr(source, "workflow_push_token", None)):
-        return source  # type: ignore[return-value]
+        return source
     project_id = getattr(ctx.settings, "project_id", "")
     if not project_id:
         return None

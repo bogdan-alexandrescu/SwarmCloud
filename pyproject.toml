@@ -342,3 +342,8 @@ typeCheckingMode = "basic"
 pythonVersion = "3.11"
 include = ["apps"]
 exclude = ["apps/swarm-ui", "**/node_modules", "**/__pycache__", "**/.*"]
+# A `# type: ignore` that suppresses nothing is an error (issue 55): a dead
+# ignore hides the next real error on its line. The dead ones were pruned when
+# this was turned on; any that remain (the frozen apps/common/swarm_common/)
+# are in scripts/lib/pyright-baseline.json like every other error.
+reportUnnecessaryTypeIgnoreComment = "error"
