@@ -179,6 +179,53 @@ held run is `PLANNED` and has no task: it costs nothing.
 **The switch.** `SWARM_PLAN_LINT=off` turns the whole of this off (no lint, no
 re-plan, no hold, no refusal of an automatic approval); it is on by default.
 
+## Each step says when it is done (`done_when`)
+
+A requirement says what the issue needs; it does not say when ONE step of a
+plan of several is finished, so the review could only judge a step against the
+plan's summary. A plan step may now carry `done_when`: 1 to
+`MAX_STEP_DONE_WHEN` (8) statements, each one plain-text line of at most
+`MAX_DONE_WHEN_CHARS` (300) characters with no control character, that a
+reviewer can check is true or false of the branch. Each is named
+`<step_id>.<n>`, `n` from 1 in the step's order. The planner's prompt asks for
+them on every step.
+
+**Why a warning and not a finding.** Statements are new, and a plan that has
+none is no less checkable than it was yesterday: refusing it, re-planning it or
+holding its automatic approval for that alone would spend a planner task and a
+person's attention on what worked before. So `planlint.warnings(plan)` reports
+`step_done_when_missing` for each step of a multi-step plan that states none,
+and `planlint.lint` never does: the code is in `planlint.WARNING_CODES`, not
+`CODES`. The warnings are computed from the plan as it is now, so an edit's are
+current; `GET /v1/runs/{run_id}` serves them as `plan_warnings`, and the plan
+comment on the issue lists them under "Plan lint warnings". With
+`SWARM_PLAN_LINT=off` there are none.
+
+**Where the statements go.** All three places fence them as data, as the plan's
+other text is fenced (`donewhen`, the same rules as `planfiles`): between two
+delimiter lines carrying the run id, each statement folded onto one line with
+its @-mentions broken and the delimiters stripped from it. A section holds at
+most `MAX_DONE_WHEN_BYTES`; past it every statement is cut to an equal share,
+and no id the review must answer is ever dropped.
+
+* The step's build prompt lists that step's own statements.
+* The review prompt lists every step's statements, and its verdict.json gains
+  `done_when`: one `{"id", "met", "note"}` entry per id. An unmet statement is
+  also a finding, so the review says NOT_YET and the fix runs. The worker's
+  verdict reader takes `verdict` and `findings` and ignores other keys, so the
+  fix's gate, the re-review and the fix loop read the file as before.
+* The fix prompt lists every statement and tells the fix to make true each
+  one that verdict.json's `done_when` marks `"met": false`. The fix is compiled
+  at approval, before any review ran, so it reads which ones are unmet from the
+  verdict staged for it, not from its prompt.
+* The plan comment shows each step's statements under it, numbered as the
+  review names them.
+
+**A plan with none runs exactly as before.** The field is optional and never
+defaulted into the stored plan, so a plan stored before it keeps its digest,
+and every section above is empty for it: its compiled prompts are byte for byte
+what they were.
+
 ## The planner is told what a step costs and how the issue's earlier runs ended
 
 A planner that cannot see the price of a step splits work too finely, and one
