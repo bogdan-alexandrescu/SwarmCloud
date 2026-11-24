@@ -163,7 +163,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 157 | `states.py`: the scheduler may end a re-review whose verdict gate is shut PARKED -> SUCCEEDED, guarded on its own promotion write, without a lease (re-review gate) | REQUESTED 2026-11-23 by the pull request that adds this line; not applied. Until it is, a re-review whose gate is shut is leased and dispatched as today |
 | 158 | `profiles.py`: declare `context_ceiling` as an optional object input on the claude-code runner family, so a step may carry its own lower session limits (per-role session limits) | REQUESTED 2026-11-23 by the pull request that adds this line; not applied. Until it is, swarm-api refuses a step that carries `context_ceiling` and every session runs at the worker's ceilings |
 | 159 | `profiles.py`: an `xlarge` resource class (16 CPU requested and limit, 64 GiB, GKE only, outside the admin-sized `CLASS_ORDER`) and a `recording` runner profile (no agent, a Docker daemon in a sandboxed pod, 86,400 s), shipped `available=False` (recording runner, docs/design/recording-runner.md, part of #8) | NOT ACCEPTED: waiting for the owner. REQUESTED 2026-11-24 by the pull request that adds this line; not applied. Until it is, no class is above 8 CPU or 32 GiB and no profile runs longer than 14,400 s |
-| 160 | `states.py` / `models.py`: `ParkReason.WORKFLOW_PAUSED`, `Workflow.paused`, `paused_at` and `paused_by`, and `EventType.PAUSE_REQUESTED` and `RESUME_REQUESTED`, so a workflow can be paused and resumed (docs/design/workflow-pause.md, part of issue 7) | NOT ACCEPTED: REQUESTED 2026-11-24 by the pull request that adds this line; not applied. Nothing is built on it; until the owner decides there is no workflow pause |
+| 160 | `states.py` / `models.py`: `ParkReason.WORKFLOW_PAUSED`, `Workflow.paused`, `paused_at` and `paused_by`, and `EventType.PAUSE_REQUESTED` and `RESUME_REQUESTED`, so a workflow can be paused and resumed (docs/design/workflow-pause.md, part of issue 7) | ACCEPTED by the owner 2026-11-24 (on issue 7, with the design's five questions decided: Q5 a new park reason) and APPLIED 2026-11-24 by the pull request that adds this line (workflow pause, first lane: P0 with the routes and the scheduler gate, part of issue 7), exactly as requested |
 
 ---
 
@@ -18584,10 +18584,15 @@ questions (section 11) decide the parts this request depends on.
 
 ## 160. `states.py` / `models.py`: `ParkReason.WORKFLOW_PAUSED`, the workflow's pause fields and two pause events (workflow pause)
 
-**Status:** NOT ACCEPTED. REQUESTED 2026-11-24 by the pull request that adds
-this section (docs/design/workflow-pause.md, part of issue 7); not applied.
-Nothing in `apps/common/swarm_common/` was edited for it, and nothing is built
-on it: until the owner decides, there is no workflow pause.
+**Status:** ACCEPTED by the owner 2026-11-24, in a comment on issue 7 that
+also decided the five questions of docs/design/workflow-pause.md section 10
+(Q5: a new park reason, this request, not a reuse of `MANUAL_PAUSE`). APPLIED
+2026-11-24 by the pull request that adds this paragraph (the design's first
+lane, part of issue 7), exactly as drawn under "The requested change" and
+nothing wider: `ParkReason.WORKFLOW_PAUSED`, `EventType.PAUSE_REQUESTED` and
+`RESUME_REQUESTED` in `states.py`, and `Workflow.paused`, `paused_at` and
+`paused_by` in `models.py`. Requested 2026-11-24 by the pull request that
+added this section.
 
 ### What is true today
 
@@ -18693,4 +18698,5 @@ reads as not paused; the parity check names the new members.
 ### Who decides
 
 The owner, together with question Q5 of docs/design/workflow-pause.md (a new
-reason, recommended, or reuse `MANUAL_PAUSE`). Awaiting the owner's decision.
+reason, recommended, or reuse `MANUAL_PAUSE`). Decided 2026-11-24: accepted,
+a new reason.

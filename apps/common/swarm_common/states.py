@@ -258,6 +258,13 @@ class ParkReason(str, Enum):
     #: the scheduler once `next_eligible_at` passes. Holds no capacity
     #: (invariant 1). Contract request 123, accepted by the owner 2026-10-28.
     PLATFORM_REFUSED = "PLATFORM_REFUSED"
+    #: A step of a paused workflow (docs/design/workflow-pause.md). Written by
+    #: the scheduler at admission (READY -> PARKED) and by the step's worker at
+    #: its control poll (RUNNING -> PARKED, checkpointed, lease released).
+    #: Promoted ONLY by the scheduler's workflow-pause sweep once the
+    #: workflow's `paused` is false; never by `_promote_manual_pauses`. Holds
+    #: no capacity (invariant 1). Contract request 160.
+    WORKFLOW_PAUSED = "WORKFLOW_PAUSED"
 
 
 class BlockedReason(str, Enum):
@@ -355,3 +362,10 @@ class EventType(str, Enum):
     #: the warning was written as RUNNING with `detail.cause:
     #: "budget_warning"`, which readers accept for one release.
     BUDGET_WARNING = "budget_warning"
+    #: A person asked the step's workflow to pause. The step's state is
+    #: unchanged by this event; the PARKED that follows is written by whoever
+    #: parks it (the scheduler, the worker). Contract request 160.
+    PAUSE_REQUESTED = "pause_requested"
+    #: A person resumed the step's workflow; the scheduler's READY follows for
+    #: a parked step. Contract request 160.
+    RESUME_REQUESTED = "resume_requested"

@@ -1618,6 +1618,12 @@ def workflow_from_dict(data: dict[str, Any]) -> Workflow:
         on_step_failure=data.get("on_step_failure", "fail_workflow"),
         priority=int(data.get("priority", 0)),
         cancel_requested=bool(data.get("cancel_requested", False)),
+        # Contract request 160 (docs/design/workflow-pause.md section 2.1). A
+        # workflow stored before it carries none of the three: not paused.
+        # Compared as `is True`, so only a written True is a pause.
+        paused=data.get("paused") is True,
+        paused_at=as_datetime(data.get("paused_at")),
+        paused_by=data.get("paused_by") or None,
     )
 
 
@@ -1692,6 +1698,12 @@ def workflow_to_api(
         "priority": workflow.priority,
         "on_step_failure": workflow.on_step_failure,
         "cancel_requested": workflow.cancel_requested,
+        # Contract request 160 (docs/design/workflow-pause.md): whether the
+        # workflow is paused, since when and by whom, for the console's
+        # Pause/Resume control and the waiting line.
+        "paused": workflow.paused,
+        "paused_at": workflow.paused_at,
+        "paused_by": workflow.paused_by,
         **({"after_pull_requests": after} if after is not None else {}),
         # SC-SESSION-SCOPE: the Claude Code session that submitted it.
         **workflow_claude_session(step_tasks or {}),

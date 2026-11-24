@@ -266,3 +266,78 @@ def test_pause_writes_no_state_generation_or_lease_on_a_live_step(client, db, ma
     assert {k: after[k] for k in kept} == kept
     assert after["pause_requested_at"] == db.docs[f"workflows/{workflow_id}"]["paused_at"]
     assert {k: v.get("active") for k, v in db.docs.items() if k.startswith("pools/")} == pools
+
+
+@pytest.mark.parametrize("body", [
+    {"reason": "x" * 501},
+    {"reason": 7},
+    {"runner_profile": "mock"},
+    {"image": "anything"},
+])
+def test_the_pause_body_takes_only_a_bounded_reason(client, db, body):
+    workflow_id, _steps = _create(client, db)
+    r = client.post(f"/v1/workflows/{workflow_id}/pause", headers=auth_header("alice"), json=body)
+    assert r.status_code == 422, r.text
+    assert not db.docs[f"workflows/{workflow_id}"].get("paused")
+
+
+def test_the_resume_body_takes_nothing(client, db):
+    workflow_id, _steps = _create(client, db)
+    client.post(f"/v1/workflows/{workflow_id}/pause", headers=auth_header("alice"))
+    r = client.post(f"/v1/workflows/{workflow_id}/resume", headers=auth_header("alice"),
+                    json={"reason": "no"})
+    assert r.status_code == 422, r.text
+    assert db.docs[f"workflows/{workflow_id}"]["paused"] is True
+
+
+@pytest.mark.parametrize("action", ["pause", "resume"])
+def test_a_contended_step_answers_503_and_a_retry_finishes_it(
+    client, db, api_context, monkeypatch, action
+):
+    from swarm_api import store as store_mod
+
+    workflow_id, steps = _create(client, db)
+    if action == "resume":
+        assert client.post(f"/v1/workflows/{workflow_id}/pause",
+                           headers=auth_header("alice")).status_code == 200
+    method = "_signal_step_pause" if action == "pause" else "_clear_step_pause"
+    store = api_context.store
+    real = getattr(store, method)
+    stuck = {steps["b"]}
+
+    def contended(tenant_id, task_id, **kwargs):
+        if task_id in stuck:
+            raise store_mod._StepContended(task_id)
+        return real(tenant_id, task_id, **kwargs)
+
+    monkeypatch.setattr(store, method, contended)
+    first = client.post(f"/v1/workflows/{workflow_id}/{action}", headers=auth_header("alice"))
+    assert first.status_code == 503, first.text
+    assert first.headers.get("Retry-After")
+    assert first.json()["code"] == "pause_contended"
+    assert first.json()["detail"]["steps_contended"] == [steps["b"]]
+    paused_at = db.docs[f"workflows/{workflow_id}"].get("paused_at")
+
+    stuck.clear()
+    second = client.post(f"/v1/workflows/{workflow_id}/{action}", headers=auth_header("alice"))
+
+    assert second.status_code == 200, second.text
+    # The retry moved no clock and finished the step the first call missed.
+    assert db.docs[f"workflows/{workflow_id}"].get("paused_at") == paused_at
+    mirror = db.docs[f"tasks/{steps['b']}"].get("pause_requested_at")
+    if action == "pause":
+        assert mirror == paused_at
+        assert len(_events(db, steps["b"], "pause_requested")) == 1
+    else:
+        assert mirror is None
+        assert len(_events(db, steps["b"], "resume_requested")) == 1
+
+
+def test_cancel_lifts_a_pause_so_the_workflow_leaves_the_paused_query(client, db):
+    workflow_id, _steps = _create(client, db)
+    client.post(f"/v1/workflows/{workflow_id}/pause", headers=auth_header("alice"))
+
+    r = client.post(f"/v1/workflows/{workflow_id}/cancel", headers=auth_header("alice"))
+
+    assert r.status_code == 200, r.text
+    assert db.docs[f"workflows/{workflow_id}"]["paused"] is False
