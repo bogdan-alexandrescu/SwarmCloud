@@ -84,7 +84,7 @@ const PARTS: readonly { key: keyof Proposals7d; label: string }[] = [
 ]
 
 /** "Mine | Proposing": the full list and the sources, as links (buttons, not prose). */
-export function SourcesSwitch({ on, go }: { on: boolean; go: (to: string) => void }) {
+export function SourcesSwitch({ on, go }: Readonly<{ on: boolean; go: (to: string) => void }>) {
   return (
     <Segmented<'all' | 'proposes'>
       label="Which schedules"
@@ -103,13 +103,13 @@ function gateValue(key: keyof Schedule['gate'], value: string | number): string 
   return key === 'approval_ttl_hours' ? `${value} h` : String(value)
 }
 
-function Gate({ gate }: { gate: Schedule['gate'] }) {
+function Gate({ gate }: Readonly<{ gate: Schedule['gate'] }>) {
   const served = GATE_FIELDS.filter((f) => gate[f.key] !== undefined && gate[f.key] !== null)
   if (served.length === 0) return null
   return (
     <dl className="src-gate" aria-label="Gate">
       {served.map((f) => (
-        <div key={f.key} data-gate={f.key}>
+        <div key={f.key} data-testid={`src-gate-${f.key}`}>
           <dt className="acd-k">{f.label}</dt>
           <dd className="acd-mono">{gateValue(f.key, gate[f.key]!)}</dd>
         </div>
@@ -118,13 +118,13 @@ function Gate({ gate }: { gate: Schedule['gate'] }) {
   )
 }
 
-function SevenDays({ counts }: { counts: Proposals7d | null | undefined }) {
+function SevenDays({ counts }: Readonly<{ counts: Proposals7d | null | undefined }>) {
   if (counts === undefined || counts === null) {
     return (
       <div className="acd-next" data-testid="src-7d">
         <span className="acd-k">Proposed · 7 days</span>
         <span className="src-7d-v">
-          <span className="acd-big is-none">&mdash;</span>
+          <span className="acd-big is-none" data-testid="src-7d-n">&mdash;</span>
           <Info about="Not counted" tip="This API's schedule list carries no seven-day count." />
         </span>
       </div>
@@ -135,17 +135,17 @@ function SevenDays({ counts }: { counts: Proposals7d | null | undefined }) {
     <div className="acd-next" data-testid="src-7d">
       <span className="acd-k">Proposed · {counts.window_days} days</span>
       <span className="src-7d-v">
-        <span className="acd-big">{counts.complete ? String(counts.proposed) : `at least ${counts.proposed}`}</span>
+        <span className="acd-big" data-testid="src-7d-n">{counts.complete ? String(counts.proposed) : `at least ${counts.proposed}`}</span>
         {!counts.complete && <Info about="At least" tip="The server's bounded read was full, so some proposals may be missing." />}
       </span>
-      {parts.length > 0 && <span className="acd-line acd-dim">{parts.map((p) => `${counts[p.key] as number} ${p.label}`).join(' · ')}</span>}
+      {parts.length > 0 && <span className="acd-line acd-dim" data-testid="src-7d-parts">{parts.map((p) => `${counts[p.key] as number} ${p.label}`).join(' · ')}</span>}
     </div>
   )
 }
 
-function SourceCard({ s, go }: { s: Source; go: (to: string) => void }) {
+function SourceCard({ s, go }: Readonly<{ s: Source; go: (to: string) => void }>) {
   return (
-    <section className="acd-card" aria-label={s.name} data-source={s.schedule_id}>
+    <section className="acd-card" aria-label={s.name} data-source={s.schedule_id} data-testid="src-card">
       <div className="acd-card-h">
         <Tag title={s.tier ?? undefined}>{s.type}</Tag>
         <h3>{s.name}</h3>
@@ -163,7 +163,7 @@ function SourceCard({ s, go }: { s: Source; go: (to: string) => void }) {
   )
 }
 
-function SourcesBody({ d, go, bar }: { d: Sources; go: (to: string) => void; bar: ReactNode }) {
+function SourcesBody({ d, go, bar }: Readonly<{ d: Sources; go: (to: string) => void; bar: ReactNode }>) {
   const roleGate = useRoleGate('member', 'create schedules')
   if (!d.narrowed) {
     return (
@@ -239,7 +239,7 @@ async function loadSources(): Promise<Result<Sources>> {
 }
 
 /** The sources' screen: the Schedules page narrowed, with the switch back to the full list. */
-export function ScheduleSources({ go }: { go: (to: string) => void }) {
+export function ScheduleSources({ go }: Readonly<{ go: (to: string) => void }>) {
   const bar = <SourcesSwitch on go={go} />
   return (
     <Screen
