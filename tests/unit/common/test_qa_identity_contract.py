@@ -10,8 +10,7 @@ adds). What is held here, the three tests §5 names and the filing:
     (`live_browser=True`), and option B needs the gate;
   * `check_inputs` accepts `"console"` and refuses `"admin"`, `""` and a
     non-string, each as a bound broken on the declared key (invariant 10: a
-    name from a closed list, never an account, a host or a token);
-  * the request is filed in docs/contract-change-requests.md as entry 106.
+    name from a closed list, never an account, a host or a token).
 
 No cloud, no emulator: the contract is pure.
 
@@ -23,8 +22,6 @@ declare the key on `claude-code` too and
 
 from __future__ import annotations
 
-import re
-from pathlib import Path
 
 import pytest
 
@@ -32,7 +29,6 @@ from swarm_common.profiles import RUNNER_PROFILES, InputRefused, check_inputs
 
 PROFILE = "claude-code-browser"
 KEY = "qa_identity"
-REQUESTS = Path(__file__).resolve().parents[3] / "docs" / "contract-change-requests.md"
 
 
 def test_claude_code_browser_declares_qa_identity_with_the_one_choice_console():
@@ -81,13 +77,3 @@ def test_check_inputs_refuses_what_is_not_the_one_choice(value):
     assert caught.value.key == KEY
     assert caught.value.expected is not None
     assert "console" in str(caught.value)
-
-
-def test_request_qi_1_is_filed_as_entry_106():
-    """The change the tests above hold has its entry, under the design's §5
-    name (CLAUDE.md rule 1)."""
-    text = REQUESTS.read_text(encoding="utf-8")
-    rows = [line for line in text.splitlines() if line.startswith("| 106 |")]
-    assert len(rows) == 1, rows
-    assert "QI-CONTRACT" in rows[0] and "QA identity request QI-1" in rows[0]
-    assert re.search(r"^## 106\. .*\(QI-CONTRACT, QA identity request QI-1\)$", text, re.M)

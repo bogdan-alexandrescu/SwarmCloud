@@ -48,7 +48,6 @@ from swarm_common.states import (
 ROOT = Path(__file__).resolve().parents[3]
 TYPES_TS = ROOT / "apps" / "swarm-ui" / "src" / "types.ts"
 STATE_PILL = ROOT / "apps" / "swarm-ui" / "src" / "components" / "StatePill.tsx"
-REQUESTS = ROOT / "docs" / "contract-change-requests.md"
 NOW = datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc)
 
 
@@ -232,11 +231,3 @@ def test_the_ui_restatements_carry_the_new_park_reason():
     )
     pill = STATE_PILL.read_text(encoding="utf-8")
     assert re.search(r"^\s*HUMAN_REQUIRED:", pill, re.M)
-
-
-def test_the_requests_are_filed_as_accepted():
-    text = REQUESTS.read_text(encoding="utf-8")
-    for tag in ("LB-A", "LB-B", "LB-C", "LB-D"):
-        rows = [line for line in text.splitlines() if line.startswith("| ") and tag in line]
-        assert rows, f"{tag} has no index row"
-        assert "ACCEPTED by the owner 2026-10-11" in rows[0], rows[0]

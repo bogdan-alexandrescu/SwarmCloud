@@ -27,7 +27,6 @@ fails.
 from __future__ import annotations
 
 import dataclasses
-import re
 from pathlib import Path
 
 import pytest
@@ -44,7 +43,6 @@ from swarm_common.profiles import (
 )
 
 REPO = Path(__file__).resolve().parents[3]
-REQUESTS = REPO / "docs" / "contract-change-requests.md"
 PARITY = REPO / "scripts" / "lib" / "check-contract-parity.sh"
 
 #: Version 2 of the design's SIZES-SCHED-2 example: `standard` at 6 / 12 GiB.
@@ -171,12 +169,3 @@ def test_the_parity_check_compares_the_ui_units_to_the_code_defaults():
     assert "default_sizes" in text
     assert "units_py = dict((name, size.units) for name, size in default_sizes().items())" in text
     assert "RESOURCE_UNITS (code defaults)" in text
-
-
-def test_request_rs_3_is_filed_as_entry_110():
-    text = REQUESTS.read_text(encoding="utf-8")
-    rows = [line for line in text.splitlines() if line.startswith("| 110 |")]
-    assert len(rows) == 1, rows
-    assert "SIZES-CONTRACT-2" in rows[0] and "RS-3" in rows[0]
-    assert "APPLIED" in rows[0]
-    assert re.search(r"^## 110\. .*\(SIZES-CONTRACT-2, runner sizes request RS-3, part of #1689\)$", text, re.M)

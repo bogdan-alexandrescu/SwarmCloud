@@ -219,7 +219,7 @@ def test_a_bad_option_exits_2():
 
 def test_the_baselines_are_sorted_and_disjoint():
     names = sorted(p.name for p in BASELINES.glob("*.txt"))
-    assert names == ["unit-a.txt", "unit-b.txt"]
+    assert names == ["unit-b.txt"]
     seen: set[str] = set()
     for path in BASELINES.glob("*.txt"):
         entries = [line for line in path.read_text().splitlines() if line.strip()]
@@ -231,8 +231,9 @@ def test_the_baselines_are_sorted_and_disjoint():
 #: The baselines a step of issue 71 has emptied and deleted. scripts-ci.txt
 #: listed the 73 CI-YAML readers under tests/unit/scripts/ (steps 3 and 4);
 #: scripts-docs.txt listed its docs-prose, root *.md and Makefile readers
-#: (step 5).
-FINISHED_BASELINES = ("scripts-ci.txt", "scripts-docs.txt")
+#: (step 5); unit-a.txt listed the readers under tests/unit/common, worker
+#: and mcp (step 6).
+FINISHED_BASELINES = ("scripts-ci.txt", "scripts-docs.txt", "unit-a.txt")
 
 
 @pytest.mark.parametrize("name", FINISHED_BASELINES)
@@ -249,6 +250,22 @@ def test_no_file_under_unit_scripts_reads_out_of_its_tree():
     assert not found, found
     listed = [line for path in BASELINES.glob("*.txt")
               for line in path.read_text().split() if line.startswith("tests/unit/scripts/")]
+    assert not listed, listed
+
+
+UNIT_A_DIRS = ("tests/unit/common/", "tests/unit/worker/", "tests/unit/mcp/")
+
+
+def test_no_file_under_unit_common_worker_or_mcp_reads_out_of_its_tree():
+    # tests/unit/common, worker and mcp are clean (step 6) and no baseline
+    # names them: a test there that opens docs prose -- the contract change
+    # requests log, a design doc -- CI YAML, a root *.md or the Makefile is red.
+    # MUTATION: open docs/contract-change-requests.md in tests/unit/common.
+    found = sorted({read.split(":", 1)[0] for read in _whole_tree_reads()
+                    if read.startswith(UNIT_A_DIRS)})
+    assert not found, found
+    listed = [line for path in BASELINES.glob("*.txt")
+              for line in path.read_text().split() if line.startswith(UNIT_A_DIRS)]
     assert not listed, listed
 
 

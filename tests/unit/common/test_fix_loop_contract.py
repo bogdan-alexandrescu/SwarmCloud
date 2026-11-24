@@ -12,9 +12,8 @@ docs/design/fix-loop.md §7 requests A and B, accepted by the owner on 2026-10-2
     promotes a park only through a sweep that names its reason
     (`_parked_window(ParkReason.X)`), or through PREWARM_REASONS;
   * `scripts/lib/check-contract-parity.sh` still passes with the new member;
-  * the requests are filed: 124 and 125 accepted and applied, and 126 (the end
-    cause Q3 (c) needs) accepted by the owner on 2026-10-27 and applied: the frozen
-    `EndCause` has `FIX_LOOP_EXHAUSTED`, appended, the outcome ledger classes
+  * request 126 (the end cause Q3 (c) needs), accepted by the owner on
+    2026-10-27, is applied: the frozen `EndCause` has `FIX_LOOP_EXHAUSTED`, appended, the outcome ledger classes
     it as its own failure class, and the console's `EndCause` list carries it.
 
 MUTATION: set `available=False` (with a reason) on `fix-loop` and
@@ -50,10 +49,6 @@ from swarm_common.states import (
 
 REPO = Path(__file__).resolve().parents[3]
 LOCALS_TF = REPO / "terraform" / "infra" / "locals.tf"
-REQUESTS = REPO / "docs" / "contract-change-requests.md"
-#: "ACCEPTED by the owner", with or without the owner's initials in brackets
-#: after it: the record names a role, never a person.
-ACCEPTED = r"ACCEPTED by the owner (?:\([A-Z]+\) )?"
 SCHEDULER = REPO / "apps" / "scheduler" / "scheduler"
 PARITY = REPO / "scripts" / "lib" / "check-contract-parity.sh"
 
@@ -188,51 +183,19 @@ def test_the_contract_parity_script_passes():
     assert re.search(rf"ok types\.ts ParkReason: {members} member", report), report[-6000:]
 
 
-# --------------------------------------------------------------------------
-# The record
-# --------------------------------------------------------------------------
-
-
-def _row(number: str) -> str:
-    text = REQUESTS.read_text(encoding="utf-8")
-    rows = [line for line in text.splitlines() if line.startswith(f"| {number} |")]
-    assert len(rows) == 1, rows
-    return rows[0]
-
-
-def test_requests_a_and_b_are_filed_as_accepted_and_applied():
-    text = REQUESTS.read_text(encoding="utf-8")
-    for number, letter in (("124", "fix loop request A"), ("125", "fix loop request B")):
-        row = _row(number)
-        assert "FL-CONTRACT" in row and letter in row
-        # "accepted by the owner" is the mark scripts/lib/check-frozen-contract.sh
-        # looks for in an added line; without it the swarm_common diff is refused.
-        assert re.search(ACCEPTED + re.escape("2026-10-27 (Q1, Q2, Q10"), row) and "APPLIED" in row
-        assert re.search(rf"^## {number}\. .*\(FL-CONTRACT, {letter}\)$", text, re.M)
-
-
 def test_request_c_is_accepted_and_applied():
     """Q3 (c) ends a loop FAILED `fix_loop_exhausted`. the owner accepted request 126
     on 2026-10-27 ('accept-126'), so the frozen enum has the member, appended
     after request 118's `budget_exceeded` so no reader's order moves.
 
     MUTATION: drop `FIX_LOOP_EXHAUSTED` from `EndCause` and the enum asserts
-    fail; leave request 126's row saying "Not applied" and the record asserts
-    fail; drop "accepted by the owner" from the row and
-    scripts/lib/check-frozen-contract.sh would refuse the swarm_common diff.
+    fail.
     """
     assert EndCause.FIX_LOOP_EXHAUSTED.value == "fix_loop_exhausted"
     assert EndCause("fix_loop_exhausted") is EndCause.FIX_LOOP_EXHAUSTED
     causes = list(EndCause)
     assert causes[-1] is EndCause.FIX_LOOP_EXHAUSTED
     assert causes[-2] is EndCause.BUDGET_EXCEEDED
-    row = _row("126")
-    assert "fix loop request C" in row
-    assert re.search(ACCEPTED + "2026-10-27", row) and "APPLIED" in row
-    assert "Not applied" not in row
-    text = REQUESTS.read_text(encoding="utf-8")
-    section = text.split("## 126. ", 1)[1].split("\n## ", 1)[0]
-    assert re.search(re.escape("**Status:** ") + ACCEPTED + "2026-10-27", section)
 
 
 def test_the_console_names_the_new_end_cause():
