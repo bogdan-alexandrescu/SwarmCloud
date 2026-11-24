@@ -28,17 +28,23 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from swarm_api import refusals, roles
+from swarm_api import forge, forgewrite, refusals, roles
+from swarm_api.auth import StaticTokenVerifier
+from swarm_api.credentials import InMemoryCredentials
+from swarm_api.deps import build_context
+from swarm_api.groups import StaticGroups
 from swarm_api.issueruns import RUNS_COLLECTION
+from swarm_api.metrics import ApiMetrics
+from swarm_api.waker import NullWaker
 
-from .conftest import auth_header
+from . import forge_fakes
+from .conftest import api_settings, auth_header
 from .test_issue_runs import (  # noqa: F401 -- fixtures, used by name
     PLAN,
     _approve,
     _edit,
     _planned,
     _run,
-    api_context,
     forge_tokens,
     github,
 )
@@ -46,6 +52,25 @@ from .test_roles_store import grant
 
 MEMBER_SWITCH = refusals.env_name("role_member_required")
 THREAD = "plan_thread"
+
+
+@pytest.fixture
+def api_context(db, tokens, group_map, objects, github, forge_tokens):
+    """test_issue_runs' context, with a settings key so a test can narrow a
+    member to `viewer` the way the role routes do (roles are signed)."""
+    return build_context(
+        settings=api_settings(settings_key=secrets.token_hex(32)),
+        db=db,
+        verifier=StaticTokenVerifier(tokens),
+        groups=StaticGroups(group_map),
+        credentials=InMemoryCredentials(),
+        waker=NullWaker(),
+        metrics=ApiMetrics(),
+        objects=objects,
+        forge_tokens=forge_tokens,
+        forge=forge.GitHubIssues(send=github),
+        forge_writer=forgewrite.GitHubWriter(send=forge_fakes.GitHubWrites()),
+    )
 
 
 def _comment(client, run_id, body, user="alice"):
