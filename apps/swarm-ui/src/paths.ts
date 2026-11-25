@@ -278,6 +278,8 @@ export const FIXED: Readonly<Record<string, string>> = {
   // plans-pipeline §2.1: the Pipeline board, between Schedules and Approvals.
   // Its filters ride on its query (`?source=&state=&waits=person`).
   'automate/pipeline': '/automate/pipeline',
+  // plans-pipeline §6.4: Automate › Settings, after Approvals.
+  'automate/settings': '/automate/settings',
   submit: '/submit',
   'capacity/pools': '/capacity/pools',
   'capacity/profiles': '/capacity/pools/profiles',
