@@ -445,7 +445,7 @@ class JudgeClient:
                 try:
                     status, raw = self.transport(self.backend.url, body, headers,
                                                  CALL_TIMEOUT_SECONDS)
-                except Exception:  # a timeout, a refused connection, a reset: retryable
+                except Exception:  # a timeout, a refused connection, a reset: retryable  # noqa: BLE001
                     status, raw = 0, b""
                 if 200 <= status < 300:
                     break

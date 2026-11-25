@@ -334,7 +334,7 @@ class SessionCarrier:
     def _gate_call(self, op: str, args: Mapping[str, Any]) -> dict[str, Any]:
         try:
             return self._gate.call(op, args)
-        except Exception as exc:  # CtlError / CtlRefused, or the channel's own failure
+        except Exception as exc:  # CtlError / CtlRefused, or the channel's own failure  # noqa: BLE001
             refused = type(exc).__name__ == "CtlRefused"
             raise GateUnavailable("gate_refused" if refused else "gate_unavailable") from None
 
@@ -396,7 +396,7 @@ class SessionCarrier:
         name = plan.login_name
         try:
             payload = self._vault.read(plan.login_secret)
-        except Exception:
+        except Exception:  # noqa: BLE001
             payload = None
         envelope = _envelope(payload)
         if envelope is None:

@@ -196,7 +196,7 @@ def _attempt(fn: Callable[[], Any]) -> tuple[Any, SwarmError | None]:
         return fn(), None
     except SwarmError as exc:
         return None, exc
-    except Exception as exc:  # pragma: no cover - transport level
+    except Exception as exc:  # pragma: no cover - transport level  # noqa: BLE001
         return None, SwarmError(f"{type(exc).__name__}: {exc}")
 
 

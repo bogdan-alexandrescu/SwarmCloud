@@ -1441,7 +1441,7 @@ def answer_question(
                 raise RuntimeError("this answer path starts no pick-fix round")
             patch = start_pick_fix(merge, claim)
             started.append(str(patch.get("round_workflow_id")))
-        except Exception as exc:  # recorded, and the answer still stands
+        except Exception as exc:  # recorded, and the answer still stands  # noqa: BLE001
             reason = exc.message if hasattr(exc, "message") else (
                 str(exc) if isinstance(exc, (ValueError, RuntimeError)) else type(exc).__name__)
             patch = {"error": redact(str(reason)).text[:300]}

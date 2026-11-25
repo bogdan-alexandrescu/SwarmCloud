@@ -161,7 +161,7 @@ def _answer_message(raw: bytes) -> str:
     """The `message` of a GitHub error body, or "" when it has none."""
     try:
         data = json.loads(raw.decode("utf-8")) if raw else None
-    except Exception:
+    except Exception:  # noqa: BLE001
         return ""
     message = data.get("message") if isinstance(data, dict) else None
     return message if isinstance(message, str) else ""
@@ -282,7 +282,7 @@ def _response_headers(response: Any) -> dict[str, str]:
     raw = getattr(response, "headers", None)
     try:
         return {str(k): str(v) for k, v in raw.items()} if raw is not None else {}
-    except Exception:
+    except Exception:  # noqa: BLE001
         return {}
 
 
@@ -301,7 +301,7 @@ def _urllib_send(
     except urllib.error.HTTPError as answer:
         try:
             raw = answer.read(MAX_RESPONSE_BYTES + 1)
-        except Exception:
+        except Exception:  # noqa: BLE001
             raw = b""
         return answer.code, raw, _response_headers(answer)
 
@@ -534,7 +534,7 @@ class GitHubWriter:
             sent = self._send(method, url, headers, body, self._timeout)
         except ForgeWriteError:
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # The type only: a transport's message can quote the request.
             raise ForgeUnreachable(
                 f"{what} could not be sent to GitHub ({_transport_name(exc)})"
@@ -585,7 +585,7 @@ class GitHubWriter:
             raise ForgeWriteError(f"GitHub's answer for {what} is larger than this client holds")
         try:
             return json.loads(raw.decode("utf-8"))
-        except Exception:
+        except Exception:  # noqa: BLE001
             raise ForgeWriteError(f"GitHub's answer for {what} is not JSON") from None
 
     # -- issue comments --------------------------------------------------------
@@ -1340,7 +1340,7 @@ class GitHubWriter:
                 self._url(ref, f"actions/jobs/{int(job_id)}/logs"), github_headers(token),
                 self._timeout,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.info("job %s log not located (%s)", int(job_id), type(exc).__name__)
             return None
         if status not in (301, 302, 303, 307, 308) or not location or not is_log_host(location):
@@ -1351,7 +1351,7 @@ class GitHubWriter:
                 {"Range": f"bytes=-{limit}", "User-Agent": _USER_AGENT},
                 self._timeout,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # The type only: the URL is signed and must not reach a log.
             log.info("job %s log not read (%s)", int(job_id), type(exc).__name__)
             return None

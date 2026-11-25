@@ -205,7 +205,7 @@ def _read(name: str, read: Callable[[], Any]) -> FeatureState:
     never served as `false`, and never fails the identity route."""
     try:
         value = read()
-    except Exception:  # noqa: BLE001 - an unread state is reported as unread
+    except Exception:  # an unread state is reported as unread
         log.warning("tenants/me could not read feature %s", name, exc_info=True)
         return FEATURE_UNKNOWN
     return value if isinstance(value, bool) else FEATURE_UNKNOWN
@@ -325,7 +325,7 @@ def _stored_names(ctx: AppContext, tenant_ids: list[str]) -> dict[str, str]:
         # any other, so the route still answers with the group emails.
         collection = ctx.db.collection(TENANTS)
         snaps = list(ctx.db.get_all([collection.document(t) for t in dict.fromkeys(tenant_ids)]))
-    except Exception:  # noqa: BLE001 - an unread name is served as today's group email
+    except Exception:  # an unread name is served as today's group email
         log.warning("tenants/mine could not read the workspaces' names", exc_info=True)
         return {}
     names: dict[str, str] = {}

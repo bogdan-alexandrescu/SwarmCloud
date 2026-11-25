@@ -1223,7 +1223,7 @@ class AttemptState:
         `GET /v1/tasks` then derives the row as it always has."""
         try:
             docs = task_attempt_docs(self._db, attempt.tenant_id, attempt.task_id)
-        except Exception as exc:  # a view never fails the write it rides on
+        except Exception as exc:  # a view never fails the write it rides on  # noqa: BLE001
             log.warning("attempt totals not stored: %s", type(exc).__name__)
             return None
         return stored_totals(docs, attempt_id=attempt.attempt_id,

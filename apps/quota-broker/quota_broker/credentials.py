@@ -273,7 +273,7 @@ class CredentialRefresher:
             # static API key or a setup-token. Not an error, and not something to
             # log noisily on every sweep.
             return RefreshOutcome(tenant_id, provider, False, "no_refresh_credential")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # Anything else is the store failing, not the tenant lacking a
             # credential. Reported separately so a broken sweep is visible.
             self._log.warning(
@@ -402,7 +402,7 @@ class CredentialRefresher:
                 self._warn_unverified(base, published, tenant_id, provider, detail)
             try:
                 self._store.add_version(base, published)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self._log.warning(
                     "could not publish a still-valid access token",
                     extra={
@@ -566,7 +566,7 @@ class CredentialRefresher:
             stored = self._store.access(base)
         except KeyError:
             return _BaseState.NEEDS_PUBLISH, "no_version"
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             read_error = type(exc).__name__
         else:
             return (
@@ -577,7 +577,7 @@ class CredentialRefresher:
             known = self._ledger.published_digest(base)
         except LedgerUnavailable as exc:
             return _BaseState.UNKNOWN, f"{read_error}/ledger:{exc}"
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # A ledger that raises something other than its own contract type
             # is still a ledger that did not answer. Anything else here would
             # be the swallowed exception this whole module exists to remove.
@@ -603,7 +603,7 @@ class CredentialRefresher:
             return
         try:
             self._ledger.record(base, digest)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._log.warning(
                 "could not record which access token was published, so the "
                 "next sweep may publish an identical version before it can "
@@ -666,7 +666,7 @@ class CredentialRefresher:
                 outcomes.append(
                     self.refresh_secret(secret_base, label=label, held=label in held)
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self._log.error(
                     "account refresh raised; continuing with the rest of the pool",
                     extra={"account": label, "error": type(exc).__name__},
@@ -690,7 +690,7 @@ class CredentialRefresher:
                 break
             try:
                 outcomes.append(self.refresh_tenant(tenant_id, provider))
-            except Exception as exc:  # one tenant must not stop the sweep
+            except Exception as exc:  # one tenant must not stop the sweep  # noqa: BLE001
                 self._log.error(
                     "credential sweep raised for a tenant",
                     extra={

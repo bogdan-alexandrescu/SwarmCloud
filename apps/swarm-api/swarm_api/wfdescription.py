@@ -487,7 +487,7 @@ def generate(db: Any, tasks: Sequence[Task], *, summariser: Summariser | None,
     try:
         if not _claim(db, tenant_id, workflow_id, now()):
             return "skipped:already_claimed"
-    except Exception:  # noqa: BLE001 - logged; the workflow is unaffected
+    except Exception:  # logged; the workflow is unaffected
         log.exception("workflow description: could not claim the row of %s", workflow_id)
         return "failed:claim"
     row: dict[str, Any] = {"calls": 0, "model": None, "input_tokens": None, "output_tokens": None}
@@ -523,12 +523,12 @@ def generate(db: Any, tasks: Sequence[Task], *, summariser: Summariser | None,
             written = [_write(db, task.id, about) for task in tasks]
             if not any(written):
                 outcome = "skipped:described_meanwhile"
-    except Exception as exc:  # noqa: BLE001 - logged and recorded; never raised
+    except Exception as exc:  # logged and recorded; never raised
         log.exception("workflow description: %s was not described", workflow_id)
         outcome = f"failed:{type(exc).__name__}"
     try:
         _settle(db, tenant_id, workflow_id, {**row, "outcome": outcome, "settled_at": now()})
-    except Exception:  # noqa: BLE001
+    except Exception:
         log.exception("workflow description: could not settle the row of %s", workflow_id)
     return outcome
 
@@ -565,7 +565,7 @@ def after_submission(db: Any, tasks: Sequence[Task], *, settings: Any,
             _PENDING[:] = [t for t in _PENDING if t.is_alive()]
             _PENDING.append(thread)
         thread.start()
-    except Exception:  # noqa: BLE001 - the submission has already succeeded
+    except Exception:  # the submission has already succeeded
         log.exception("workflow description: could not start")
 
 

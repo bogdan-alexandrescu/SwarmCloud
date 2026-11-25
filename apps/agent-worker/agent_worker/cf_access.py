@@ -90,7 +90,7 @@ def hand_over(gate: Any, items: list[dict[str, Any]], log: Any, *, protected: bo
                 try:
                     gate.call(CTL_OP, {"tokens": payload})
                     outcome = HANDED
-                except Exception as exc:  # the gate's refusal is a word it chose; only the class is logged
+                except Exception as exc:  # the gate's refusal is a word it chose; only the class is logged  # noqa: BLE001
                     log.warning("the gate did not take the Cloudflare Access token",
                                 error=type(exc).__name__, names=names)
                     outcome = GATE_REFUSED

@@ -283,7 +283,7 @@ class GitServer:
             else:
                 try:
                     response = self.handle(message)
-                except Exception as exc:  # one bad call must not end the session
+                except Exception as exc:  # one bad call must not end the session  # noqa: BLE001
                     print(f"{self.name}: {type(exc).__name__} answering a request", file=sys.stderr)
                     ident = message.get("id") if isinstance(message, dict) else None
                     response = _error(ident, -32603, f"internal error: {type(exc).__name__}")

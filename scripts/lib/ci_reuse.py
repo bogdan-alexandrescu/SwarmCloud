@@ -411,7 +411,7 @@ def main(argv: list[str]) -> int:
     # find: ANY failure is "reuse nothing", never a failed job.
     try:
         reused, why, source = find(args.repo, args.sha, args.event)
-    except Exception as exc:  # doubt runs everything, never fails the job
+    except Exception as exc:  # doubt runs everything, never fails the job  # noqa: BLE001
         reused, why, source = [], f"the lookup failed ({type(exc).__name__}); running every job", ""
     print(f"reused={json.dumps(reused)}: {why}")
     if args.github_output:

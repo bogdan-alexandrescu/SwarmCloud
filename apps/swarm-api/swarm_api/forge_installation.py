@@ -300,7 +300,7 @@ def _refusal_kind(answer: Any) -> str | None:
     also the answer when the message names neither)."""
     try:
         data = answer.json()
-    except Exception:
+    except Exception:  # noqa: BLE001
         data = None
     message = str(data.get("message") or "").lower() if isinstance(data, dict) else ""
     if "repositor" in message and "permission" not in message:
@@ -368,7 +368,7 @@ class InstallationTokens:
                 return None
         try:
             installation = self.installation_for(tenant_id, owner)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._failed(key, _MintFailed(f"installation lookup {type(exc).__name__}"), now)
             return None
         if installation is None:
@@ -383,7 +383,7 @@ class InstallationTokens:
         except _MintFailed as failed:
             self._failed(key, failed, now)
             return None
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._failed(key, _MintFailed(type(exc).__name__), now)
             return None
         with self._lock:
@@ -452,7 +452,7 @@ class InstallationTokens:
         """One fresh, unheld mint for one repository, or `refused`."""
         try:
             installation = self.installation_record(tenant_id, owner)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.warning("%s not minted owner=%s repo=%s (installation lookup %s)",
                         what, owner.lower(), repo.lower(), type(exc).__name__)
             raise refused(MINT_FAILED) from None
@@ -471,7 +471,7 @@ class InstallationTokens:
                         what, owner.lower(), repo.lower(), inst, reason,
                         "" if failed.status is None else f" HTTP {failed.status}")
             raise refused(reason, failed.status, installation=installation) from None
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.warning("%s not minted owner=%s repo=%s installation=%s (%s)",
                         what, owner.lower(), repo.lower(), inst, type(exc).__name__)
             raise refused(MINT_FAILED, installation=installation) from None
@@ -493,7 +493,7 @@ class InstallationTokens:
               permissions: Mapping[str, str] = READ_PERMISSIONS) -> tuple[str, float]:
         try:
             jwt = self._app_jwt()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             raise _MintFailed(f"app jwt {type(exc).__name__}") from None
         with redaction_literal(jwt):
             headers = {"Accept": "application/vnd.github+json",
@@ -506,7 +506,7 @@ class InstallationTokens:
             try:
                 answer = self._send("POST", f"{API}/app/installations/{int(installation)}"
                                     "/access_tokens", headers, body, self._timeout)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 # The type only: a transport's message can quote the request.
                 raise _MintFailed(f"no answer {type(exc).__name__}") from None
             finally:
@@ -520,7 +520,7 @@ class InstallationTokens:
                               _refusal_kind(answer) if status in (403, 422) else None)
         try:
             data = answer.json()
-        except Exception:
+        except Exception:  # noqa: BLE001
             data = None
         token = data.get("token") if isinstance(data, dict) else None
         expires = _expiry(data.get("expires_at")) if isinstance(data, dict) else None
@@ -562,7 +562,7 @@ def read_token(source: InstallationSource | None, tenant_id: str, owner: str,
         return ""
     try:
         return source.token_for_repo(tenant_id, owner, repo) or ""
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         log.warning("installation token source failed owner=%s repo=%s (%s)",
                     owner.lower(), repo.lower(), type(exc).__name__)
         return ""
@@ -583,7 +583,7 @@ def read_credential(source: InstallationSource | None, tenant_id: str, owner: st
                 return "", ""
             return found[0], forge_limits.installation_credential(int(found[1]))
         token = source.token_for_repo(tenant_id, owner, repo) or ""
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         log.warning("installation token source failed owner=%s repo=%s (%s)",
                     owner.lower(), repo.lower(), type(exc).__name__)
         return "", ""

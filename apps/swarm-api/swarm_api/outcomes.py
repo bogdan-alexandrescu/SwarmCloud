@@ -1185,7 +1185,7 @@ def platform_requested(raw: Mapping[str, Any]) -> bool:
 def _tz_database_present() -> bool:
     try:
         return bool(available_timezones())
-    except Exception:  # pragma: no cover - depends on the image
+    except Exception:  # pragma: no cover - depends on the image  # noqa: BLE001
         return False
 
 

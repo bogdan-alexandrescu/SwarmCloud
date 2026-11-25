@@ -344,7 +344,7 @@ class CtlServer:
         except OpRefused as exc:
             log.info("live ctl: op=%s refused cause=%s", op, exc.code)
             return self._signed(seq, False, error=f"refused:{exc.code}"), True
-        except Exception as exc:  # the handler's failure is the worker's to see, not a crash
+        except Exception as exc:  # the handler's failure is the worker's to see, not a crash  # noqa: BLE001
             log.warning("live ctl: op=%s failed (%s)", op, type(exc).__name__)
             return self._signed(seq, False, error="failed"), True
         log.info("live ctl: op=%s done", op)

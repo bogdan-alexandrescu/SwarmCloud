@@ -96,7 +96,7 @@ class SpendPricer:
             self.log.warning("stopped run's cost not reported: swarm-api did not price it",
                              decision=getattr(exc, "code", type(exc).__name__))
             return None, False
-        except Exception as exc:  # pragma: no cover - defensive; teardown path
+        except Exception as exc:  # pragma: no cover - defensive; teardown path  # noqa: BLE001
             self.log.warning("stopped run's cost not reported", error=type(exc).__name__)
             return None, False
         cost = answer.get("cost_usd")
