@@ -1,6 +1,8 @@
 // The states guard's own rules (prosestates.tsx), on hand-built states, and
 // THE COVER TEST: every screen file that draws an opener is named by a state,
-// or by issue 81's state tests; there is no pending allowance.
+// or by issue 81's state tests; there is no pending allowance. A file is
+// named by at least as many states as it draws openers (`openerCount`), so a
+// second fold or dialog in a file one state already names is not covered by it.
 
 import { useState, type ReactElement } from 'react'
 import { fireEvent } from '@testing-library/react'
@@ -182,6 +184,22 @@ export function drawsOpener(src: string, overlays: readonly string[]): boolean {
   return overlays.some((name) => new RegExp(`<${name}\\b`).test(code))
 }
 
+/**
+ * The openers `src` draws, counted where they can be told apart in the
+ * source: each `<details>`, each `role="dialog"` or `role="menu"` written as
+ * a JSX attribute (not inside a selector string such as `'[role="dialog"]'`),
+ * and each overlay component it renders but Tooltip, which opens on hover and
+ * focus and holds a tip, not a state. A toggle button's `aria-expanded` is
+ * not counted on its own: its panel is the fold or dialog counted, and a
+ * file drawing one makes it an opener file (drawsOpener) all the same.
+ */
+export function openerCount(src: string, overlays: readonly string[]): number {
+  const code = stripComments(src)
+  const tags = overlays.filter((name) => name !== 'Tooltip').map((name) => `<${name}\\b`)
+  const re = new RegExp(['<details\\b', '(?<=\\s)role="(?:dialog|menu)"', ...tags].join('|'), 'g')
+  return (code.match(re) ?? []).length
+}
+
 /** The opener files nothing accounts for: no state names them and issue 81 did not name them. */
 export function uncovered(openers: readonly string[], states: readonly ProseState[], named81: readonly string[]): string[] {
   const named = new Set(states.flatMap((s) => s.files))
@@ -209,6 +227,26 @@ describe('the cover: every screen file that draws an opener is visited', () => {
   it('names every opener file by a state or by issue 81', () => {
     const left = uncovered(openers, REGISTRY, NAMED_BY_81)
     expect(left, `register a state for each (prosestates.<group>.tsx):\n${left.join('\n')}`).toEqual([])
+  })
+
+  it('names each file by as many states as it draws openers', () => {
+    const per = (f: string): number => REGISTRY.filter((s) => s.files.includes(f)).length
+    const short = openers
+      .filter((f) => !NAMED_BY_81.includes(f))
+      .map((f) => ({ f, openers: openerCount(SOURCES[f] ?? '', OVERLAYS), states: per(f) }))
+      .filter((x) => x.states < x.openers)
+      .map((x) => `${x.f}: ${x.openers} openers, ${x.states} states`)
+    expect(short, `register a state for each opener (prosestates.<group>.tsx):\n${short.join('\n')}`).toEqual([])
+  })
+
+  it('counts openers, not files: a second fold in a file one state names is short', () => {
+    expect(openerCount('<details><summary>a</summary>b</details>', OVERLAYS)).toBe(1)
+    expect(openerCount('<details>x</details>\n<div role="dialog">y</div>\n<Dialog title="z">w</Dialog>', OVERLAYS)).toBe(3)
+    // A selector string, a comment and a hover tip open nothing.
+    expect(openerCount("el.closest('[role=\"dialog\"]')\n// <details>\n<Tooltip tip=\"t\">x</Tooltip>", OVERLAYS)).toBe(0)
+    const one = REGISTRY.filter((s) => s.files.includes('Notifications.tsx'))
+    expect(one.length, 'the bell is named by one state').toBe(1)
+    expect(openerCount((SOURCES['Notifications.tsx'] ?? '') + '\n<details><summary>more</summary></details>', OVERLAYS)).toBeGreaterThan(one.length)
   })
 
   it('fails a file when the one state that names it is taken out', () => {

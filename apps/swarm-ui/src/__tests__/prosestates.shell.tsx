@@ -142,6 +142,20 @@ export const SHELL: readonly ProseState[] = [
     },
   },
   {
+    // Collapsed, a click on the section you are in opens its pages (visual QA V083).
+    key: 'shell/section-flyout',
+    group: 'shell',
+    files: ['Spine.tsx'],
+    shows: '.sk-flyout.is-work',
+    walk: {
+      open: 'work/running',
+      then: () => {
+        click('[aria-label="Collapse the panel"]')
+        click('.sk-spine a[data-sec="work"]')
+      },
+    },
+  },
+  {
     key: 'shell/not-found',
     group: 'shell',
     files: ['NotFound.tsx'],

@@ -555,7 +555,14 @@ export function StopRun({
               ? 'at once'
               : started
                 ? "at the worker's next heartbeat, not now"
-                : 'when a worker starts, or when the reconciler finishes it — not now'}
+                : (
+                    // ONE SHORT LINE (issue 439): the two things that end an
+                    // attempt no worker has started, then the sentence behind its (i).
+                    <>
+                      worker start or reconciler — not now{' '}
+                      <InfoTip about="when the stop takes effect" tip="when a worker starts, or when the reconciler finishes it — not now" />
+                    </>
+                  )}
           </span>
         </li>
       </ul>

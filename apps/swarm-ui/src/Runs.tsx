@@ -394,8 +394,11 @@ export function RunsScreen({ view, go }: { view: string | null; go: (to: string)
   const runId = runOf(view)
   const tab = runTabOf(view)
   const [reloads, setReloads] = useState(0)
-  /** Why the run was re-read, when a refusal made this page do it. */
-  const [notice, setNotice] = useState<string | null>(null)
+  /**
+   * Why the run was re-read, when a refusal made this page do it: one short
+   * line on the surface, the sentence behind its (i), word for word (issue 439).
+   */
+  const [notice, setNotice] = useState<{ line: string; tip: string } | null>(null)
   useEffect(() => setNotice(null), [runId])
   /** The issue's title, once the run is read: the page's title (item 4). */
   const [heading, setHeading] = useState<{ run: string; title: string } | null>(null)
@@ -409,8 +412,8 @@ export function RunsScreen({ view, go }: { view: string | null; go: (to: string)
     // literal below as the tab's heading and skips a per-run title. Until the
     // run is read, the id is all this page knows to call it.
     const pageTitle = heading !== null && heading.run === runId ? heading.title : runId
-    const reread = (why: string) => {
-      setNotice(why)
+    const reread = (line: string, tip: string) => {
+      setNotice({ line, tip })
       setReloads((n) => n + 1)
     }
     // A heading with no space is a reference or an id: one line, cut, never
@@ -425,7 +428,9 @@ export function RunsScreen({ view, go }: { view: string | null; go: (to: string)
         {notice !== null && (
           <div className="rn-notice" role="status">
             <WarnMark />
-            <span>{notice}</span>
+            <span>
+              {notice.line} <InfoTip about="why the run was read again" tip={notice.tip} />
+            </span>
           </div>
         )}
         <Screen
@@ -946,7 +951,8 @@ export function planMovedUnder(shown: IssueRun, served: IssueRun): boolean {
 
 function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
   run: IssueRun
-  reread: (why: string) => void
+  /** Re-read the run, saying why: `line` on the surface, `tip` behind its (i). */
+  reread: (line: string, tip: string) => void
   go: (to: string) => void
   /** Told the page's title: the issue's, or its reference when the run kept none. */
   onHeading: (title: string) => void
@@ -1034,7 +1040,7 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
       setHeld(null)
       if (what !== 'edit') setDecided({ what, digest: on, at })
       if (next !== undefined && next !== null && typeof next.id === 'string') setRun(next)
-      else reread('The API accepted this and did not echo the run, so it was read again.')
+      else reread('Done; the run was read again', 'The API accepted this and did not echo the run, so it was read again.')
       return
     }
     if (r.status !== 'error') return
@@ -1042,6 +1048,7 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
       setActing({ kind: 'idle' })
       close()
       reread(
+        'The plan changed; nothing was done',
         'The plan changed since you opened it, so nothing was done. This is the plan now: read it, then act on it again.',
       )
       return
@@ -1049,7 +1056,7 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
     if (r.error.code === 'invalid_run_transition' || r.error.kind === 'conflict') {
       setActing({ kind: 'idle' })
       close()
-      reread(`The run moved on since you opened it, so nothing was done: ${r.error.message}`)
+      reread('The run moved on; nothing was done', `The run moved on since you opened it, so nothing was done: ${r.error.message}`)
       return
     }
     setActing({ kind: 'failed', error: r.error })
@@ -1182,11 +1189,13 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
         {held !== null && (
           <div className="rn-notice rn-held" role="status">
             <WarnMark />
+            {/* ONE SHORT LINE (issue 439): who edited it beside it, why the
+                actions are refused behind the (i), word for word. */}
             <span>
-              The plan changed since this page drew it
-              {held.plan_edited_by !== null && <> (edited by {held.plan_edited_by})</>}. The actions below still name the
-              plan shown, so the API will refuse them.
+              The plan changed since this page drew it{' '}
+              <InfoTip about="the changed plan" tip="The actions below still name the plan shown, so the API will refuse them." />
             </span>
+            {held.plan_edited_by !== null && <span className="ctl-sub">edited by {held.plan_edited_by}</span>}
             <Button disabled={busy} onClick={showHeld}>Show the plan now</Button>
           </div>
         )}

@@ -6,18 +6,22 @@
 // undoes all of it after each state (prose.states.agent.test.tsx).
 
 import { useState, type ReactElement } from 'react'
+import { vi } from 'vitest'
 
 import { AgTabsEdge } from '../agent-split/tabs'
-import { PromptText } from '../Artifacts'
-import type { CancelResult } from '../api'
+import { AgentDetailScreen } from '../AgentDetail'
+import { LogBody, PromptText, type LogFeed } from '../Artifacts'
+import { FIXTURE_CLOCK, type AgentDetail, type CancelResult } from '../api'
+import { AttemptTimelineScreen } from '../AttemptTimeline'
 import type { ApiError, Result } from '../fetch'
 import { CheckpointBrowser, type CheckpointLoaders } from '../CheckpointBrowser'
 import { DiffView } from '../diff/DiffView'
 import { LiveToolMenu } from '../LiveToolMenu'
+import { LogMarksContext, type LogMarks } from '../logMarks'
 import { StopRun } from '../StopRun'
-import type { Task, Waiting, WaitingHistoryEntry } from '../types'
+import type { AttemptRow, Task, TaskTranscript, TranscriptStep, Waiting, WaitingHistoryEntry } from '../types'
 import { WaitPanel } from '../WaitPanel'
-import { at, task } from './runfixture'
+import { at, attempt, task } from './runfixture'
 
 // ------------------------------------------------------------------ stubs
 
@@ -33,7 +37,7 @@ export function restoreAgentStubs(): void {
  * set: the slice mocks api.ts's `cancelTask` to read it (the fixture build
  * never refuses a stop). Cleared by `restoreAgentStubs`.
  */
-export const refuse: { cancel: Result<CancelResult> | null } = { cancel: null }
+export const refuse: { cancel: Result<CancelResult> | null; transcript: Result<TaskTranscript> | null } = { cancel: null, transcript: null }
 
 /** The next stop is released at once (it held no capacity), until restored. */
 export function releaseStop(): void {
@@ -49,6 +53,22 @@ export function refuseStop(message: string): void {
   refuse.cancel = { status: 'error', error }
   restores.push(() => {
     refuse.cancel = null
+  })
+}
+
+/**
+ * What the attempts and agent reads answer instead of the build's own
+ * (fixture) answers, while set: the slice mocks api.ts's `loadAttempts` and
+ * `loadAgentDetail` to read them. Cleared by `restoreAgentStubs`.
+ */
+export const served: { attempts: Result<{ attempts: AttemptRow[] }> | null; detail: Result<AgentDetail> | null } = { attempts: null, detail: null }
+
+/** The next transcript read (the transcript's `next window`) is refused by the API with `message`, until restored. */
+export function refuseTranscript(message: string): void {
+  const error: ApiError = { kind: 'server_error', httpStatus: 500, code: 'internal', message }
+  refuse.transcript = { status: 'error', error }
+  restores.push(() => {
+    refuse.transcript = null
   })
 }
 
@@ -174,6 +194,11 @@ function Tabs(): ReactElement {
 
 export const mountStop = (): ReactElement => <StopRun task={runningTask()} what="agent" reload={() => undefined} overlay />
 
+/** An agent leased and dispatched but no worker has started: the Stop dialog's third case. */
+export const mountStopNotStarted = (): ReactElement => (
+  <StopRun task={runningTask({ state: 'DISPATCHED', started_at: null })} what="agent" reload={() => undefined} overlay />
+)
+
 export const mountWait = (): ReactElement => <WaitPanel task={parkedTask(8)} now={WAIT_NOW} />
 
 export const mountDiff = (): ReactElement => <DiffView patch={PATCH} name="swarm-work.patch" />
@@ -260,3 +285,121 @@ const LOADERS: CheckpointLoaders = {
 export const mountCheckpoint = (): ReactElement => (
   <CheckpointBrowser taskId="task_a" attemptId="att_1" checkpointId="ckpt-00001" onClose={() => undefined} loaders={LOADERS} />
 )
+
+// ------------------------------------------------------------ the transcript
+
+const TRANSCRIPT_TASK = 'task_7e21c0d4a95b4f3e8c02'
+
+function step(n: number, over: Partial<TranscriptStep>): TranscriptStep {
+  return {
+    id: `L${n}:0`, line_offset: n * 100, block: 0, kind: 'text', role: 'assistant', parent_tool_use_id: null,
+    text: null, tool: null, tool_result: null, meta: null, truncated_fields: [], raw: null, ...over,
+  }
+}
+
+/** One of each fold a transcript step draws: progress events, a record, thinking, a tool call and its result, a result whose call is in another window. */
+const STEPS: TranscriptStep[] = [
+  step(1, { kind: 'other', role: 'system', meta: { raw_type: 'tool_progress' } }),
+  step(2, { kind: 'other', role: 'system', meta: { raw_type: 'tool_progress' } }),
+  step(3, { kind: 'text', text: 'Reading the pool table.', raw: '{"type":"assistant","text":"Reading the pool table."}' }),
+  step(4, { kind: 'thinking', text: 'Pool a first.' }),
+  step(5, { kind: 'tool_call', tool: { id: 'tu_1', name: 'Bash', input: '{"command":"ls pools"}' } }),
+  step(6, { kind: 'tool_result', role: 'user', tool_result: { tool_use_id: 'tu_1', is_error: false, content: 'pool-a\npool-b', images: 0 } }),
+  step(7, { kind: 'tool_result', role: 'user', tool_result: { tool_use_id: 'tu_0', is_error: true, content: 'exit 1', images: 0 } }),
+]
+
+const LOG_ATTEMPT = { status: 'latest' as const, known: true, generation: 1, created_at: at(0), completed_at: at(30), exit_code: 0 }
+
+/** A finished attempt's final transcript, one window of two: `next window` reads the second. */
+function transcriptRead(): TaskTranscript {
+  return {
+    task_id: TRANSCRIPT_TASK, tenant_id: 'eng', attempt_id: 'att_1', attempt: LOG_ATTEMPT, read_at: at(31),
+    stream: {
+      stream: 'agent_stdout', source: 'final', status: 'ok', detail: null,
+      uri: ['gs:/', 'swarm-artifacts-example', 'tenants/eng/tasks', TRANSCRIPT_TASK, 'attempts/att_1/agent_stdout.log'].join('/'),
+      object_updated_at: at(30), age_seconds: 60, total_bytes: 2000, offset: 0, returned_bytes: 1000, next_offset: 1000,
+      truncated: true, tail_window: null,
+    },
+    format: 'claude-stream-json', steps: STEPS, complete: false, window_starts_mid_stream: false, skipped_lines: 0,
+    answer_in_window: false, redaction: { applied_at_read_time: true, rules: 11 }, redaction_count: 0,
+  }
+}
+
+/** Inside the log dock: its marks provided, so the transcript's facts fold as the dock folds them. */
+const DOCK: LogMarks = { needle: '', current: null, wrap: false, gaps: {} }
+
+/** The log dock's transcript view on one finished attempt, drawn as the Logs tab draws it beside the live browser. */
+export function mountTranscript(): ReactElement {
+  const t = transcriptRead()
+  const v: LogFeed = {
+    task: task({ id: TRANSCRIPT_TASK, state: 'SUCCEEDED', runner_profile: 'claude-code', started_at: at(0), completed_at: at(30) }),
+    attemptId: null,
+    transcript: { status: 'ok', data: t, fetchedAt: Date.parse(at(31)) },
+    logs: {
+      status: 'ok',
+      fetchedAt: Date.parse(at(31)),
+      data: {
+        task_id: TRANSCRIPT_TASK, tenant_id: 'eng', attempt_id: 'att_1', attempt: LOG_ATTEMPT, read_at: at(31), streams: [],
+        prefix: `tenants/eng/tasks/${TRANSCRIPT_TASK}/attempts/att_1/`, redaction: { applied_at_read_time: true, rules: 11 },
+      },
+    },
+  }
+  return (
+    <LogMarksContext.Provider value={DOCK}>
+      <LogBody v={v} view="transcript" reading={{ fetchedAt: Date.parse(at(31)), pollMs: null }} now={Date.parse(at(32))} />
+    </LogMarksContext.Provider>
+  )
+}
+
+// ------------------------------------------------------- the standalone drawer
+
+/** A button that opens the agent drawer on its own -- not inside the split -- as a page that hosts it alone would. */
+function StandaloneDrawer({ taskId }: Readonly<{ taskId: string }>): ReactElement {
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <button type="button" className="ps-open-drawer" onClick={() => setOpen(true)}>
+        Open agent
+      </button>
+      {open && <AgentDetailScreen taskId={taskId} onClose={() => setOpen(false)} />}
+    </>
+  )
+}
+
+/**
+ * The fixture build's running agent, in the standalone drawer (its own
+ * `.drawer` and close button), read at the fixture build's own clock as a
+ * walk is: on today's clock its last event is weeks old and it reads silent.
+ */
+export function mountDrawer(): ReactElement {
+  vi.setSystemTime(new Date(FIXTURE_CLOCK))
+  return <StandaloneDrawer taskId="task_a073aff5" />
+}
+
+// -------------------------------------------------- a merge step's re-checks
+
+/** A merge step handed to a person after three CI re-checks: the attempts page folds the two earlier ones. */
+export function mountReChecks(): ReactElement {
+  const t = task({
+    id: 'task_9b40d6e2f1a84c37b5e1',
+    state: 'PARKED',
+    park_reason: 'HUMAN_REQUIRED',
+    runner_profile: 'merge',
+    waiting: {
+      reason: 'HUMAN_REQUIRED',
+      summary: 'CI on PR #3412 waited 48 m over 3 re-checks',
+      since: null,
+      resumes_when: 'a member of the workspace calls human-ready',
+      detail: { park_phase: 'ci_wait_stuck', re_checks: 3 },
+      history: [],
+    },
+  } as Partial<Task>)
+  const rows = [1, 2, 3].map((n) => attempt(n, { task_id: t.id, exit_code: 75, error: 'CI_PENDING', completed_at: at(n * 16 + 1) }))
+  served.attempts = { status: 'ok', fetchedAt: Date.now(), data: { attempts: rows } }
+  served.detail = { status: 'ok', fetchedAt: Date.now(), data: { task: t, events: [], eventsDetail: null } as unknown as AgentDetail }
+  restores.push(() => {
+    served.attempts = null
+    served.detail = null
+  })
+  return <AttemptTimelineScreen taskId={t.id} />
+}

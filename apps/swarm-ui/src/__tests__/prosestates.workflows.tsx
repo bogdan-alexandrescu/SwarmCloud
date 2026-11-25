@@ -7,7 +7,8 @@
 // listings, the diagram's text, the QA run's dismissed routes, the facts
 // card's More, Stop and Pause with their refusals, and a question answered.
 
-import { fireEvent } from '@testing-library/react'
+import { act, fireEvent } from '@testing-library/react'
+import { vi } from 'vitest'
 
 import type { ProseState } from './prosestates'
 import { settle } from './proseapp'
@@ -25,7 +26,21 @@ import {
   mountWorkflowFacts,
 } from './prosestates.workflows.mounts'
 import { mountAnsweredQuestions, mountWideStage } from './prosestates.workflows.board'
-import { mountRunApproveRefused, mountRunChecks, mountRunLongSummary, mountRunOverlaps, mountRunRejected } from './prosestates.workflows.runs'
+import {
+  mountRunApproveRefused,
+  mountRunChecks,
+  mountRunEditRefused,
+  mountRunHeld,
+  mountRunLongSummary,
+  mountRunMovedOn,
+  mountRunOverlaps,
+  mountRunPlanChanged,
+  mountRunRejected,
+  mountRunRejectRefused,
+  mountRunsOlder,
+  mountRunsOlderRefused,
+} from './prosestates.workflows.runs'
+import { RUN_POLL_MS } from '../Runs'
 import { screenLoaded } from './screenLoaded'
 
 /** The fixture workflow of five checks and a synthesis, one failed. */
@@ -45,10 +60,25 @@ async function drawn(): Promise<void> {
   await settle()
 }
 
+/** Wait for `selector` to be drawn. */
+async function whenDrawn(selector: string): Promise<void> {
+  for (let i = 0; i < 20 && document.querySelector(selector) === null; i++) await drawn()
+}
+
 /** Wait for `selector` to be drawn, then click it. */
 async function clickWhenDrawn(selector: string): Promise<void> {
-  for (let i = 0; i < 20 && document.querySelector(selector) === null; i++) await drawn()
+  await whenDrawn(selector)
   click(selector)
+}
+
+/** Open Reject's form, give a reason and send it. */
+async function rejectWith(reason: string): Promise<void> {
+  clickText('.rn-actions button', 'Reject')
+  await drawn()
+  const field = document.querySelector<HTMLTextAreaElement>('.rn-reject textarea')
+  if (field === null) throw new Error('no reason field in the reject form')
+  fireEvent.change(field, { target: { value: reason } })
+  clickText('.rn-reject button', 'Reject this plan')
 }
 
 /** Open the first `<details>` matching `selector`. */
@@ -470,13 +500,99 @@ export const WORKFLOWS: readonly ProseState[] = [
     shows: '.rn-decided',
     moved: ['The run is Rejected now; nothing ran.'],
     mount: mountRunRejected,
+    act: () => rejectWith('Out of scope'),
+  },
+  {
+    key: 'run/reject-refused',
+    group: 'workflows',
+    files: ['Runs.tsx'],
+    shows: '.state.failed',
+    data: ['the store refused the rejection'],
+    lines: ['The change was not confirmed'],
+    moved: ['The platform did not confirm this change. Read the page again to see whether it was made before sending it again.'],
+    mount: mountRunRejectRefused,
+    act: () => rejectWith('Out of scope'),
+  },
+  {
+    key: 'run/edit-refused',
+    group: 'workflows',
+    files: ['Runs.tsx'],
+    shows: '.state.failed',
+    data: ['the store refused the edit'],
+    lines: ['The change was not confirmed'],
+    moved: ['The platform did not confirm this change. Read the page again to see whether it was made before sending it again.'],
+    mount: mountRunEditRefused,
     act: async () => {
-      clickText('.rn-actions button', 'Reject')
+      await whenDrawn('.rn-actions button')
+      clickText('.rn-actions button', 'Edit plan')
       await drawn()
-      const reason = document.querySelector<HTMLTextAreaElement>('.rn-reject textarea')
-      if (reason === null) throw new Error('no reason field in the reject form')
-      fireEvent.change(reason, { target: { value: 'Out of scope' } })
-      clickText('.rn-reject button', 'Reject this plan')
+      const summary = document.querySelector<HTMLTextAreaElement>('.rn-edit textarea')
+      if (summary === null) throw new Error('no summary field in the plan editor')
+      fireEvent.change(summary, { target: { value: 'My edit of the plan.' } })
+      clickText('.rn-edit button', 'Save the plan')
+    },
+  },
+  {
+    key: 'run/plan-changed',
+    group: 'workflows',
+    files: ['Runs.tsx'],
+    shows: '.rn-notice',
+    lines: ['The plan changed; nothing was done'],
+    moved: ['The plan changed since you opened it, so nothing was done. This is the plan now: read it, then act on it again.'],
+    mount: mountRunPlanChanged,
+    act: async () => {
+      await whenDrawn('.rn-actions button')
+      clickText('.rn-actions button', 'Approve and run')
+    },
+  },
+  {
+    key: 'run/moved-on',
+    group: 'workflows',
+    files: ['Runs.tsx'],
+    shows: '.rn-notice',
+    lines: ['The run moved on; nothing was done'],
+    moved: ['The run moved on since you opened it, so nothing was done: the run is REJECTED'],
+    mount: mountRunMovedOn,
+    act: async () => {
+      await whenDrawn('.rn-actions button')
+      clickText('.rn-actions button', 'Approve and run')
+    },
+  },
+  {
+    // Reached by the page's own next read, not a click: the poll serves someone else's plan.
+    key: 'run/plan-held',
+    group: 'workflows',
+    files: ['Runs.tsx'],
+    shows: '.rn-held',
+    lines: ['The plan changed since this page drew it'],
+    moved: ['The actions below still name the plan shown, so the API will refuse them.'],
+    mount: mountRunHeld,
+    act: async () => {
+      await whenDrawn('.rn-actions button')
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(RUN_POLL_MS)
+      })
+    },
+  },
+  {
+    key: 'runs/older',
+    group: 'workflows',
+    files: ['Runs.tsx'],
+    shows: '.rn-row:nth-child(2)',
+    mount: mountRunsOlder,
+    act: async () => {
+      await clickWhenDrawn('.rn-more button')
+    },
+  },
+  {
+    key: 'runs/older-refused',
+    group: 'workflows',
+    files: ['Runs.tsx'],
+    shows: '.rn-list > .state.failed',
+    data: ['the store refused the page'],
+    mount: mountRunsOlderRefused,
+    act: async () => {
+      await clickWhenDrawn('.rn-more button')
     },
   },
 ]

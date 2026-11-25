@@ -87,6 +87,15 @@ export const OVERVIEW: readonly ProseState[] = [
     act: () => foldDrawn('#ov-running', '4 more'),
   },
   {
+    // The same rest of the list, as the phone draws it (visual QA V177): its own fold.
+    key: 'overview/phone-running-more',
+    group: 'overview',
+    files: ['Overview.tsx'],
+    shows: 'details.ov-prun-more[open]',
+    mount: mountRunningMore,
+    act: () => clickDrawn('details.ov-prun-more > summary'),
+  },
+  {
     key: 'overview/failures-more',
     group: 'overview',
     files: ['OverviewRegions.tsx'],

@@ -11,7 +11,24 @@ import { fireEvent } from '@testing-library/react'
 import type { ProseState } from './prosestates'
 import { settle } from './proseapp'
 import { screenLoaded } from './screenLoaded'
-import { LONG_PROMPT, mountCheckpoint, mountDiff, mountDiffPhone, mountPrompt, mountStop, mountTabs, mountToolMenu, mountWait, refuseStop, releaseStop } from './prosestates.agent.mounts'
+import {
+  LONG_PROMPT,
+  mountCheckpoint,
+  mountDiff,
+  mountDiffPhone,
+  mountDrawer,
+  mountPrompt,
+  mountReChecks,
+  mountStop,
+  mountStopNotStarted,
+  mountTabs,
+  mountToolMenu,
+  mountTranscript,
+  mountWait,
+  refuseStop,
+  refuseTranscript,
+  releaseStop,
+} from './prosestates.agent.mounts'
 import { click } from './prosestates.shell'
 
 /** The ordinary running agent the QA capture opens (qa/routes.json). */
@@ -215,6 +232,16 @@ export const AGENT: readonly ProseState[] = [
     walk: { open: `${BROWSER}/browser`, then: () => click('.th-open') },
   },
   {
+    key: 'agent/stop-dialog-not-started',
+    group: 'agent',
+    files: ['StopRun.tsx'],
+    shows: '.stop-confirm',
+    lines: ['worker start or reconciler — not now'],
+    moved: ['when a worker starts, or when the reconciler finishes it — not now'],
+    mount: mountStopNotStarted,
+    act: () => click('.run-stop-btn'),
+  },
+  {
     key: 'agent/stop-requested',
     group: 'agent',
     files: ['StopRun.tsx'],
@@ -353,5 +380,91 @@ export const AGENT: readonly ProseState[] = [
     shows: '▸ progress/',
     mount: mountCheckpoint,
     act: () => click('.ckb li[role="treeitem"][aria-expanded="true"] .ckb-open'),
+  },
+  {
+    key: 'agent/transcript-facts',
+    group: 'agent',
+    files: ['Artifacts.tsx'],
+    shows: '.arts-transcript > details.ag-logmeta[open]',
+    mount: mountTranscript,
+    act: () => click('.arts-transcript > details.ag-logmeta > summary'),
+  },
+  {
+    key: 'agent/transcript-progress',
+    group: 'agent',
+    files: ['Artifacts.tsx'],
+    shows: 'li.is-fold > details.arts-more[open]',
+    mount: mountTranscript,
+    act: () => click('li.is-fold > details.arts-more > summary'),
+  },
+  {
+    key: 'agent/transcript-record',
+    group: 'agent',
+    files: ['Artifacts.tsx'],
+    shows: 'li.is-text > details.arts-more[open]',
+    mount: mountTranscript,
+    act: () => click('li.is-text > details.arts-more > summary'),
+  },
+  {
+    key: 'agent/transcript-thinking',
+    group: 'agent',
+    files: ['Artifacts.tsx'],
+    shows: 'li.is-thinking > details.arts-more[open]',
+    mount: mountTranscript,
+    act: () => click('li.is-thinking > details.arts-more > summary'),
+  },
+  {
+    key: 'agent/transcript-tool',
+    group: 'agent',
+    files: ['Artifacts.tsx'],
+    shows: 'li.is-tool > details.arts-more:first-of-type[open]',
+    mount: mountTranscript,
+    act: () => click('li.is-tool > details.arts-more:first-of-type > summary'),
+  },
+  {
+    key: 'agent/transcript-result',
+    group: 'agent',
+    files: ['Artifacts.tsx'],
+    shows: 'li.is-tool > details.arts-more:nth-of-type(2)[open]',
+    mount: mountTranscript,
+    act: () => click('li.is-tool > details.arts-more:nth-of-type(2) > summary'),
+  },
+  {
+    key: 'agent/transcript-tool-result',
+    group: 'agent',
+    files: ['Artifacts.tsx'],
+    shows: 'li.is-tool > details.arts-more.is-bad[open]',
+    mount: mountTranscript,
+    act: () => click('li.is-tool > details.arts-more.is-bad > summary'),
+  },
+  {
+    key: 'agent/transcript-next-refused',
+    group: 'agent',
+    files: ['Artifacts.tsx'],
+    shows: '.arts-transcript > p.att-none',
+    data: ['the store refused the window'],
+    mount: () => {
+      refuseTranscript('the store refused the window')
+      return mountTranscript()
+    },
+    act: () => clickText('.arts-window-note button', 'next window'),
+  },
+  {
+    key: 'agent/drawer',
+    group: 'agent',
+    files: ['AgentDetail.tsx'],
+    shows: '.drawer[role="dialog"]',
+    mount: mountDrawer,
+    act: () => click('.ps-open-drawer'),
+  },
+  {
+    key: 'agent/earlier-attempts',
+    group: 'agent',
+    files: ['AttemptTimeline.tsx'],
+    shows: 'details[data-ci-wait-earlier][open]',
+    lines: ['why parked'],
+    moved: ['Waiting for the pull request checks to finish. Holds no capacity.'],
+    mount: mountReChecks,
+    act: () => click('details[data-ci-wait-earlier] > summary'),
   },
 ]
