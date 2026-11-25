@@ -143,6 +143,39 @@ export const mountVoiceConflict = (): Promise<ReactElement> =>
 export const mountVoiceRefused = (): Promise<ReactElement> =>
   mountVoiceSettings({ status: 422, body: { code: 'validation_failed', message: 'idle takes a name from the catalogue', detail: { field: 'idle' } } })
 
+// ---------------------------------------------------------------- New workspace: the form's answers
+
+const NEW_WS = 'w-4c1e0b'
+
+/** The form drawn inline, the create answered with `answer`: a first admin's outcome, or the API's refusal. */
+async function mountNewWorkspace(answer: { status: number; body: unknown }): Promise<ReactElement> {
+  await live()
+  const record = { workspace_id: NEW_WS, kind: 'group', state: 'approved', principal: 'research@example.com', display_name: 'Research', steps: {}, decision: { verdict: 'approved', reason: null, at: at(0), auto: true } }
+  serve((m, url) => {
+    if (m === 'POST' && url === '/v1/admin/workspaces') return answer
+    if (m === 'GET' && url === `/v1/admin/workspaces/${NEW_WS}`) return { status: 200, body: { workspace: record } }
+    return null
+  })
+  const { NewWorkspaceForm } = await import('../NewWorkspace')
+  return <NewWorkspaceForm inline />
+}
+
+function filed(firstAdmin: Json): { status: number; body: unknown } {
+  return { status: 202, body: { workspace_id: NEW_WS, kind: 'group', state: 'approved', principal: 'research@example.com', display_name: 'Research', steps: {}, decision: { verdict: 'approved', reason: null, at: at(0), auto: true }, first_admin: firstAdmin } }
+}
+
+/** Filed, its first admin granted but not in the group yet. */
+export const mountNewWorkspaceMember = (member: boolean | null) => (): Promise<ReactElement> =>
+  mountNewWorkspace(filed({ email: 'frank@example.com', role: 'admin', granted: true, member }))
+
+/** Filed, its first admin not granted: the workspace already existed, or another reason. */
+export const mountNewWorkspaceNotGranted = (reason: string) => (): Promise<ReactElement> =>
+  mountNewWorkspace(filed({ email: 'frank@example.com', role: 'admin', granted: false, reason }))
+
+/** The create refused by the API: its code and its message. */
+export const mountNewWorkspaceRefused = (): Promise<ReactElement> =>
+  mountNewWorkspace({ status: 409, body: { code: 'WORKSPACE_EXISTS', message: 'research@example.com already has a workspace.' } })
+
 // ---------------------------------------------------------------- Schedules, every workspace
 
 function scheduleRow(id: string, tenant: string): Json {

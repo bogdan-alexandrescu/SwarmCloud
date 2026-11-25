@@ -16,6 +16,9 @@ import {
   mountCostPill,
   mountDebugTrace,
   mountFloating,
+  mountNewWorkspaceMember,
+  mountNewWorkspaceNotGranted,
+  mountNewWorkspaceRefused,
   mountPeopleLoans,
   mountProjects,
   mountRoster,
@@ -64,6 +67,21 @@ const FOLDS: readonly { name: string; lines?: string[]; moved?: string[] }[] = [
   { name: 'Model prices' },
   { name: 'GitHub fallback token' },
 ]
+
+/** Fill the inline New workspace form's group, with `admin` as its first admin, and create it. */
+async function fileGroup(admin: string): Promise<void> {
+  await press('.nw-inline', 'Group')
+  const field = (label: string): HTMLInputElement => {
+    const lbl = [...document.querySelectorAll<HTMLElement>('.nw-inline label')].find((l) => (l.textContent ?? '').startsWith(label))
+    const input = lbl?.querySelector<HTMLInputElement>('input')
+    if (input === null || input === undefined) throw new Error(`no field "${label}"`)
+    return input
+  }
+  fireEvent.change(field('Group address'), { target: { value: 'research@example.com' } })
+  if (admin !== '') fireEvent.change(field('First admin'), { target: { value: admin } })
+  await settle()
+  await press('.nw-inline', 'Create workspace')
+}
 
 /** People's first Manage button. */
 const manage = (): Promise<void> => press('main', 'Manage')
@@ -373,6 +391,56 @@ export const ADMIN: readonly ProseState[] = [
       await press('[data-card="behaviour"]', '2 min')
       await press('body', 'Save')
     },
+  },
+  // ---------------------------------------------------------------- New workspace: the form's answers
+  {
+    key: 'admin/new-workspace-first-admin-pending',
+    group: 'admin',
+    files: ['NewWorkspace.tsx'],
+    shows: '[data-first-admin]',
+    mount: mountNewWorkspaceMember(false),
+    act: () => fileGroup('frank@example.com'),
+  },
+  {
+    key: 'admin/new-workspace-first-admin-member',
+    group: 'admin',
+    files: ['NewWorkspace.tsx'],
+    shows: '[data-first-admin]',
+    mount: mountNewWorkspaceMember(true),
+    act: () => fileGroup('frank@example.com'),
+  },
+  {
+    key: 'admin/new-workspace-first-admin-unchecked',
+    group: 'admin',
+    files: ['NewWorkspace.tsx'],
+    shows: '[data-first-admin]',
+    mount: mountNewWorkspaceMember(null),
+    act: () => fileGroup('frank@example.com'),
+  },
+  {
+    key: 'admin/new-workspace-first-admin-exists',
+    group: 'admin',
+    files: ['NewWorkspace.tsx'],
+    shows: '[data-first-admin]',
+    mount: mountNewWorkspaceNotGranted('workspace_exists'),
+    act: () => fileGroup('frank@example.com'),
+  },
+  {
+    key: 'admin/new-workspace-first-admin-refused',
+    group: 'admin',
+    files: ['NewWorkspace.tsx'],
+    shows: '[data-first-admin]',
+    mount: mountNewWorkspaceNotGranted('not_in_domain'),
+    act: () => fileGroup('frank@example.com'),
+  },
+  {
+    key: 'admin/new-workspace-refused',
+    group: 'admin',
+    files: ['NewWorkspace.tsx'],
+    shows: '.nw-inline [role="alert"]',
+    data: ['research@example.com already has a workspace.'],
+    mount: mountNewWorkspaceRefused,
+    act: () => fileGroup(''),
   },
   // ---------------------------------------------------------------- Schedules, every workspace
   {
