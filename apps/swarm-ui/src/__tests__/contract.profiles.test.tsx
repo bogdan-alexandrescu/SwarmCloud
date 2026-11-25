@@ -88,8 +88,9 @@ const RUNNER_STARTING = Object.entries(PROFILES)
 const PICKED = new Set<string>([MCP_SERVERS_KEY, BROWSER_TOOL_KEY, QA_IDENTITY_KEY])
 
 /** Keys the platform's own runs write (an issue run's `issue`, a review's
- *  `pull_request`), never typed on this form. */
-const SET_BY_THE_PLATFORM = new Set<string>(['issue', 'pull_request'])
+ *  `pull_request`, a planned step's `context_ceiling`, stamped by
+ *  swarm_api/stepceiling.py), never typed on this form. */
+const SET_BY_THE_PLATFORM = new Set<string>(['issue', 'pull_request', 'context_ceiling'])
 
 /** Declared keys the form leaves to "a setting of your own", deliberately:
  *  the mock's failure-path knobs, generic's output and grace ceilings, and the
