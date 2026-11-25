@@ -3090,9 +3090,9 @@ def ask_plan_chat(
     run = runs.get(tenant_id, run_id)  # 404 first: another tenant's run is not there
     data = planchat.settle(ctx, chat, runs, run)
     if run.state != RunState.PLANNED:
-        raise planchat.ChatClosed(
+        refusals.refuse(planchat.ChatClosed(
             f"run {run_id!r} is {run.state.value}; its chat is read-only after the decision",
-            detail={"state": run.state.value})
+            detail={"state": run.state.value}))
     held = planchat.current_turn(data)
     if held is not None:
         raise planchat.busy(run, held)
@@ -3101,15 +3101,15 @@ def ask_plan_chat(
         raise NotFound(f"run {run_id!r} not found")
     levels = run_may_decide(ctx, auth, tenant_id, run) or {}
     if levels.get("comment") is not True:
-        raise planchat.CommentLevelRequired(
+        refusals.refuse(planchat.CommentLevelRequired(
             f"you may not comment on run {run_id!r}'s plan, so you may not ask its review agent",
-            detail={"may_decide": {"comment": levels.get("comment")}})
+            detail={"may_decide": {"comment": levels.get("comment")}}))
     effective = _effective_plan_settings(ctx, tenant_id, run.schedule)
     settings = plansettings.plan_settings_record(effective)
     caps = effective["caps"]
     refused = planchat.chat_cap(data, caps)
     if refused is not None:
-        raise refused
+        refusals.refuse(refused)
     model = planchat.resolve_model(effective, data)
     choice = issueruns_module.review_agent_class(model["class"], model["from"],
                                                  stepclass.class_models_of(ctx))

@@ -53,7 +53,9 @@ pytestmark = pytest.mark.usefixtures("fix_loop_off", "plan_diagrams_on")
 
 SWITCHES = tuple(refusals.env_name(code) for code in (
     "role_member_required", "anchor_unknown", "edit_level_required", "replan_running",
-    "diagrams_off", "diagram_cap", "diagrams_cap", "diagram_running"))
+    "diagrams_off", "diagram_cap", "diagrams_cap", "diagram_running",
+    # The lane's own refusals ship off (refusals.SWITCHES); these tests run them on.
+    "chat_closed", "comment_level_required", "chat_cap"))
 
 #: The deployment's pinned classes, so a class the settings resolve is the
 #: class sent (an unpinned one is the profile's default, `review_agent_class`).
@@ -636,3 +638,17 @@ def test_pin_makes_a_chat_pin_thread_entry(client, db, objects):
                         headers=auth_header("root"), json={"anchor": {"part": "plan"}})
     assert again.status_code == 409
     assert _stored(db, run["id"])["plan_revision"] == 1
+
+
+@pytest.mark.parametrize("code", ["chat_closed", "comment_level_required", "chat_cap"])
+def test_the_lanes_refusals_ship_off(code):
+    assert refusals.SWITCHES[code].default is False
+
+
+def test_with_chat_cap_off_the_41st_turn_is_asked(client, db, objects, monkeypatch):
+    monkeypatch.setenv(refusals.env_name("chat_cap"), "off")
+    run = _planned(client, db, objects)
+    _stored(db, run["id"])[planchat.RUN_FIELD] = {"turns": 40, "costs": [], "current": None}
+    asked = _ask(client, run)
+    assert asked.status_code == 202, asked.text
+    assert len(_chat_tasks(db)) == 1

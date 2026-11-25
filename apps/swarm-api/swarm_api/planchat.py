@@ -57,7 +57,7 @@ from swarm_common.admission import _snapshot
 from swarm_common.models import utcnow
 from swarm_common.states import TaskState
 
-from . import issueruns, plansettings, sessiontag, stepceiling, stepclass
+from . import issueruns, plansettings, refusals, sessiontag, stepceiling, stepclass
 from .errors import ApiError, Conflict, Forbidden, NotFound, UpstreamUnavailable
 from .issueruns import (
     CHAT_ANSWER_FILE,
@@ -632,14 +632,16 @@ class PlanChat:
 
         def change(txn: Any, data: dict[str, Any]) -> dict[str, Any]:
             if data.get("state") != "PLANNED":
-                raise ChatClosed(f"run {run.id!r} is {data.get('state')}; its chat is read-only "
-                                 "after the decision", detail={"state": data.get("state")})
+                # Switched (refusals.SWITCHES): off, the turn is recorded anyway.
+                refusals.refuse(ChatClosed(
+                    f"run {run.id!r} is {data.get('state')}; its chat is read-only after the "
+                    "decision", detail={"state": data.get("state")}))
             held = current_turn(data)
             if held is not None:
                 raise busy(run, held)
             refused = chat_cap(data, caps)
             if refused is not None:
-                raise refused
+                refusals.refuse(refused)
             record = chat_record(data)
             document["caps"] = {
                 "chat_turns": {"cap": int(caps["chat_turns"]), "used": record["turns"]},
