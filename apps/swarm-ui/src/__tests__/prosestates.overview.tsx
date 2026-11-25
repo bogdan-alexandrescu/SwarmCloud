@@ -62,9 +62,6 @@ async function typeIn(text: string): Promise<void> {
   await settle()
 }
 
-/** The schedule's name, as its sheet's heading says it. */
-const sheetName = (): string => (document.querySelector('.as-sheet h2, .as-sheet [id]')?.textContent ?? '').trim()
-
 /** Hover and focus the first tip host under `scope`. */
 async function hover(scope: string): Promise<void> {
   const host = await drawn(`${scope} .c-tip-host`)

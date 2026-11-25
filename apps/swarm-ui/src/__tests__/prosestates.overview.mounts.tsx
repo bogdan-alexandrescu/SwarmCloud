@@ -96,7 +96,7 @@ export async function mountInterviewDesign(): Promise<ReactElement> {
 }
 
 /** The fixture's merging schedule, read on a fresh api module (the page's fake clock holds the read's 90 ms). */
-async function merging(): Promise<import('../types').Schedule> {
+async function merging(): Promise<import('../api').Schedule> {
   const api = await import('../api')
   const read = api.loadSchedule(MERGING)
   await vi.advanceTimersByTimeAsync(200)
