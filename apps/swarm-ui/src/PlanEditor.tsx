@@ -282,6 +282,29 @@ export function useSavedOver(digest: string | null): SavedRevision | null {
   return useSyncExternalStore(subscribeSaved, () => (digest === null ? null : (savedOver.get(digest) ?? null)))
 }
 
+/**
+ * THE DECISION BAR'S EDIT OPENS THE EDITOR IN PLACE (owner's pick on PR 464,
+ * "Edit opens the editor in place"): the bar (ApprovalDecision.tsx's Decide)
+ * and the document's editor (PlanEditorMount) are drawn apart, so the mount
+ * offers an opener for the digest it would edit, and the bar's Edit calls it.
+ * No mount, or a reader who may not edit, offers none, and the bar draws no
+ * Edit: the bar never offers a click the editor would not take.
+ */
+const openers = new Map<string, () => void>()
+const openerListeners = new Set<() => void>()
+const subscribeOpeners = (f: () => void) => {
+  openerListeners.add(f)
+  return () => {
+    openerListeners.delete(f)
+  }
+}
+const openersChanged = () => openerListeners.forEach((f) => f())
+
+/** The function that opens this page's editor over `digest`, else null. */
+export function usePlanEditorOpener(digest: string | null): (() => void) | null {
+  return useSyncExternalStore(subscribeOpeners, () => (digest === null ? null : (openers.get(digest) ?? null)))
+}
+
 const obj = (v: unknown): Json | null => (v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Json) : null)
 
 /**
@@ -303,8 +326,8 @@ const short = (d: string) => {
 }
 
 /**
- * EDIT BY HAND ON THE DECISION PAGE (`D:P3b`): the button, then the editor
- * over the revision shown. Save sends `plan:edit` with the digest the editor
+ * EDIT BY HAND ON THE DECISION PAGE (`D:P3b`): the editor over the revision
+ * shown, opened in place by the decision bar's Edit. Save sends `plan:edit` with the digest the editor
  * opened on -- the revision it replaces -- and, once saved, names the new
  * revision, its digest and its author (`D:P3c`).
  */
@@ -314,6 +337,26 @@ export function PlanEditorMount({ runId, run, plan, digest }: Readonly<{ runId: 
   const [busy, setBusy] = useState(false)
   const [refused, setRefused] = useState<ApiError | null>(null)
   const saved = useSavedOver(digest)
+  const where = useRef<HTMLDivElement>(null)
+  const offered = runId !== null && plan !== null && digest !== null && saved === null && mayEdit
+  useEffect(() => {
+    if (!offered || digest === null) return
+    const openHere = () => {
+      setRefused(null)
+      setOpen(digest)
+      // The editor opens where the plan is: brought into view, its first field focused.
+      requestAnimationFrame(() => {
+        where.current?.scrollIntoView?.({ block: 'start' })
+        where.current?.querySelector<HTMLElement>('input, textarea')?.focus()
+      })
+    }
+    openers.set(digest, openHere)
+    openersChanged()
+    return () => {
+      if (openers.get(digest) === openHere) openers.delete(digest)
+      openersChanged()
+    }
+  }, [offered, digest])
   if (runId === null || plan === null || digest === null) return null
   if (saved !== null)
     return (
@@ -324,15 +367,8 @@ export function PlanEditorMount({ runId, run, plan, digest }: Readonly<{ runId: 
       </p>
     )
   if (!mayEdit) return null
-  if (open === null)
-    return (
-      <p className="rn-actions">
-        <Button size="sm" onClick={() => {
-          setRefused(null)
-          setOpen(digest)
-        }}>Edit by hand</Button>
-      </p>
-    )
+  // Closed, it draws nothing: the decision bar's Edit opens it (usePlanEditorOpener).
+  if (open === null) return null
   const save = async (edited: RunPlan) => {
     setBusy(true)
     setRefused(null)
@@ -351,13 +387,13 @@ export function PlanEditorMount({ runId, run, plan, digest }: Readonly<{ runId: 
     if (r.status === 'error') setRefused(r.error)
   }
   return (
-    <>
+    <div ref={where} data-testid="pe-in-place">
       {refused !== null && (
         <p className="sbf-bad" role="alert" data-testid="pe-refused" title={refused.message}>
           Not saved: {errorHeading(refused)}
         </p>
       )}
       <PlanEditor key={open} plan={plan as unknown as RunPlan} busy={busy} onCancel={() => setOpen(null)} onSave={(p) => void save(p)} />
-    </>
+    </div>
   )
 }

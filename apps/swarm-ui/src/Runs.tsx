@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { approvePlan, editPlan, loadRun, loadRuns, loadSchedules, rejectPlan } from './api'
+import { editPlan, loadRun, loadRuns, loadSchedules, rejectPlan } from './api'
 import type { AdvisedIssueRun, PlanAdvisory } from './api'
 import type { ApiError, Result } from './fetch'
 import { InlineText as RnText, WorkspaceNamed, runAddress } from './IssueSubmit'
@@ -1023,10 +1023,15 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
   // A run held with no plan (both planner outputs failed to parse, none earlier
   // did): nothing to approve, but a person edits one in or rejects it.
   const planlessHeld = run.state === 'PLANNED' && run.plan === null && run.plan_digest === null && run.plan_lint?.held === true
-  const actable = canAct || planlessHeld
+  // A PLANNED RUN WITH A PLAN IS DECIDED ON ITS DECISION PAGE (plans-pipeline
+  // §11 U5; owner's pick on PR 464, "Summary only"): this page shows the
+  // plan's summary and links there, with no Approve, Edit or Reject of its
+  // own. A run held with NO plan keeps Edit and Reject here, because the
+  // decision page edits a served plan and this one has none.
+  const actable = planlessHeld
   const busy = acting.kind === 'busy'
 
-  async function act(what: 'approve' | 'edit' | 'reject', at: ActionsAt, call: () => Promise<Result<unknown>>) {
+  async function act(what: 'edit' | 'reject', at: ActionsAt, call: () => Promise<Result<unknown>>) {
     setActing({ kind: 'busy', what })
     setActedAt(at)
     const on = run.plan_digest
@@ -1071,7 +1076,7 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
   const approved = planApproved(run)
   // From CHECKING the pull request is the subject: its card leads (item 5).
   const prLeads = lead(run)
-  /** Approve, Edit and Reject -- or the rejection form, where it was asked for. Null while editing. */
+  /** Edit and Reject for a run held with no plan -- or the rejection form, where it was asked for. Null while editing. */
   const actions = (at: ActionsAt): ReactNode => {
     if (!actable || open.kind === 'edit') return null
     if (open.kind === 'reject' && open.at === at) {
@@ -1082,12 +1087,6 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
     }
     return (
       <div className="rn-actions">
-        {canAct && (
-          <Button kind="primary" disabled={busy}
-            onClick={() => void act('approve', at, () => approvePlan(run.id, digest!))}>
-            {acting.kind === 'busy' && acting.what === 'approve' ? 'Approving…' : 'Approve and run'}
-          </Button>
-        )}
         <Button disabled={busy} onClick={() => setOpen({ kind: 'edit', digest })}>Edit plan</Button>
         <Button disabled={busy} data-act={`reject-${at}`} onClick={() => setOpen({ kind: 'reject', at })}>Reject</Button>
       </div>
@@ -1169,14 +1168,12 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
           <div className="rn-wait">
             <p className="rn-wait-t">
               {run.plan_approval === 'required' || run.plan_lint?.held === true ? (
-                <><b>Waiting for a person.</b> Anyone in <WorkspaceNamed id={run.tenant_id} phrase /> may approve, edit or reject.</>
+                <><b>Waiting for a person.</b> Anyone in <WorkspaceNamed id={run.tenant_id} phrase /> may approve, edit or reject it on its decision page.</>
               ) : (
-                <><b>Approval is automatic:</b> the next read approves this plan. Anyone in <WorkspaceNamed id={run.tenant_id} phrase /> may act on it first.</>
-              )}{' '}
-              Approving carries this plan&rsquo;s digest, so a plan edited by someone else since you opened it is refused
-              rather than run.
+                <><b>Approval is automatic:</b> the next read approves this plan. Anyone in <WorkspaceNamed id={run.tenant_id} phrase /> may act on it first, on its decision page.</>
+              )}
             </p>
-            {actions('top')}
+            <DecisionLink runId={run.id} go={go} />
             {answer('top')}
           </div>
         )}
@@ -1187,8 +1184,8 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
             <WarnMark />
             <span>
               The plan changed since this page drew it
-              {held.plan_edited_by !== null && <> (edited by {held.plan_edited_by})</>}. The actions below still name the
-              plan shown, so the API will refuse them.
+              {held.plan_edited_by !== null && <> (edited by {held.plan_edited_by})</>}. The summary below is the plan
+              this page drew; the decision page reads the newest.
             </span>
             <Button disabled={busy} onClick={showHeld}>Show the plan now</Button>
           </div>
@@ -1216,7 +1213,6 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
               </h3>
             }>
           {run.state === 'PLANNED' && <PlanLintFindings lint={run.plan_lint ?? null} />}
-          {run.state === 'PLANNED' && run.plan_digest !== null && <DecisionLink runId={run.id} go={go} />}
           {open.kind === 'edit' && actable ? (
             <PlanEditor
               key={open.digest ?? 'no-plan'}
@@ -1234,6 +1230,11 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
                 ? 'No plan yet: the planner agent is still working.'
                 : 'No plan: the planner did not produce one this run could read.'}
             </p>
+          ) : canAct ? (
+            // SUMMARY ONLY (owner's pick on PR 464): the full plan, its
+            // revisions, thread and editor are on the decision page, linked
+            // in the banner above.
+            <PlanSummary plan={run.plan} revision={run.plan_revision} editedBy={run.plan_edited_by} shape={run.plan_shape ?? null} />
           ) : (
             <>
               <p className="sb-note">
@@ -1505,6 +1506,33 @@ export function planLead(summary: string): { lead: string; cut: boolean } {
  */
 function oneEllipsis(lead: string): string {
   return `${lead.replace(/[\s.…]+$/u, '').trimEnd()}…`
+}
+
+/**
+ * A PLANNED RUN'S PLAN, AS A SUMMARY (plans-pipeline §11 U5; owner's pick on
+ * PR 464, "Summary only"): the revision, the lead, the mode, the estimate and
+ * the step count. No steps, no requirements, no raw plan and no actions: the
+ * plan is read, edited and decided on its decision page.
+ */
+function PlanSummary({ plan, revision, editedBy, shape }: Readonly<{ plan: RunPlan; revision: number | null; editedBy: string | null; shape: string | null }>) {
+  const { lead } = planLead(plan.summary)
+  return (
+    <div className="rn-plan-summary" data-testid="rn-plan-summary">
+      <p className="sb-note">
+        revision {revision}
+        {editedBy !== null && <> · edited by {editedBy}</>}
+        {' · '}{shape ?? `${pluralise(plan.steps.length, 'step')}, then a review and a fix`}
+      </p>
+      <p className="rn-summary"><RnText text={lead} /></p>
+      <p className="rn-plan-facts">
+        {(plan.mode === 'single' || plan.mode === 'workflow') &&
+          <Chip title="The planner's call: one agent, or a workflow of several steps">{plan.mode === 'single' ? 'single agent' : 'workflow'}</Chip>}
+        {plan.estimate
+          ? <Chip title="The planner's estimate for the whole plan">estimate {plan.estimate}</Chip>
+          : <span className="sb-note">no estimate given</span>}
+      </p>
+    </div>
+  )
 }
 
 /**

@@ -9,6 +9,8 @@
 //     so `diagrams`, `no_diagram`, `rationale`, `mode` and `overlaps` go back
 //     as they came;
 //   * a step's rationale is edited in its own field, and a diagram is removed;
+//   * the decision bar's Edit opens the editor in place, in the document (the
+//     owner's pick on PR 464), and never navigates to the run's page;
 //   * Save on the decision page sends the digest of the revision it replaces,
 //     and the saved revision is named with its digest and author.
 //
@@ -172,18 +174,24 @@ function routes(extra?: (m: string, url: string, body: unknown) => Reply) {
   }
 }
 
+const go = vi.fn()
+
 async function mount(handler: (m: string, url: string, body: unknown) => Reply) {
   const calls = serve(handler)
   vi.stubEnv('VITE_LIVE', '1')
   vi.resetModules()
+  go.mockReset()
   const { ApprovalsScreen } = await import('../Approvals')
-  render(<ApprovalsScreen view={`approval=${encodeURIComponent(ITEM)}`} go={vi.fn()} />)
+  render(<ApprovalsScreen view={`approval=${encodeURIComponent(ITEM)}`} go={go} />)
   await screen.findByRole('heading', { name: 'Approvals', level: 1 }, WAIT)
   return calls
 }
 
+/** The decision bar's Edit. */
+const barEdit = async () => within(await screen.findByTestId('pd-bar', undefined, WAIT)).findByRole('button', { name: 'Edit' }, WAIT)
+
 describe('on the decision page', () => {
-  it('opens the editor in the document, and Save sends the digest it replaces', async () => {
+  it('opens the editor in place from the bar’s Edit, and Save sends the digest it replaces', async () => {
     const saved = runRead({
       plan: { ...PLAN, summary: 'Serve the overlaps, edited.' },
       plan_digest: D3,
@@ -192,8 +200,12 @@ describe('on the decision page', () => {
     })
     const calls = await mount(routes((m, url) => (m === 'POST' && url.split('?')[0] === EDIT ? { status: 200, body: { run: saved } } : null)))
     const doc = await screen.findByTestId('pd-doc', undefined, WAIT)
-    fireEvent.click(await within(doc).findByRole('button', { name: 'Edit by hand' }, WAIT))
+    // Closed, the document offers no second button: the bar's Edit is the way in.
+    expect(within(doc).queryByRole('form', { name: 'Edit the plan' })).toBeNull()
+    fireEvent.click(await barEdit())
+    // MUTATION: Edit links to the run's page again (go called, no form here).
     const form = await within(doc).findByRole('form', { name: 'Edit the plan' }, WAIT)
+    expect(go).not.toHaveBeenCalled()
     fireEvent.change(within(form).getByRole('textbox', { name: 'Summary' }), { target: { value: 'Serve the overlaps, edited.' } })
     fireEvent.click(within(form).getByRole('button', { name: 'Save the plan' }))
     await waitFor(() => expect(calls.filter((c) => c.method === 'POST' && c.url.split('?')[0] === EDIT)).toHaveLength(1), WAIT)
@@ -221,6 +233,9 @@ describe('on the decision page', () => {
     )
     const doc = await screen.findByTestId('pd-doc', undefined, WAIT)
     await screen.findByTestId('pd-summary', undefined, WAIT)
-    expect(within(doc).queryByRole('button', { name: 'Edit by hand' })).toBeNull()
+    const bar = await screen.findByTestId('pd-bar', undefined, WAIT)
+    expect(within(bar).getByRole('button', { name: 'Approve' })).toBeTruthy()
+    expect(within(bar).queryByRole('button', { name: 'Edit' })).toBeNull()
+    expect(within(doc).queryByRole('form', { name: 'Edit the plan' })).toBeNull()
   })
 })
