@@ -307,6 +307,8 @@ export const ADMIN: readonly ProseState[] = [
     group: 'admin',
     files: ['AdminSetupSteps.tsx'],
     shows: 'main p.c-hint[role="status"], main [role="alert"]',
+    lines: ['Sign-in for ana opened in a new tab'],
+    moved: ['Your sign-in for ana opened in a new tab: sign in to Claude there, and this page sees the account at its next read.'],
     walk: {
       open: SETUP,
       persona: ADMIN_P,

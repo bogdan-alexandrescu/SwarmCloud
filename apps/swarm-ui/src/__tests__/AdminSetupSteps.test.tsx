@@ -1146,6 +1146,8 @@ describe('the installer adds their own Claude account without copying a link (au
     expect(row.querySelector('figure.c-code')).toBeNull()
     expect(visible(row)).not.toContain(String(link.path))
     expect(visible(row)).toContain('opened in a new tab')
+    // Issue 439: what to do in that tab is the line's (i), word for word.
+    expect(helpIn(row)).toContain('Your sign-in for ana opened in a new tab: sign in to Claude there, and this page sees the account at its next read.')
     open.mockRestore()
   })
 
