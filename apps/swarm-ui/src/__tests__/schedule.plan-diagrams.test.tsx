@@ -90,13 +90,14 @@ const REPO = {
 const PREVIEW = { preview: { words: 'at 09:00, Monday through Friday', next: ['2026-10-12T09:00:00+01:00'], min_gap_minutes: 1440, refusal: null } }
 
 /** Opens the edit form of `stored`; a PATCH is answered with the next revision. */
-async function edit(stored: Json = schedule(), types: Json[] = [SWEEP, REPORT]) {
+async function edit(stored: Json = schedule(), types: Json[] = [SWEEP, REPORT], effective: Json = { value: 'on', from: 'platform' }) {
   const calls = serve((m, url) => {
     const path = url.split('?')[0]!
     if (m === 'GET' && path === '/v1/schedules/sch_a') return { status: 200, body: { schedule: stored, firings: [] } }
     if (m === 'PATCH' && path === '/v1/schedules/sch_a') return { status: 200, body: { schedule: { ...stored, revision: 3 } } }
     if (m === 'GET' && path === '/v1/schedule-types') return { status: 200, body: { types, tenant_id: 'eng' } }
     if (m === 'GET' && path === '/v1/repositories') return { status: 200, body: { repositories: [REPO] } }
+    if (m === 'GET' && path === '/v1/workspaces/eng/plan-settings') return { status: 200, body: { tenant_id: 'eng', plans: { diagrams: null, chat_model_class: null }, effective: { diagrams: effective } } }
     if (m === 'POST' && path === '/v1/schedules:preview') return { status: 200, body: PREVIEW }
     return null
   })
@@ -112,8 +113,8 @@ async function edit(stored: Json = schedule(), types: Json[] = [SWEEP, REPORT]) 
 
 const group = () => screen.getByRole('radiogroup', { name: LABEL })
 const radios = () => within(group()).getAllByRole('radio')
-const chosen = () => radios().filter((r) => r.getAttribute('aria-checked') === 'true').map((r) => r.textContent)
-const pick = (word: Value) => fireEvent.click(within(group()).getByRole('radio', { name: word }))
+const chosen = () => radios().filter((r) => r.getAttribute('aria-checked') === 'true').map((r) => r.textContent!.replace(/ \(on\)| \(off\)/, ''))
+const pick = (word: Value) => fireEvent.click(within(group()).getByRole('radio', { name: word === 'inherit' ? /^inherit/ : word }))
 const save = () => screen.getByRole('button', { name: 'Save changes' })
 
 type Calls = Awaited<ReturnType<typeof edit>>['calls']
@@ -134,7 +135,7 @@ describe('who has the choice', () => {
   it('shows a sweep schedule inherit, on and off, with inherit chosen where none is stored', async () => {
     // MUTATION: draw it without the default and no radio is checked.
     await edit()
-    expect(radios().map((r) => r.textContent)).toEqual([...VALUES])
+    expect(radios().map((r) => r.textContent!.replace(/ \(on\)| \(off\)/, ''))).toEqual([...VALUES])
     expect(chosen()).toEqual(['inherit'])
   })
 
@@ -201,14 +202,32 @@ describe('what the PATCH carries', () => {
   })
 })
 
+describe('what inherit resolves to', () => {
+  it.each(['on', 'off'] as const)('names the effective %s in the inherit option alone', async (effective) => {
+    // MUTATION: leave the option bare, or put the words on another option.
+    await edit(schedule(), [SWEEP, REPORT], { value: effective, from: 'workspace' })
+    await screen.findByRole('radio', { name: `inherit (${effective})` }, WAIT)
+    expect(within(group()).getAllByRole('radio').map((r) => r.textContent)).toEqual([`inherit (${effective})`, 'on', 'off'])
+  })
+
+  it('keeps the bare word where the setting was not read', async () => {
+    await edit(schedule(), [SWEEP, REPORT], { value: 'unknown' })
+    await new Promise((r) => setTimeout(r, 50))
+    expect(radios().map((r) => r.textContent)).toEqual([...VALUES])
+  })
+})
+
 describe('how it is drawn', () => {
   it('adds no words to the form but its label and its three values', async () => {
     // MUTATION: add a hint under the group.
     const form = () => visible(screen.getByTestId('sc-form')).replace(/\s+/g, '')
     const { unmount } = await edit()
-    const withIt = form()
+    await screen.findByRole('radio', { name: 'inherit (on)' }, WAIT)
+    await waitFor(() => expect(form()).toContain('Nextfive'), WAIT)
+    const withIt = form().replace('inherit(on)', 'inherit')
     unmount()
     await edit(schedule(), [typeRow('issue-sweep', { proposes: false }), REPORT])
+    await waitFor(() => expect(form()).toContain('Nextfive'), WAIT)
     expect(withIt).toContain('Diagramsinplansinheritonoff')
     expect(withIt.replace('Diagramsinplansinheritonoff', '')).toBe(form())
   })

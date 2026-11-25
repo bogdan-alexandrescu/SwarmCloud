@@ -35,6 +35,7 @@ import { cloneElement, isValidElement, useEffect, useId, useLayoutEffect, useMem
 import {
   createSchedule,
   loadRepositories,
+  loadEffectivePlanDiagrams,
   loadScheduleTypes,
   previewSchedule,
   updateSchedule,
@@ -138,6 +139,14 @@ type TypeRow = ScheduleTypeRow & { proposes?: boolean }
 /** A document without the field follows the workspace: `inherit` is the API's default. */
 function planDiagramsOf(s: Stored | null): PlanDiagrams {
   return s?.plan_diagrams ?? 'inherit'
+}
+
+/** The options; `inherit` names what it resolves to now, once read: `inherit (on)`. */
+function planDiagramOptions(effective: 'on' | 'off' | null): readonly { value: PlanDiagrams; label: string }[] {
+  return [
+    { value: 'inherit', label: effective === null ? 'inherit' : `inherit (${effective})` },
+    ...PLAN_DIAGRAMS.slice(1),
+  ]
 }
 
 const PLAN_DIAGRAMS: readonly { value: PlanDiagrams; label: string }[] = [
@@ -1088,6 +1097,7 @@ function ScheduleForm({
   // the schedule the first request made instead of a second one (§7.1).
   const requestId = useRef(`ui-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`)
   const t = types.find((x) => x.name === d.type) ?? null
+  const effectiveDiagrams = useEffectivePlanDiagrams(schedule !== null && t?.proposes === true ? schedule.tenant_id : null)
   const set = (patch: Partial<Draft>) => setD((prev) => ({ ...prev, ...patch }))
 
   const pickType = (name: string) => {
@@ -1443,7 +1453,7 @@ function ScheduleForm({
                 />
               </Field>
               {schedule !== null && t?.proposes === true && (
-                <Segmented<PlanDiagrams> label={CHANGE_LABEL.plan_diagrams!} value={d.planDiagrams} options={PLAN_DIAGRAMS} onChange={(v) => set({ planDiagrams: v })} />
+                <Segmented<PlanDiagrams> label={CHANGE_LABEL.plan_diagrams!} value={d.planDiagrams} options={planDiagramOptions(effectiveDiagrams)} onChange={(v) => set({ planDiagrams: v })} />
               )}
             </div>
             {restatedOnes.length > 0 && (
@@ -1509,6 +1519,22 @@ function subscribeOneColumn(onChange: () => void): () => void {
 /** Whether the form is one column, so the preview is drawn under the cron rather than beside it. */
 function useOneColumn(): boolean {
   return useSyncExternalStore(subscribeOneColumn, oneColumnNow, () => false)
+}
+
+/** What `inherit` resolves to for `tenantId`, or null until read (or when unreadable). */
+function useEffectivePlanDiagrams(tenantId: string | null): 'on' | 'off' | null {
+  const [value, setValue] = useState<'on' | 'off' | null>(null)
+  useEffect(() => {
+    if (tenantId === null) return
+    let live = true
+    void loadEffectivePlanDiagrams(tenantId).then((v) => {
+      if (live) setValue(v)
+    })
+    return () => {
+      live = false
+    }
+  }, [tenantId])
+  return value
 }
 
 function useRepositories(): Result<RepoRecord[]> {
