@@ -12,7 +12,7 @@ import { FIXTURE_CONTRACT_REFUSAL_PROMPT } from '../api'
 import type { ProseState } from './prosestates'
 import { settle } from './proseapp'
 import { fold } from './prosestates.agent'
-import { mountAwaitInput, mountHeldRunners, mountQuestion } from './prosestates.work.mounts'
+import { WORKFLOW_REFUSAL_MESSAGE, mountAwaitInput, mountHeldRunners, mountQuestion, mountWorkflowRefused } from './prosestates.work.mounts'
 import { click } from './prosestates.shell'
 import { screenLoaded } from './screenLoaded'
 
@@ -290,6 +290,32 @@ export const WORK: readonly ProseState[] = [
         await stepRunner('generic')
         press('Submit this workflow')
       },
+    },
+  },
+  {
+    // Refused by the API after Submit: the fixture build creates every workflow, so it is mounted live.
+    key: 'submit-workflow/refused',
+    group: 'work',
+    files: ['SubmitWorkflow.tsx', 'ContractJev.tsx'],
+    shows: '.state.failed[role="status"]',
+    // The API's own message, drawn verbatim.
+    data: [WORKFLOW_REFUSAL_MESSAGE],
+    mount: mountWorkflowRefused,
+    act: async () => {
+      for (let i = 0; i < 20 && document.querySelector('.wfb-step select') === null; i++) {
+        await screenLoaded()
+        await settle()
+      }
+      const select = document.querySelector<HTMLSelectElement>('.wfb-step select[aria-label="step-1 runner"], .wfb-step select')
+      if (select === null) throw new Error('the workflow form drew no step runner')
+      fireEvent.change(select, { target: { value: 'mock' } })
+      await screenLoaded()
+      await settle()
+      press('Submit this workflow')
+      for (let i = 0; i < 20 && document.querySelector('.state.failed') === null; i++) {
+        await screenLoaded()
+        await settle()
+      }
     },
   },
   {

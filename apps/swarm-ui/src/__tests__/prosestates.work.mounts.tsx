@@ -5,6 +5,7 @@
 // strip answers in place).
 
 import type { ReactElement } from 'react'
+import { vi } from 'vitest'
 
 import { RunnerPicker, type ProviderKeys } from '../RunnerPicker'
 import type { RunnerProfile } from '../types'
@@ -58,9 +59,54 @@ const AT = '2026-10-18T10:00:00.000Z'
 const INPUT_ROUTE = '/v1/workflows/wf_r/steps/review/input'
 const realFetch = globalThis.fetch
 
-/** Undo the await-input card's fetch stub: called after each state. */
+/** Undo the mounts' fetch stubs and the live build: called after each state. */
 export function restoreWorkStubs(): void {
   globalThis.fetch = realFetch
+  vi.doUnmock('../api')
+  vi.resetModules()
+}
+
+const json = (status: number, body: unknown): Promise<Response> =>
+  Promise.resolve(new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } }))
+
+/** The API's refusal of a workflow whose contract Jev found unenforceable (contract.jev.test.tsx's REFUSAL). */
+export const WORKFLOW_REFUSAL_MESSAGE = 'contract wc-example is strict, and Jev found requirements no worker could enforce: REQ-2, REQ-4'
+
+/**
+ * The workflow form with its submit sent live and refused with a 422 (the
+ * fixture build creates every workflow), as contract.jev.test.tsx does; its
+ * other reads stay the fixture build's.
+ */
+export async function mountWorkflowRefused(): Promise<ReactElement> {
+  vi.resetModules()
+  vi.doMock('../api', async (importOriginal) => ({ ...(await importOriginal<typeof import('../api')>()), USE_FIXTURES: false }))
+  globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = input instanceof Request ? input.url : input.toString()
+    if ((init?.method ?? 'GET') === 'POST' && url.startsWith('/v1/workflows')) {
+      return json(422, {
+        code: 'validation_failed',
+        message: WORKFLOW_REFUSAL_MESSAGE,
+        detail: {
+          reason: 'work_contract_not_enforceable',
+          contract_id: 'wc-example',
+          revision: 1,
+          digest: 'ab'.repeat(32),
+          unenforced: [],
+          jev: {
+            call_id: 'call-77777777',
+            backend: 'internal-jev',
+            requirements: [
+              { id: 'REQ-2', class: 'unenforceable', reason: 'vague_outcome', p: 0.83 },
+              { id: 'REQ-4', class: 'unenforceable', reason: 'depends_on_a_later_event', p: 0.71 },
+            ],
+          },
+        },
+      })
+    }
+    return realFetch(input, init)
+  }
+  const { SubmitWorkflowScreen } = await import('../SubmitWorkflow')
+  return <SubmitWorkflowScreen />
 }
 
 /** The step's view, as swarm_api/awaitinput.py's `step_view` writes it (awaitinput.card.test.tsx). */
