@@ -433,7 +433,17 @@ function Members() {
   const members = useUrRead(loadAccessMembers, 'access-members')
   const gate = membersGated(members.state)
   return (
-    <Card className="ac-members" title="Members' GitHub connections" action={gate === null ? <UrRefresh reads={[members]} /> : undefined}>
+    <Card
+      className="ac-members"
+      title="Members' GitHub connections"
+      // ISSUE 439: the card's note sits behind its (i), word for word.
+      action={
+        <>
+          {gate === null && <UrRefresh reads={[members]} />}
+          <InfoTip about="members' connections" tip={MEMBERS_TIP} />
+        </>
+      }
+    >
       {gate !== null ? (
         <FailedPanel error={gate} onRetry={members.reload} />
       ) : (
@@ -470,13 +480,12 @@ function Members() {
           }
         </UrRegion>
       )}
-      <p className="ur-hint">
-        Each member connects as themselves. An admin sees states and names, never a value, and cannot reconnect for
-        someone else.
-      </p>
     </Card>
   )
 }
+
+
+const MEMBERS_TIP = 'Each member connects as themselves. An admin sees states and names, never a value, and cannot reconnect for someone else.'
 
 /**
  * A PERSONAL WORKSPACE'S PAGE HAS A WAY ON (visual QA pass 1, config-29; part of archived issue 2596). Reached by URL, the page

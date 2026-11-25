@@ -249,3 +249,23 @@ export async function mountGroupRoles(): Promise<ReactElement> {
   const { App } = await import('../App')
   return <App />
 }
+
+// ---------------------------------------------------------------- a token entry, created
+
+/** The App on the tokens page, its create answered with a new entry: the card shows the secret's name and the command. */
+export async function mountTokenCreated(): Promise<ReactElement> {
+  vi.resetModules()
+  vi.doMock('../api', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('../api')>()),
+    registerTokenSlot: () =>
+      Promise.resolve({
+        status: 'ok',
+        fetchedAt: Date.now(),
+        data: { token: { token_id: 'tok_new', scope: 'user', tenant_id: 'u-owner', provider_suffix: 'git-u-0a1b2c3d4e5f6071', secret_name: 'swarm-tenant-u-owner-git-u-0a1b2c3d4e5f6071' } },
+      }),
+  }))
+  window.history.replaceState(null, '', '/')
+  window.location.hash = '#config/repositories?page=tokens'
+  const { App } = await import('../App')
+  return <App />
+}

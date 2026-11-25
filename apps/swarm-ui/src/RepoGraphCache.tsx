@@ -464,8 +464,9 @@ function ReplicaLatency({ r }: { r: Extract<GraphCacheReplica, { state: 'read' }
   const cold = l.by_temperature.cold
   return (
     <p className="ur-small" data-row="replica-latency">
-      Answer latency: middle <b>{msWords(l.p50_ms)}</b>, slow <b>{msWords(l.p95_ms)}</b>
-      {l.max_ms !== null && <>, slowest {msWords(l.max_ms)}</>} over {thousands(l.count)} answers
+      {/* ISSUE 439: figures, not a sentence: under nine words, as the states guard holds a line. */}
+      Latency: middle <b>{msWords(l.p50_ms)}</b>, slow <b>{msWords(l.p95_ms)}</b>
+      {l.max_ms !== null && <>, slowest {msWords(l.max_ms)}</>}, {thousands(l.count)} answers
       {cold !== undefined && cold.count > 0 && cold.p95_ms !== null && <> · cold slow {msWords(cold.p95_ms)}</>}
     </p>
   )
@@ -487,7 +488,7 @@ function ReplicaPanel({ r }: { r: GraphCacheReplica }) {
       <div className="c-card ur-cache-replica is-not-read" data-replica={r.replica} data-state="not_read" data-reason={r.reason} style={NOT_READ_PANEL}>
         <b>{r.replica}</b>
         <p className="ur-small">
-          Not read: it {reasonWords(r.reason)} ({r.reason}).
+          Not read: {reasonWords(r.reason)} ({r.reason})
         </p>
       </div>
     )

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 
 import { createAdminWorkspace, loadAdminWorkspace, type FirstAdminAnswer } from './api'
 import { Button, Dash, Dialog, Tabs, ToneMark } from './components'
 import type { ApiError } from './fetch'
+import { InfoTip } from './InfoTip'
 import { ApprovedWaiting, WORKSPACE_POLL_MS, waitingOf } from './OnboardingWorkspace'
 import { usePoll } from './Shell'
 import type { AdminWorkspaceView, WorkspaceJobStep, WorkspaceKind } from './types'
@@ -103,35 +104,45 @@ function str(v: unknown): string | null {
   return typeof v === 'string' && v !== '' ? v : null
 }
 
-/** What the kind will get, shown before submit (§4.2.4). `who` is the address as typed, or the kind's placeholder. */
+/** What each kind gets, word for word, behind the tab's (i) (issue 439). `who` is the address as typed, or the kind's placeholder. */
+function getsTip(kind: WorkspaceKind, who: string): string {
+  switch (kind) {
+    case 'personal':
+      return `${who} gets its own tenant, worker account, storage prefix and namespace. It is approved at once, because you are an admin, and is ready when they first sign in. It runs nothing until a Claude account is lent to them or they add their own.`
+    case 'group':
+      return `${who} gets its own tenant, worker account, storage prefix and namespace, shared by the group's members, and an empty team forge slot. The API first checks that the group can be read in the directory. It is approved at once, because you are an admin.`
+    case 'service':
+      return `${who} gets its own tenant, worker account, storage prefix and namespace, and is admitted at the API’s front door. The platform owner approves it. It runs nothing until a Claude account is lent to it or added.`
+  }
+}
+
+/**
+ * What the kind will get, shown before submit (§4.2.4). ISSUE 439: who
+ * approves stays one line on the surface; what the kind gets is behind the
+ * (i), word for word.
+ */
 function Gets({ kind, who }: { kind: WorkspaceKind; who: string }) {
-  const address = <code>{who}</code>
+  const tip = <InfoTip about={`a ${kind} workspace`} tip={getsTip(kind, who)} />
   let body: ReactNode
   switch (kind) {
     case 'personal':
       body = (
         <>
-          <b>Personal</b> · {address} gets its own tenant, worker account, storage prefix and namespace. It is approved at
-          once, because you are an admin, and is ready when they first sign in. It runs nothing until a Claude account is
-          lent to them or they add their own.
+          <b>Personal</b> · approved at once {tip}
         </>
       )
       break
     case 'group':
       body = (
         <>
-          <b>Group</b> · {address} gets its own tenant, worker account, storage prefix and namespace, shared by the
-          group&apos;s members, and an empty team forge slot. The API first checks that the group can be read in the
-          directory. It is approved at once, because you are an admin.
+          <b>Group</b> · approved at once {tip}
         </>
       )
       break
     case 'service':
       body = (
         <>
-          <b>Service</b> · {address} gets its own tenant, worker account, storage prefix and namespace, and is admitted at
-          the API’s front door. <b>The platform owner approves it.</b> It runs nothing until a Claude account is lent to
-          it or added.
+          <b>Service</b> · <b>The platform owner approves it.</b> {tip}
         </>
       )
       break

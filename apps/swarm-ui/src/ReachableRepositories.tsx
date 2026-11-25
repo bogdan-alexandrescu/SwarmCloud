@@ -11,6 +11,11 @@ import './styles/repositories.css'
 import './styles/onboarding.css'
 import './styles/reachable-repositories.css'
 
+/** What Push test does, behind the ask's (i) (issue 439). */
+function pushTestTip(repository: string): string {
+  return `SwarmCloud creates one branch, swarmcloud/onboarding-check-<nonce>, at the head of ${repository}'s default branch, as you, and deletes it straight away. It is the only check that writes to GitHub.`
+}
+
 /**
  * "REPOSITORIES SWARMCLOUD MAY REACH AS YOU" (GITHUB-ACCESS-PAGE; part of
  * archived issue 2157). It was the last card of Work › Access, under Choose repositories.
@@ -346,10 +351,9 @@ export function ReachableRepositories({
                           onAct={() => void pushTest(g)}
                           onKeep={() => setConfirming(null)}
                         >
+                          {/* ISSUE 439: the write stays one line; how it is done sits behind its (i), word for word. */}
                           <p className="ur-small">
-                            SwarmCloud creates one branch, <code>swarmcloud/onboarding-check-&lt;nonce&gt;</code>, at the
-                            head of {g.repository}'s default branch, as you, and deletes it straight away. It is the only
-                            check that writes to GitHub.
+                            Writes one test branch, then deletes it <InfoTip about="the push test" tip={pushTestTip(g.repository)} />
                           </p>
                         </AskFirst>
                       </div>
