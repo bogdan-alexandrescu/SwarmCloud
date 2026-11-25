@@ -11,12 +11,11 @@
 //
 // Placeholders only; nothing is token-shaped.
 
-import { render, waitFor } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { serve, visible } from './repofixture'
 
 const WAIT = { timeout: 4000 }
-const JSON_HEADERS = { 'content-type': 'application/json' }
-const visible = (el: Element | null) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim()
 // Built at runtime: a 64-hex literal reads as a key to a credential scan.
 const DIGEST = 'sha256:' + 'cd'.repeat(32)
 const RUN_ID = 'run_plandecide0000001'
@@ -52,61 +51,58 @@ const USAGE = {
   caps_read_at: '2026-11-23T04:05:00Z',
 }
 
+const ITEM_PATH = `/automate/approvals/${encodeURIComponent('run:' + RUN_ID)}`
+
 async function mount(served: unknown) {
-  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
-    const url = String(input)
-    if (url === `/v1/runs/${RUN_ID}`) return new Response(JSON.stringify({ run: served }), { status: 200, headers: JSON_HEADERS })
-    return new Response(JSON.stringify({ code: 'not_found', message: url }), { status: 404, headers: JSON_HEADERS })
-  }) as unknown as typeof fetch
+  serve((m, url) => (m === 'GET' && url.split('?')[0] === `/v1/runs/${RUN_ID}` ? { status: 200, body: { run: served } } : null))
   vi.stubEnv('VITE_LIVE', '1')
   vi.resetModules()
   const { RunsScreen } = await import('../Runs')
-  const go = vi.fn()
-  const utils = render(<RunsScreen view={`run=${RUN_ID}`} go={go} />)
-  await waitFor(() => expect(utils.container.querySelector('.rn-chosen')).not.toBeNull(), WAIT)
-  return { page: utils.container, go }
+  render(<RunsScreen view={`run=${RUN_ID}`} go={vi.fn()} />)
+  return screen.findByRole('region', { name: 'Chosen at submission' }, WAIT)
 }
 
 afterEach(() => {
   vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
 })
 
 describe('the decision page link', () => {
   it('links a PLANNED run to its decision page', async () => {
-    const { page } = await mount(run())
-    const link = page.querySelector<HTMLAnchorElement>('[data-testid="rn-decide"]')
-    expect(link).not.toBeNull()
-    expect(link!.getAttribute('href')!.split('?')[0]).toBe(`/automate/approvals/${encodeURIComponent(`run:${RUN_ID}`)}`)
+    await mount(run())
+    const link = await screen.findByTestId('rn-decide', undefined, WAIT)
+    expect(link.getAttribute('href')!.split('?')[0]).toBe(ITEM_PATH)
     // An action drawn as a button, not a text link.
-    expect(link!.classList.contains('c-btn')).toBe(true)
+    expect(link.classList.contains('c-btn')).toBe(true)
   })
 
   it('draws no decision link once the run is past PLANNED', async () => {
-    const { page } = await mount(run({ state: 'REJECTED', terminal: true, rejected_by: 'operator@example.com', rejection_reason: 'no' }))
-    expect(page.querySelector('[data-testid="rn-decide"]')).toBeNull()
+    await mount(run({ state: 'REJECTED', terminal: true, rejected_by: 'operator@example.com', rejection_reason: 'no' }))
+    expect(screen.queryByTestId('rn-decide')).toBeNull()
   })
 })
 
+const facts = (chosen: HTMLElement) => within(chosen).getAllByRole('listitem').map(visible)
+
 describe('the review spend', () => {
   it('shows no review figure, never $0, for a run read without plan_review_usage', async () => {
-    const { page } = await mount(run())
-    expect(page.querySelector('[data-testid="rn-review-spend"]')).toBeNull()
-    expect(visible(page.querySelector('.rn-chosen'))).not.toMatch(/review \$/)
+    const chosen = await mount(run())
+    expect(screen.queryByTestId('rn-review-spend')).toBeNull()
+    expect(visible(chosen)).not.toMatch(/review \$/)
   })
 
   it('shows "review $6.40 of $25" beside the cost of a planned run with usage', async () => {
-    const { page } = await mount(run({ plan_review_usage: USAGE }))
-    const fact = page.querySelector('[data-testid="rn-review-spend"]')
-    expect(fact).not.toBeNull()
-    expect(visible(fact)).toBe('review $6.40 of $25')
-    // Beside the cost, in the same list.
-    const cost = Array.from(page.querySelectorAll('.rn-chosen .ctl-fact')).find((li) => visible(li.querySelector('b')) === 'cost so far')
-    expect(cost).toBeDefined()
-    expect(cost!.nextElementSibling).toBe(fact!.closest('li'))
+    const chosen = await mount(run({ plan_review_usage: USAGE }))
+    expect(visible(screen.getByTestId('rn-review-spend'))).toBe('review $6.40 of $25')
+    // Beside the cost, in the same list: the fact after "cost so far".
+    const all = facts(chosen)
+    const cost = all.findIndex((f) => f.startsWith('cost so far'))
+    expect(cost).toBeGreaterThanOrEqual(0)
+    expect(all[cost + 1]).toMatch(/^review spend\s*review \$6\.40 of \$25$/)
   })
 
   it('says "at least" when a cost went unreported', async () => {
-    const { page } = await mount(run({ plan_review_usage: { ...USAGE, review_usd: { spent: 6.4, cap: 25, at_least: true } } }))
-    expect(visible(page.querySelector('[data-testid="rn-review-spend"]'))).toBe('review $6.40 of $25 · at least')
+    await mount(run({ plan_review_usage: { ...USAGE, review_usd: { spent: 6.4, cap: 25, at_least: true } } }))
+    expect(visible(screen.getByTestId('rn-review-spend'))).toBe('review $6.40 of $25 · at least')
   })
 })

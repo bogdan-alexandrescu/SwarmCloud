@@ -1,10 +1,10 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { approvePlan, editPlan, loadRun, loadRuns, loadSchedules, rejectPlan } from './api'
 import type { AdvisedIssueRun, PlanAdvisory } from './api'
 import type { ApiError, Result } from './fetch'
 import { InlineText as RnText, WorkspaceNamed, runAddress } from './IssueSubmit'
 import { MarkGlyph, type MarkHue, type MarkName } from './marks'
-import { Banner, Button, Card, Chip, CIcon, CodeBlock, Segmented, Tabs, WarnMark } from './components'
+import { Banner, Button, ButtonLink, Card, Chip, CIcon, CodeBlock, Segmented, Tabs, WarnMark } from './components'
 import { Dash } from './components/Chip'
 import { FailedPanel, Screen, timeAgo } from './Shell'
 import { workflowPullRequest, type MergeCard, type WorkflowPullRequest } from './stepviews'
@@ -22,6 +22,8 @@ import { interviewAddress, proposalAddress } from './interviewPaths'
 import { Absent } from './primitives'
 import { RunChangesTab, changesAtOf, withChangesAt } from './WorkflowChanges'
 import { Markdown } from './ArtifactViewer'
+import { EMPTY_PLAN, PlanEditor } from './PlanEditor'
+import { approvalAddress } from './approvalPaths'
 import './styles/intake.css'
 import './styles/runs.css'
 
@@ -73,6 +75,9 @@ import './styles/runs.css'
  *
  * Classes are `rn-` so a later pass can swap them for lane U0's components.
  */
+
+/** The plan editor lives in PlanEditor.tsx (plans-pipeline §11 U5); the interview page imports it from here. */
+export { PlanEditor }
 
 /** A run that has not finished is re-read on this cadence: each read advances it. */
 export const RUN_POLL_MS = 15_000
@@ -1211,6 +1216,7 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
               </h3>
             }>
           {run.state === 'PLANNED' && <PlanLintFindings lint={run.plan_lint ?? null} />}
+          {run.state === 'PLANNED' && run.plan_digest !== null && <DecisionLink runId={run.id} go={go} />}
           {open.kind === 'edit' && actable ? (
             <PlanEditor
               key={open.digest ?? 'no-plan'}
@@ -1346,10 +1352,63 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
               ? <span className="rn-id" title={scheduleOf(run.created_by) === null ? runCreatorWord(run, names) ?? '' : `${runCreatorWord(run, names)} (${run.created_by})`}>{runCreatorWord(run, names)}</span>
               : <i className="ctl-em">&mdash; not recorded</i>}</li>
             <CostFact read={read} ended={run.terminal} />
+            <ReviewSpendFact run={run} />
           </ul>
         </section>
       </aside>
     </div>
+  )
+}
+
+/**
+ * A PLANNED RUN IS DECIDED ON ITS DECISION PAGE (plans-pipeline §2.3, lane
+ * U5): `/automate/approvals/run:<id>`, the approval the run projects, where the
+ * plan is a document with its revisions, thread and editor. A button, because
+ * it is where the decision is taken.
+ */
+function DecisionLink({ runId, go }: Readonly<{ runId: string; go: (to: string) => void }>) {
+  const to = approvalAddress(`run:${runId}`)
+  return (
+    <p className="rn-actions">
+      <ButtonLink size="sm" href={addressToPath(to)} data-testid="rn-decide" title="The plan as a document, with its revisions and thread"
+        onClick={(e) => {
+          if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+          e.preventDefault()
+          go(to)
+        }}>Decision page</ButtonLink>
+    </p>
+  )
+}
+
+/** `plan_review_usage.review_usd` (plans-pipeline §7.8), as the run read serves it; absent on an older server. */
+interface ReviewUsd { spent?: number | null; cap?: number | null; at_least?: boolean | null }
+
+/** `$6.40`; a whole cap is `$25`. */
+const reviewUsd = (n: number, whole = false) => (whole && Number.isInteger(n) ? `$${n}` : `$${n.toFixed(2)}`)
+
+/**
+ * THE REVIEW SPEND AGAINST ITS CAP, BESIDE THE COST (§7.8): what the plan's
+ * review chat and on-demand diagrams spent, "review $6.40 of $25". A run read
+ * without `plan_review_usage` (an older server, or a figure not served) draws
+ * nothing rather than $0, which would be a reading nobody made. The whole
+ * review's cost, re-plans included, is a different figure and is not this one.
+ * Amber from 80% of the cap, as the chat's header is.
+ */
+function ReviewSpendFact({ run }: Readonly<{ run: IssueRun }>) {
+  const usage = (run as IssueRun & { plan_review_usage?: { review_usd?: ReviewUsd | null } | null }).plan_review_usage
+  const r = usage?.review_usd ?? null
+  const spent = typeof r?.spent === 'number' && Number.isFinite(r.spent) ? r.spent : null
+  const cap = typeof r?.cap === 'number' && Number.isFinite(r.cap) && r.cap > 0 ? r.cap : null
+  if (spent === null || cap === null) return null
+  const atLeast = r?.at_least === true
+  const title = `Spent by this plan's review chat and diagrams, against the per-run cap${atLeast ? '; a cost went unreported, so at least this' : ''}. Re-plans are not counted here.`
+  return (
+    <li className="ctl-fact">
+      <b>review spend</b>
+      <span data-testid="rn-review-spend" data-near={spent >= cap * 0.8 || undefined} title={title}>
+        review {reviewUsd(spent)} of {reviewUsd(cap, true)}{atLeast ? ' · at least' : ''}
+      </span>
+    </li>
   )
 }
 
@@ -1365,39 +1424,6 @@ export function historyGap(run: IssueRun): string | null {
   if (last === undefined) return `No transition is recorded; the run is ${runStateWord(run.state)} now.`
   if (last.to === run.state) return null
   return `The record ends at ${runStateWord(last.to)}; the run is ${runStateWord(run.state)} now. The transitions between were not recorded.`
-}
-
-/** A list as the editor shows it: one entry per line. */
-function linesOf(list: string[] | null | undefined): string {
-  return (list ?? []).join('\n')
-}
-
-/** The entries a textarea holds: one per non-blank line, trimmed. */
-function entries(text: string): string[] {
-  return text.split('\n').map((l) => l.trim()).filter((l) => l !== '')
-}
-
-/**
- * An optional plan field as edited. Untouched, it is the value the plan had --
- * absent, null or a list -- so a save changes nothing the reader did not
- * change; emptied, it is dropped (the API takes no empty estimate); otherwise
- * it is what was typed.
- */
-function editedList(original: string[] | null | undefined, text: string): string[] | null | undefined {
-  if (text === linesOf(original)) return original
-  const l = entries(text)
-  return l.length === 0 ? undefined : l
-}
-
-function editedText(original: string | null | undefined, text: string): string | null | undefined {
-  if (text === (original ?? '')) return original
-  return text.trim() === '' ? undefined : text.trim()
-}
-
-/** `target[key] = value`, or no key at all when the value is undefined. */
-function put<T extends object, K extends keyof T>(target: T, key: K, value: T[K] | undefined): void {
-  if (value === undefined) delete target[key]
-  else target[key] = value
 }
 
 /**
@@ -1727,130 +1753,6 @@ function IssueReadCard({ run, now }: { run: IssueRun; now: number }) {
         </details>
       )}
     </section>
-  )
-}
-
-type StepDraft = { step: PlanStepDoc; title: string; prompt: string; files: string; tests: string; estimate: string }
-
-/** What a person edits a plan in from on a run held with no plan: one empty step to fill. */
-const EMPTY_PLAN: RunPlan = { summary: '', steps: [{ step_id: 'step-1', title: '', prompt: '' }] }
-
-/**
- * The plan, editable where a plan is: the summary, the estimate and the
- * requirements, and each step's title, prompt, files, tests and estimate.
- * The mode and the overlaps are the planner's findings and are kept as
- * written. Every field the plan carries goes back, so an edit never drops one.
- */
-export function PlanEditor({ plan, busy, onCancel, onSave }: {
-  plan: RunPlan; busy: boolean; onCancel: () => void; onSave: (plan: RunPlan) => void
-}) {
-  const [summary, setSummary] = useState(plan.summary)
-  const [estimate, setEstimate] = useState(plan.estimate ?? '')
-  const [requirements, setRequirements] = useState(linesOf(plan.requirements))
-  const [steps, setSteps] = useState<StepDraft[]>(plan.steps.map((s) => ({
-    step: s, title: s.title, prompt: s.prompt, files: linesOf(s.files), tests: linesOf(s.tests), estimate: s.estimate ?? '',
-  })))
-  // WHAT BLOCKS SAVING IS NAMED (QA1-FIX-24, runs-submit-09, part of archived issue 2596):
-  // Save went disabled with nothing saying why, and no field was marked. Each
-  // blank required field is `aria-invalid` with its own hint, and the
-  // disabled Save says which fields block it (`disabledReason`, its
-  // aria-describedby).
-  const blanks = [
-    ...(summary.trim() === '' ? ['the summary'] : []),
-    ...steps.flatMap((s, i) => [
-      ...(s.title.trim() === '' ? [`step ${i + 1}'s title`] : []),
-      ...(s.prompt.trim() === '' ? [`step ${i + 1}'s prompt`] : []),
-    ]),
-  ]
-  const blank = blanks.length > 0
-  // The editor opens on its first field, not on <body> (runs-submit-08).
-  const first = useRef<HTMLTextAreaElement>(null)
-  useEffect(() => first.current?.focus(), [])
-  const hintId = useId()
-  const set = (i: number, key: 'title' | 'prompt' | 'files' | 'tests' | 'estimate', value: string) =>
-    setSteps((all) => all.map((s, j) => (j === i ? { ...s, [key]: value } : s)))
-
-  function edited(): RunPlan {
-    const out: RunPlan = {
-      ...plan,
-      summary,
-      steps: steps.map((d) => {
-        const step: PlanStepDoc = { ...d.step, title: d.title, prompt: d.prompt }
-        put(step, 'files', editedList(d.step.files, d.files))
-        put(step, 'tests', editedList(d.step.tests, d.tests))
-        put(step, 'estimate', editedText(d.step.estimate, d.estimate))
-        return step
-      }),
-    }
-    put(out, 'estimate', editedText(plan.estimate, estimate))
-    put(out, 'requirements', editedList(plan.requirements, requirements))
-    return out
-  }
-
-  return (
-    <form className="rn-edit" onSubmit={(e) => {
-      e.preventDefault()
-      if (!blank) onSave(edited())
-    }}>
-      <label className="rn-field">
-        <b>Summary</b>
-        <textarea ref={first} value={summary} rows={3} onChange={(e) => setSummary(e.target.value)}
-          aria-invalid={summary.trim() === '' || undefined}
-          aria-describedby={summary.trim() === '' ? `${hintId}-summary` : undefined} />
-      </label>
-      {summary.trim() === '' && <span className="sbf-bad rn-field-why" id={`${hintId}-summary`}>Required: the plan needs a summary.</span>}
-      <label className="rn-field">
-        <b>Estimate</b>
-        <input value={estimate} maxLength={200} onChange={(e) => setEstimate(e.target.value)} aria-describedby={`${hintId}-estimate`} />
-      </label>
-      {/* Beside the field, not in its label: the label stays its name alone. */}
-      <span className="sb-note" id={`${hintId}-estimate`}>Free text, as the planner wrote it: a time or a size, such as &ldquo;about 2 hours&rdquo;. Optional.</span>
-      <label className="rn-field">
-        <b>Requirements, one per line</b>
-        <textarea value={requirements} rows={4} onChange={(e) => setRequirements(e.target.value)} />
-      </label>
-      <p className="sb-note">
-        The requirements are what the review checks, and what decides <code>Closes</code> against{' '}
-        <code>part of</code>. The mode and the overlaps are kept as the planner found them.
-      </p>
-      {steps.map((s, i) => (
-        <fieldset key={s.step.step_id} className="rn-field-set">
-          <legend className="mono">{i + 1} · {s.step.step_id}</legend>
-          <label className="rn-field">
-            <b>Title</b>
-            <input value={s.title} onChange={(e) => set(i, 'title', e.target.value)}
-              aria-invalid={s.title.trim() === '' || undefined}
-              aria-describedby={s.title.trim() === '' ? `${hintId}-t${i}` : undefined} />
-          </label>
-          {s.title.trim() === '' && <span className="sbf-bad rn-field-why" id={`${hintId}-t${i}`}>Required: a step needs a title.</span>}
-          <label className="rn-field">
-            <b>Prompt</b>
-            <textarea value={s.prompt} rows={4} onChange={(e) => set(i, 'prompt', e.target.value)}
-              aria-invalid={s.prompt.trim() === '' || undefined}
-              aria-describedby={s.prompt.trim() === '' ? `${hintId}-p${i}` : undefined} />
-          </label>
-          {s.prompt.trim() === '' && <span className="sbf-bad rn-field-why" id={`${hintId}-p${i}`}>Required: a step needs a prompt.</span>}
-          <label className="rn-field">
-            <b>Files, one per line</b>
-            <textarea className="mono" value={s.files} rows={2} onChange={(e) => set(i, 'files', e.target.value)} />
-          </label>
-          <label className="rn-field">
-            <b>Tests, one per line</b>
-            <textarea value={s.tests} rows={2} onChange={(e) => set(i, 'tests', e.target.value)} />
-          </label>
-          <label className="rn-field">
-            <b>Step estimate</b>
-            <input value={s.estimate} maxLength={100} onChange={(e) => set(i, 'estimate', e.target.value)} />
-          </label>
-        </fieldset>
-      ))}
-      <p className="sb-note">Saving sends the digest of the plan you opened; an edit made by someone else since is refused.</p>
-      <div className="rn-actions">
-        <Button type="submit" kind="primary" disabled={busy}
-          disabledReason={blank ? `Not saved: ${blanks.join(', ')} ${blanks.length === 1 ? 'is' : 'are'} empty.` : undefined}>Save the plan</Button>
-        <Button disabled={busy} onClick={onCancel}>Cancel</Button>
-      </div>
-    </form>
   )
 }
 

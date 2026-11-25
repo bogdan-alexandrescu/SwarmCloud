@@ -58,22 +58,22 @@ afterEach(() => {
 describe('the editor', () => {
   it('disables Remove on the last step and says why', () => {
     render(<PlanEditor plan={asPlan({ ...PLAN, steps: [PLAN.steps[0]] })} busy={false} onCancel={() => undefined} onSave={() => undefined} />)
-    const remove = screen.getByRole('button', { name: 'Remove step 1' })
-    expect((remove as HTMLButtonElement).disabled).toBe(true)
+    const remove = screen.getByRole<HTMLButtonElement>('button', { name: 'Remove step 1' })
+    expect(remove.disabled).toBe(true)
     // The reason is the button's description, not a visible sentence.
-    expect(remove.getAttribute('aria-describedby')).toBeTruthy()
-    const why = document.getElementById(remove.getAttribute('aria-describedby')!)!
-    expect(visible(why)).toMatch(/at least one step/)
+    const why = screen.getByText(/at least one step/)
+    expect(why.hidden).toBe(true)
+    expect(remove.getAttribute('aria-describedby')).toBe(why.id)
   })
 
   it('removes a step when there are two, and keeps every field it does not show', () => {
     const onSave = vi.fn()
     render(<PlanEditor plan={asPlan(PLAN)} busy={false} onCancel={() => undefined} onSave={onSave} />)
-    const remove = screen.getByRole('button', { name: 'Remove step 2' })
-    expect((remove as HTMLButtonElement).disabled).toBe(false)
+    const remove = screen.getByRole<HTMLButtonElement>('button', { name: 'Remove step 2' })
+    expect(remove.disabled).toBe(false)
     fireEvent.click(remove)
     // With one step left, its Remove is off.
-    expect((screen.getByRole('button', { name: 'Remove step 1' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Remove step 1' }).disabled).toBe(true)
     fireEvent.change(screen.getByRole('textbox', { name: 'Summary' }), { target: { value: 'Serve the overlaps, edited.' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save the plan' }))
     expect(onSave).toHaveBeenCalledTimes(1)
@@ -111,7 +111,7 @@ describe('the editor', () => {
 
   it('saves a plan with no diagrams exactly as it came', () => {
     const onSave = vi.fn()
-    const { diagrams: _drop, ...bare } = PLAN
+    const bare = Object.fromEntries(Object.entries(PLAN).filter(([k]) => k !== 'diagrams'))
     render(<PlanEditor plan={asPlan({ ...bare, no_diagram: 'a one-line change' })} busy={false} onCancel={() => undefined} onSave={onSave} />)
     expect(screen.queryByRole('list', { name: 'Diagrams' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Save the plan' }))
@@ -207,7 +207,7 @@ describe('on the decision page', () => {
     // D:P3c: the saved revision is named with its digest and author.
     const tick = await screen.findByTestId('pe-saved', undefined, WAIT)
     expect(visible(tick)).toContain('Revision 3')
-    expect(tick.querySelector('[data-digest]')!.getAttribute('data-digest')).toBe(D3)
+    expect(within(tick).getByTitle(D3).getAttribute('data-digest')).toBe(D3)
     expect(visible(tick)).toContain('a@example.com')
   })
 
