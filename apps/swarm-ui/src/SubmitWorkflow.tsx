@@ -1675,13 +1675,21 @@ function Outcome({ sub, refusal, onStep }: {
           ))}
         </ul>
       )}
-      {/* ONE SENTENCE EACH, AND BOTH ARE THE INVARIANT RATHER THAN AN
-          EXPLANATION OF IT: whether anything was created. */}
-      <p>{uncertain
-        ? 'The workflow may exist. Open the Workflows board and look before submitting again.'
-        : unserved
-          ? 'Nothing was created, and the plan is not what was refused: changing it will not help.'
-          : 'Nothing was created. Correct the plan and submit again.'}</p>
+      {/* THE INVARIANT STAYS ONE LINE, whether anything was created; what to
+          do about it is its (i), word for word (issue 439). */}
+      <p>
+        {uncertain ? 'The workflow may exist' : 'Nothing was created'}{' '}
+        <InfoTip
+          about="the refusal"
+          tip={
+            uncertain
+              ? 'The workflow may exist. Open the Workflows board and look before submitting again.'
+              : unserved
+                ? 'Nothing was created, and the plan is not what was refused: changing it will not help.'
+                : 'Nothing was created. Correct the plan and submit again.'
+          }
+        />
+      </p>
       {error.httpStatus !== null && <p className="checked-at">HTTP {error.httpStatus}{error.code ? ` · ${error.code}` : ''}</p>}
     </div>
   )

@@ -300,6 +300,8 @@ export const WORK: readonly ProseState[] = [
     shows: '.state.failed[role="status"]',
     // The API's own message, drawn verbatim.
     data: [WORKFLOW_REFUSAL_MESSAGE],
+    lines: ['Nothing was created'],
+    moved: ['Nothing was created. Correct the plan and submit again.'],
     mount: mountWorkflowRefused,
     act: async () => {
       for (let i = 0; i < 20 && document.querySelector('.wfb-step select') === null; i++) {
