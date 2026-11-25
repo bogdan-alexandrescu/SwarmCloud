@@ -1714,6 +1714,60 @@ export async function rejectPlan(runId: string, planDigest: string | null, reaso
   return write(route('/v1/runs/{id}/plan:reject', { id: runId }), 'POST', body) as Promise<Result<IssueRunRead>>
 }
 
+/** Where a plan thread entry sits (docs/design/plans-pipeline.md §3.4): the whole plan has no ref. */
+export interface PlanAnchor {
+  part: 'plan' | 'step' | 'requirement' | 'overlap' | 'diagram'
+  ref: string | null
+}
+
+/** One stored entry of `plan_thread` (§3.4), as `plan:comment` answers it. */
+export interface PlanThreadEntryRead {
+  entry: Record<string, unknown>
+}
+
+/** The run's re-plan record (§3.5), as `plan:revise` answers it. */
+export interface PlanReplanRead {
+  replan: Record<string, unknown>
+}
+
+/** `GET /v1/runs/{run_id}/plan-revisions/{revision}`: one revision with its whole plan (§3.3). */
+export interface PlanRevisionRead {
+  revision: Record<string, unknown> & { plan?: Record<string, unknown> | null; digest?: string | null }
+}
+
+/**
+ * Comment on the revision on screen (§3.4). `planDigest` is the digest of that
+ * revision, so a comment says which plan it was written on; a comment never
+ * changes the plan.
+ */
+export async function commentOnPlan(runId: string, planDigest: string, anchor: PlanAnchor, text: string): Promise<Result<PlanThreadEntryRead>> {
+  return write(route('/v1/runs/{id}/plan:comment', { id: runId }), 'POST', { plan_digest: planDigest, anchor, text }) as Promise<Result<PlanThreadEntryRead>>
+}
+
+/** Fold (or unfold) a comment: its author's, or anyone's at the edit level (§3.4). */
+export async function resolvePlanComment(runId: string, entryId: string, resolved: boolean): Promise<Result<PlanThreadEntryRead>> {
+  return write(route('/v1/runs/{id}/plan:comment', { id: runId }), 'POST', { entry_id: entryId, resolved }) as Promise<Result<PlanThreadEntryRead>>
+}
+
+/**
+ * Request changes (§3.5, §5): every open comment on the shown revision goes to
+ * the planner with that revision's digest. Nothing else is sent: the agent's
+ * shape is the run's planner's (invariant 10).
+ */
+export async function revisePlan(runId: string, planDigest: string): Promise<Result<PlanReplanRead>> {
+  return write(route('/v1/runs/{id}/plan:revise', { id: runId }), 'POST', { plan_digest: planDigest }) as Promise<Result<PlanReplanRead>>
+}
+
+/** Cancel the re-plan that runs (§5.3), by its id. */
+export async function cancelReplan(runId: string, replanId: string): Promise<Result<PlanReplanRead>> {
+  return write(route('/v1/runs/{id}/plan:revise', { id: runId }), 'POST', { cancel: replanId }) as Promise<Result<PlanReplanRead>>
+}
+
+/** One revision's whole plan (§3.3): the run read serves every revision without its plan. */
+export async function loadPlanRevision(runId: string, revision: number): Promise<Result<PlanRevisionRead>> {
+  return read<PlanRevisionRead>(route('/v1/runs/{id}/plan-revisions/{revision}', { id: runId, revision }), () => false)
+}
+
 /**
  * THE DEVELOPMENT FIXTURES FOR RUNS. Example data, in the mock-up's words
  * (intake-tenants.html): one run waiting for approval and one running. Each
