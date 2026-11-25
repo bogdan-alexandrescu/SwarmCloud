@@ -83,6 +83,7 @@ from ..task_accounts import accounts_for
 from ..task_input import masking_for
 from ..validation import known_providers
 from ..workspaces import WORKSPACES, kind_of
+from ..wire_types import DispatchControl, LeasePage, QuotaPage, TenantPage
 from .accounts import account_pool
 from .browser_logins import browser_vault
 from .runs import advance_tenant_runs
@@ -127,7 +128,7 @@ def _check_runner(runner_profile: str) -> str:
 
 # -- dispatch pause -------------------------------------------------------
 
-@router.get("/dispatch")
+@router.get("/dispatch", responses={200: {"model": DispatchControl}})
 def get_dispatch(
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),
@@ -746,7 +747,7 @@ def units_held_by_pool(leases: list[Lease]) -> dict[str, int]:
     return held
 
 
-@router.get("/leases")
+@router.get("/leases", responses={200: {"model": LeasePage}})
 def list_leases(
     tenant_id: str | None = Query(default=None),
     active_only: bool = Query(default=True),
@@ -974,7 +975,7 @@ def purge_history(
     return result
 
 
-@router.get("/quota")
+@router.get("/quota", responses={200: {"model": QuotaPage}})
 def list_quota(
     tenant_id: str | None = Query(default=None),
     auth: AuthContext = Depends(admin_auth),
@@ -1173,7 +1174,7 @@ def _workspace_records(ctx: AppContext, tenant_ids: list[str]) -> dict[str, dict
     }
 
 
-@router.get("/tenants")
+@router.get("/tenants", responses={200: {"model": TenantPage}})
 def list_tenants(
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),

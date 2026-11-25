@@ -2629,9 +2629,6 @@
     "sonarjs/no-alphabetical-sort": {
       "count": 3
     },
-    "sonarjs/super-linear-regex": {
-      "count": 1
-    },
     "testing-library/no-manual-cleanup": {
       "count": 1
     },
@@ -3094,7 +3091,7 @@
   },
   "src/__tests__/activity.timeline.test.tsx": {
     "@typescript-eslint/no-unnecessary-type-assertion": {
-      "count": 9
+      "count": 1
     },
     "@typescript-eslint/no-unsafe-return": {
       "count": 1
@@ -3316,9 +3313,6 @@
     "sonarjs/no-nested-conditional": {
       "count": 1
     },
-    "sonarjs/super-linear-regex": {
-      "count": 1
-    },
     "testing-library/no-manual-cleanup": {
       "count": 1
     },
@@ -3331,9 +3325,6 @@
       "count": 1
     },
     "sonarjs/prefer-specific-assertions": {
-      "count": 1
-    },
-    "sonarjs/super-linear-regex": {
       "count": 1
     },
     "testing-library/no-node-access": {
@@ -5146,9 +5137,6 @@
     "sonarjs/no-clear-text-protocols": {
       "count": 1
     },
-    "sonarjs/prefer-specific-assertions": {
-      "count": 1
-    },
     "testing-library/no-container": {
       "count": 20
     },
@@ -5229,9 +5217,6 @@
   },
   "src/__tests__/eventpaging.strings.test.tsx": {
     "@typescript-eslint/no-unnecessary-type-assertion": {
-      "count": 1
-    },
-    "sonarjs/argument-type": {
       "count": 1
     },
     "testing-library/no-container": {
@@ -5374,9 +5359,6 @@
       "count": 1
     },
     "sonarjs/no-hardcoded-ip": {
-      "count": 1
-    },
-    "sonarjs/super-linear-regex": {
       "count": 1
     },
     "testing-library/no-node-access": {
@@ -7222,9 +7204,6 @@
       "count": 7
     },
     "@typescript-eslint/require-await": {
-      "count": 1
-    },
-    "sonarjs/argument-type": {
       "count": 1
     },
     "testing-library/no-container": {
@@ -15660,7 +15639,7 @@
       "count": 31
     },
     "sonarjs/argument-type": {
-      "count": 3
+      "count": 1
     },
     "sonarjs/no-alphabetical-sort": {
       "count": 2

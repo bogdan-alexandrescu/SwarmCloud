@@ -26,16 +26,28 @@ the console reads it from the generated type.
 Nested shapes the console still types by hand (`blocked_by`, `waiting`,
 `dispatch`, ...) are `Any` here, `unknown` in the generated type, and narrowed
 by `types.ts`'s `Task`; describing them is a later slice of #72.
+
+THE REST OF THE CONSOLE'S CORE SHAPES (below `Task`): the pools, runner
+profiles and their admission, capacity, the task page, attempts, leases and
+heartbeats, quota, tenants, stats, `me`, the dispatch switch, the workflow,
+providers and events -- every shape the console once copied into `types.ts`
+by hand. Same conventions, the same documented-only attachment (each route's
+`responses=`), and the same two-way hold against what every serving route
+sends, so a codec-built row is still served unchanged. Each console interface
+in `types.ts` extends its generated shape and keeps only its own narrowing.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
+from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from swarm_common.states import TaskState
+
+from . import outcomes as _outcomes
 
 
 class TaskLinks(BaseModel):
@@ -306,3 +318,1505 @@ class TaskEnvelope(BaseModel):
     model_config = ConfigDict(title="TaskEnvelope")
 
     task: Task
+
+
+# --------------------------------------------------------------------------
+# The shapes the console's field-contract table held by regex (part of #72).
+#
+# Same conventions as `Task`: REQUIRED is what every route serving the shape
+# sends (and the console reads as required); everything else has a default and
+# is optional in the generated type. Nested shapes the console still narrows by
+# hand are `Any`. Each is attached to its route(s) with `responses=` only, so
+# the dict the route builds is still what it serves.
+# --------------------------------------------------------------------------
+
+
+class Pool(BaseModel):
+    """`pool_to_api` in codec.py: one capacity pool's ceiling and use."""
+
+    model_config = ConfigDict(title="Pool")
+
+    name: str
+    hard_limit: int | None
+    adaptive_target: int | None
+    quota_derived_limit: int | None
+    effective_limit: int | None
+    active: int
+    available: int | None
+    enabled: bool
+    updated_at: datetime
+    lowered_by: list[Any] | None = Field(None, description=(
+        "What lowered `effective_limit` below `hard_limit`, one entry per cause."
+    ))
+
+
+class ProfileBlocker(BaseModel):
+    """One pool that refuses a runner profile's next agent (`ProfileAdmission.blockers`)."""
+
+    model_config = ConfigDict(title="ProfileBlocker")
+
+    pool: str
+    reason: str
+    limit: int | None
+    active: int
+    group: str | None
+
+
+class Counterfactual(BaseModel):
+    """What one relaxed ceiling would buy a runner profile (`ProfileAdmission.counterfactual`)."""
+
+    model_config = ConfigDict(title="Counterfactual")
+
+    pool: str
+    action: str
+    headroom_after: int | None
+    basis_after: str
+    delta: int | None
+    next_binding: list[str]
+
+
+class ProfileAdmission(BaseModel):
+    """How many more agents of one runner profile fit now, and what binds it."""
+
+    model_config = ConfigDict(title="ProfileAdmission")
+
+    units: int
+    headroom: int | None
+    basis: str
+    blockers: list[ProfileBlocker]
+    binding: list[str]
+    counterfactual: list[Counterfactual]
+    complete: bool
+    unread: list[str]
+    uncapped: list[str]
+
+
+class RunnerProfile(BaseModel):
+    """One entry of `GET /v1/capacity`'s `runner_profiles`, keyed by the profile's name."""
+
+    model_config = ConfigDict(title="RunnerProfile")
+
+    resource_class: str
+    backend: str
+    provider: str | None
+    units: int
+    pools: list[str]
+    pool_units: dict[str, int] | None = Field(None, description=(
+        "Contract request 129: the units this profile takes from each of its pools."
+    ))
+    available: bool | None = None
+    disabled_reason: str | None = None
+    admission: ProfileAdmission | None = None
+    input_contract: Any = Field(None, description="What the profile's input must carry.")
+
+
+class Capacity(BaseModel):
+    """`GET /v1/capacity`: the caller's pools and what each runner profile can admit."""
+
+    model_config = ConfigDict(title="Capacity")
+
+    pools: list[Pool]
+    runner_profiles: dict[str, RunnerProfile]
+    tenant_id: str | None = None
+    pools_complete: bool | None = None
+    blocked_reason_groups: dict[str, list[str]] | None = None
+    generated_at: datetime
+
+
+class TaskPage(BaseModel):
+    """`GET /v1/tasks`: one page of tasks. The paging key is `next_page_token`."""
+
+    model_config = ConfigDict(title="TaskPage")
+
+    tasks: list[Task]
+    next_page_token: str | None = Field(None, description=(
+        "Pass back as `page_token` for the next page; null on the last. This API has never "
+        "sent `next_cursor`."
+    ))
+    tenant_id: str | None = None
+
+
+class AttemptRow(BaseModel):
+    """`attempt_to_api` in codec.py: one attempt, with its five spend fields."""
+
+    model_config = ConfigDict(title="AttemptRow")
+
+    attempt_id: str
+    task_id: str
+    tenant_id: str
+    generation: int
+    lease_id: str
+    backend: str
+    execution_name: str | None
+    created_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
+    exit_code: int | None
+    error: str | None
+    error_redaction_count: int | None = None
+    peak_rss_bytes: int | None
+    peak_disk_bytes: int | None
+    oom_near_miss: bool
+    checkpoints: list[str]
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_input_tokens: int | None
+    cache_creation_input_tokens: int | None
+    cost_usd: float | None
+    cpu_seconds: float | None = None
+    peak_cpu_cores: float | None = None
+    mean_cpu_cores: float | None = None
+    cpu_limit_cores: float | None = None
+    cpu_measured_at: datetime | None = None
+    cpu_limit_source: str | None = None
+    cpu_reading_age_seconds: float | None = None
+    model: str | None = None
+    size_version: int | None = None
+    sized_cpu_request: float | None = None
+    sized_cpu_limit: float | None = None
+    sized_memory_gib: float | None = None
+    sized_disk_gib: float | None = None
+    sized_live_split: Any = None
+    account_id: str | None = None
+    credential_source: str | None = None
+    credential_tier: str | None = None
+
+
+class AttemptPage(BaseModel):
+    """`GET /v1/tasks/{task_id}/attempts`."""
+
+    model_config = ConfigDict(title="AttemptPage")
+
+    task_id: str
+    read_at: datetime
+    attempts: list[AttemptRow]
+    accounts_by_attempt: dict[str, Any] = Field(description=(
+        "The subscription account each attempt ran on, keyed by attempt id."
+    ))
+
+
+class LeaseThresholds(BaseModel):
+    """The reconciler's own thresholds, served with the leases so no client restates them."""
+
+    model_config = ConfigDict(title="LeaseThresholds")
+
+    heartbeat_grace_seconds: int
+    lease_timeout_seconds: int
+
+
+class LeaseRow(BaseModel):
+    """`lease_to_api` in codec.py. The lease's own state is `dispatch_state`, never `state`:
+    nothing writes STARTING or RUNNING to a lease, so it is not the task's state."""
+
+    model_config = ConfigDict(title="LeaseRow")
+
+    lease_id: str
+    task_id: str
+    attempt_id: str
+    tenant_id: str
+    generation: int
+    pools: list[str]
+    units: int
+    pool_units: dict[str, int] | None = None
+    dispatch_state: str
+    created_at: datetime
+    dispatch_deadline: datetime
+    expires_at: datetime
+    heartbeat_at: datetime | None
+    released_at: datetime | None
+    release_reason: str | None
+    released: bool
+    expired: bool
+    dispatch_overdue: bool
+    silent_seconds: int
+    heartbeat_ever: bool
+    last_error: str | None
+
+
+class LeasePage(BaseModel):
+    """`GET /v1/admin/leases`."""
+
+    model_config = ConfigDict(title="LeasePage")
+
+    leases: list[LeaseRow]
+    next_page_token: str | None = None
+    thresholds: LeaseThresholds
+    evaluated_at: datetime
+    active_only: bool
+    tenant_id: str | None
+    units_held: int
+    units_held_by_pool: dict[str, int] | None = None
+    active_beyond_window: int
+    truncated: bool
+    examined: int
+
+
+class LeaseHeartbeat(BaseModel):
+    """One row of `GET /v1/leases`: a live lease's heartbeat, for a tenant's member."""
+
+    model_config = ConfigDict(title="LeaseHeartbeat")
+
+    task_id: str
+    lease_id: str
+    attempt_id: str
+    generation: int
+    task_state: TaskState
+    dispatch_state: str
+    created_at: datetime
+    dispatch_deadline: datetime
+    expires_at: datetime
+    heartbeat_at: datetime | None
+    silent_seconds: int | None
+    silent: bool
+    expired: bool
+    dispatch_overdue: bool
+
+
+class LeaseHeartbeatPage(BaseModel):
+    """`GET /v1/leases`."""
+
+    model_config = ConfigDict(title="LeaseHeartbeatPage")
+
+    tenant_id: str
+    read_at: datetime
+    thresholds: LeaseThresholds
+    heartbeats: list[LeaseHeartbeat]
+
+
+class QuotaState(BaseModel):
+    """`quota_to_api` in codec.py: one provider's quota reading for one tenant."""
+
+    model_config = ConfigDict(title="QuotaState")
+
+    provider: str
+    tenant_id: str
+    state: str
+    updated_at: datetime
+    configured_hard_max: int
+    adaptive_target: int | None
+    quota_derived_limit: int | None
+    requests_remaining: int | None
+    tokens_remaining: int | None
+    reset_at: datetime | None
+    cooldown_until: datetime | None
+    last_429_at: datetime | None
+    retry_after_seconds: int | None
+    success_count: int
+    rate_limit_count: int
+    effective_limit: int
+    feeds_pool: Pool | None = Field(None, description="The pool this reading lowers, if any.")
+
+
+class QuotaPage(BaseModel):
+    """`GET /v1/admin/quota`."""
+
+    model_config = ConfigDict(title="QuotaPage")
+
+    tenant_id: str | None
+    quota: list[QuotaState]
+    truncated: bool
+    generated_at: datetime
+
+
+class Tenant(BaseModel):
+    """`tenant_to_api` in codec.py."""
+
+    model_config = ConfigDict(title="Tenant")
+
+    tenant_id: str
+    kind: str
+    principal: str
+    display_name: str | None
+    created_at: datetime
+    max_active: int
+    capacity_units: int
+    monthly_budget_usd: float | None
+    enabled: bool
+    credentials: list[str]
+    service_account: str | None
+    gcs_prefix: str | None
+    namespace: str | None
+    workspace_kind: str | None = Field(None, description=(
+        "The workspace record's kind; null for a Terraform tenant (WK-ADMIN-LIST)."
+    ))
+    workspace_id: str | None = Field(None, description=(
+        "The workspace record's w- id; null for a Terraform tenant (WK-ADMIN-LIST)."
+    ))
+
+
+class TenantPage(BaseModel):
+    """`GET /v1/admin/tenants`."""
+
+    model_config = ConfigDict(title="TenantPage")
+
+    tenants: list[Tenant]
+    workspaces_unread: bool = Field(description=(
+        "Whether the workspace records could not be read, so `workspace_kind` and "
+        "`workspace_id` read null for every row."
+    ))
+
+
+class Stats(BaseModel):
+    """`GET /v1/stats`. `platform_tasks_by_state` is ABSENT, not empty, for a non-admin:
+    an absent key is not a count of nothing."""
+
+    model_config = ConfigDict(title="Stats")
+
+    tenant_id: str
+    tasks_by_state: dict[str, int]
+    dispatch_paused: bool
+    limits: dict[str, int]
+    generated_at: datetime
+    platform_tasks_by_state: dict[str, int] | None = Field(None, description=(
+        "Served only to an admin who asks for `scope=platform`; absent otherwise."
+    ))
+    dispatch_state: str | None = Field(None, description="running, paused or unknown (U26).")
+    control_document: str | None = Field(None, description="present or missing (U26).")
+
+
+class Me(BaseModel):
+    """`GET /v1/tenants/me`: the caller and the workspace they are in."""
+
+    model_config = ConfigDict(title="Me")
+
+    tenant: Any
+    principal: Any
+    environment: str
+    environment_declared: bool
+    role: Any = Field(None, description="The caller's role in the selected workspace, {name, source}.")
+    features: Any = Field(None, description=(
+        "caller_mcp/await_input/service_answer, each true, false or \"unknown\" (FEATURES-READ)."
+    ))
+
+
+class DispatchControl(BaseModel):
+    """`GET /v1/admin/dispatch`: the platform dispatch switch."""
+
+    model_config = ConfigDict(title="DispatchControl")
+
+    dispatch_paused: bool
+    updated_at: datetime | None
+    updated_by: str | None
+    reason: str | None
+    dispatch_state: str | None = Field(None, description="running, paused or unknown (U26).")
+    control_document: str | None = Field(None, description="present or missing (U26).")
+
+
+class Workflow(BaseModel):
+    """`GET /v1/workflows/{workflow_id}`: the workflow, its steps and its derived state."""
+
+    model_config = ConfigDict(title="Workflow")
+
+    workflow_id: str
+    state: str
+    tenant_id: str
+    stored_state: str
+    state_source: str
+    rollup: Any = None
+    drift: Any = None
+    created_at: datetime
+    updated_at: datetime
+    submitted_by: str | None
+    submitted_by_name: str | None = None
+    paused: bool = Field(False, description="True while a person has paused the workflow (docs/design/workflow-pause.md).")
+    paused_at: datetime | None = None
+    paused_by: str | None = None
+    priority: int
+    on_step_failure: str
+    cancel_requested: bool
+    steps: list[Any]
+    pull_request: Any = None
+    claude_session: Any = Field(None, description=(
+        "The Claude Code session that submitted it (SC-SESSION-SCOPE); read by the sc plugin."
+    ))
+    links: Any = Field(None, description=(
+        "The console link, for surfaces OUTSIDE the console (MCP, sc, plugin, PR bodies)."
+    ))
+    repository_url: str | None = Field(None, description="The workflow's repository, masked as a task's.")
+    title: str | None = None
+    description: str | None = Field(None, description="The submitter's plain-text description.")
+    description_source: str | None = Field(None, description="Who wrote the description.")
+    about: Any = Field(None, description="{purpose, goals, output}: the description in three parts.")
+    feature: Any = Field(None, description="{title, url?} of the feature it builds.")
+    started_from: str | None = Field(None, description=(
+        "schedule, quality_check, issue_run, claude_code or console."
+    ))
+
+
+class WorkflowEnvelope(BaseModel):
+    """`GET /v1/workflows/{workflow_id}`: the workflow, its step tasks and its dispatch."""
+
+    model_config = ConfigDict(title="WorkflowEnvelope")
+
+    workflow: Workflow
+    tasks: list[Task]
+    dispatch: Any
+
+
+class ProviderEntry(BaseModel):
+    """One provider of `GET /v1/providers`."""
+
+    model_config = ConfigDict(title="ProviderEntry")
+
+    provider: str
+    credential_registered: bool
+    credential_source: str | None = None
+    runnable_profiles: list[str] | None = None
+    runner_profiles: list[str]
+    quota: QuotaState | None
+
+
+class ProvidersPage(BaseModel):
+    """`GET /v1/providers`."""
+
+    model_config = ConfigDict(title="ProvidersPage")
+
+    tenant_id: str
+    providers: list[ProviderEntry]
+    account_pool: str | None = None
+    generated_at: datetime
+
+
+class TaskEvent(BaseModel):
+    """`event_to_api` in codec.py: one entry of a task's event log."""
+
+    model_config = ConfigDict(title="TaskEvent")
+
+    event_id: str
+    task_id: str
+    type: str
+    at: datetime
+    attempt_id: str | None
+    lease_id: str | None
+    generation: int | None
+    detail: dict[str, Any] | None
+    detail_redaction_count: int | None = None
+
+
+class TaskEventPage(BaseModel):
+    """`GET /v1/tasks/{task_id}/events`."""
+
+    model_config = ConfigDict(title="TaskEventPage")
+
+    task_id: str
+    events: list[TaskEvent]
+    next_page_token: str | None
+
+
+# --------------------------------------------------------------------------
+# The outcome ledger: `GET /v1/outcomes` (part of #72).
+#
+# The Timeline's types, once copied into `outcomes.ts` and held by a parser of
+# that file. Every nested object is modelled, because the page reads them all;
+# the unions the page switches on are enums built from the live tuples in
+# `swarm_api.outcomes`, so a failure class added there reaches the generated
+# type on the next regeneration. NULL MEANS NOT KNOWN, NEVER ZERO: every field
+# typed `| None` below is null for that reason, and is required (always sent).
+# --------------------------------------------------------------------------
+
+
+def _enum(name: str, values: tuple[str, ...], doc: str) -> type[Enum]:
+    """A string enum over live values: a named type in the OpenAPI document,
+    a string-literal union in the generated TypeScript."""
+    enum = Enum(name, [(value, value) for value in values], type=str)  # type: ignore[misc]
+    enum.__doc__ = doc
+    return enum
+
+
+FailureClassKey = _enum("FailureClassKey", _outcomes.FAILURE_KEYS,
+                        "Why an ended task failed (`swarm_api.outcomes.FAILURE_CLASSES`).")
+CancelCauseKey = _enum("CancelCauseKey", _outcomes.CANCEL_KEYS,
+                       "Why a task was cancelled (`swarm_api.outcomes.CANCEL_CAUSES`).")
+LedgerBucketSize = _enum("LedgerBucketSize", _outcomes.BUCKETS,
+                         "The bucket a ledger read is cut into (`swarm_api.outcomes.BUCKETS`).")
+GroupBy = _enum("GroupBy", _outcomes.GROUPS,
+                "The Timeline's group picker (`swarm_api.outcomes.GROUPS`).")
+UnreadReason = _enum("UnreadReason", tuple(sorted(_outcomes._REASON_ORDER)),
+                     "Why a bucket or a tenant-day was not read.")
+BucketState = _enum("BucketState", ("sealed", "open", "unread"),
+                    "A bucket's state; when `unread`, every count on it is null.")
+
+
+class Rate(BaseModel):
+    """k succeeded of n decided, with its Wilson 95 % interval. Null when n = 0."""
+
+    model_config = ConfigDict(title="Rate")
+
+    k: int
+    n: int
+    p: float
+    lo: float
+    hi: float
+
+
+class CancelSplit(BaseModel):
+    """Cancels by cause; none of them is a failure."""
+
+    model_config = ConfigDict(title="CancelSplit")
+
+    total: int
+    requested: int
+    after_failure: int
+    after_cancel: int = Field(description=(
+        "A cascade cancel that followed a cancel somebody asked for, at its parent or further "
+        "up the chain -- not a failure (archived issue 185, decision 2)."
+    ))
+    workflow_sweep: int
+    child_cascade: int | None = Field(None, description=(
+        "Contract request 41: a child task cancelled because its parent was cancelled, ended, "
+        "or out-waited its await. OPTIONAL: an API before DERIVE_VERSION 6 does not send it, "
+        "and absent is not zero."
+    ))
+    other: int
+
+
+class CostCell(BaseModel):
+    """Reported cost over some attempts."""
+
+    model_config = ConfigDict(title="CostCell")
+
+    sum_usd: float | None = Field(description=(
+        "null when no attempt reported a cost: an absence, never $0.00."))
+    attempts: int
+    reporting: int
+
+
+class OutcomeBucket(BaseModel):
+    """One bucket. When `state` is unread, every count below is null."""
+
+    model_config = ConfigDict(title="OutcomeBucket")
+
+    start: str
+    end: str
+    state: BucketState
+    in_progress: bool = Field(description="end > generated_at: the current period, drawn as \"so far\".")
+    unread_reason: UnreadReason | None
+    submitted: int | None = Field(description="By created_at: the ONLY submission-time field on a bucket.")
+    ended: int | None
+    succeeded: int | None
+    failed: int | None
+    dead_lettered: int | None
+    cancelled: CancelSplit | None
+    rate: Rate | None
+    failure_classes: dict[FailureClassKey, int] | None  # type: ignore[valid-type]
+    cost: CostCell | None
+
+
+class Stat(BaseModel):
+    """A latency distribution, in seconds."""
+
+    model_config = ConfigDict(title="Stat")
+
+    n: int
+    p50_s: float
+    p95_s: float
+    max_s: float
+    values_s: list[float] | None = Field(description=(
+        "Only when n < 5: the values themselves, because a percentile of four is a guess."))
+
+
+class LatencyOutcome(BaseModel):
+    model_config = ConfigDict(title="LatencyOutcome")
+
+    n: int
+    wait: Stat | None
+    run: Stat | None
+    total: Stat | None
+
+
+class LatencyRow(BaseModel):
+    model_config = ConfigDict(title="LatencyRow")
+
+    runner_profile: str
+    timeout_s: float | None = Field(description=(
+        "null when the row's tasks do not share one timeout_seconds."))
+    succeeded: LatencyOutcome
+    failed: LatencyOutcome = Field(description="Includes dead-lettered.")
+
+
+class SeriesPoint(BaseModel):
+    model_config = ConfigDict(title="SeriesPoint")
+
+    k: int
+    n: int
+
+
+class GroupRow(BaseModel):
+    model_config = ConfigDict(title="GroupRow")
+
+    key: str = Field(description=(
+        "Grouped by person, `''` is the tasks with no submitter recorded: a row, but not a name."))
+    submitted: int | None = Field(description=(
+        "Null for the `model` group: arrivals are counted per task, before an attempt has run "
+        "on any model, so no model can be credited with them."))
+    ended: int
+    succeeded: int
+    failed: int
+    dead_lettered: int
+    cancelled: CancelSplit
+    rate: Rate | None
+    cost: CostCell
+    declared_cost: bool
+    series: list[SeriesPoint | None] | None = Field(description=(
+        "Aligned 1:1 with buckets; a null entry is an unread bucket. The whole field is null "
+        "past 120 buckets."))
+
+
+class FirstFailed(BaseModel):
+    model_config = ConfigDict(title="FirstFailed")
+
+    step_id: str | None = Field(description=(
+        "The task's own, which the route reads as it is and does not promise."))
+    task_id: str
+    failure_class: FailureClassKey  # type: ignore[valid-type]
+    ended_at: str
+
+
+class WorkflowSteps(BaseModel):
+    model_config = ConfigDict(title="WorkflowSteps")
+
+    total: int
+    succeeded: int
+    failed: int
+    dead_lettered: int
+    cancelled: int
+    open: int
+    unreadable: int
+
+
+class WorkflowFailedRow(BaseModel):
+    model_config = ConfigDict(title="WorkflowFailedRow")
+
+    workflow_id: str
+    tenant_id: str
+    submitted_by: str | None = Field(description=(
+        "`''` as well as null when no submitter was recorded: both are an absence, never a name."))
+    first_failed: FirstFailed | None
+    cascade_cancelled: int
+    last_ended_at: str
+    state: str
+    steps: WorkflowSteps | None
+
+
+class CostByOutcome(BaseModel):
+    model_config = ConfigDict(title="CostByOutcome")
+
+    succeeded: CostCell
+    failed: CostCell
+    dead_lettered: CostCell
+    cancelled: CostCell
+
+
+class PerSucceededTask(BaseModel):
+    model_config = ConfigDict(title="PerSucceededTask")
+
+    n: int
+    of: int
+    p50_usd: float | None
+    p95_usd: float | None
+    max_usd: float | None
+    values_usd: list[float] | None
+
+
+class DeclaredCost(CostCell):
+    model_config = ConfigDict(title="DeclaredCost")
+
+    profiles: list[str]
+
+
+class TotalsCost(CostCell):
+    model_config = ConfigDict(title="TotalsCost")
+
+    by_outcome: CostByOutcome
+    per_succeeded_task: PerSucceededTask
+    retries: CostCell
+    declared: DeclaredCost
+
+
+class OutcomeTotals(BaseModel):
+    model_config = ConfigDict(title="OutcomeTotals")
+
+    complete: bool
+    buckets: int
+    buckets_read: int
+    submitted: int
+    ended: int
+    succeeded: int
+    failed: int
+    dead_lettered: int
+    cancelled: CancelSplit
+    rate: Rate | None
+    failure_classes: dict[FailureClassKey, int]  # type: ignore[valid-type]
+    cost: TotalsCost
+
+
+class TenantScope(BaseModel):
+    model_config = ConfigDict(title="TenantScope")
+
+    kind: Literal["tenant"]
+    tenant_id: str
+
+
+class PlatformScope(BaseModel):
+    model_config = ConfigDict(title="PlatformScope")
+
+    kind: Literal["platform"]
+    tenants: list[str]
+    excluded: list[str]
+    tenants_complete: bool
+
+
+class OutcomesRequested(BaseModel):
+    model_config = ConfigDict(title="OutcomesRequested")
+
+    span: str | None
+    since: str | None
+    until: str | None
+    bucket: str
+
+
+class OutcomesBasis(BaseModel):
+    """WHICH TIMESTAMP EACH SERIES IS PLACED BY, as the route says it."""
+
+    model_config = ConfigDict(title="OutcomesBasis")
+
+    outcomes: str
+    submitted: str
+
+
+class OutcomesFilters(BaseModel):
+    model_config = ConfigDict(title="OutcomesFilters")
+
+    profile: list[str]
+    submitted_by: list[str]
+    kind: str
+    tenant: list[str]
+    exclude_tenant: list[str]
+    group: GroupBy  # type: ignore[valid-type]
+
+
+class FailureClassLabel(BaseModel):
+    model_config = ConfigDict(title="FailureClassLabel")
+
+    key: FailureClassKey  # type: ignore[valid-type]
+    label: str
+
+
+class CancelCauseLabel(BaseModel):
+    model_config = ConfigDict(title="CancelCauseLabel")
+
+    key: CancelCauseKey  # type: ignore[valid-type]
+    label: str
+
+
+class OutcomesVocab(BaseModel):
+    model_config = ConfigDict(title="OutcomesVocab")
+
+    failure_classes: list[FailureClassLabel]
+    cancel_causes: list[CancelCauseLabel]
+    classifier_version: int
+
+
+class RetryTries(BaseModel):
+    model_config = ConfigDict(title="RetryTries")
+
+    attempts: str
+    tasks: int
+    succeeded: int
+    failed: int
+    dead_lettered: int
+    cancelled: int
+
+
+class NeededRetry(BaseModel):
+    model_config = ConfigDict(title="NeededRetry")
+
+    k: int
+    of: int
+
+
+class ExitCount(BaseModel):
+    model_config = ConfigDict(title="ExitCount")
+
+    exit_code: int | None
+    label: str
+    n: int
+
+
+class NotFinal(BaseModel):
+    model_config = ConfigDict(title="NotFinal")
+
+    attempts: int
+    by_exit: list[ExitCount]
+
+
+class OutcomeRetries(BaseModel):
+    model_config = ConfigDict(title="OutcomeRetries")
+
+    tries: list[RetryTries]
+    needed_retry: NeededRetry
+    rescued: int
+    failed_after_retry: int
+    not_final: NotFinal
+    admissions_without_attempt_doc: int
+
+
+class OutcomeLatency(BaseModel):
+    model_config = ConfigDict(title="OutcomeLatency")
+
+    percentile_method: str
+    by_profile: list[LatencyRow]
+    wait_excluded: int = Field(description=(
+        "The same number as `coverage.wait_excluded`, carried here so the latency card need not "
+        "read `coverage`."))
+
+
+class OutcomeGroups(BaseModel):
+    model_config = ConfigDict(title="OutcomeGroups")
+
+    by: GroupBy  # type: ignore[valid-type]
+    rows_total: int
+    rows: list[GroupRow]
+
+
+class FailingStep(BaseModel):
+    model_config = ConfigDict(title="FailingStep")
+
+    step_id: str
+    n: int
+
+
+class WorkflowsFailed(BaseModel):
+    model_config = ConfigDict(title="WorkflowsFailed")
+
+    applicable: bool
+    with_ended_steps: int | None = Field(description=(
+        "null when `applicable` is false (kind=standalone): nothing was counted, so no count "
+        "is a zero."))
+    with_failed_steps: int | None
+    rows_total: int | None
+    rows: list[WorkflowFailedRow]
+    failing_steps: list[FailingStep]
+
+
+class CoverageDays(BaseModel):
+    """TENANT-DAYS ON THE UTC CALENDAR, the rollup's own unit."""
+
+    model_config = ConfigDict(title="CoverageDays")
+
+    total: int
+    sealed: int
+    live: int
+    unread: int
+
+
+class UnreadDay(BaseModel):
+    model_config = ConfigDict(title="UnreadDay")
+
+    tenant_id: str
+    day: str
+    reason: UnreadReason  # type: ignore[valid-type]
+
+
+class OutcomeCoverage(BaseModel):
+    model_config = ConfigDict(title="OutcomeCoverage")
+
+    days: CoverageDays
+    unread: list[UnreadDay]
+    derived_now: int
+    built_through: str | None
+    reopened: int
+    terminal_without_completed_at: int | None = Field(description=(
+        "null when the count query failed: not read, never 0."))
+    wait_excluded: int
+    seal_grace_s: int
+
+
+class OutcomePrevious(BaseModel):
+    model_config = ConfigDict(title="OutcomePrevious")
+
+    since: str
+    until: str
+    complete: bool
+    succeeded: int
+    failed: int
+    dead_lettered: int
+    cancelled_total: int
+    rate: Rate | None
+
+
+RowOutcome = _enum("RowOutcome", _outcomes.ROW_OUTCOMES,
+                   "What a figure's rows may be (`swarm_api.outcomes.ROW_OUTCOMES`). Failed is "
+                   "FAILED + DEAD_LETTERED, the one definition the drawing uses.")
+
+
+class EndedRow(BaseModel):
+    """One ended task, as the ledger placed it: by `completed_at`."""
+
+    model_config = ConfigDict(title="EndedRow")
+
+    id: str
+    tenant_id: str
+    state: Literal["SUCCEEDED", "FAILED", "DEAD_LETTERED", "CANCELLED"]
+    completed_at: str
+    runner_profile: str | None
+    submitted_by: str = Field(description="Lower case; '' when the task recorded no submitter.")
+    workflow_id: str | None
+    step_id: str | None
+    failure_class: FailureClassKey | None  # type: ignore[valid-type]
+    cancel_cause: CancelCauseKey | None  # type: ignore[valid-type]
+
+
+class EndedRows(BaseModel):
+    """THE ROWS BEHIND ONE FIGURE (`rows=`), from the fold the figure was counted
+    from, so `total` is the figure and `rows` are the tasks in it (newest end
+    first, at most `rows_max`). `at`/`end` name the bucket, or are null for the
+    span; `key` is the group row under `group`, or null for every row."""
+
+    model_config = ConfigDict(title="EndedRows")
+
+    outcome: RowOutcome  # type: ignore[valid-type]
+    at: str | None
+    end: str | None
+    unread_reason: UnreadReason | None  # type: ignore[valid-type]
+    group: GroupBy  # type: ignore[valid-type]
+    key: str | None
+    total: int
+    rows_max: int
+    rows: list[EndedRow]
+
+
+class Outcomes(BaseModel):
+    """`GET /v1/outcomes`: what the work in a span ended as, bucketed by when it ended.
+
+    `coverage` and `previous` are required here because a whole read sends
+    them; the console's `OutcomesHead` is the payload a `section` read may
+    send without them. `ended_rows` (`rows=`) and `usage` (`usage=`) are sent
+    only when asked for."""
+
+    model_config = ConfigDict(title="Outcomes")
+
+    scope: TenantScope | PlatformScope
+    tz: str
+    requested: OutcomesRequested
+    since: str
+    until: str
+    bucket: LedgerBucketSize  # type: ignore[valid-type]
+    bucket_chosen_by: Literal["server", "caller"]
+    basis: OutcomesBasis
+    filters: OutcomesFilters
+    vocab: OutcomesVocab
+    buckets: list[OutcomeBucket]
+    totals: OutcomeTotals
+    retries: OutcomeRetries
+    latency: OutcomeLatency
+    groups: OutcomeGroups
+    workflows_failed: WorkflowsFailed
+    coverage: OutcomeCoverage
+    previous: OutcomePrevious | None
+    reads: int
+    cached: bool
+    generated_at: str
+    ended_rows: EndedRows | None = Field(None, description="The tasks behind one figure, with `rows=`.")
+    usage: Any = Field(None, description="The agents' usage, with `usage=`.")
+
+
+# --------------------------------------------------------------------------
+# The runtimes catalogue: `GET /v1/runtimes` (part of #72).
+# --------------------------------------------------------------------------
+
+
+class ResourceClassSpec(BaseModel):
+    """A resource class's sizing, as `/v1/runtimes` joins it to each runtime."""
+
+    model_config = ConfigDict(title="ResourceClassSpec")
+
+    name: str
+    cpu: float
+    cpu_request: float | None = None
+    cpu_limit: float | None = None
+    memory_gib: float
+    disk_gib: float
+    units: int
+    size_version: int | None = None
+
+
+class Runtime(BaseModel):
+    """One runner profile as `/v1/runtimes` publishes it, keyed by its name."""
+
+    model_config = ConfigDict(title="Runtime")
+
+    name: str
+    available: bool
+    disabled_reason: str
+    image: str
+    node_version: str | None = None
+    backend: str
+    resolved_backend: str
+    provider: str | None
+    secrets: list[str]
+    secrets_any_of: bool
+    timeout_seconds: int
+    resource_class: str
+    model_classes: list[str] | None = None
+    default_model_class: str | None = None
+    models: dict[str, str] | None = None
+    resources: ResourceClassSpec
+    agent_memory_gib: float | None = None
+    display_memory_gib: float | None = None
+    pod_memory_gib: float | None = None
+
+
+class RuntimesPage(BaseModel):
+    """`GET /v1/runtimes`."""
+
+    model_config = ConfigDict(title="RuntimesPage")
+
+    runtimes: dict[str, Runtime]
+
+
+# --------------------------------------------------------------------------
+# The account listing: `GET /v1/accounts` (part of #72).
+# --------------------------------------------------------------------------
+
+
+class AccountWindow(BaseModel):
+    model_config = ConfigDict(title="AccountWindow")
+
+    utilization: float
+    resets_at: str
+    reset: bool
+
+
+class Account(BaseModel):
+    """One subscription account, as the broker serves it and swarm-api rebuilds it."""
+
+    model_config = ConfigDict(title="Account")
+
+    account_id: str
+    owner_tenant: str
+    label: str
+    display_name: str | None = None
+    provider: str
+    state: str
+    reason: str
+    lend_to: list[str]
+    assigned: int
+    windows: dict[str, AccountWindow]
+    observed_at: str | None
+    stale: bool
+    unreadable_by: list[str]
+    unreadable_now: list[str] = Field(description=(
+        "The tenants the pool is skipping this account for NOW (the verdict, with the server's "
+        "clock); `unreadable_by` is only the record, with no ages."))
+    last_assigned_at: str | None
+    # What the broker's `account_to_api` and swarm-api's rebuild add beside
+    # the fields above. Optional: the rebuild forwards whatever the broker it
+    # talks to serves, and an older broker sends fewer of them.
+    vendor: str | None = None
+    kind: str | None = None
+    tier: str | None = None
+    lends: dict[str, Any] | None = Field(None, description="Per borrowing tenant: its caps.")
+    per_workspace_max: dict[str, Any] | None = None
+    monthly_spend_cap_usd: float | None = None
+    month_spend_usd: float | None = None
+    lend_spend_usd: dict[str, Any] | None = None
+    exhausted_at: str | None = None
+    voice_dedicated: bool | None = None
+    model_classes: list[str] | None = None
+    organisation: Any = None
+    duplicate_of: str | None = None
+    duplicate_reason: str | None = None
+    duplicate_matched_on: Any = None
+    possible_duplicate: Any = None
+    max_agents: int | None = None
+    pools: list[str] | None = None
+    voice_it_people: list[Any] | None = None
+    voice_it_holder: Any = None
+    can_take_new_agent: bool | None = None
+    blocked_by: list[Any] | None = None
+    next_eligible_at: str | None = None
+    latest_hold_deadline: str | None = None
+    measured: bool | None = None
+    last_refresh_at: str | None = None
+    token_expires_at: str | None = None
+    last_refresh_reason: str | None = None
+    health_24h: dict[str, int] | None = Field(None, description="Health events by kind, last 24 h.")
+    health_status: str | None = None
+
+
+class RefreshSweep(BaseModel):
+    """Whether the broker's refresh sweep is still running; `readable: false` is unknown."""
+
+    model_config = ConfigDict(title="RefreshSweep")
+
+    last_completed_at: str | None
+    last_outcome: str | None
+    readable: bool
+
+
+class AccountsPage(BaseModel):
+    """`GET /v1/accounts`: every account this tenant may run on."""
+
+    model_config = ConfigDict(title="AccountsPage")
+
+    accounts: list[Account]
+    tenant_id: str | None
+    unreadable_documents: list[str]
+    unreadable_document_count: int = Field(description=(
+        "How many account documents the broker could not read; the ids are named only to "
+        "their owner."))
+    refresh_sweep: RefreshSweep | None = None
+
+
+# --------------------------------------------------------------------------
+# The Artifacts tab and the task's masked input (#184): the artifact listing
+# and one artifact's content, the logs, the parsed transcript, the final
+# answer and `GET /v1/tasks/{id}/input`. Built by `agent_output.py`,
+# `inspect.py`, `transcript.py` and `task_input.py`. Every key below is sent
+# on every path of its builder (ok, absent, unreadable, binary, no attempt
+# yet); the few with a default are the ones the console reads as optional
+# because an API older than the field does not send them (as `Task` does).
+# The literal unions are the builders' own closed sets, so a value outside
+# one is a served payload that no longer matches its generated type.
+# --------------------------------------------------------------------------
+
+
+class ReadRedaction(BaseModel):
+    """`redaction` on every read-time-redacted read: the masking ran when this
+    response was built, with this many rules."""
+
+    model_config = ConfigDict(title="ReadRedaction")
+
+    applied_at_read_time: bool
+    rules: int
+
+
+class SkippedArtifact(BaseModel):
+    """One file the worker wrote and did not upload."""
+
+    model_config = ConfigDict(title="SkippedArtifact")
+
+    name: str
+    cause: str | None = Field(description=(
+        "`cap`, `upload_error` or `refused` (archived issue 165); null for a bare name from an "
+        "older summary."
+    ))
+
+
+class ArtifactEntry(BaseModel):
+    """One entry of `GET /v1/tasks/{id}/artifacts`: the worker's manifest entry as stored,
+    plus the four keys the listing derives beside it (`attempt_id`, `kind`, `content_type`,
+    `role`). The stored keys pass through unchanged, so only `name` is required of them."""
+
+    model_config = ConfigDict(title="ArtifactEntry")
+
+    name: str
+    bytes: int | None = None
+    uri: str | None = Field(None, description=(
+        "A `gs://` reference, never a download URL. Absent on an inline control-plane entry."
+    ))
+    attempt_id: str | None = Field(None, description=(
+        "The attempt the stored uri lies under; null when the uri is absent or not under this task."
+    ))
+    kind: str | None = Field(None, description=(
+        "From the one name table: markdown, json, ndjson, log, text, image or binary."
+    ))
+    content_type: str | None = None
+    role: str | None = Field(None, description=(
+        "`agent_stdout`, `agent_stderr` or `agent_transcript` for the agent's own streams."
+    ))
+    carried_from: str | None = Field(None, description=(
+        "Set on an entry carried over from an earlier attempt."
+    ))
+    written_by: str | None = Field(None, description="Set on a control-plane entry.")
+    republished_from: str | None = Field(None, description="Set on a control-plane entry.")
+    inline: str | None = Field(None, description=(
+        "The text of an inline control-plane entry, which has no stored object."
+    ))
+    attachments: Any = None
+
+
+class ArtifactListing(BaseModel):
+    """`GET /v1/tasks/{id}/artifacts`: what the attempt left in GCS, by reference."""
+
+    model_config = ConfigDict(title="ArtifactListing")
+
+    task_id: str
+    artifacts: list[ArtifactEntry]
+    artifacts_skipped: list[SkippedArtifact]
+    artifacts_over_cap: int | None = Field(None, description=(
+        "Files past the 500-file cap (archived issue 227): null until `complete`, 0 when none were."
+    ))
+    artifact_bytes: int | None
+    complete: bool = Field(description=(
+        "False until the task is terminal and its result summary is written, so \"no artifacts "
+        "yet\" and \"produced none\" differ."
+    ))
+    attempt_id: str | None = None
+
+
+class ArtifactContentRef(BaseModel):
+    """`artifact` on an artifact read: the manifest entry the name resolved to."""
+
+    model_config = ConfigDict(title="ArtifactContentRef")
+
+    name: str | None
+    bytes: int | None
+    uri: str | None
+
+
+class ArtifactContent(BaseModel):
+    """`GET /v1/tasks/{id}/artifacts/content?name=`: one artifact's text, bounded and redacted."""
+
+    model_config = ConfigDict(title="ArtifactContent")
+
+    task_id: str
+    tenant_id: str
+    attempt_id: str = Field(description="Empty for an inline control-plane entry.")
+    artifact: ArtifactContentRef
+    status: Literal["ok", "absent", "unreadable", "binary"]
+    detail: str | None
+    key: str | None
+    uri: str | None
+    content: str | None = Field(description="Null unless `status` is `ok`.")
+    total_bytes: int | None
+    offset: int
+    returned_bytes: int
+    next_offset: int | None
+    truncated: bool
+    redacted: bool
+    redaction_count: int
+    invalid_utf8_bytes: int | None = None
+    redaction: ReadRedaction
+    kind: str | None = None
+    content_type: str | None = None
+
+
+class LogAttempt(BaseModel):
+    """`attempt` on the logs, transcript and answer reads: which attempt was read."""
+
+    model_config = ConfigDict(title="LogAttempt")
+
+    status: Literal["latest", "requested", "unknown_attempt", "no_attempt_yet"]
+    known: bool
+    generation: int | None
+    created_at: datetime | None
+    completed_at: datetime | None
+    exit_code: int | None
+
+
+class TailWindow(BaseModel):
+    """`tail_window` on a live stream read from object offset 0."""
+
+    model_config = ConfigDict(title="TailWindow")
+
+    object_offset: int
+    stream_size: int
+    published_at: str | None = None
+
+
+class LogStream(BaseModel):
+    """One stream of `GET /v1/tasks/{id}/logs`."""
+
+    model_config = ConfigDict(title="LogStream")
+
+    stream: str = Field(description=(
+        "`stdout`/`stderr` are the runner process's; `agent_stdout`/`agent_stderr` the agent CLI's."
+    ))
+    source: Literal["final", "live", "artifact"] | None
+    status: Literal["ok", "absent", "unreadable", "not_applicable"]
+    detail: str | None
+    key: str | None
+    uri: str | None
+    content: str | None = Field(description=(
+        "Null for absent and unreadable; an empty string is a real, empty log."
+    ))
+    total_bytes: int | None
+    offset: int
+    returned_bytes: int
+    next_offset: int | None
+    truncated: bool
+    redacted: bool
+    redaction_count: int
+    tail_window: TailWindow | None
+    object_updated_at: str | None = None
+    age_seconds: float | None = None
+    invalid_utf8_bytes: int | None = None
+
+
+class TaskLogs(BaseModel):
+    """`GET /v1/tasks/{id}/logs`: an attempt's captured streams, redacted at read time."""
+
+    model_config = ConfigDict(title="TaskLogs")
+
+    task_id: str
+    tenant_id: str
+    attempt_id: str | None
+    attempt: LogAttempt
+    read_at: datetime = Field(None, description="Optional and never null: an older API omits it.")
+    streams: list[LogStream]
+    prefix: str
+    redaction: ReadRedaction
+
+
+class TranscriptStream(BaseModel):
+    """`stream` on the transcript: the agent stdout object the steps were parsed from."""
+
+    model_config = ConfigDict(title="TranscriptStream")
+
+    stream: Literal["agent_stdout"]
+    source: Literal["final", "live", "artifact"] | None
+    status: Literal["ok", "absent", "unreadable", "not_applicable"]
+    detail: str | None
+    uri: str | None
+    object_updated_at: str | None
+    age_seconds: float | None
+    total_bytes: int | None
+    offset: int
+    returned_bytes: int
+    next_offset: int | None
+    truncated: bool
+    tail_window: TailWindow | None
+
+
+class TranscriptTool(BaseModel):
+    """`tool` on a `tool_call` step. Each may be null on the wire (`_Scrubber.text`)."""
+
+    model_config = ConfigDict(title="TranscriptTool")
+
+    id: str | None
+    name: str | None
+    input: str | None
+
+
+class TranscriptToolResult(BaseModel):
+    """`tool_result` on a `tool_result` step; `tool_use_id` and `is_error` may be null."""
+
+    model_config = ConfigDict(title="TranscriptToolResult")
+
+    tool_use_id: str | None
+    is_error: bool | None
+    content: str | None
+    images: int
+
+
+class TranscriptStep(BaseModel):
+    """One step of the parsed transcript (`transcript._step`)."""
+
+    model_config = ConfigDict(title="TranscriptStep")
+
+    id: str | None
+    line_offset: int
+    block: int
+    kind: Literal["init", "text", "thinking", "tool_call", "tool_result", "result",
+                  "rate_limit", "system", "usage", "error", "other"]
+    role: Literal["assistant", "user", "system"] | None
+    parent_tool_use_id: str | None
+    text: str | None
+    tool: TranscriptTool | None
+    tool_result: TranscriptToolResult | None
+    meta: dict[str, Any] | None
+    truncated_fields: list[str]
+    raw: str | None = Field(description="The redacted source event; only with `include_raw=true`.")
+
+
+class TaskTranscript(BaseModel):
+    """`GET /v1/tasks/{id}/transcript`: the agent's own stdout, parsed into steps."""
+
+    model_config = ConfigDict(title="TaskTranscript")
+
+    task_id: str
+    tenant_id: str
+    attempt_id: str | None
+    attempt: LogAttempt
+    read_at: datetime
+    stream: TranscriptStream
+    format: Literal["claude-stream-json", "claude-json", "codex-exec-json", "ndjson",
+                    "text"] | None
+    steps: list[TranscriptStep] | None = Field(description="Null for `text`; `[]` for an empty object.")
+    complete: bool
+    window_starts_mid_stream: bool
+    skipped_lines: int
+    answer_in_window: bool
+    capture_truncated: bool | None = Field(None, description=(
+        "True when the capture was cut at its cap, so the transcript is not the whole run."
+    ))
+    redaction: ReadRedaction
+    redaction_count: int
+
+
+class AnswerObject(BaseModel):
+    """`object` on the answer: the stored stream the answer was read from."""
+
+    model_config = ConfigDict(title="AnswerObject")
+
+    stream: Literal["agent_stdout"]
+    source: Literal["final", "live", "artifact"]
+    uri: str | None
+    object_updated_at: str | None
+
+
+class TaskAnswer(BaseModel):
+    """`GET /v1/tasks/{id}/answer`: the agent's final answer, redacted."""
+
+    model_config = ConfigDict(title="TaskAnswer")
+
+    task_id: str
+    tenant_id: str
+    attempt_id: str | None
+    attempt: LogAttempt
+    read_at: datetime
+    status: Literal["ok", "not_yet", "absent", "unreadable"]
+    source: Literal["agent_result_event", "runner_summary"] | None
+    object: AnswerObject | None
+    format: Literal["markdown", "text"] | None
+    content: str | None
+    complete: bool | None
+    is_error: bool | None
+    subtype: str | None
+    stop_reason: str | None
+    terminal_reason: str | None
+    num_turns: int | None
+    bytes: int | None
+    redacted: bool
+    redaction_count: int
+    capture_truncated: bool | None = None
+    detail: str | None
+
+
+class MaskedText(BaseModel):
+    """A text as `redaction.redact` returns it, with its own count."""
+
+    model_config = ConfigDict(title="MaskedText")
+
+    text: str
+    redaction_count: int
+
+
+class MaskedMetadata(BaseModel):
+    """The task's metadata, masked by the same masker as its input."""
+
+    model_config = ConfigDict(title="MaskedMetadata")
+
+    value: dict[str, Any]
+    redaction_count: int
+    platform_keys: list[str]
+
+
+class TaskInputCopy(BaseModel):
+    """`GET /v1/tasks/{id}/input`: the task's input as a screen may draw it, masked at read time."""
+
+    model_config = ConfigDict(title="TaskInputCopy")
+
+    task_id: str
+    tenant_id: str
+    read_at: datetime
+    prompt_key: Literal["string", "missing", "other"]
+    prompt: MaskedText | None = Field(description="Null unless `input.prompt` is a string.")
+    rest: MaskedText | None
+    full: MaskedText
+    metadata: MaskedMetadata = Field(None, description="Optional and never null: an older API omits it.")
+    redacted: bool
+    redaction_count: int
+    redaction: ReadRedaction
