@@ -147,7 +147,7 @@ example-shared-project could read it there. The VM is single-use and is deleted
 afterwards, but that window is real. The owner accepted it on 2026-10-14. No
 other secret may go on a guarded job.
 
-The rules a reviewer holds every workflow change to:
+The rules every workflow change is held to:
 
 * every job is either on the guarded expression or listed as hosted, with a
   reason;
@@ -157,9 +157,11 @@ The rules a reviewer holds every workflow change to:
   the hatch on and off;
 * the short form is used only by workflows whose triggers make it safe.
 
-No unit test reads the workflows to check this any more: a test reads only its
-own tree ([below](#a-test-reads-only-its-own-tree)), so these rules are held in
-review.
+`tests/unit/scripts/test_fork_prs_off_self_hosted.py` holds these rules
+against the workflows. It is one of the CI security guards the owner kept on
+2026-11-25 as a named exception to "a test reads only its own tree"
+(`SECURITY_GUARDS` in `scripts/check_test_reads.py`,
+[below](#a-test-reads-only-its-own-tree)).
 
 What the VM image differs in: `/usr/local/bin` is not writable by the
 runner user, so a job installs a tool into `$RUNNER_TEMP` (security.yml does
@@ -551,7 +553,7 @@ the indexer-image split's start-time question needed every release's size, and u
 no release recorded its own, so the 2026-10-05 bisect had to read each one
 back out of the registry.
 `test_image_sizes.py` holds the table; the step's place in `release.yml` is
-held in review, since no test reads CI YAML
+held in review, since no test reads CI YAML but the named security guards
 ([below](#a-test-reads-only-its-own-tree)).
 
 **What the release does when it cannot reuse.** Each ends in a red job whose
@@ -1259,13 +1261,28 @@ environment's settings. Measured 2026-09-24:
 without an approval by choosing to bypass the rule. That is GitHub's default,
 and it was left as measured.
 
-**What a pull request proves about this, and what it cannot.** Issue 71
-deleted the test that read `release.yml` and scheduled its job graph for a prod
-dispatch (no test reads CI YAML, [below](#a-test-reads-only-its-own-tree)).
-`test_push_images_scan_only.py` still holds `--scan-only` to moving nothing,
-which is what exempts the pre-approval scan. That no job that promotes,
-applies or deploys can start before `approval (prod)`, including on a partial
-re-run, is held in review of `release.yml`.
+**What a pull request proves about this, and what it cannot.**
+`tests/unit/scripts/test_release_prod_gate.py` reads `release.yml` and
+schedules it: for a prod dispatch, with and without `skip_build`, it walks
+the job graph, evaluates every job-level `if:` against how the jobs it needs
+ended, makes the job that names `prod` be rejected, cancelled or never
+reached, and asserts that no job that promotes, applies or deploys can start
+in any of those runs — and that, approved, every one of them still can. Two
+more tests cancel the run. They try every way the jobs, or the earlier steps,
+could have ended, and assert that no such job starts and no such step runs.
+It also asserts that exactly one job names `prod`, and that no dev release
+names it. The re-run tests carry an approved first attempt into a second
+one. They try every set of jobs one partial re-run can restart without
+`approval`, from every distinct approved first attempt. In each, no job that
+promotes, applies or deploys may start, and a job that exists to fail must
+start. "Re-run all jobs" must still reach every such job, and a dev re-run
+must still promote, apply and deploy. The model's re-run rules come from
+GitHub's documentation and have not been observed on this workflow. It is one of
+the CI security guards the owner kept on 2026-11-25 as a named exception to
+"a test reads only its own tree" (`SECURITY_GUARDS` in
+`scripts/check_test_reads.py`, [below](#a-test-reads-only-its-own-tree)).
+`test_push_images_scan_only.py` holds `--scan-only` to moving nothing,
+which is what exempts the pre-approval scan.
 
 No test shows that the `prod` environment still has its reviewer, that GitHub
 starts `always()` work after a cancel (its documented behaviour, not observed
@@ -1425,9 +1442,11 @@ plan that forgets a custom role must be classified IAM, and a plan that only
 moves image digests must not. It also runs every owner-named family with every
 changing action, and inputs that must be refused rather than answered. The
 self-test (`plan-guard.sh --self-test`) carries the same cases.
-Issue 71 deleted the test that scheduled `release.yml` to check this gate (no
-test reads CI YAML, [below](#a-test-reads-only-its-own-tree)); what it checked,
-and what a reviewer of `release.yml` now holds by hand:
+`tests/unit/scripts/test_release_dev_iam_gate.py` schedules `release.yml` with
+the model from `test_release_prod_gate.py`, trying every value the
+classification can write; both are CI security guards the owner kept on
+2026-11-25 (`SECURITY_GUARDS`, [below](#a-test-reads-only-its-own-tree)). It
+checks four things:
 
 * nothing applies or deploys after an IAM plan unless `dev-iam` is approved;
 * a routine plan flows through `dev` untouched;
@@ -3543,7 +3562,10 @@ auto-merge.yml `enable`, `disable` and `ready-on-green`, merge-train.yml
 another branch is refused, which is the point. `deployment: false` reads the
 environment's secrets without writing a deployment record (GitHub,
 [using environments without deployments](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/control-deployments)).
-No test checks that a job reading either secret declares the environment.
+[`test_repo_secrets_environment.py`](../tests/unit/scripts/test_repo_secrets_environment.py)
+scans every workflow file and fails on a job that reads either secret without
+the environment; it is one of the CI security guards the owner kept on
+2026-11-25 (`SECURITY_GUARDS`, [below](#a-test-reads-only-its-own-tree)).
 Google Cloud needed no such move: its workload identity
 binding already pins the ref to main. The switch-over runs in this order:
 the owner enters both values in `repo-secrets` first; then the change that
@@ -4949,7 +4971,24 @@ test, so a docs pull request broke the unit tests of code nobody touched and a
 code pull request inherited a red it did not cause. About 200 test files did;
 issue 71 deleted those pins outright. A pin over prose or YAML is **deleted,
 never moved** into another check, script or lint over the same prose or YAML:
-there is no check over docs prose or CI YAML.
+there is no check over docs prose, and no check over CI YAML but the security
+guards below.
+
+**The one exception: the CI security guards (the owner's decision of
+2026-11-25).** The tests that hold a CI *security* decision keep reading the
+workflows, because a security property of a workflow -- that a fork's pull
+request never reaches the self-hosted runners or their secrets, that the
+release reaches production only through its gate, that its IAM apply and its
+identity token are held to the jobs that need them, that the repository's
+secrets sit behind their environment, that the tenant-isolation acceptance
+job runs, that the security scan gates on new findings, keeps no checkout
+credential and compares with the right base -- has no other place a pull
+request would see it broken. They are a short **named** list,
+`SECURITY_GUARDS` in `scripts/check_test_reads.py`, one clause per file saying
+which decision it holds; every other test is refused exactly as before. The
+list cannot rot: a listed path that no longer exists, or that no longer reads
+anything out of its tree, is red. A new entry is the owner's decision, not a
+lane's.
 
 **A value that really crosses trees is published by its owner as generated
 JSON.** The one such value here is the shell of the workflow steps that are
@@ -4972,7 +5011,8 @@ one included; no console test opens `docs/`.
 
 **The guard.** `scripts/check_test_reads.py` finds every such read in a
 `.py` file under `tests/` and in a JS/TS test (`apps/swarm-ui`'s vitest and
-node:test files, `tests/browser`), and holds the whole tree with no baseline; its whole-tree test sits in
+node:test files, `tests/browser`), and holds the whole tree with no baseline and
+only the named `SECURITY_GUARDS` above excepted; its whole-tree test sits in
 `GUARD_TESTS`, so a new read is red on every pull request. With no test reading
 docs, the selector no longer follows a doc that cites a changed path to the
 tests that name it.

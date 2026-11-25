@@ -147,8 +147,10 @@ Environment specifics that will bite you:
   or the `Makefile`, so a docs edit cannot turn a code pull request red; a value
   that crosses trees is generated JSON from its owner
   (`scripts/generated/ci-run-blocks.json`, `--check` to catch drift), and no
-  check runs over docs prose or CI YAML
-  ([docs/ci.md](ci.md#a-test-reads-only-its-own-tree)).
+  check runs over docs prose or CI YAML. The one exception is the CI security
+  guards, by the owner's decision of 2026-11-25: a short named list,
+  `SECURITY_GUARDS` in `scripts/check_test_reads.py`, which only the owner
+  extends ([docs/ci.md](ci.md#a-test-reads-only-its-own-tree)).
 
 ---
 

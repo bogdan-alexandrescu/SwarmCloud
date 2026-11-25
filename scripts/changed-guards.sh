@@ -142,14 +142,17 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # test_verify_deployer_trust: test_check_test_pointers (about 2.5 s), which
 # refuses a comment under apps/ that names a test -- a new one names no test,
 # so only a whole-tree run reaches it (part of issue 69). After it:
+# test_check_test_reads (about 8 s): no test under tests/ opens docs prose,
+# CI YAML, a root *.md or the Makefile -- a new read lands in a file no diff
+# names, so only a whole-tree run reaches it (part of issue 71). The scanner
+# has ONE named exception list, SECURITY_GUARDS in scripts/check_test_reads.py:
+# the tests that hold CI security decisions, kept by the owner's decision of
+# 2026-11-25; a listed file that is gone or reads nothing is red too. Then
 # test_check_source_text (about 10 s, most of it one read and parse of the
 # test trees), which refuses a malformed source-text marker on a test that
 # reads .py/.ts source as text and a hit of a forbidden-pattern rule in
 # scripts/source_text_rules/ -- either can sit in any file, so no diff
-# selects it (part of issue 73). Then test_check_test_reads (about 8 s): no
-# test under tests/ opens docs prose, CI YAML, a root *.md or the Makefile
-# -- a new read lands in a file no diff names, so only a whole-tree run
-# reaches it (part of issue 71). Then the inventory
+# selects it (part of issue 73). Then the inventory
 # walker the merge train ejected for (owner's improvement plan, 2026-11-23)
 # -- test_plugin_agents_ignore_chat (every plugin/agents/*.md is a known kind;
 # 1.0 s). A new agent breaks it and names it not, so no diff selects it.
