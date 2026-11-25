@@ -78,6 +78,10 @@ function serve(me: Json | null, mine: Json[] | null, extra: (url: string) => unk
   }) as unknown as typeof fetch
 }
 
+// The real clock, taken before any case could fake it.
+const realSetTimeout = globalThis.setTimeout
+const realNow = performance.now.bind(performance)
+
 /** The worker's module cache (vitest 3.2's vite-node runner): one entry per module, with its load. */
 type ModuleEntry = { promise?: unknown; evaluated?: boolean }
 function moduleCache(): Map<string, ModuleEntry> {
@@ -116,8 +120,23 @@ async function routing() {
   return { App, paths, land }
 }
 
-afterEach(() => {
+/**
+ * Resolves once no module is loading. A case that drew an Admin page drew its
+ * lazy screen while the two reads were in flight, and that screen's module
+ * graph goes on loading after the case: let it finish here, in the case that
+ * started it, on the real clock, so the next case resets a quiet cache.
+ */
+async function moduleLoadsSettled(timeoutMs = 8_000): Promise<void> {
+  const start = realNow()
+  while (loading().length > 0) {
+    if (realNow() - start >= timeoutMs) throw new Error(`modules still loading after ${timeoutMs} ms: ${loading().join(', ')}`)
+    await new Promise((resolve) => realSetTimeout(resolve, 20))
+  }
+}
+
+afterEach(async () => {
   cleanup()
+  await moduleLoadsSettled()
   vi.unstubAllEnvs()
   vi.unstubAllGlobals()
   localStorage.clear()
