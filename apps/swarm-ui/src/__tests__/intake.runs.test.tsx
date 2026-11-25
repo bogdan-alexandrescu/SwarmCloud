@@ -6,23 +6,19 @@
 //   * the list is drawn in the order the API served it (newest first is the
 //     server's ordering, never re-sorted here), with each state as the API
 //     names it, and an empty tenant is an empty state, not a blank table;
-//   * Approve sends THE DIGEST OF THE PLAN SHOWN (owner decision D3), and a
-//     409 `plan_changed` re-reads the run and says the plan changed;
-//   * a poll that serves another plan is HELD, not drawn: the plan on screen
-//     stays the one Approve and Edit name, an editor saves with the digest it
-//     opened on, and a notice offers the new plan;
-//   * Reject sends the shown digest and the reason;
-//   * a staged plan shows the API's plan_shape and each step's depends_on, and
-//     an edit carries every depends_on through, so saving never turns it back
-//     into a chain;
+//   * a PLANNED run's plan is a SUMMARY linking to its decision page, with no
+//     Approve, Edit or Reject of its own (owner's pick on PR 464): it is read,
+//     edited and decided there (plan.editor.test.tsx holds the editor);
+//   * a poll that serves another plan is HELD, not drawn: the summary on
+//     screen stays the one drawn, and a notice offers the new plan;
+//   * a staged plan shows the API's plan_shape and each step's depends_on;
 //   * what the run has not got yet -- the PR, the plan and status comments --
 //     is said with its reason, never hidden and never invented; cost, which
 //     the run does not serve, is a dash; a workflow not yet created is
 //     "none yet";
 //   * the plan shows what archived issue 454's planner writes: mode, estimate, the
 //     requirements, the OVERLAPS as links (the issue's acceptance test is that
-//     the plan names them), and each step's files, tests and estimate; the
-//     editor round-trips all of it;
+//     the plan names them), and each step's files, tests and estimate;
 //   * the CI loop: fix round n of N, the pull request, the green sha, Closes
 //     against part-of, the failing excerpt AS TEXT, the comments on the issue
 //     and a failed write-back.
@@ -129,7 +125,7 @@ describe('/runs: the tenant\'s runs, newest first as served', () => {
 })
 
 describe('/runs/<id>: one run', () => {
-  it('shows the state, the plan and its digest, and the links it has', async () => {
+  it('shows the state, the plan\'s summary and its digest, the decision page, and the links it has', async () => {
     serve((_m, url) => url === '/v1/runs/run_4c1e09d2' ? { status: 200, body: { run: run() } } : null)
     const { container } = await mount('run=run_4c1e09d2')
     const plan = await waitFor(() => {
@@ -138,9 +134,12 @@ describe('/runs/<id>: one run', () => {
       return el!
     }, WAIT)
     expect(visible(container.querySelector('.rn-state'))).toContain('Planned')
-    expect(visible(plan)).toContain('Sum step spend into the workflow read')
-    expect(visible(plan)).toContain('api: sum step spend')
-    expect(visible(plan)).toContain('ui: the cost column')
+    // Summary only: the lead, no steps, and no Approve, Edit or Reject here.
+    const summary = within(plan).getByTestId('rn-plan-summary')
+    expect(visible(summary)).toContain('Sum step spend into the workflow read')
+    expect(plan.querySelector('.rn-step')).toBeNull()
+    for (const name of ['Approve and run', 'Edit plan', 'Reject']) expect(screen.queryByRole('button', { name })).toBeNull()
+    expect(screen.getByTestId('rn-decide').getAttribute('href')).toContain('run%3Arun_4c1e09d2')
     // The digest, shortened on screen and whole in its title.
     const digest = plan.querySelector<HTMLElement>('.rn-digest')!
     expect(digest.getAttribute('title')).toBe(DIGEST_A)
@@ -170,82 +169,6 @@ describe('/runs/<id>: one run', () => {
     expect(screen.queryByRole('button', { name: 'Approve and run' }), 'a RUNNING run offered approval').toBeNull()
   })
 
-  it('Approve sends the digest of the plan shown, and draws the answer', async () => {
-    const calls = serve((m, url) => {
-      if (url === '/v1/runs/run_4c1e09d2' && m === 'GET') return { status: 200, body: { run: run() } }
-      if (url === '/v1/runs/run_4c1e09d2/plan:approve') {
-        return { status: 200, body: { run: run({ state: 'RUNNING', workflow_id: 'wf_new' }) } }
-      }
-      return null
-    })
-    const { container } = await mount('run=run_4c1e09d2')
-    fireEvent.click((await screen.findAllByRole('button', { name: 'Approve and run' }, WAIT))[0]!)
-    await waitFor(() => expect(visible(container.querySelector('.rn-state'))).toContain('Running'), WAIT)
-    const post = calls.find((c) => c.url.endsWith('plan:approve'))!
-    expect(post.method).toBe('POST')
-    expect(post.body).toEqual({ plan_digest: DIGEST_A })
-  })
-
-  it('a stale-digest refusal re-reads the run and says the plan changed', async () => {
-    let reads = 0
-    serve((m, url) => {
-      if (url === '/v1/runs/run_4c1e09d2' && m === 'GET') {
-        reads += 1
-        return { status: 200, body: { run: reads === 1 ? run() : run({ plan_digest: DIGEST_B, plan_revision: 2,
-          plan_edited_by: 'someone@example.com',
-          plan: { summary: 'An edited plan.', steps: [{ step_id: 'one', title: 'one step', prompt: 'do it' }] } }) } }
-      }
-      if (url.endsWith('plan:approve')) {
-        return { status: 409, body: { code: 'plan_changed', message: 'the plan has changed since it was shown',
-          detail: { plan_digest: DIGEST_B } } }
-      }
-      return null
-    })
-    const { container } = await mount('run=run_4c1e09d2')
-    fireEvent.click((await screen.findAllByRole('button', { name: 'Approve and run' }, WAIT))[0]!)
-    await screen.findByText(/The plan changed since you opened it/, undefined, WAIT)
-    await waitFor(() => expect(visible(container.querySelector('.rn-plan'))).toContain('An edited plan.'), WAIT)
-    expect(reads).toBe(2)
-    expect(container.querySelector('.rn-digest')!.getAttribute('title')).toBe(DIGEST_B)
-    // Still PLANNED: approving again approves the plan now on screen.
-    expect(screen.getAllByRole('button', { name: 'Approve and run' })[0]!).not.toBeNull()
-  })
-
-  it('Reject sends the shown digest and the reason', async () => {
-    const calls = serve((m, url) => {
-      if (url === '/v1/runs/run_4c1e09d2' && m === 'GET') return { status: 200, body: { run: run() } }
-      if (url.endsWith('plan:reject')) {
-        return { status: 200, body: { run: run({ state: 'REJECTED', terminal: true, rejected_by: 'operator@example.com', rejection_reason: 'wrong repo' }) } }
-      }
-      return null
-    })
-    const { container } = await mount('run=run_4c1e09d2')
-    fireEvent.click((await screen.findAllByRole('button', { name: 'Reject' }, WAIT))[0]!)
-    fireEvent.change(screen.getByLabelText('Why (optional)'), { target: { value: 'wrong repo' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Reject this plan' }))
-    await waitFor(() => expect(visible(container.querySelector('.rn-state'))).toContain('Rejected'), WAIT)
-    const post = calls.find((c) => c.url.endsWith('plan:reject'))!
-    expect(post.body).toEqual({ plan_digest: DIGEST_A, reason: 'wrong repo' })
-  })
-
-  it('Edit sends the edited plan with the digest it replaces', async () => {
-    const calls = serve((m, url) => {
-      if (url === '/v1/runs/run_4c1e09d2' && m === 'GET') return { status: 200, body: { run: run() } }
-      if (url.endsWith('plan:edit')) return { status: 200, body: { run: run({ plan_digest: DIGEST_B, plan_revision: 2 }) } }
-      return null
-    })
-    await mount('run=run_4c1e09d2')
-    fireEvent.click((await screen.findAllByRole('button', { name: 'Edit plan' }, WAIT))[0]!)
-    fireEvent.change(screen.getByLabelText('Summary'), { target: { value: 'A shorter plan.' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save the plan' }))
-    await waitFor(() => expect(calls.some((c) => c.url.endsWith('plan:edit'))).toBe(true), WAIT)
-    const post = calls.find((c) => c.url.endsWith('plan:edit'))!
-    expect(post.body).toEqual({
-      plan_digest: DIGEST_A,
-      plan: { summary: 'A shorter plan.', steps: run().plan.steps },
-    })
-  })
-
   const STAGED = { summary: 'Two independent halves, then the wiring.', steps: [
     { step_id: 'api', title: 'api: sum step spend', prompt: 'Add the sum.', depends_on: [] },
     { step_id: 'ui', title: 'ui: the cost column', prompt: 'Draw it.', depends_on: [] },
@@ -254,7 +177,8 @@ describe('/runs/<id>: one run', () => {
 
   it('a staged plan states its shape and each step\'s dependencies', async () => {
     serve((m, url) => (url === '/v1/runs/run_4c1e09d2' && m === 'GET'
-      ? { status: 200, body: { run: run({ plan: STAGED,
+      // A run not PLANNED draws the whole plan; a PLANNED one, its summary.
+      ? { status: 200, body: { run: run({ state: 'REJECTED', terminal: true, plan: STAGED,
           plan_shape: '3 steps in 2 stages (2 → 1), then review and fix' }) } }
       : null))
     await mount('run=run_4c1e09d2')
@@ -264,23 +188,6 @@ describe('/runs/<id>: one run', () => {
     const steps = plan.querySelectorAll('.rn-step')
     expect(visible(steps.item(0))).toContain('starts at once')
     expect(visible(steps.item(2))).toContain('after api, ui')
-  })
-
-  it('Edit keeps every step\'s depends_on, so a staged plan does not become a chain', async () => {
-    const calls = serve((m, url) => {
-      if (url === '/v1/runs/run_4c1e09d2' && m === 'GET') return { status: 200, body: { run: run({ plan: STAGED }) } }
-      if (url.endsWith('plan:edit')) return { status: 200, body: { run: run({ plan: STAGED, plan_digest: DIGEST_B, plan_revision: 2 }) } }
-      return null
-    })
-    await mount('run=run_4c1e09d2')
-    fireEvent.click((await screen.findAllByRole('button', { name: 'Edit plan' }, WAIT))[0]!)
-    fireEvent.change(screen.getByLabelText('Summary'), { target: { value: 'A shorter plan.' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save the plan' }))
-    await waitFor(() => expect(calls.some((c) => c.url.endsWith('plan:edit'))).toBe(true), WAIT)
-    const post = calls.find((c) => c.url.endsWith('plan:edit'))!
-    expect(post.body).toEqual({ plan_digest: DIGEST_A, plan: { summary: 'A shorter plan.', steps: STAGED.steps } })
-    expect((post.body as { plan: { steps: { depends_on?: string[] }[] } }).plan.steps.map((s) => s.depends_on))
-      .toEqual([[], [], ['api', 'ui']])
   })
 
   it('a FAILED run says why, and offers no action', async () => {
@@ -356,7 +263,8 @@ describe('/runs/<id>: one run', () => {
   })
 
   it('the plan shows its mode, estimate, requirements, and each step\'s files, tests and estimate', async () => {
-    serve((_m, url) => url === '/v1/runs/run_4c1e09d2' ? { status: 200, body: { run: run({ plan: FULL_PLAN }) } } : null)
+    // A run not PLANNED draws the whole plan; a PLANNED one, its summary.
+    serve((_m, url) => url === '/v1/runs/run_4c1e09d2' ? { status: 200, body: { run: run({ state: 'REJECTED', terminal: true, plan: FULL_PLAN }) } } : null)
     const { container } = await mount('run=run_4c1e09d2')
     const plan = await waitFor(() => {
       const el = container.querySelector<HTMLElement>('.rn-plan')
@@ -373,47 +281,6 @@ describe('/runs/<id>: one run', () => {
     expect(visible(steps[0]!)).toContain('1 hour')
     expect(visible(steps[1]!)).toContain('apps/swarm-ui/src/Workflows.tsx')
     expect(visible(steps[1]!)).toContain('2 hours')
-  })
-
-  it('the editor round-trips every new field and saves with the digest it opened on', async () => {
-    const calls = serve((m, url) => {
-      if (url === '/v1/runs/run_4c1e09d2' && m === 'GET') return { status: 200, body: { run: run({ plan: FULL_PLAN }) } }
-      if (url.endsWith('plan:edit')) return { status: 200, body: { run: run({ plan_digest: DIGEST_B, plan_revision: 2 }) } }
-      return null
-    })
-    await mount('run=run_4c1e09d2')
-    fireEvent.click((await screen.findAllByRole('button', { name: 'Edit plan' }, WAIT))[0]!)
-    // Unchanged, it sends the plan it opened on, every field included.
-    fireEvent.click(screen.getByRole('button', { name: 'Save the plan' }))
-    await waitFor(() => expect(calls.filter((c) => c.url.endsWith('plan:edit'))).toHaveLength(1), WAIT)
-    expect(calls.find((c) => c.url.endsWith('plan:edit'))!.body).toEqual({ plan_digest: DIGEST_A, plan: FULL_PLAN })
-  })
-
-  it('the editor edits requirements, the estimate and a step\'s files, tests and estimate', async () => {
-    const calls = serve((m, url) => {
-      if (url === '/v1/runs/run_4c1e09d2' && m === 'GET') return { status: 200, body: { run: run({ plan: FULL_PLAN }) } }
-      if (url.endsWith('plan:edit')) return { status: 200, body: { run: run({ plan_digest: DIGEST_B, plan_revision: 2 }) } }
-      return null
-    })
-    await mount('run=run_4c1e09d2')
-    fireEvent.click((await screen.findAllByRole('button', { name: 'Edit plan' }, WAIT))[0]!)
-    fireEvent.change(screen.getByLabelText('Requirements, one per line'), { target: { value: 'Only this one\n\n' } })
-    fireEvent.change(screen.getByLabelText('Estimate'), { target: { value: '' } })
-    fireEvent.change(screen.getAllByLabelText('Files, one per line')[1]!, { target: { value: 'a.tsx\n b.tsx ' } })
-    fireEvent.change(screen.getAllByLabelText('Tests, one per line')[1]!, { target: { value: '' } })
-    fireEvent.change(screen.getAllByLabelText('Step estimate')[0]!, { target: { value: '90 minutes' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save the plan' }))
-    await waitFor(() => expect(calls.some((c) => c.url.endsWith('plan:edit'))).toBe(true), WAIT)
-    const { estimate: _dropped, ...rest } = FULL_PLAN
-    const { tests: _cleared, ...ui } = FULL_PLAN.steps[1]!
-    expect(calls.find((c) => c.url.endsWith('plan:edit'))!.body).toEqual({
-      plan_digest: DIGEST_A,
-      plan: {
-        ...rest,
-        requirements: ['Only this one'],
-        steps: [{ ...FULL_PLAN.steps[0]!, estimate: '90 minutes' }, { ...ui, files: ['a.tsx', 'b.tsx'] }],
-      },
-    })
   })
 
   it('a CHECKING run links its pull request and names the fix rounds left', async () => {
@@ -519,66 +386,14 @@ describe('/runs/<id>: one run', () => {
     await screen.findByText("run 'run_x' not found", undefined, WAIT)
   })
 
-  it('a poll that serves another plan under an open editor is held; Save sends the digest the editor opened on', async () => {
+  it('a poll never swaps the summary under the reader: the new plan is offered, and drawn when asked for', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
     let reads = 0
-    const calls = serve((m, url) => {
+    serve((m, url) => {
       if (url === '/v1/runs/run_4c1e09d2' && m === 'GET') {
         reads += 1
         return { status: 200, body: { run: reads === 1 ? run()
           : run({ plan_digest: DIGEST_B, plan_revision: 2, plan_edited_by: 'someone@example.com', plan: EDITED }) } }
-      }
-      if (url.endsWith('plan:edit')) {
-        return { status: 409, body: { code: 'plan_changed', message: 'the plan has changed since it was shown',
-          detail: { plan_digest: DIGEST_B } } }
-      }
-      return null
-    })
-    const { container, RUN_POLL_MS } = await (async () => {
-      const m = await mount('run=run_4c1e09d2')
-      const { RUN_POLL_MS: ms } = await import('../Runs')
-      return { ...m, RUN_POLL_MS: ms }
-    })()
-    await advance(0)
-    fireEvent.click(screen.getAllByRole('button', { name: 'Edit plan' })[0]!)
-    fireEvent.change(screen.getByLabelText('Summary'), { target: { value: 'My edit of the first plan.' } })
-
-    // Someone else edits; the next poll reads their plan.
-    await advance(RUN_POLL_MS)
-    expect(reads).toBe(2)
-    // The editor and the digest on screen are still the first plan's, and the change is offered, not swapped in.
-    expect((screen.getByLabelText('Summary') as HTMLTextAreaElement).value).toBe('My edit of the first plan.')
-    expect(container.querySelector('.rn-digest')!.getAttribute('title')).toBe(DIGEST_A)
-    expect(visible(container.querySelector('.rn-held'))).toContain('The plan changed since this page drew it')
-    expect(visible(container.querySelector('.rn-held'))).toContain('someone@example.com')
-
-    fireEvent.click(screen.getByRole('button', { name: 'Save the plan' }))
-    await advance(0)
-    const post = calls.find((c) => c.url.endsWith('plan:edit'))!
-    expect(post.body).toEqual({
-      plan_digest: DIGEST_A,
-      plan: { summary: 'My edit of the first plan.', steps: run().plan.steps },
-    })
-    // The API refuses it: the run is read again and the page says why.
-    await advance(0)
-    expect(reads).toBe(3)
-    expect(screen.getByText(/The plan changed since you opened it/)).not.toBeNull()
-    expect(visible(container.querySelector('.rn-plan'))).toContain("Someone else's plan.")
-    expect(container.querySelector('.rn-digest')!.getAttribute('title')).toBe(DIGEST_B)
-  })
-
-  it('a poll never swaps the plan under Approve: it approves the digest shown until the reader asks for the new plan', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
-    let reads = 0
-    const calls = serve((m, url) => {
-      if (url === '/v1/runs/run_4c1e09d2' && m === 'GET') {
-        reads += 1
-        return { status: 200, body: { run: reads === 1 ? run()
-          : run({ plan_digest: DIGEST_B, plan_revision: 2, plan_edited_by: 'someone@example.com', plan: EDITED }) } }
-      }
-      if (url.endsWith('plan:approve')) {
-        return { status: 200, body: { run: run({ state: 'APPROVED', plan_digest: DIGEST_B, plan: EDITED,
-          approved_by: 'operator@example.com', approved_at: '2026-10-02T14:20:00Z', approved_digest: DIGEST_B }) } }
       }
       return null
     })
@@ -588,15 +403,15 @@ describe('/runs/<id>: one run', () => {
     await advance(RUN_POLL_MS)
     expect(reads).toBe(2)
     expect(visible(container.querySelector('.rn-plan'))).toContain('Sum step spend into the workflow read')
+    expect(container.querySelector('.rn-digest')!.getAttribute('title')).toBe(DIGEST_A)
+    expect(visible(container.querySelector('.rn-held'))).toContain('The plan changed since this page drew it')
+    expect(visible(container.querySelector('.rn-held'))).toContain('someone@example.com')
 
-    // Asking for it draws it, and only then does Approve name it.
+    // Asking for it draws it.
     fireEvent.click(screen.getByRole('button', { name: 'Show the plan now' }))
     expect(container.querySelector('.rn-held')).toBeNull()
     expect(visible(container.querySelector('.rn-plan'))).toContain("Someone else's plan.")
-    fireEvent.click(screen.getAllByRole('button', { name: 'Approve and run' })[0]!)
-    await advance(0)
-    const post = calls.find((c) => c.url.endsWith('plan:approve'))!
-    expect(post.body).toEqual({ plan_digest: DIGEST_B })
+    expect(container.querySelector('.rn-digest')!.getAttribute('title')).toBe(DIGEST_B)
   })
 
   it('planMovedUnder holds only a changed plan on a run still PLANNED', async () => {

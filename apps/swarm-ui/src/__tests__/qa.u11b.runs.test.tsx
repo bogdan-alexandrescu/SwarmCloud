@@ -252,7 +252,8 @@ describe('N15: the CI note is true of the run it is drawn on', () => {
 
 describe('N18: inline code and one ellipsis', () => {
   it('draws backticked text as code in the lead, the requirements and the prompts', async () => {
-    const { container } = await mount(run())
+    // The whole plan is drawn on a run not waiting on its decision page (a PLANNED one is a summary, PR 464).
+    const { container } = await mount(run({ state: 'REJECTED' }))
     const plan = container.querySelector('.rn-plan')!
     expect(visible(plan.querySelector('.rn-summary'))).not.toContain('`')
     expect(plan.querySelector('.rn-summary code')?.textContent).toBe('Closes #454')
