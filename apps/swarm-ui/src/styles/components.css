@@ -495,3 +495,6 @@
   .c-seg > :first-child:nth-last-child(n+7),
   .c-seg > :first-child:nth-last-child(n+7) ~ * { flex-basis: 23%; }
 }
+
+/* Used by AutomateSettings and ScheduleDetail, two lazy screens: it lives in the shell sheet so neither depends on the other being visited. */
+.as-none { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }

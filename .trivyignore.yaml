@@ -128,9 +128,21 @@ vulnerabilities:
   # skew. 1.37.2 still
   # links x/net below 0.60.0, so this entry stays; only the statement's
   # kubectl version changes. Id and expiry unchanged.
+  # Extended one week on 2026-11-25, two days before it expired (owner rule
+  # of 2026-11-01: take every fixed build, extend one week only for what is
+  # still unfixed; owner, 2026-11-25: handle such entries two days early).
+  # Measured ~02:00Z: kubectl 1.37.2 is still the newest release
+  # (dl.k8s.io stable.txt and stable-1.37.txt; 1.36.6 is stable-1.36.txt,
+  # and GitHub lists only 1.38.0 pre-releases above it); the binary,
+  # downloaded as the Dockerfiles download it and matched against
+  # kubectl.sha256, is go1.26.10 with golang.org/x/net v0.57.0, read with
+  # `go version -m`, and trivy 0.76.2 (DB of 2026-11-25 01:10Z) reports this
+  # id in it and in no other pinned binary. No pin fixes it, so 2026-11-28 ->
+  # 2026-12-05, statement unchanged in substance. Re-check on or before
+  # 2026-12-03 the same way.
   - id: CVE-2026-78669
-    statement: "golang.org/x/net http2 DoS inside vendor-built kubectl (1.37.2, pinned and the newest release, links x/net v0.57.0); no kubectl release links x/net 0.60.0 yet. The GKE plugin is fixed at 592.0.0."
-    expired_at: 2026-11-28
+    statement: "golang.org/x/net http2 DoS inside vendor-built kubectl (1.37.2, pinned and the newest release, links x/net v0.57.0; measured 2026-11-25); no kubectl release links x/net 0.60.0 yet. The GKE plugin is fixed at 592.0.0."
+    expired_at: 2026-12-05
   # Same class, added the same night (owner, 2026-10-10): the next release after
   # PR 992 was refused on this id alone, in the same vendor binaries and images,
   # fixed by the same Go 1.26.9 / 1.27.2. Same bound: a crafted TLS peer can at
@@ -186,9 +198,20 @@ vulnerabilities:
   # skew. 1.37.2's x/net
   # v0.57.0 is still below the fixed 0.62.0 and inside the statement's range,
   # so no word of the statement is false. Id and expiry unchanged.
+  # Extended one week on 2026-11-25, two days before it expired (owner rule
+  # of 2026-11-01: take every fixed build, extend one week only for what is
+  # still unfixed; owner, 2026-11-25: handle such entries two days early).
+  # Measured ~02:00Z, each download checksum-matched against its vendor's
+  # index and read with `go version -m`: kubectl 1.37.2 (pinned and newest,
+  # kubectl.sha256) is go1.26.10 with x/net v0.57.0; Google's apt index now
+  # lists gke-gcloud-auth-plugin 594.0.1 as its newest, and its binary is
+  # byte-identical to the pinned 592.0.0's (go1.27.3, x/net v0.61.0). trivy
+  # 0.76.2 (DB of 2026-11-25 01:10Z) reports this id in exactly those two
+  # binaries. No pin fixes it, so 2026-11-28 -> 2026-12-05, narrowed to the
+  # versions measured. Re-check on or before 2026-12-03 the same way.
   - id: CVE-2026-78661
-    statement: "golang.org/x/net/html DoS inside vendor-built kubectl and gke-gcloud-auth-plugin (x/net v0.56.0 to v0.61.0, plugin 594.0.0 included); no vendor build links the fixed 0.62.0 yet."
-    expired_at: 2026-11-28
+    statement: "golang.org/x/net/html DoS inside vendor-built kubectl (1.37.2, pinned and newest: x/net v0.57.0) and gke-gcloud-auth-plugin (592.0.0 pinned, 594.0.1 newest: x/net v0.61.0), measured 2026-11-25; no vendor build links the fixed 0.62.0 yet."
+    expired_at: 2026-12-05
   # Same class again (owner, 2026-10-17): golang.org/x/text's precis Nickname
   # profile can panic on an out-of-bounds slice. It is in two vendor-built
   # binaries: kubectl (agent-runtime-base, -nocodex, -browser, -indexer and
@@ -282,9 +305,32 @@ vulnerabilities:
   # go1.27.2, so no pin fixes it. This entry covers only the two Google
   # binaries; every other vendor Go binary stays fixed at its pin. Re-check
   # Google's index on 2026-11-25.
+  #
+  # Extended one week on 2026-11-25, the day it expired (owner, the same rule as
+  # 2026-11-01: take every fixed build, extend one week only for what is still
+  # unfixed). From 00:00Z the image scan refused the runtime images on this id
+  # (issue 425). Measured ~00:45Z: the newest google-cloud-cli in Google's apt index
+  # and in the rapid channel's components-2.json (revision 20261121205138) is
+  # 594.0.1, still on gcloud-crc32c build 20261016073856 and auth-plugin build
+  # 20261030071842. Each .deb for 591.0.0, 592.0.0, 593.0.0, 594.0.0 and 594.0.1
+  # was downloaded from the pool as the Dockerfile does, its SHA256 matched the
+  # index, and each binary's Go version was read from its build info:
+  #
+  #   release   gcloud-crc32c          gke-gcloud-auth-plugin
+  #   591.0.0   go1.27.2  NOT fixed    go1.27.1  NOT fixed
+  #   592.0.0   go1.27.2  NOT fixed    go1.27.3  fixed (pinned since 2026-11-06)
+  #   593.0.0   go1.27.2  NOT fixed    go1.27.3  fixed
+  #   594.0.0   go1.27.2  NOT fixed    go1.27.3  fixed
+  #   594.0.1   go1.27.2  NOT fixed    go1.27.3  fixed
+  #
+  # workspace-apply's base tags google-cloud-cli:592.0.0-stable to
+  # 594.0.1-stable (amd64 layers, digest-verified) also ship gcloud-crc32c on
+  # go1.27.2. No release fixes gcloud-crc32c, so no pin moves; the plugin is
+  # already fixed at its 592.0.0 pin, so the entry now covers gcloud-crc32c
+  # only. Re-check Google's index on 2026-12-02.
   - id: CVE-2026-111943
-    statement: "Go stdlib crypto/x509 inside Google-built gcloud-crc32c (go1.27.2) and gke-gcloud-auth-plugin (go1.27.1) from google-cloud-cli 591.0.0; 592.0.0 and 593.0.0 (measured 2026-11-11) still ship go1.27.2; 594.0.0 carries the same gcloud-crc32c build (20261016) and auth-plugin build (20261030) (Google's component index, 2026-11-18), no Google build on go1.27.3 yet; extended one week under the owner's rule."
-    expired_at: 2026-11-25
+    statement: "Go stdlib crypto/x509 inside Google-built gcloud-crc32c (go1.27.2, build 20261016073856) from google-cloud-cli 591.0.0; every newer release through 594.0.1 and the -stable images through 594.0.1 still ship it on go1.27.2 (measured 2026-11-25), no Google build of it on a fixed Go yet; extended one week under the owner's rule."
+    expired_at: 2026-12-02
 
   # Same class again (owner, 2026-10-28 ~21:00Z UTC): a Go standard library
   # os.Root fix (CVE-2026-56857, CRITICAL, fixed in Go 1.26.9 / 1.27.2): on
@@ -321,9 +367,17 @@ vulnerabilities:
   # skew. kubectl stays
   # fixed for this id (go1.26.10); only the statement's kubectl version
   # changes. Id and expiry unchanged.
-  - id: CVE-2026-56857
-    statement: "Go os.Root junction escape, Windows-only; in Google's gcloud-crc32c and gke-gcloud-auth-plugin, no fixed vendor build yet; kubectl is bumped to 1.37.2 (go1.26.10) instead; our images are Linux."
-    expired_at: 2026-11-28
+  # Its entry, CVE-2026-56857, was deleted on 2026-11-25, two days before it
+  # expired (owner rule of 2026-11-01: take every fixed build): every binary
+  # it named is already on a fixed Go at its pin. Measured ~02:00Z, each
+  # download checksum-matched against its vendor's index and read with
+  # `go version -m`: gcloud-crc32c in google-cloud-cli 591.0.0 (pinned) is
+  # go1.27.2, gke-gcloud-auth-plugin 592.0.0 (pinned) is go1.27.3 (it moved
+  # there on 2026-11-06) and kubectl 1.37.2 is go1.26.10, all at or past the
+  # fixed 1.26.9 / 1.27.2. trivy 0.76.2 (DB of 2026-11-25 01:10Z) reports
+  # this id in none of them, nor in the newest google-cloud-cli 594.0.1, nor
+  # in workspace-apply's base google-cloud-cli:591.0.0-stable (scanned by its
+  # digest). No pin moves.
 
   # swarm-speech's 99 entries (45 for apps/swarm-speech/uv.lock, the same 45
   # purl-scoped for the image, 9 for ray's ray_dist.jar and gradio's bundled
@@ -374,6 +428,22 @@ vulnerabilities:
   # skew. 1.37.2 is still
   # go1.26.10, below the fixed 1.26.11, so kubectl's path stays and the
   # statement stands. Id and expiry unchanged.
+  # Extended one week on 2026-11-25, two days before it expired (owner rule
+  # of 2026-11-01: take every fixed build, extend one week only for what is
+  # still unfixed; owner, 2026-11-25: handle such entries two days early).
+  # Measured ~02:00Z, each download checksum-matched against its vendor's
+  # index and read with `go version -m`:
+  #   binary                   pinned          its Go     newest release    its Go
+  #   gcloud-crc32c            gcloud 591.0.0  go1.27.2   594.0.1           go1.27.2
+  #   gke-gcloud-auth-plugin   592.0.0         go1.27.3   594.0.1           go1.27.3
+  #   kubectl                  1.37.2          go1.26.10  1.37.2            go1.26.10
+  #   terraform                1.17.1          go1.26.10  1.17.2            go1.26.10
+  #   trivy                    0.76.2          go1.27.3   0.76.2            go1.27.3
+  # (newest: Google's apt index, dl.k8s.io stable.txt, checkpoint-api.hashicorp.com,
+  # GitHub's latest trivy release). trivy 0.76.2 (DB of 2026-11-25 01:10Z)
+  # reports this id in each of the five and now rates it MEDIUM. None is
+  # fixed, so every path stays and 2026-11-27 -> 2026-12-04. Re-check on or
+  # before 2026-12-02 the same way.
   - id: CVE-2026-97054
     paths:
       - usr/lib/google-cloud-sdk/bin/gcloud-crc32c
@@ -381,5 +451,5 @@ vulnerabilities:
       - usr/local/bin/kubectl
       - usr/local/bin/terraform
       - usr/local/bin/trivy
-    statement: "Go net/http MaxBytesReader on HTTP/1 servers, inside vendor-built gcloud-crc32c, gke-gcloud-auth-plugin, kubectl, terraform and trivy, whose newest releases are still below Go 1.26.11 / 1.27.4; these are client tools that run no HTTP/1 server in our containers. The Go toolchain, gopls, terraform-ls, gh and docker are fixed by bumps, not accepted."
-    expired_at: 2026-11-27
+    statement: "Go net/http MaxBytesReader on HTTP/1 servers, inside vendor-built gcloud-crc32c, gke-gcloud-auth-plugin, kubectl, terraform and trivy, whose newest releases (google-cloud-cli 594.0.1, kubectl 1.37.2, terraform 1.17.2, trivy 0.76.2; measured 2026-11-25) are still below Go 1.26.11 / 1.27.4; these are client tools that run no HTTP/1 server in our containers. The Go toolchain, gopls, terraform-ls, gh and docker are fixed by bumps, not accepted."
+    expired_at: 2026-12-04

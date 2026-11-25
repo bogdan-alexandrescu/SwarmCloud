@@ -70,6 +70,40 @@ def check_inputs(root_dir: Path) -> list[str]:
     return problems
 
 
+def _plan(world: World, cwd: Path) -> dict[str, Any]:
+    """What `terraform show -json` prints for the pass: one resource change per
+    target (or two default ones), all in the pass's own project, the way the
+    provider plans them (project set, `projects/<number>/...` paths, the id
+    unknown until apply), with the google_project data and a provider config
+    that references var.project_id."""
+    inputs_path = cwd / INPUTS_FILE
+    inputs = json.loads(inputs_path.read_text()) if inputs_path.is_file() else {}
+    project = str(inputs.get("project_id") or "")
+    number = world.cloud.number(project)  # type: ignore[attr-defined]
+    plan_path = cwd / "swarm-install.tfplan"
+    targets = json.loads(plan_path.read_text()).get("targets", []) if plan_path.is_file() else []
+    addresses = [t.removeprefix("-target=") for t in targets] or ["google_service_account.fake_one",
+                                                                  "google_storage_bucket.fake_two"]
+    changes = []
+    for address in addresses:
+        rtype, _, name = address.partition(".")
+        changes.append({
+            "address": address, "type": rtype, "name": name or rtype,
+            "change": {"actions": ["create"], "before": None,
+                       "after": {"project": project, "name": f"projects/{number}/resources/{name or rtype}"},
+                       "after_unknown": {"id": True}},
+        })
+    return {
+        "format_version": "1.2",
+        "prior_state": {"values": {"root_module": {"resources": [
+            {"address": "data.google_project.this", "mode": "data", "type": "google_project", "name": "this",
+             "values": {"project_id": project, "number": number}}]}}},
+        "configuration": {"provider_config": {"google": {"name": "google", "expressions": {
+            "project": {"references": ["var.project_id"]}}}}},
+        "resource_changes": changes,
+    }
+
+
 def attach(world: World) -> None:
     world.tf_state = {}  # type: ignore[attr-defined]  # root -> resource addresses
     world.tf_outputs = {"bootstrap": {}, "infra": {}}  # type: ignore[attr-defined]
@@ -98,7 +132,7 @@ def attach(world: World) -> None:
                                                                               w.startswith("-target=")]}))
             return 0, "Plan: 0 to add, 0 to change, 0 to destroy.\n", ""
         if verb == "show":
-            return 0, json.dumps({"format_version": "1.2", "resource_changes": []}), ""
+            return 0, json.dumps(_plan(world, cwd)), ""
         if verb == "apply":
             inputs = json.loads((cwd / INPUTS_FILE).read_text())
             targets = json.loads((cwd / "swarm-install.tfplan").read_text()).get("targets", [])

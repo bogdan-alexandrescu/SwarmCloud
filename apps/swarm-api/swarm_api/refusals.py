@@ -755,6 +755,30 @@ SWITCHES: dict[str, Switch] = {
         "off, the plan's schema refuses the fifth as invalid_plan. On once the decision page "
         "disables Pin to the plan at four",
     ),
+    # The plan review chat (docs/design/plans-pipeline.md §7, lane P7
+    # PLANS-CHAT-API). Each gates `POST /v1/runs/{id}/plan-chat`, a route new
+    # with that lane. Off, the question is asked anyway -- one ordinary task in
+    # the run's tenant whose answer never changes the plan -- and the log names
+    # the refusal it would have made. NOT here, and always on: the role floor
+    # (`role_member_required`'s own switch), the tenant check (404), `chat_busy`
+    # and `turn_not_pinnable` (the guard's NOT_SWITCHABLE_CODES says why).
+    "chat_closed": Switch(
+        code="chat_closed",
+        why="a plan-chat question on a run that is not PLANNED (its plan decided, rejected or "
+        "not yet made) is refused 409. On once the decision page (lane U9) hides the "
+        "composer after the decision",
+    ),
+    "comment_level_required": Switch(
+        code="comment_level_required",
+        why="a plan-chat question by a member who may not comment on the plan is refused "
+        "403. On once the decision page offers the chat only at may_decide.comment",
+    ),
+    "chat_cap": Switch(
+        code="chat_cap",
+        why="a plan-chat question past plan_review_caps.chat_turns (40 by default) or "
+        "review_usd ($25), Admin › Settings, is refused 429 naming which. On once the "
+        "decision page shows both counts",
+    ),
 }
 
 
