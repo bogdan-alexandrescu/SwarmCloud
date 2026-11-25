@@ -211,7 +211,7 @@ const PREFIX = 'eng/task_a/att_1/ckpt-00001'
 const URI = ['gs:/', 'swarm-artifacts-example', PREFIX, 'archive.tar.gz'].join('/')
 type Files = Awaited<ReturnType<CheckpointLoaders['files']>>
 type FileRead = Awaited<ReturnType<CheckpointLoaders['file']>>
-type Member = Extract<Files, { status: 'ok' }>['data']['files'][number]
+type Member = NonNullable<Extract<Files, { status: 'ok' }>['data']['files']>[number]
 
 function member(path: string, over: Partial<Member> = {}): Member {
   return { path, size: 10, mode: 0o644, type: 'file', link: null, unsafe: false, undecodable: false, ...over }
@@ -226,8 +226,8 @@ const MEMBERS: Member[] = [
 const STATE_JSON = JSON.stringify({ pools: { a: { depth: 3 } } })
 
 const LOADERS: CheckpointLoaders = {
-  files: async () =>
-    ({
+  files: () =>
+    Promise.resolve<Files>({
       status: 'ok',
       fetchedAt: Date.now(),
       data: {
@@ -238,10 +238,10 @@ const LOADERS: CheckpointLoaders = {
         file_count_agrees: true, scanned_bytes: 4096, inflated_bytes: 20480,
         limits: { entries: 5000, scan_bytes: 268435456, inflate_bytes: 1073741824 },
       },
-    }) as Files,
-  file: async (_t: string, _a: string, _c: string, path: string) => {
+    }),
+  file: (_t: string, _a: string, _c: string, path: string) => {
     const text = path === 'state.json' ? STATE_JSON : '# step 1\n'
-    return {
+    return Promise.resolve<FileRead>({
       status: 'ok',
       fetchedAt: Date.now(),
       data: {
@@ -253,7 +253,7 @@ const LOADERS: CheckpointLoaders = {
         total_bytes: text.length, offset: 0, returned_bytes: text.length, next_offset: null, truncated: false,
         redacted: false, redaction_count: 0, redaction: { applied_at_read_time: true, rules: 11 },
       },
-    } as FileRead
+    })
   },
 }
 
