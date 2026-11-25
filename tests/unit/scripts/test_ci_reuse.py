@@ -174,11 +174,6 @@ def test_a_lookup_that_cannot_read_the_api_reuses_nothing_and_fails_nothing(tmp_
 # --------------------------------------------------------------------------
 # The workflow.
 # --------------------------------------------------------------------------
-# The CI-FOLD name-keepers of application.yml (ci_fold_layout.FOLDED, which the
-# branch no longer keeps): old job ids that carry their check's name.
-_FOLD_NAME_KEEPERS = {"workflows", "ruff", "manifests", "python-checks"}
-
-
 def _jobs() -> dict:
     return yaml.safe_load(APPLICATION.read_text())["jobs"]
 
@@ -515,10 +510,10 @@ def test_every_reach_condition_is_the_job_s_own_if():
     (test_ci_fold.py, ci_fold_layout.py) carries the same condition after `always() && `, so a
     failed folded job never reads as its skip. MUTATION: change a job's `if:`
     without REACH."""
-    from .ci_fold_layout import PATCH_NOTE
+    from .ci_fold_layout import FOLDED, PATCH_NOTE
     from .test_fast_checks_on_lane_prs import without_lane_clause
 
-    keepers = _FOLD_NAME_KEEPERS
+    keepers = set(FOLDED["application.yml"][1])
     jobs = _jobs()
     assert set(reuse.REACH) == set(reuse.REUSABLE)
     for key in reuse.REUSABLE:

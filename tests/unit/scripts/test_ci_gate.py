@@ -763,3 +763,16 @@ def test_the_gate_holds_read_permissions_only():
     assert isinstance(scope, dict), "the gate job must declare its permissions, not inherit the workflow's"
     assert set(scope) <= {"actions", "checks", "contents"} and set(scope.values()) == {"read"}, scope
     assert scope.get("actions") == "read", "the script lists terraform.yml's runs"
+
+
+def test_no_expression_is_interpolated_into_a_run_block():
+    """Values reach the shell through env:, never through `${{ }}` in run:."""
+    steps = gate_job()["steps"]
+    runs = [s["run"] for s in steps if "run" in s]
+    assert any("scripts/ci-gate.sh wait" in r for r in runs), runs
+    for r in runs:
+        assert "${{" not in r, r
+    checkout = next(s for s in steps if str(s.get("uses", "")).startswith("actions/checkout@"))
+    # The changed files come from `git diff base...head`; a shallow clone has neither.
+    assert (checkout.get("with") or {}).get("fetch-depth") == 0, checkout
+    assert (checkout.get("with") or {}).get("persist-credentials") is False, checkout
