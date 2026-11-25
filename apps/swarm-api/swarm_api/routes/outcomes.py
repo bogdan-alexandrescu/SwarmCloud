@@ -47,6 +47,7 @@ from fastapi import APIRouter, Depends, Query
 from ..auth import AuthContext, require_admin
 from ..deps import AppContext, current_auth, get_context, tenant_scope
 from ..outcomes import platform_requested
+from ..wire_types import Outcomes
 
 router = APIRouter(prefix="/v1", tags=["outcomes"])
 
@@ -55,7 +56,7 @@ router = APIRouter(prefix="/v1", tags=["outcomes"])
 PLATFORM_ROUTE = ("GET", "/v1/outcomes")
 
 
-@router.get("/outcomes")
+@router.get("/outcomes", responses={200: {"model": Outcomes}})
 def get_outcomes(
     tz: str | None = Query(default=None, description="IANA zone, required"),
     span: str | None = Query(default=None, description="24h | 7d | 14d | 30d | 90d"),

@@ -90,6 +90,7 @@ from ..steprerun import RERUN_OF_METADATA_KEY
 from ..store import CancelContended, PauseContended, workflow_listing_token
 from ..validation import ISSUE_RUN_METADATA_KEY, QA_TARGET_METADATA_KEY, SCHEDULE_METADATA_KEY
 from ..waker import ring
+from ..wire_types import WorkflowEnvelope
 
 log = logging.getLogger(__name__)
 
@@ -718,7 +719,7 @@ def _without_rerun_replaced(workflow: Any, tasks: list[Task]) -> list[Task]:
     ]
 
 
-@router.get("/{workflow_id}")
+@router.get("/{workflow_id}", responses={200: {"model": WorkflowEnvelope}})
 @route_scope.reachable_by(route_scope.CONTINUATION)
 def get_workflow(
     workflow_id: str,
