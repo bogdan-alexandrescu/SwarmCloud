@@ -24,6 +24,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
+import { helpIn } from './proseruns'
 import { Routed } from './screenroute'
 import { painted } from './marks'
 
@@ -246,7 +247,8 @@ describe('the merge switch dialog, for a viewer who can switch', () => {
     fireEvent.click(go!)
     await within(dialog).findByRole('textbox', undefined, WAIT)
     // MUTATION: "In a tenant of one person" back and this fails.
-    expect(visible(dialog)).toMatch(/In a workspace of one person, this typed name stands in/)
+    // Behind the dialog's (i) since issue 439.
+    expect(helpIn(dialog)).toMatch(/In a workspace of one person, this typed name stands in/)
     expect(visible(dialog)).not.toMatch(/tenant/i)
   })
 })

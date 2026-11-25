@@ -110,6 +110,15 @@ export const OVERVIEW: readonly ProseState[] = [
     group: 'overview',
     files: ['Schedules.tsx', 'ScheduleDetail.tsx'],
     shows: '.as-sheet',
+    // The type's description, as the API serves it (scheduletypes.py).
+    data: ['nothing executes until a person approves each plan'],
+    moved: [
+      'The firings after it could not be read.',
+      '— no day bar: this read did not serve today’s reservation.',
+      'Edit its gate to approve each merge before it can be switched to automatic.',
+      'Every change to this schedule, who made it and when, newest first. Read when opened.',
+    ],
+    lines: ['later ones not read', '— no day bar', 'This schedule does not merge.', 'Every change, newest first'],
     walk: { open: SCHEDULES, then: sheet },
   },
   {
@@ -124,6 +133,12 @@ export const OVERVIEW: readonly ProseState[] = [
     group: 'overview',
     files: ['Schedules.tsx'],
     shows: '.c-dlg',
+    moved: [
+      'This fires the schedule once, now, outside its timetable.',
+      'Its firing creates work at once, which takes capacity like any other run.',
+      'A dry run creates nothing and runs no agent.',
+    ],
+    lines: ['Creates work now, outside its timetable'],
     walk: { open: SCHEDULES, then: async () => { await sheet(); await press('.as-sheet', 'Run now') } },
   },
   {
@@ -149,6 +164,8 @@ export const OVERVIEW: readonly ProseState[] = [
     group: 'overview',
     files: ['Schedules.tsx'],
     shows: '.c-dlg',
+    moved: ['No new firings until it is resumed. Work it already made carries on.', 'Why, in one line (optional; shown in the list and on this sheet)'],
+    lines: ['No new firings until resumed', 'Why (optional)'],
     walk: { open: SCHEDULES, then: async () => { await sheet(); await press('.as-sheet', 'Pause') } },
   },
   {
@@ -165,6 +182,11 @@ export const OVERVIEW: readonly ProseState[] = [
     group: 'overview',
     files: ['Schedules.tsx'],
     shows: '.c-dlg',
+    moved: [
+      'The schedule stops firing for good and cannot be brought back.',
+      'Its history and audit are kept, and work it already made is ordinary work that is not cancelled.',
+    ],
+    lines: ['Stops firing for good; cannot be undone'],
     walk: { open: SCHEDULES, then: async () => { await sheet(); await press('.as-sheet', 'Delete') } },
   },
   {
@@ -185,25 +207,22 @@ export const OVERVIEW: readonly ProseState[] = [
     group: 'overview',
     files: ['ScheduleDetail.tsx'],
     shows: '.c-dlg',
+    moved: [
+      'A pull request this schedule makes merges once it is green and reviewed, with no person approving it.',
+      'Still held: workflow files; IAM, terraform/bootstrap, CODEOWNERS and protected paths; and the frozen contract.',
+      'The member who last changed this schedule’s gate, scope or spec cannot make this switch; in a platform repository only a platform admin can.',
+    ],
+    lines: ['No person approves its merges', 'Still held: the hard stops', 'Written to its audit'],
     mount: mountMergeSwitch,
     act: () => press('.sc-switch', 'Merge automatically'),
-  },
-  {
-    key: 'automate/schedule-merge-rules',
-    group: 'overview',
-    files: ['ScheduleDetail.tsx'],
-    shows: 'details.sc-rules[open]',
-    mount: mountMergeSwitch,
-    act: async () => {
-      await press('.sc-switch', 'Merge automatically')
-      await foldDrawn('.c-dlg', 'Details')
-    },
   },
   {
     key: 'automate/schedule-merge-typed',
     group: 'overview',
     files: ['ScheduleDetail.tsx'],
-    shows: '.c-dlg .c-field',
+    shows: '.c-dlg:has(.c-field)',
+    moved: ['In a workspace of one person, this typed name stands in for the second person.'],
+    lines: ['Stands in for a second person'],
     mount: mountMergeSwitch,
     act: async () => {
       await press('.sc-switch', 'Merge automatically')
@@ -330,6 +349,11 @@ export const OVERVIEW: readonly ProseState[] = [
     group: 'overview',
     files: ['PlatformOverTime.tsx'],
     shows: '.pot-menu',
+    moved: [
+      'Model: The model the agent ran; “not ended” until it ends.',
+      'Picking one reads nothing: every breakdown comes with the read.',
+    ],
+    lines: ['Break agents down by'],
     walk: { open: 'admin/counts', persona: 'platform-admin', then: () => clickDrawn('button[aria-haspopup="menu"]') },
   },
   {
@@ -344,6 +368,10 @@ export const OVERVIEW: readonly ProseState[] = [
     group: 'overview',
     files: ['PermissionCards.tsx'],
     shows: '.fp-detail',
+    // What each permission's absence breaks, as the API serves it (forgeperms.py `needed_for`).
+    data: ["runs can't push their branch", "runs can't open or update pull requests", "issue runs and the observer can't read or comment on issues"],
+    moved: ['Not granted, needed only for repositories with Workflow files on'],
+    lines: ['Not granted, not needed here'],
     walk: { open: 'config/workspace', then: async () => { await press('main', 'Setup'); await press('main', 'Details') } },
   },
   {

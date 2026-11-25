@@ -54,6 +54,7 @@ import { InApp } from './InApp'
 import { SCHEDULES_ADDRESS, scheduleAddress } from './schedulePaths'
 import { APPROVALS_ADDRESS } from './approvalPaths'
 import { Info } from './AccountsVerdict'
+import { InfoTip } from './InfoTip'
 import { FailedPanel, Screen, timeAgo } from './Shell'
 import type { RepoRecord } from './RepositoriesData'
 import { useNow } from './useNow'
@@ -779,9 +780,13 @@ export function MergeSwitch({ s, onChanged, go }: { s: Schedule; onChanged: () =
     return (
       <p className="sb-note" data-testid="sc-merge-switch" data-mode={merge ?? 'unset'}>
         This schedule does not merge.
-        {floor === 'off'
-          ? ' Its type never merges, so there is no gate to edit.'
-          : floor !== 'reading' && ' Edit its gate to approve each merge before it can be switched to automatic.'}
+        {floor === 'off' ? (
+          <> <InfoTip about="Merging" tip="Its type never merges, so there is no gate to edit." /></>
+        ) : (
+          floor !== 'reading' && (
+            <> <InfoTip about="Merging" tip="Edit its gate to approve each merge before it can be switched to automatic." /></>
+          )
+        )}
       </p>
     )
   }
@@ -843,30 +848,34 @@ export function MergeSwitch({ s, onChanged, go }: { s: Schedule; onChanged: () =
             <>
               {blocked !== null && <BlockedSwitch id={blockId} s={s} block={blocked} go={go} />}
               <h3 className="sc-h3">What changes</h3>
+              {/* EACH CHANGE ONE LINE, ITS SENTENCE BEHIND ITS (i), WORD FOR WORD (issue 439); the
+                  hard stops and who may switch, once a fold, are one (i) on the last line. */}
               <ul className="sc-changes">
-                <li>A pull request this schedule makes merges once it is green and reviewed, with no person approving it.</li>
                 <li>
-                  Still held: workflow files; IAM, terraform/bootstrap, CODEOWNERS and protected paths; and the frozen contract.
+                  No person approves its merges{' '}
+                  <InfoTip about="Automatic merging" tip="A pull request this schedule makes merges once it is green and reviewed, with no person approving it." />
+                </li>
+                <li>
+                  Still held: the hard stops{' '}
+                  <InfoTip
+                    about="Still held"
+                    tip="Still held: workflow files; IAM, terraform/bootstrap, CODEOWNERS and protected paths; and the frozen contract. The hard stops still hold whatever this says: a plan naming workflow files is refused; IAM, terraform/bootstrap, CODEOWNERS and the repository’s protected paths are held for a second member to approve (for the owner, in a platform repository); and in a platform repository the frozen contract is held for the owner."
+                  />
+                </li>
+                <li>
+                  Written to its audit{' '}
+                  <InfoTip
+                    about="Who may switch"
+                    tip="The member who last changed this schedule’s gate, scope or spec cannot make this switch; in a platform repository only a platform admin can. The switch is written to the schedule’s audit."
+                  />
                 </li>
               </ul>
-              <details className="sc-rules">
-                <summary>Details</summary>
-                <p>
-                  The hard stops still hold whatever this says: a plan naming workflow files is refused; IAM, terraform/bootstrap,
-                  CODEOWNERS and the repository’s protected paths are held for a second member to approve (for the owner, in a platform
-                  repository); and in a platform repository the frozen contract is held for the owner.
-                </p>
-                <p>
-                  The member who last changed this schedule’s gate, scope or spec cannot make this switch; in a platform repository only a
-                  platform admin can. The switch is written to the schedule’s audit.
-                </p>
-              </details>
             </>
           ) : (
             <label className="c-field">
+              {/* THE ASK ON THE LABEL, ITS WHY BEHIND THE (i) AFTER IT (issue 439): an (i) inside the label would take its clicks. */}
               <span className="c-lbl">
-                Type <code>{s.name}</code> to switch merging to automatic. In a workspace of one person, this typed name stands in for the
-                second person.
+                Type <code>{s.name}</code> to switch
               </span>
               <input
                 className="c-inp is-mono"
@@ -880,6 +889,15 @@ export function MergeSwitch({ s, onChanged, go }: { s: Schedule; onChanged: () =
                 {typedOk ? 'The name matches.' : 'Type the schedule’s name exactly.'}
               </span>
             </label>
+          )}
+          {step === 'type' && (
+            <p className="sb-note">
+              Stands in for a second person{' '}
+              <InfoTip
+                about="Typed name"
+                tip={`Type ${s.name} to switch merging to automatic. In a workspace of one person, this typed name stands in for the second person.`}
+              />
+            </p>
           )}
           {refused !== null && (
             <p className="c-hint" role="alert">{switchRefusal(refused)}</p>
@@ -1203,7 +1221,9 @@ function Cadence({ s, word }: { s: Schedule; word: StateWord | undefined }) {
           ) : (
             <>
               Next <b title={localTime(s.next_run_at)}>{untilWords(s.next_run_at, now)}</b>
-              <span className="sc-sub">the firings after it could not be read</span>
+              <span className="sc-sub">
+                later ones not read <InfoTip about="Next firings" tip="The firings after it could not be read." />
+              </span>
             </>
           )}
         </p>
@@ -1314,10 +1334,17 @@ function Spend({ s, type }: { s: Schedule; type: ScheduleTypeRow | null | 'unrea
     <Sec name="spend" title="Spend today" sub={`${dayWords(s.spend_today.day)} · the schedule’s own day`}>
       {s.budget_use === undefined || s.budget_use === null ? (
         <p className="sb-note" data-testid="sc-burn-absent">
-          {s.budget_use === null
-            ? '— no day bar: the budget has no per-run or per-day figure to count against.'
-            : '— no day bar: this read did not serve today’s reservation.'}{' '}
-          Spent so far:{' '}
+          {/* ONE FACT, THE WHY BEHIND ITS (i) (issue 439). */}
+          — no day bar{' '}
+          <InfoTip
+            about="Day bar"
+            tip={
+              s.budget_use === null
+                ? '— no day bar: the budget has no per-run or per-day figure to count against.'
+                : '— no day bar: this read did not serve today’s reservation.'
+            }
+          />{' '}
+          · Spent so far:{' '}
           <SpendFigure usdReported={s.spend_today.reported_usd} unreported={s.spend_today.unreported_attempts} what="today's runs" />
         </p>
       ) : (
@@ -1356,7 +1383,12 @@ function Gate({ s, type, onChanged, go }: { s: Schedule; type: ScheduleTypeRow |
     if (type === null) return <span className="as-dim">the type’s default; reading which…</span>
     const d = type === 'unread' ? undefined : type.default_gate?.[point]
     if (d === undefined) return <i className="ctl-em">&mdash; the type’s default, which the catalogue did not say</i>
-    return `${map[d] ?? d} (the type’s default)`
+    // TWO FACTS, NOT ONE RUN (issue 439): the word, then the mark that it is the default.
+    return (
+      <>
+        <span>{map[d] ?? d}</span> <span className="as-dim">(the type’s default)</span>
+      </>
+    )
   }
   return (
     <Sec name="gate" title="Gates and approvers">
@@ -1385,7 +1417,7 @@ function Gate({ s, type, onChanged, go }: { s: Schedule; type: ScheduleTypeRow |
           {/* The failures that pause it on the row, the hard stops behind the (i): the same sentence as the
               form's Gates card, one shared string (QA1 automate-09; the owner's pick under archived issue 2417). */}
           {failures === 1 ? 'A failed run pauses' : `${failures} failed runs in a row pause`} the schedule{' '}
-          <Info about="Hard stops" tip={HARD_STOPS} />
+          <InfoTip about="Hard stops" tip={HARD_STOPS} />
         </Kv>
       </dl>
       <h4 className="as-h4">Merging</h4>
@@ -1405,7 +1437,7 @@ function FoldSec({
 }: {
   name: Fold
   title: string
-  folded: string
+  folded: ReactNode
   open: boolean
   onToggle: () => void
   children: ReactNode
@@ -1506,7 +1538,12 @@ function SheetBody({
       <FoldSec
         name="audit"
         title="Audit"
-        folded="Every change to this schedule, who made it and when, newest first. Read when opened."
+        folded={
+          <>
+            Every change, newest first{' '}
+            <InfoTip about="Audit" tip="Every change to this schedule, who made it and when, newest first. Read when opened." />
+          </>
+        }
         open={fold === 'audit'}
         onToggle={() => toggle('audit')}
       >

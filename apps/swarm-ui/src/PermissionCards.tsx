@@ -4,6 +4,7 @@ import { Button, ButtonLink, Card, Chip, EmptyState, ToneMark } from './componen
 import { notServed } from './RepositoriesData'
 import { UrRegion, useUrRead, type UrRead } from './RepositoriesParts'
 import { timeAgo } from './types'
+import { InfoTip } from './InfoTip'
 import './styles/repositories.css'
 import './styles/forgeperms.css'
 
@@ -525,7 +526,14 @@ function GrantsTable({ rows }: { rows: readonly GrantRow[] }) {
                 <span className="fp-sr">{r.ok ? 'enough' : r.optional ? 'not needed yet' : 'not enough'}</span>
               </td>
               <td role="cell" data-label="For" className="fp-for">
-                <span className="fp-words">{r.neededFor}</span>
+                {/* The console's own neutral words are one fact and an (i) (issue 439); the server's `needed_for` is its data. */}
+                {r.optional ? (
+                  <span className="fp-words">
+                    Not granted, not needed here <InfoTip about="Workflows" tip={WORKFLOWS_NOT_NEEDED} />
+                  </span>
+                ) : (
+                  <span className="fp-words">{r.neededFor}</span>
+                )}
                 {/* A span, not a <small>: the table is already --t-micro, and a <small> drew these at 10px. */}
                 {r.capabilities.length > 0 && <span className="fp-caps">{r.capabilities.map((c) => CAPABILITY_WORD[c] ?? c).join(', ')}</span>}
               </td>

@@ -36,6 +36,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { repo, serve, visible } from './repofixture'
+import { helpIn } from './proseruns'
 
 const WAIT = { timeout: 4000 }
 const REVIEW = 'https://github.com/organizations/example-org/settings/installations/42/permissions/update'
@@ -536,7 +537,8 @@ describe('Workflows (write): a needed row, a gap only where a covered repository
     expect(row.getAttribute('data-ok')).toBe('neutral')
     expect(visible(row.querySelectorAll('td')[2] ?? null)).toBe('none')
     // MUTATION: keep the server's `needed_for` on a neutral row and these words are missing.
-    expect(visible(row.querySelector('.fp-for'))).toContain(NEUTRAL)
+    // Behind the cell's (i) since issue 439.
+    expect(helpIn(row.querySelector('.fp-for'))).toContain(NEUTRAL)
     expect(card.querySelector('.fp-lines')).toBeNull()
     expect(Array.from(card.querySelectorAll('a')).find((a) => visible(a) === 'Review on GitHub')).toBeUndefined()
   })
@@ -551,7 +553,7 @@ describe('Workflows (write): a needed row, a gap only where a covered repository
     expect(visible(app.querySelector('.fp-summary'))).toBe('6 of 6 needed · Push, Pull requests, Merge, CI, Issues, Actions')
     open(app)
     expect(wfRow(app)?.getAttribute('data-ok')).toBe('neutral')
-    expect(visible(wfRow(app)!.querySelector('.fp-for'))).toContain(NEUTRAL)
+    expect(helpIn(wfRow(app)!.querySelector('.fp-for'))).toContain(NEUTRAL)
   })
 
   it('workflows never appears under "Also granted"', async () => {
