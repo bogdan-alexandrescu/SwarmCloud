@@ -3380,6 +3380,7 @@ lost, from the per-tenant merge-wake tick (`fixloop.sweep_tenant`).
 | the first review says MERGE | ends SUCCEEDED with no round |
 | the first review was skipped because the build changed nothing, and no head was pushed | ends SUCCEEDED, `nothing_to_change`, with no round and no verdict; the merge step behind it then skips too, with no pull request to merge |
 | a re-review says MERGE | ends SUCCEEDED; its `final_review` is that re-review |
+| the first review, or a re-review with rounds left, is blocked only by "not reviewed rendered" | starts a re-review of the same head on `claude-code-browser`, counted as a round, instead of a fix: no code change answers it. When that re-review could not render either, parks for a person, `fix_changed_nothing` with `code: "not_rendered"`, and the round a person adds is a re-review again |
 | a re-review says NOT_YET, rounds left | starts the next fix with that verdict's findings, from the head a person pushed if one did |
 | a re-review says NOT_YET, no round left | parks for a person, `fix_loop_exhausted` |
 | a fix pushed nothing, or the same head | parks for a person, `fix_changed_nothing` |
