@@ -602,7 +602,7 @@ function AttemptCard({
             439): it is two sentences, drawn again on every folded re-check. */}
         {a !== null && isParked(a) && a.error != null && REASON_COPY[a.error] !== undefined && (
           <p className="blocker-copy">
-            why parked <InfoTip about="why it parked" tip={REASON_COPY[a.error]} />
+            why parked <InfoTip about="why it parked" tip={REASON_COPY[a.error] ?? ''} />
           </p>
         )}
 
