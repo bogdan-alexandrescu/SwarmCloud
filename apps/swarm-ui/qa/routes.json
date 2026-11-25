@@ -31,6 +31,12 @@
         "ready": "main h1"
       },
       {
+        "id": "automate-settings",
+        "address": "automate/settings",
+        "path": "/automate/settings",
+        "ready": "main h1"
+      },
+      {
         "id": "config-workspace",
         "address": "config/workspace",
         "path": "/config/workspace",
