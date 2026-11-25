@@ -77,6 +77,7 @@ from .issueruns import NO_CLOSING_KEYWORD, failure_text
 from .redaction import MASK, redact
 from .repositories import parse_repository
 from .reviewgate import SKIPPED_REASON_KEY
+from .rollup import SKIPPED_SUMMARY_KEY
 from .schemas import WorkflowCreate
 from .validation import (
     DISPATCH_METADATA_KEY,
@@ -139,6 +140,10 @@ ROUND_FAILED = "round_failed"
 REVIEW_UNREADABLE = "review_unreadable"
 ROUND_REFUSED = "round_refused"
 PERSON_PHASES = (EXHAUSTED, CHANGED_NOTHING, ROUND_FAILED, REVIEW_UNREADABLE, ROUND_REFUSED)
+#: The loop's ending when its first review was skipped because the build
+#: changed nothing and no head was pushed (issue 392): nothing to loop on,
+#: no verdict, and not a phase a person is asked about.
+NOTHING_TO_CHANGE = "nothing_to_change"
 #: The pull request ended outside the workflow (§4.4's last rows).
 MERGED_OUTSIDE = "merged_outside"
 CLOSED_OUTSIDE = "closed_outside"
@@ -1143,7 +1148,9 @@ def _root_head(db: Any, tenant_id: str, doc: Mapping[str, Any],
 
 def _round_zero(loop: _Loop, review: Mapping[str, Any], root_doc: Mapping[str, Any]) -> None:
     """The first review's verdict (§4.2): MERGE ends the loop with no round;
-    NOT_YET starts `re-review:1` (integrate) or `review-fix:1` (direct-pr)."""
+    NOT_YET starts `re-review:1` (integrate) or `review-fix:1` (direct-pr). A
+    review the worker skipped for nothing to change, with no head pushed,
+    ends it `nothing_to_change` with no round and no verdict (§4.4)."""
     terminal = {s.value for s in TERMINAL_STATES}
     waiting_on = [review] + ([root_doc] if loop.strategy == "integrate" else [])
     for parent in waiting_on:
@@ -1165,6 +1172,16 @@ def _round_zero(loop: _Loop, review: Mapping[str, Any], root_doc: Mapping[str, A
     if spec_refusal(loop.ctx.settings, review, review_id) is not None:
         _park(loop, REVIEW_UNREADABLE, _unreadable_detail(
             base, code="spec_unverified", error="the review's spec does not verify"))
+        return
+    if head is None and isinstance(
+            _mapping(review.get("result_summary")).get(SKIPPED_SUMMARY_KEY), Mapping):
+        # Issue 392: the worker skipped the review (no agent, no verdict.json)
+        # because the build changed nothing, and no head was pushed: there is
+        # nothing to review and nothing to fix. The loop ends SUCCEEDED with
+        # no verdict -- never a MERGE for code nobody reviewed -- so the merge
+        # behind it is promoted and skips in turn. A skipped review while a
+        # head exists still parks below: that head was never judged.
+        _finish(loop, TaskState.SUCCEEDED, phase=NOTHING_TO_CHANGE)
         return
     try:
         verdict = read_verdict(loop.ctx, loop.tenant_id, review_id)

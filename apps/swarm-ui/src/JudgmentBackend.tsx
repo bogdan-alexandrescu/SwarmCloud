@@ -1,4 +1,5 @@
 import { useEffect, useId, useState } from 'react'
+import { InfoTip } from './InfoTip'
 import { loadJudgment, putJudgmentBackend, type JevBackend, type JevOption } from './api'
 import { Banner, Card } from './components'
 import { UrRegion, useUrRead } from './RepositoriesParts'
@@ -33,8 +34,10 @@ export function JevBackendCard() {
   const judgment = useUrRead(loadJudgment, 'judgment')
   return (
     <Card title="Jev backend">
+      {/* ISSUE 81: one short line; the sentence it was is behind the (i), word for word. */}
       <p className="pk-lead">
-        Where Jev, the browser&rsquo;s judgment model, sends what it is asked to judge for agents in this workspace.
+        Where Jev sends what it judges.{' '}
+        <InfoTip about="the Jev backend" tip="Where Jev, the browser’s judgment model, sends what it is asked to judge for agents in this workspace." />
       </p>
       <UrRegion state={judgment.state} route={ROUTE} what="the Jev backend" onRetry={judgment.reload}>
         {(d) => <JevBackendChoice tenantId={d.tenant_id} canEdit={d.can_edit} chosen={d.jev.backend} options={d.jev.options}

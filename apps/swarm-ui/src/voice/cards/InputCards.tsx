@@ -26,6 +26,7 @@ import { useEffect, useState } from 'react'
 import { AwaitInputCard } from '../../AwaitInputCard'
 import { loadWorkflow, type WorkflowRead } from '../../api'
 import { Chip } from '../../components'
+import { InfoTip } from '../../InfoTip'
 import { inspectorHref } from '../../decision'
 import { errorHeading, type Result } from '../../fetch'
 import type { CardProps } from '../CardList'
@@ -105,9 +106,13 @@ export function DetailsInputCard({ card, spec, body }: CardProps) {
         </p>
       ) : (
         card.state === 'waiting' && (
+          // A FEW WORDS ON THE SURFACE, THE SENTENCE BEHIND ITS (i) (issue 81).
           <p className="sb-note">
-            {options.length > 0 ? 'Say which one' : 'Say your answer'}
-            {options.length > 0 && freeText ? ', or answer in your own words' : ''}; Voice it writes it here.
+            {options.length > 0 ? sayWhich(freeText) : 'Say your answer'}{' '}
+            <InfoTip
+              about="answering by voice"
+              tip={`${options.length > 0 ? 'Say which one' : 'Say your answer'}${options.length > 0 && freeText ? ', or answer in your own words' : ''}; Voice it writes it here.`}
+            />
           </p>
         )
       )}
@@ -122,4 +127,9 @@ export function DetailsInputCard({ card, spec, body }: CardProps) {
       )}
     </VoiceCardFrame>
   )
+}
+
+/** The waiting card's few words when it offers options (issue 81). */
+function sayWhich(freeText: boolean): string {
+  return freeText ? 'Say which one, or your own words' : 'Say which one'
 }

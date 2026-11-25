@@ -479,6 +479,13 @@ export function normRepo(v: unknown): RepoRecord | null {
 export const WORKFLOW_FILES_WHY =
   "An agent's workflow on a pushed branch runs in this repository with its secrets before any merge hold. Merges of workflow changes always wait for an owner."
 
+/**
+ * ISSUE 81: what stays on the surface of `WORKFLOW_FILES_WHY`, after the
+ * words "Workflow files": the security disclosure as one short line. The two
+ * sentences, word for word, sit behind the (i) beside it.
+ */
+export const WORKFLOW_FILES_LINE = 'run with secrets before any merge.'
+
 /** What the not-granted line needs of one `GET /v1/forge/permissions` row. */
 export interface WorkflowsGrantRow {
   credential: ForgeReach | null

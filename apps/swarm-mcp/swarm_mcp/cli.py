@@ -1278,6 +1278,51 @@ def cmd_workflow_cancel(client: SwarmClient, args) -> int:
     return EXIT_OK
 
 
+def cmd_workflow_pause(client: SwarmClient, args) -> int:
+    """Pause a workflow (docs/design/workflow-pause.md section 3.1), and say
+    which steps were asked to park.
+
+    A signalled step is ASKED, not stopped: a READY step is parked at its next
+    admission, a running one at its next checkpoint. So this prints "asked to
+    park", never "paused", for a step. A refusal -- 409 for a finished workflow
+    or one being cancelled, 404 for another tenant's, 503 for steps the API
+    could not reach -- raises with the API's own words and is not retried: a
+    second pause is idempotent and the operator's to run.
+    """
+    result = workflows.pause(client, args.workflow_id, getattr(args, "reason", None))
+    workflow_id = result.get("workflow_id") or args.workflow_id
+    paused_at = result.get("paused_at")
+    if result.get("already_paused"):
+        print(f"{workflow_id} already paused at {paused_at}; nothing written")
+    else:
+        print(f"{workflow_id} paused at {paused_at}")
+    for task_id in [str(t) for t in result.get("steps_signalled") or []]:
+        print(f"  {task_id}  asked to park at its next admission or checkpoint")
+    for task_id in [str(t) for t in result.get("steps_already_terminal") or []]:
+        print(f"  {task_id}  already finished")
+    return EXIT_OK
+
+
+def cmd_workflow_resume(client: SwarmClient, args) -> int:
+    """Resume a paused workflow (docs/design/workflow-pause.md section 3.2).
+
+    The route clears each step's pause signal; the scheduler, not this call,
+    promotes the parked steps on its next pass, so a step is described as
+    released, not as running. Refusals as `cmd_workflow_pause`.
+    """
+    result = workflows.resume(client, args.workflow_id)
+    workflow_id = result.get("workflow_id") or args.workflow_id
+    if result.get("already_running"):
+        print(f"{workflow_id} was not paused; nothing written")
+    else:
+        print(f"{workflow_id} resumed at {result.get('resumed_at')}")
+    for task_id in [str(t) for t in result.get("steps_cleared") or []]:
+        print(f"  {task_id}  released; the scheduler promotes it on its next pass")
+    for task_id in [str(t) for t in result.get("steps_already_terminal") or []]:
+        print(f"  {task_id}  already finished")
+    return EXIT_OK
+
+
 # -- cluster state ---------------------------------------------------------
 #
 # `sc` is its own console script, because a status command wants a short name.
@@ -2165,6 +2210,20 @@ def build_parser() -> argparse.ArgumentParser:
     wc = sub.add_parser("workflow-cancel", help="cancel a workflow and its steps")
     wc.add_argument("workflow_id")
     wc.set_defaults(func=cmd_workflow_cancel)
+
+    wp = sub.add_parser(
+        "workflow-pause",
+        help="pause a workflow: its steps park and hold no capacity until resumed",
+    )
+    wp.add_argument("workflow_id")
+    wp.add_argument(
+        "--reason", default=None, help="why, shown on the workflow (at most 500 characters)"
+    )
+    wp.set_defaults(func=cmd_workflow_pause)
+
+    wr = sub.add_parser("workflow-resume", help="resume a paused workflow")
+    wr.add_argument("workflow_id")
+    wr.set_defaults(func=cmd_workflow_resume)
 
     sc_cmd = sub.add_parser(
         "sc", help="cluster state: accounts, capacity, agents, trouble (same as the `sc` command)"

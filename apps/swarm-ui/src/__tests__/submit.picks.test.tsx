@@ -201,7 +201,9 @@ describe('the task form is F1', () => {
     const lands = [...panel.querySelectorAll('.ctl-fact')].find((f) => f.querySelector('b')?.textContent === 'lands as')
     expect(lands, 'no "lands as" row').toBeDefined()
     expect(visible(lands!)).toContain('ready or parked · costs nothing')
-    expect(visible(panel)).toContain('Nothing runs until the scheduler admits it into every pool it needs.')
+    // ISSUE 81: one short line on the surface, the sentence behind its (i).
+    expect(visible(panel)).toContain('Nothing runs until the scheduler admits it.')
+    expect(within(panel).getAllByRole('tooltip', { hidden: true }).map(visible)).toContain('Nothing runs until the scheduler admits it into every pool it needs.')
     const go = within(panel).getByRole('button', { name: 'Start one agent' })
     // The canonical primary button (components.html A): the accent fill, and
     // ONE disabled treatment that pales it.

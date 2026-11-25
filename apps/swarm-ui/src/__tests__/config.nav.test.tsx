@@ -339,7 +339,7 @@ describe('Admin is drawn only for an admin (CONFIG-NAV)', () => {
     const said = document.querySelector('[data-refused="admin"]')!.textContent
     // MUTATION: name the role by `roleOf` alone -> "your role in ... was not read" and this fails.
     expect(said).not.toContain('was not read')
-    expect(said).toMatch(/You are not a platform admin\. [^.]+ is your own workspace\./)
+    expect(said).toMatch(/You are not a platform admin · \S.* is your own workspace/)
     expect(said).not.toContain('an admin of')
   }, CASE_TIMEOUT)
 
