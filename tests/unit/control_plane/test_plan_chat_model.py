@@ -41,7 +41,7 @@ from .test_issue_runs import (  # noqa: F401 -- fixtures, used by name
     forge_tokens,
     github,
 )
-from .test_plan_chat import UNDRAWN, _ask, _asked, _code, _expire, _finish, _stored, _sub
+from .test_plan_chat import UNDRAWN, _asked, _code, _expire, _stored, _sub
 from .test_roles_store import grant
 
 pytestmark = pytest.mark.usefixtures("fix_loop_off", "plan_diagrams_on")

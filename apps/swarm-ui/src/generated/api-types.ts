@@ -948,6 +948,15 @@ export interface PlanChatAsk {
   anchor?: DiagramAnchor | null
 }
 
+/**
+ * `plan:chat-model`'s body (§7.8): a model CLASS by name, or null to clear
+ * this plan's own. Never a model id, an image, a command, a resource or a
+ * profile (invariant 10); any other key is 422.
+ */
+export interface PlanChatModelSet {
+  model_class: string | null
+}
+
 /** Where in the thread a pinned answer is anchored. */
 export interface PlanChatPin {
   anchor: DiagramAnchor

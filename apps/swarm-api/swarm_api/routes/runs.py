@@ -75,7 +75,7 @@ import os
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from typing import Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from fastapi import APIRouter, Depends, Query, Response, status
 from fastapi.responses import StreamingResponse
@@ -142,6 +142,7 @@ from ..issueruns import (
     auto_merge_default,
     refuse_auto_merge,
     refuse_planner_model_class,
+    UnknownModelClass,
     run_summary,
     served_plan_revisions,
     MAX_THREAD_TEXT_CHARS,
@@ -2010,8 +2011,34 @@ def get_run(
                                           labels=(run.issue_read or {}).get("labels") or ())
         if run.plan is not None else None)
     row = with_plan_revisions(ctx, run, row)
-    row = with_plan_thread(ctx, run, row)
+    # §7.8: the chat's model and what the review has used, read now.
+    data = _chat(ctx).run_data(run)
+    row = with_chat_model(ctx, tenant_id, run, data, row)
+    row = with_plan_thread(ctx, run, row, extra=planchat.model_thread_events(data))
     return {"run": with_planner_documents(ctx, tenant_id, run, row)}
+
+
+def with_chat_model(ctx: AppContext, tenant_id: str, run: IssueRun, data: Mapping[str, Any],
+                    row: dict) -> dict:
+    """`row` with the plan-review reads of §7.8, computed on read, outside the
+    digest, after the tenant's read of the run passed (`data` is this run's
+    own document):
+
+    * `plan_chat_model`: this plan's own class, who set it and why, or null;
+    * `chat_model`: the class the next turn is submitted at and its level;
+    * `chat_model_suggestion`: `{suggested, why}`, null without a plan;
+    * `plan_review_usage`: each cap's use against the caps read now."""
+    effective = _effective_plan_settings(ctx, tenant_id, run.schedule)
+    class_models = stepclass.class_models_of(ctx)
+    prices = ctx.store.get_platform_settings().get("model_prices") or {}
+    row["plan_chat_model"] = planchat.served_model_record(data)
+    row["chat_model"] = planchat.resolve_model(effective, data)
+    row["chat_model_suggestion"] = planchat.chat_model_suggestion(
+        run, risk=row.get("plan_risk"), resolved=planchat.resolve_model(effective, None),
+        class_models=class_models, prices=prices)
+    row["plan_review_usage"] = planchat.plan_review_usage(
+        data, replans=run.plan_replans, caps=effective["caps"], read_at=effective["read_at"])
+    return row
 
 
 def with_plan_revisions(ctx: AppContext, run: IssueRun, row: dict) -> dict:
@@ -2027,7 +2054,8 @@ def with_plan_revisions(ctx: AppContext, run: IssueRun, row: dict) -> dict:
     return row
 
 
-def with_plan_thread(ctx: AppContext, run: IssueRun, row: dict) -> dict:
+def with_plan_thread(ctx: AppContext, run: IssueRun, row: dict,
+                     extra: Sequence[Mapping[str, Any]] = ()) -> dict:
     """`row` with `plan_thread` (the stored entries and the events derived
     from the run, oldest first) and `thread_truncated` (plans-pipeline.md
     §3.4).
@@ -2039,7 +2067,8 @@ def with_plan_thread(ctx: AppContext, run: IssueRun, row: dict) -> dict:
     runs = _runs(ctx)
     documents, more = runs.plan_thread_documents(run)
     workflows, tasks = runs.plan_thread_sources(run)
-    events = plan_thread_events(run, row.get("plan_revisions") or [], workflows, tasks)
+    events = [*plan_thread_events(run, row.get("plan_revisions") or [], workflows, tasks),
+              *extra]
     thread, truncated = served_plan_thread(run, documents, events, more=more)
     row["plan_thread"] = thread
     row["thread_truncated"] = truncated
@@ -2841,9 +2870,11 @@ def ask_for_diagram(
     if ctx.submissions.tenant_for(auth).tenant_id != tenant_id:
         # The agent is the run's tenant's or none (invariant 9).
         raise NotFound(f"run {run_id!r} not found")
-    model = effective["chat_model_class"]
+    # The chat's builder at the chat's class (§7.2, §7.8): this plan's own
+    # class first, as a chat turn resolves it.
+    model = planchat.resolve_model(effective, _chat(ctx).run_data(run))
     choice = issueruns_module.review_agent_class(
-        str(model["value"]), str(model["from"]), stepclass.class_models_of(ctx))
+        str(model["class"]), str(model["from"]), stepclass.class_models_of(ctx))
     ask = redact_detail(body.ask, limit=issueruns_module.MAX_DIAGRAM_ASK_CHARS)
     claimed, entry, plan = runs.claim_diagram(
         tenant_id, run.id, digest=body.plan_digest, anchor_part=body.anchor.part,
@@ -3170,6 +3201,74 @@ def ask_plan_chat(
     response.status_code = status.HTTP_202_ACCEPTED
     return {"turn": planchat.served_turn({**(chat.turn(run, turn) or document),
                                           "task_id": task_id})}
+
+
+class PlanChatModelSet(StrictModel):
+    """`plan:chat-model`'s body (§7.8): a model CLASS by name, or null to
+    clear this plan's own. Never a model id, an image, a command, a resource
+    or a profile (invariant 10); any other key is 422."""
+
+    model_class: str | None = Field(max_length=64)
+
+
+@router.post("/{run_id}/plan:chat-model")
+def set_plan_chat_model(
+    run_id: str,
+    body: PlanChatModelSet,
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Set the class this plan's review chat answers with, or clear it
+    (plans-pipeline.md §7.8).
+
+    Who: the role floor every decision uses, read fresh (a viewer is
+    `role_member_required`), then the edit level on this open plan (a member
+    who may only comment is `edit_level_required`). Another tenant's run is
+    the same 404 as no run, before any other check. What: a class
+    `claude-code` carries (else 422 `unknown_model_class`, naming them). A
+    class cheaper than the workspace's (else the platform's) is always
+    accepted; a stronger one only when it is the one `chat_model_suggestion`
+    suggests now (else 422 `chat_model_not_needed`, in the suggestion's own
+    sentence). Recorded on the run with a thread event; not signed and not in
+    the digest. Nothing is submitted: the next turn is."""
+    approvals.require_decider(ctx, auth)
+    runs, chat = _runs(ctx), _chat(ctx)
+    run = runs.get(tenant_id, run_id)  # 404 first: another tenant's run is not there
+    if run.state != RunState.PLANNED:
+        raise Conflict(
+            f"run {run_id!r} is {run.state.value}; the chat's model is set only while its plan "
+            "waits", detail={"state": run.state.value})
+    _require_edit_level(ctx, auth, tenant_id, run,
+                        what="the chat's model is set at the level an edit needs")
+    carried = list(plansettings.chat_model_classes())
+    wanted = body.model_class
+    if wanted is not None and wanted not in carried:
+        raise UnknownModelClass(
+            f"{wanted[:64]!r} is not a model class {plansettings.CHAT_PROFILE} carries; it "
+            f"carries {', '.join(carried)}", detail={"model_classes": carried})
+    effective = _effective_plan_settings(ctx, tenant_id, run.schedule)
+    base = planchat.resolve_model(effective, None)
+    now = ctx.now()
+    record = None
+    if wanted is not None:
+        class_models = stepclass.class_models_of(ctx)
+        prices = ctx.store.get_platform_settings().get("model_prices") or {}
+        suggestion = planchat.chat_model_suggestion(
+            run, risk=plan_risk(ctx, tenant_id, run), resolved=base,
+            class_models=class_models, prices=prices)
+        is_stronger = planchat.stronger(wanted, str(base["class"]), class_models, prices)
+        if is_stronger and wanted != (suggestion or {}).get("suggested"):
+            # Switched (refusals.SWITCHES): off, the class is recorded anyway.
+            refusals.refuse(planchat.model_refusal(wanted, suggestion))
+        record = planchat.model_record(wanted, base=base, suggestion=suggestion,
+                                       is_stronger=is_stronger, by=auth.email, at=now)
+    event = planchat.model_event(record, base=base, by=auth.email, at=now)
+    data = chat.set_model(run, record, event, digest=run.plan_digest)
+    log.info("issue run %s tenant=%s: the chat's model is now %s by=%s", run.id, tenant_id,
+             wanted or f"{base['class']} ({base['from']})", auth.email)
+    return {"run_id": run.id, "plan_chat_model": planchat.served_model_record(data),
+            "chat_model": planchat.resolve_model(effective, data)}
 
 
 @router.get("/{run_id}/plan-chat")
