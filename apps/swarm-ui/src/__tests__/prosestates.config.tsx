@@ -6,9 +6,13 @@ import { fireEvent } from '@testing-library/react'
 import type { ProseState } from './prosestates'
 import { click } from './prosestates.shell'
 import { clickDrawn, drawn, foldDrawn, hover, press } from './prosestates.overview'
-import { mountGroupRoles, mountPluginDetail, mountPushTest, mountSetupStrip, mountStepPlugins, mountTokenCreated } from './prosestates.config.mounts'
+import { mountGroupRoles, mountPluginDetail, mountPluginSettings, mountPushTest, mountSetupStrip, mountStepPlugins, mountTokenCreated } from './prosestates.config.mounts'
 
 const WS = 'config/workspace'
+/** writeFailure's sentence for a route not there yet, behind a refusal's (i). */
+const NOT_SERVED = 'Not served yet: this API does not take this request yet.'
+/** How the fixture build refuses a write it does not serve: the API's message, not the console's words. */
+const FIXTURE_REFUSAL = 'The fixture build does not serve this route'
 const TOKENS = 'config/repositories?page=tokens'
 
 // The sentences GitTokens.tsx moved behind a token entry's (i)s, word for word.
@@ -87,7 +91,7 @@ export const CONFIG: readonly ProseState[] = [
     group: 'config',
     files: ['GitTokens.tsx'],
     shows: '#ur-reg .c-banner',
-    moved: ['Not served yet: this API does not take this request yet.'],
+    moved: [NOT_SERVED],
     lines: ['Not served yet'],
     walk: { open: TOKENS, then: async () => { await press('main', '▸ Use a personal'); await press('#ur-reg', 'Create the token entry') } },
   },
@@ -215,5 +219,76 @@ export const CONFIG: readonly ProseState[] = [
     files: ['consolefinish/ChecklistFinish.tsx'],
     shows: 'details.cfc-more[open]',
     walk: { open: 'admin/setup', persona: 'platform-admin', then: () => foldDrawn('main', 'Capacity and add-ons') },
+  },
+  {
+    key: 'config/register-refused',
+    group: 'config',
+    files: ['RepositoriesRegister.tsx'],
+    shows: 'main .c-banner',
+    moved: [NOT_SERVED],
+    lines: ['Not served yet'],
+    walk: {
+      open: 'config/repositories?page=register',
+      then: async () => {
+        fireEvent.change(await drawn('main input'), { target: { value: 'example-org/example-repo' } })
+        await press('main', 'Next: schedule')
+        await press('main', 'Next: review')
+        await press('main', 'Register')
+      },
+    },
+  },
+  {
+    key: 'config/settings-save-refused',
+    group: 'config',
+    files: ['WorkspaceSettings.tsx'],
+    shows: 'main [role="alert"]',
+    data: [FIXTURE_REFUSAL],
+    walk: {
+      open: WS,
+      then: async () => {
+        await press('main', 'Settings')
+        fireEvent.change(await drawn('main input[type="number"]'), { target: { value: '12' } })
+        await press('main', 'Save')
+      },
+    },
+  },
+  {
+    key: 'config/code-intelligence-refused',
+    group: 'config',
+    files: ['CodeIntelligence.tsx'],
+    shows: 'main .c-banner',
+    data: [FIXTURE_REFUSAL],
+    walk: { open: WS, then: async () => { await press('main', 'Settings'); await clickDrawn('input[aria-label^="Send code to Jev"]') } },
+  },
+  {
+    key: 'config/github-disconnect',
+    group: 'config',
+    files: ['Access.tsx'],
+    shows: 'main .c-banner.is-warn',
+    moved: [
+      'SwarmCloud revokes its authorisation at GitHub, disables the token it stored for you and forgets every org and repository you granted. Agents you submit afterwards wait until you connect again.',
+    ],
+    lines: ["Revokes SwarmCloud's GitHub access"],
+    walk: { open: 'config/github', then: () => press('main', 'Disconnect GitHub') },
+  },
+  {
+    key: 'config/github-disconnect-refused',
+    group: 'config',
+    files: ['Access.tsx'],
+    shows: 'main [role="alert"]',
+    data: [FIXTURE_REFUSAL],
+    walk: { open: 'config/github', then: async () => { await press('main', 'Disconnect GitHub'); await press('main .c-banner.is-warn', 'Disconnect') } },
+  },
+  {
+    key: 'config/plugin-settings-refused',
+    group: 'config',
+    files: ['PluginSettingsForm.tsx'],
+    shows: '.plg-failed',
+    data: ['example-plugin is used by nightly-check.'],
+    mount: mountPluginSettings,
+    act: async () => {
+      fireEvent.change(await drawn('input.plg-num'), { target: { value: '0.9' } })
+      await press('body', 'Save')
+    },
   },
 ]

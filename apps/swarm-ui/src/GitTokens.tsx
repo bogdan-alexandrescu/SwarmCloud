@@ -9,6 +9,7 @@ import { LIST, PERMISSIONS, GT_PAGE, UrCap, UrCrumb, UrNavButton, UrRadio, UrRef
 import { CountNote, PageHead } from './Shell'
 import { GitHubSetupCard } from './GitHubConnect'
 import { InfoTip } from './InfoTip'
+import { WriteRefusal } from './WriteRefusal'
 import { timeAgo, type OnboardingDoc } from './types'
 
 /**
@@ -46,9 +47,6 @@ const NO_EXPIRY = 'No expiry recorded for this token'
 
 /** The terminal path's disclosure, and the team token's (GT-GUIDE). */
 const PAT_TOGGLE = 'Use a personal access token instead (advanced)'
-
-/** How writeFailure begins its sentence for a route that is not there yet. */
-const NOT_SERVED = 'Not served yet'
 
 // A token entry's explanations (issue 439): each behind its step's (i), word for word.
 const PAT_TIP = 'For when Connect GitHub above is not an option. A personal access token does not renew itself: you store a new one before it expires.'
@@ -398,14 +396,7 @@ function RegisterToken({
       </div>
       {refused !== null && (
         <Banner tone="bad" title="The token entry was not created">
-          {/* ISSUE 439: a route not there yet is one short line; writeFailure's sentence is its (i), word for word. */}
-          {refused.startsWith(`${NOT_SERVED}:`) ? (
-            <>
-              {NOT_SERVED} <InfoTip about="this refusal" tip={refused} />
-            </>
-          ) : (
-            refused
-          )}
+          <WriteRefusal text={refused} />
         </Banner>
       )}
       {slot === null ? (

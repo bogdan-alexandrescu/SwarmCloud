@@ -93,11 +93,23 @@ const USAGE: Json = {
   steps: [{ tenant_id: TENANT, task_id: 'task-77', workflow_id: 'wf-1', step: 'review', state: 'RUNNING' }],
 }
 
+const SETTINGS: Json = {
+  tenant_id: TENANT,
+  form: { install_id: INSTALL, version_id: 'v-000000000001', source: 'user_config', fields: [
+    { key: 'threshold', type: 'number', kind: 'value', title: 'Threshold', required: false, sensitive: false, default: 0.7 },
+    { key: 'mode', type: 'string', kind: 'value', title: null, required: false, sensitive: false, default: 'strict' },
+  ] },
+  revision: 3,
+  values: { threshold: { set: true, value: 0.75 }, mode: { set: false } },
+  missing: [], set_at: '2026-11-06T02:04:00+00:00', set_by: 'admin@example.com', can_edit: true,
+}
+
 function pluginReads(m: string, url: string): Reply {
   if (m !== 'GET') return { status: 409, body: { code: 'PLUGIN_IN_USE', message: 'example-plugin is used by nightly-check.' } }
   if (url.startsWith(`${BASE}/installs/${INSTALL}/versions`)) return { status: 200, body: VERSIONS }
   if (url.startsWith(`${BASE}/installs/${INSTALL}/diff`)) return { status: 200, body: DIFF }
   if (url.startsWith(`${BASE}/installs/${INSTALL}/usage`)) return { status: 200, body: USAGE }
+  if (url.startsWith(`/v1/workspaces/${TENANT}/plugin-config/${INSTALL}`)) return { status: 200, body: SETTINGS }
   if (url.startsWith(`/v1/workspaces/${TENANT}/plugin-defaults`)) return { status: 200, body: { tenant_id: TENANT, defaults: [INSTALL], can_edit: true } }
   if (url === BASE || url.startsWith(`${BASE}?`)) {
     return { status: 200, body: { scope: 'workspace', tenant_id: TENANT, built_in: [], platform_installs: [], installs: [INSTALLED], limits: {}, can_install: true } }
@@ -111,6 +123,14 @@ export async function mountPluginDetail(): Promise<ReactElement> {
   serve(pluginReads)
   const { PluginDetailScreen } = await import('../PluginDetail')
   return <PluginDetailScreen installId={INSTALL} tenantId={TENANT} backHref="/config/plugins" />
+}
+
+/** A workspace plugin's settings form, an admin's to edit: Save sends the values, and a refusal names the API's error. */
+export async function mountPluginSettings(): Promise<ReactElement> {
+  await live()
+  serve(pluginReads)
+  const { PluginSettingsForm } = await import('../PluginSettingsForm')
+  return <PluginSettingsForm tenantId={TENANT} installId={INSTALL} name="example-plugin" />
 }
 
 // ---------------------------------------------------------------- the setup strip, finished

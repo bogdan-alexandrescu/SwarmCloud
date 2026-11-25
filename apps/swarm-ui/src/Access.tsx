@@ -353,6 +353,10 @@ const POLICY_RULES: ReadonlyArray<{ rule: string; head: string; line: string; bo
 /** What the policy card's (i) says: D9's enforcement, then every rule's line. */
 export const POLICY_TIP = ['Read means read, and SwarmCloud enforces it.', ...POLICY_RULES.map((r) => r.line)].join(' ')
 
+/** What Disconnect undoes, behind its ask's (i) (issue 439). */
+const DISCONNECT_TIP =
+  'SwarmCloud revokes its authorisation at GitHub, disables the token it stored for you and forgets every org and repository you granted. Agents you submit afterwards wait until you connect again.'
+
 /**
  * ON A PHONE THE RULES OPEN FOLDED (visual QA V122): each is its headline, a
  * summary that opens its sentences, so the card is three lines rather than
@@ -504,9 +508,9 @@ function Connection({ connection, quota, onChange }: { connection: GitHubConnect
               onAct={() => void disconnect()}
               onKeep={() => setConfirming(false)}
             >
+              {/* ISSUE 439: the write stays one line; what it undoes sits behind its (i), word for word. */}
               <p className="ur-small">
-                SwarmCloud revokes its authorisation at GitHub, disables the token it stored for you and forgets every
-                org and repository you granted. Agents you submit afterwards wait until you connect again.
+                Revokes SwarmCloud&apos;s GitHub access <InfoTip about="disconnecting" tip={DISCONNECT_TIP} />
               </p>
             </AskFirst>
           ) : (
