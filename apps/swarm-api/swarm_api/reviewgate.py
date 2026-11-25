@@ -226,6 +226,15 @@ SHOT_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 #: frames (archived issue 3066). `agent_worker.verdict.RENDERED_REVIEW_PROFILE`, restated here
 #: because swarm-api cannot import the worker; held equal by the test.
 RENDERED_REVIEW_PROFILE = "claude-code-browser"
+#: The words the rendered-review gate's finding starts with, and the paths it
+#: gates. `agent_worker.verdict.NOT_REVIEWED_RENDERED`, `UI_PATH_PREFIXES` and
+#: the test-path rule, restated for the fix loop (issue 393); held equal by
+#: the test.
+NOT_REVIEWED_RENDERED = "not reviewed rendered"
+UI_PATH_PREFIXES = ("apps/swarm-ui/", "docs/web-ui/")
+TEST_DIRECTORIES = ("__tests__", "tests")
+TEST_FILE_MARKS = (".test.", ".spec.")
+TEST_FILE_MARK_PREFIX = "apps/swarm-ui/"
 
 #: Task documents read per decision, as in `scheduler.runtime.MAX_DOCUMENTS_READ`.
 MAX_DOCUMENTS_READ = 40
@@ -250,6 +259,21 @@ REASON_RENDERED_REVIEW = "rendered_review"
 #: and a verdict (`VERDICT_FILE`, a review's reading, not its subject).
 COUNTED_HANDOFFS = ("swarm-work.patch", VERDICT_FILE)
 
+
+
+def is_ui_path(path: Any) -> bool:
+    """Whether a changed path is one a rendered review must see (test files are
+    not): `agent_worker.verdict.is_ui_path`, restated."""
+    if not isinstance(path, str):
+        return False
+    text = path.lstrip("/")
+    parts = text.split("/")
+    if any(part in TEST_DIRECTORIES for part in parts[:-1]):
+        return False
+    if text.startswith(TEST_FILE_MARK_PREFIX) and any(
+            mark in parts[-1] for mark in TEST_FILE_MARKS):
+        return False
+    return text.startswith(UI_PATH_PREFIXES)
 
 
 @lru_cache(maxsize=256)
