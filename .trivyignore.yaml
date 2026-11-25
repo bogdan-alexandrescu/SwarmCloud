@@ -282,9 +282,32 @@ vulnerabilities:
   # go1.27.2, so no pin fixes it. This entry covers only the two Google
   # binaries; every other vendor Go binary stays fixed at its pin. Re-check
   # Google's index on 2026-11-25.
+  #
+  # Extended one week on 2026-11-25, the day it expired (owner, the same rule as
+  # 2026-11-01: take every fixed build, extend one week only for what is still
+  # unfixed). From 00:00Z the image scan refused the runtime images on this id
+  # (issue 425). Measured ~00:45Z: the newest google-cloud-cli in Google's apt index
+  # and in the rapid channel's components-2.json (revision 20261121205138) is
+  # 594.0.1, still on gcloud-crc32c build 20261016073856 and auth-plugin build
+  # 20261030071842. Each .deb for 591.0.0, 592.0.0, 593.0.0, 594.0.0 and 594.0.1
+  # was downloaded from the pool as the Dockerfile does, its SHA256 matched the
+  # index, and each binary's Go version was read from its build info:
+  #
+  #   release   gcloud-crc32c          gke-gcloud-auth-plugin
+  #   591.0.0   go1.27.2  NOT fixed    go1.27.1  NOT fixed
+  #   592.0.0   go1.27.2  NOT fixed    go1.27.3  fixed (pinned since 2026-11-06)
+  #   593.0.0   go1.27.2  NOT fixed    go1.27.3  fixed
+  #   594.0.0   go1.27.2  NOT fixed    go1.27.3  fixed
+  #   594.0.1   go1.27.2  NOT fixed    go1.27.3  fixed
+  #
+  # workspace-apply's base tags google-cloud-cli:592.0.0-stable to
+  # 594.0.1-stable (amd64 layers, digest-verified) also ship gcloud-crc32c on
+  # go1.27.2. No release fixes gcloud-crc32c, so no pin moves; the plugin is
+  # already fixed at its 592.0.0 pin, so the entry now covers gcloud-crc32c
+  # only. Re-check Google's index on 2026-12-02.
   - id: CVE-2026-111943
-    statement: "Go stdlib crypto/x509 inside Google-built gcloud-crc32c (go1.27.2) and gke-gcloud-auth-plugin (go1.27.1) from google-cloud-cli 591.0.0; 592.0.0 and 593.0.0 (measured 2026-11-11) still ship go1.27.2; 594.0.0 carries the same gcloud-crc32c build (20261016) and auth-plugin build (20261030) (Google's component index, 2026-11-18), no Google build on go1.27.3 yet; extended one week under the owner's rule."
-    expired_at: 2026-11-25
+    statement: "Go stdlib crypto/x509 inside Google-built gcloud-crc32c (go1.27.2, build 20261016073856) from google-cloud-cli 591.0.0; every newer release through 594.0.1 and the -stable images through 594.0.1 still ship it on go1.27.2 (measured 2026-11-25), no Google build of it on a fixed Go yet; extended one week under the owner's rule."
+    expired_at: 2026-12-02
 
   # Same class again (owner, 2026-10-28 ~21:00Z UTC): a Go standard library
   # os.Root fix (CVE-2026-56857, CRITICAL, fixed in Go 1.26.9 / 1.27.2): on
