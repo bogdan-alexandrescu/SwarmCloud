@@ -132,6 +132,10 @@ def test_a_steps_own_gate_wins_over_the_workspace(db, client):
     "apps/swarm-api/swarm_api/auth.py",
     "terraform/infra/iam.tf",
     "apps/redaction/swarm_redaction/core.py",
+    # The security checks' own switches (issue 430).
+    ".trivyignore.yaml",
+    ".gitleaks.toml",
+    ".github/codeql/codeql-config.yml",
 ])
 @pytest.mark.parametrize("gate", [
     {"default": True},
