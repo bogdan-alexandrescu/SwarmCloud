@@ -90,7 +90,7 @@ export async function mountInterviewDesign(): Promise<ReactElement> {
     <InterviewView
       taskId="t_design"
       go={() => undefined}
-      read={{ questions, task: designTask, catalogue: [{ name: 'gstack', version: '1.92.55.0', runner_profiles: [], modes: {} }] }}
+      read={{ questions, task: designTask, catalogue: [{ name: 'gstack', version: '1.92.55', runner_profiles: [], modes: {} }] }}
     />
   )
 }

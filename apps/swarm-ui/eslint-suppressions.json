@@ -7521,6 +7521,11 @@
       "count": 1
     }
   },
+  "src/__tests__/prosestates.overview.tsx": {
+    "testing-library/no-node-access": {
+      "count": 2
+    }
+  },
   "src/__tests__/prosestates.shell.tsx": {
     "testing-library/no-node-access": {
       "count": 2

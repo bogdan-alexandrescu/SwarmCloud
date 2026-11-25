@@ -296,7 +296,7 @@ function BreakdownMenu({ value, onPick }: { value: Breakdown; onPick: (b: Breakd
           {/* WHAT EACH BREAKDOWN COUNTS, BEHIND THE HEAD'S (i) (issue 439): two of them were a paragraph each in the menu. */}
           <p className="pot-menu-head">
             Break agents down by{' '}
-            <InfoTip about="Breakdowns" tip={`${BREAKDOWNS.map((b) => `${b.label}: ${b.says}`).join(' ')} ${MENU_FOOT}`} />
+            <InfoTip about="Breakdowns" tip={[...BREAKDOWNS.map((b) => b.label + ': ' + b.says), MENU_FOOT].join(' ')} />
           </p>
           {BREAKDOWNS.map((b) => (
             <button
