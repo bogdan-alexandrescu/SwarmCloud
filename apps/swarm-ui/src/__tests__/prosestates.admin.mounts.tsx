@@ -80,6 +80,69 @@ export async function mountPeopleLoans(): Promise<ReactElement> {
   return <PeopleScreen />
 }
 
+// ---------------------------------------------------------------- Voice it › Settings: a save answered with a 409 or a 422
+
+// The catalogue voice.settings.test.tsx serves, copied: the page holds no list of its own.
+const VOICE_CATALOGUE = {
+  engines: [
+    { name: 'own', label: 'Own speech', uses_machine: true },
+    { name: 'gpt-live', label: 'GPT-Live', uses_machine: false },
+  ],
+  machines: [
+    { name: 'g2-standard-4', vcpu: 4, memory_gb: 16, gpu: 'nvidia-l4', gpus: 1, usd_per_hour: 0.71, price_read_at: '2026-11-05', price_source: 'figure' },
+    { name: 'g2-standard-8', vcpu: 8, memory_gb: 32, gpu: 'nvidia-l4', gpus: 1, usd_per_hour: 0.85, price_read_at: '2026-11-05', price_source: 'list price' },
+  ],
+  stt_models: [{ name: 'qwen3-asr-0.6b', hf: 'Qwen/Qwen3-ASR-0.6B', revision: 'r', files: [], disk_gb: 2 }],
+  tts_models: [{ name: 'kokoro-82m', hf: 'hexgrad/Kokoro-82M', revision: 'r', files: [], voices: ['af_heart', 'bf_emma'], default_voice: 'af_heart' }],
+  conversation_models: [
+    { name: 'claude-haiku-5-5', label: 'Claude Haiku 5.5 (fastest)', model: 'claude-haiku-5-5', provider: 'anthropic' },
+    { name: 'claude-sonnet-5', label: 'Claude Sonnet 5', model: 'claude-sonnet-5', provider: 'anthropic' },
+  ],
+  planner_models: [
+    { name: 'fable', label: 'Fable class (planning)', model: 'claude-fable-5-2' },
+    { name: 'opus', label: 'Opus class (coding)', model: 'claude-opus-5-5' },
+  ],
+  idle: [
+    { name: '2m', seconds: 120 },
+    { name: '5m', seconds: 300 },
+  ],
+  zones: [{ name: 'us-central1-a', machine: true }],
+  defaults: {},
+  read_at: '2026-11-05',
+}
+
+function voiceSettings(version: number): Json {
+  return {
+    settings: {
+      engine: 'own', machine: 'g2-standard-4', stt_model: 'qwen3-asr-0.6b', tts_model: 'kokoro-82m', tts_voice: 'af_heart',
+      conversation_model: 'claude-haiku-5-5', planner_model: 'fable', idle: '5m', zone: 'us-central1-a',
+    },
+    version, updated_by: 'alex@example.com', updated_at: '2026-11-06T06:41:00Z',
+    applied: { machine: 'g2-standard-4', stt_model: 'qwen3-asr-0.6b', tts_model: 'kokoro-82m', idle: '5m', zone: 'us-central1-a', image: 'img', at: '2026-11-05T06:12:00Z' },
+    pending: [], openai_key: { set: false, by: null, at: null, label: null, link: { open: false, expires_at: null } }, zones: ['us-central1-a'],
+  }
+}
+
+async function mountVoiceSettings(answer: { status: number; body: unknown }): Promise<ReactElement> {
+  await live()
+  serve((m, url) => {
+    if (url.includes('/v1/voice/settings/catalogue')) return { status: 200, body: VOICE_CATALOGUE }
+    if (url.includes('/v1/voice/settings') && m === 'PATCH') return answer
+    if (url.includes('/v1/voice/settings')) return { status: 200, body: voiceSettings(8) }
+    return null
+  })
+  const { VoiceSettings } = await import('../voice/Settings')
+  return <VoiceSettings canEdit />
+}
+
+/** Voice it › Settings, someone else saved first: the card's band names them. */
+export const mountVoiceConflict = (): Promise<ReactElement> =>
+  mountVoiceSettings({ status: 409, body: { code: 'conflict', message: 'the settings changed since they were read; read them again', detail: { field: 'version', version: 8 } } })
+
+/** Voice it › Settings, a field refused: the card's band names the field and the API's message. */
+export const mountVoiceRefused = (): Promise<ReactElement> =>
+  mountVoiceSettings({ status: 422, body: { code: 'validation_failed', message: 'idle takes a name from the catalogue', detail: { field: 'idle' } } })
+
 // ---------------------------------------------------------------- Schedules, every workspace
 
 function scheduleRow(id: string, tenant: string): Json {

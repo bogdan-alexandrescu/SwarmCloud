@@ -22,6 +22,8 @@ import {
   mountSchedules,
   mountSessionRecord,
   mountTeamRefused,
+  mountVoiceConflict,
+  mountVoiceRefused,
   mountWorkingCard,
 } from './prosestates.admin.mounts'
 
@@ -346,6 +348,30 @@ export const ADMIN: readonly ProseState[] = [
     act: async () => {
       await clickDrawn('tr[data-email="hal@example.com"] button')
       await press('.pp-drawer [data-section="claude"]', 'Reclaim')
+    },
+  },
+  // ---------------------------------------------------------------- Voice it › Settings: a save's answers
+  {
+    key: 'voice/settings-conflict',
+    group: 'admin',
+    files: ['voice/Settings.tsx'],
+    shows: '[data-card="behaviour"] [role="alert"]',
+    mount: mountVoiceConflict,
+    act: async () => {
+      await press('[data-card="behaviour"]', '2 min')
+      await press('body', 'Save')
+    },
+  },
+  {
+    key: 'voice/settings-refused',
+    group: 'admin',
+    files: ['voice/Settings.tsx'],
+    shows: '[data-card="behaviour"] [role="alert"]',
+    data: ['idle takes a name from the catalogue'],
+    mount: mountVoiceRefused,
+    act: async () => {
+      await press('[data-card="behaviour"]', '2 min')
+      await press('body', 'Save')
     },
   },
   // ---------------------------------------------------------------- Schedules, every workspace
