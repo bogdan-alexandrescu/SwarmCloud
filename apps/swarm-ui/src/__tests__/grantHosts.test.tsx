@@ -10,7 +10,7 @@
 //   * a tick with no host, a list emptied on an enabled grant, a 17th host
 //     and a host `SLOT_HOST` refuses are each refused before any call, in the
 //     API's own words;
-//   * the form's rule is the API module's rule, read from its source.
+//   * the form's rule is the API module's rule, as generated/constants/server.json holds it.
 //
 // Fixtures only; no network.
 
@@ -19,6 +19,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
+import server from '../generated/constants/server.json'
 import { HOST_REFUSED, HOSTS_TOO_MANY, MAX_SLOT_HOSTS, SLOT_HOST, hostsNeeded } from '../slotHosts'
 
 const AT = '2026-10-26T09:30:00+00:00'
@@ -265,23 +266,20 @@ describe('the cf-access cell\'s hosts', () => {
 })
 
 describe('the form\'s rule is the API\'s', () => {
-  const py = readFileSync(join(__dirname, '..', '..', '..', 'swarm-api', 'swarm_api', 'workspace_secrets.py'), 'utf8')
-  // Adjacent string literals joined, as Python joins them.
-  const joined = py.replace(/"\s*\n\s*f?"/g, '')
+  // swarm_api/workspace_secrets.py's values, as the generated server.json holds them.
+  const ws = server.workspace_secrets
 
   it('SLOT_HOST, the cap and the host-scoped slots match swarm_api/workspace_secrets.py', () => {
-    const pattern = /^SLOT_HOST = re\.compile\(r"(.+)"\)$/m.exec(py)
-    expect(pattern, 'SLOT_HOST not found').not.toBeNull()
     // MUTATION: loosen or tighten either side's host rule -> fails.
-    expect(SLOT_HOST.source).toBe(`^${pattern![1]}$`)
-    expect(py).toMatch(new RegExp(`^MAX_SLOT_HOSTS = ${MAX_SLOT_HOSTS}$`, 'm'))
-    expect(py).toMatch(/^HOST_SCOPED_SLOTS: tuple\[str, \.\.\.\] = \("cf-access",\)$/m)
+    expect(SLOT_HOST.source).toBe(`^${ws.slot_host_pattern}$`)
+    expect(MAX_SLOT_HOSTS).toBe(ws.max_slot_hosts)
+    expect(ws.host_scoped_slots).toEqual(['cf-access'])
   })
 
   it('every refusal is the API\'s words', () => {
-    expect(joined).toContain(HOST_REFUSED)
-    expect(joined).toContain(HOSTS_TOO_MANY.replace(String(MAX_SLOT_HOSTS), '{MAX_SLOT_HOSTS}'))
-    expect(joined).toContain(hostsNeeded('{slot}').replace(`1 to ${MAX_SLOT_HOSTS}`, '1 to {MAX_SLOT_HOSTS}'))
+    expect(HOST_REFUSED).toBe(ws.host_refused)
+    expect(HOSTS_TOO_MANY).toBe(ws.hosts_too_many)
+    expect(hostsNeeded('cf-access')).toBe(ws.hosts_needed['cf-access'])
   })
 })
 

@@ -1,4 +1,3 @@
-# source-text: contract - OUTCOME_SECTIONS in api.ts and the sections Activity.tsx's cards ask for must be the route's section keys
 """`GET /v1/outcomes?section=…`: one Timeline card's part of the ledger (archived issue 377).
 
 Owner decision 2026-09-30: every Timeline card reads its own part of the
@@ -31,7 +30,7 @@ neither the payload cache nor a first-read derive makes the two differ.
 
 from __future__ import annotations
 
-import re
+import importlib.util
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +44,16 @@ from swarm_api.outcomes import SECTIONS
 from .conftest import auth_header
 from .fakes import FakeDocumentRef, FakeFirestore, FakeQuery
 from .test_outcomes_route import Clock, _context, seed_week
+
+_CONSOLE = Path(__file__).resolve().parents[3] / "scripts/api_constants/console.py"
+_spec = importlib.util.spec_from_file_location("api_constants_console", _CONSOLE)
+console_constants = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(console_constants)
+
+#: What each read of the Timeline page asks for. The console's
+#: `contract.constants.test.ts` holds the page to the same asks, through the
+#: generated constants, so a card that starts asking for more is priced here.
+PAGE_ASKS = console_constants.OUTCOME_PAGE_ASKS
 
 WEEK = {"tz": "UTC", "span": "7d", "compare": "previous"}
 
@@ -97,18 +106,6 @@ def ok(api: TestClient, user: str, **params: Any) -> dict[str, Any]:
     return response.json()
 
 
-REPO = Path(__file__).resolve().parents[3]
-
-
-def test_the_page_asks_for_exactly_the_routes_sections():
-    """`OUTCOME_SECTIONS` in api.ts is the list the Timeline's cards name; a
-    section the route does not know is a 422 on every card that asks for it."""
-    source = (REPO / "apps/swarm-ui/src/api.ts").read_text()
-    m = re.search(r"export const OUTCOME_SECTIONS = \[(.*?)\] as const", source, flags=re.DOTALL)
-    assert m, "OUTCOME_SECTIONS is not in api.ts; this check would be vacuous"
-    assert re.findall(r"'(\w+)'", m.group(1)) == list(SECTIONS)
-
-
 def test_the_sections_are_the_keys_the_full_response_computes():
     assert set(SECTIONS) == set(FULL_KEYS) - set(ENVELOPE)
     assert [k for k in FULL_KEYS if k in SECTIONS] == list(SECTIONS), "SECTIONS is in the response's order"
@@ -148,6 +145,14 @@ def test_no_section_is_the_full_response_unchanged(warmed, tokens, group_map, cl
     assert empty.content == plain.content, "an empty section is no section"
     every = read(fresh(warmed, tokens, group_map, clock), "alice", **WEEK, section=list(SECTIONS))
     assert every.content == plain.content, "naming every section is the full response, byte for byte"
+
+
+def test_the_page_asks_name_only_the_routes_sections():
+    """A section the route does not know is a 422 on every card that asks for it."""
+    cards = PAGE_ASKS["cards"]
+    assert len(cards) == 7, "the page's cost bound below counts eight extra requests"
+    asked = {s for asks in (PAGE_ASKS["headline"], PAGE_ASKS["late"], *cards.values()) for s in asks}
+    assert asked <= set(SECTIONS), asked - set(SECTIONS)
 
 
 def test_an_unknown_section_is_the_one_validation_envelope(warmed, tokens, group_map, clock):
@@ -216,8 +221,7 @@ def test_the_latency_section_carries_the_wait_it_leaves_out(warmed, tokens, grou
     full = ok(fresh(warmed, tokens, group_map, clock), "alice", **WEEK)
     part = ok(fresh(warmed, tokens, group_map, clock), "alice", **WEEK, section="latency")
     assert part["latency"]["wait_excluded"] == full["coverage"]["wait_excluded"]
-    source = (REPO / "apps/swarm-ui/src/Activity.tsx").read_text()
-    assert "coverage" not in _page_sections(source)[1]["latency"]
+    assert "coverage" not in PAGE_ASKS["cards"]["latency"]
 
 
 def _reads(db, tokens, group_map, clock, **params: Any) -> int:
@@ -274,22 +278,6 @@ def test_each_section_alone_is_that_key_of_the_full_response_on_a_cold_store(tok
 # --------------------------------------------------------------------------
 # What the whole Timeline page costs, counted at the store
 # --------------------------------------------------------------------------
-
-def _page_sections(source: str) -> tuple[list[str], dict[str, list[str]], list[str]]:
-    """LEDGER_SECTIONS, CARD_SECTIONS and LEDGER_LATE_SECTIONS (the headline's
-    second read, archived issue 2422) as Activity.tsx states them -- read from the page, so
-    a card that starts asking for more is priced here."""
-    ledger = re.search(r"const LEDGER_SECTIONS = \[(.*?)\] as const", source, flags=re.DOTALL)
-    cards = re.search(r"const CARD_SECTIONS = \{(.*?)\} as const", source, flags=re.DOTALL)
-    late = re.search(r"const LEDGER_LATE_SECTIONS = \[(.*?)\] as const", source, flags=re.DOTALL)
-    assert ledger and cards and late, "the page's section lists moved; this check would be vacuous"
-    parsed = {
-        name: re.findall(r"'(\w+)'", body)
-        for name, body in re.findall(r"(\w+): \[(.*?)\]", cards.group(1), flags=re.DOTALL)
-    }
-    assert len(parsed) == 7, parsed
-    return re.findall(r"'(\w+)'", ledger.group(1)), parsed, re.findall(r"'(\w+)'", late.group(1))
-
 
 class Counter:
     """Every document the store hands back, as Firestore bills it: one per
@@ -348,7 +336,7 @@ def test_the_whole_timeline_page_costs_one_full_read(warmed, tokens, group_map, 
     in the same minute. Everything the outcome service reads beyond that --
     the day documents, the previous span, the terminal counts, the workflow
     lookups -- is paid once per page, which the per-card `reads` pins too."""
-    ledger, cards, late = _page_sections((REPO / "apps/swarm-ui/src/Activity.tsx").read_text())
+    ledger, cards, late = PAGE_ASKS["headline"], PAGE_ASKS["cards"], PAGE_ASKS["late"]
     counter = Counter(monkeypatch)
     old = fresh(warmed, tokens, group_map, clock)
     bodies: list[dict[str, Any]] = []

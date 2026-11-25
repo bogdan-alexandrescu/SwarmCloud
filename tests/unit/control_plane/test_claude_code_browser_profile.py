@@ -1,4 +1,3 @@
-# source-text: contract - Submit.tsx's SUGGESTED table and api.ts's catalogue fixtures must carry this profile, as must the Dockerfile and locals.tf
 """`claude-code-browser` is claude-code on agent-runtime-browser (contract
 request 67, accepted by the owner 2026-10-11).
 
@@ -18,8 +17,8 @@ Autopilot, named by callers like any other. These hold that:
     the agent to launch Chromium with its sandbox off -- only on the image
     that sets it;
   * every restatement of the catalogue carries it: the Terraform mirror and
-    model table, both agent-stream tables, the Submit form and the UI's
-    fixtures, which scripts/lib/check-contract-parity.sh reads;
+    model table, both agent-stream tables, and the generated profiles file
+    the console's Submit form and fixtures are held to (part of #72);
   * request 67 records the owner's acceptance and the rollback.
 
 MUTATION: set its resource_class to "standard" in profiles.py and
@@ -32,7 +31,7 @@ PLAYWRIGHT_BROWSERS_PATH pass-through in claude_code.body and
 from __future__ import annotations
 
 import dataclasses
-import json
+import importlib.util
 import re
 from pathlib import Path
 from typing import Any
@@ -61,8 +60,6 @@ REPO = Path(__file__).resolve().parents[3]
 PROFILE = "claude-code-browser"
 LOCALS = REPO / "terraform/infra/locals.tf"
 REQUESTS = REPO / "docs/contract-change-requests.md"
-SUBMIT = REPO / "apps/swarm-ui/src/Submit.tsx"
-UI_API = REPO / "apps/swarm-ui/src/api.ts"
 DOCKERFILE = REPO / "images/agent-runtime-browser/Dockerfile"
 
 
@@ -467,18 +464,22 @@ def test_the_terraform_mirror_carries_it_and_its_model():
     assert classes[0].group(1) == classes[1].group(1), classes
 
 
-def test_the_parity_checked_ui_tables_carry_it():
-    """check-contract-parity.sh reads Submit.tsx's SUGGESTED for every profile
-    in the catalogue; the UI fixtures are held to the catalogue by
-    test_capacity_serves_availability.py and test_ui_fixture_input_contract.py."""
-    submit = SUBMIT.read_text(encoding="utf-8")
-    table = re.search(r"const SUGGESTED\b[^=]*=\s*[{]\n(.*?)\n[}]\n", submit, re.S)
-    assert table and f"'{PROFILE}': [" in table.group(1)
-    ui = UI_API.read_text(encoding="utf-8")
-    for declaration in ("FIXTURE_INPUT_CONTRACTS", "FIXTURE_AVAILABILITY"):
-        literal = re.search(declaration + r"\b[^=]*=\s*(\{.*?\n\})", ui, re.S)
-        assert literal, declaration
-        assert PROFILE in json.loads(literal.group(1)), declaration
+def test_the_profiles_constants_group_carries_it():
+    """The console's Submit form and its fixtures are held to the catalogue
+    through the generated profiles file (part of #72):
+    apps/swarm-ui/src/__tests__/contract.profiles.test.tsx holds SUGGESTED to
+    every profile the `profiles` group serves, and the fixture capacity to
+    catalogue names with this one among them. This holds that the group serves
+    it, with exactly the keys it declares and its browser-tool choices."""
+    spec = importlib.util.spec_from_file_location(
+        "api_constants_profiles_under_test", REPO / "scripts/api_constants/profiles.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    entry = module.build()["profiles"][PROFILE]
+    assert entry["declared_inputs"] == list(RUNNER_PROFILES[PROFILE].inputs)
+    assert entry["input_choices"]["browser_tool"] == ["auto", "playwright", "dev-browser", "jev"]
+    assert entry["worker_action"] is None and entry["control_plane"] is False
 
 
 def test_request_67_records_the_owners_acceptance_and_the_rollback():

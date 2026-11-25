@@ -47,12 +47,13 @@ from swarm_common.states import CONCURRENCY_STATES
 
 from ..codec import lease_dispatch_overdue, lease_task_is_current
 from ..deps import AppContext, get_context, submission_scope, tenant_scope
+from ..wire_types import LeaseHeartbeatPage
 from .admin import _heartbeat_grace_seconds
 
 router = APIRouter(prefix="/v1/leases", tags=["leases"])
 
 
-@router.get("")
+@router.get("", responses={200: {"model": LeaseHeartbeatPage}})
 def list_lease_heartbeats(
     tenant_id: str = Depends(tenant_scope),
     submitted_by: str | None = Depends(submission_scope),

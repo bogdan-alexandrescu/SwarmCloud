@@ -1,0 +1,245 @@
+{
+  "_generated": "GENERATED FILE -- DO NOT EDIT BY HAND. Regenerate: uv run python scripts/gen_api_types.py",
+  "doctor": {
+    "finding_keys": [
+      "cause",
+      "detail",
+      "fix",
+      "id",
+      "repair",
+      "status",
+      "step"
+    ],
+    "scheduled_doctor_shipped": true,
+    "statuses": [
+      "met",
+      "unmet",
+      "unknown"
+    ]
+  },
+  "events_route_pages": true,
+  "merge_max_head_updates": 12,
+  "plugin_refusals": {
+    "api": {
+      "archive_too_large": "The archive is larger than 100 MiB.",
+      "bundle_base_invalid": "A base image is not this deployment's image by digest.",
+      "bundle_build_failed": "The bundle build failed.",
+      "bundle_build_not_started": "The bundle build could not be started.",
+      "bundle_build_unconfigured": "This deployment has no bundle build configured.",
+      "bundle_building": "A bundle build is already running; wait for it to end.",
+      "bundle_check_failed": "The bundle build's output is not the bundle that was asked for.",
+      "bundle_config_changed": "The bundle image's config differs from its release image's config in more than the plugin layers and their history entries.",
+      "bundle_grant_missing": "swarm-api may not run the bundle job or read what it pushed; its grants on the job and the bundle repository are not applied yet.",
+      "bundle_key_stale": "Another bundled plugin's current version changed since this bundle was built; apply again to build the bundle the live versions need.",
+      "bundle_not_found": "That bundle is not one of this deployment's bundles.",
+      "bundle_not_retained": "No retained bundle carries the previous version; apply it to build one.",
+      "confirmation_mismatch": "The name typed is not the plugin's name.",
+      "confirmation_required": "This update changes hooks, servers, hosts or secret fields: type the plugin's name to apply it.",
+      "diff_changed": "The diff changed since it was shown; read it again before applying.",
+      "install_bundled": "This plugin is built into an image: applying a version starts a bundle build.",
+      "install_not_active": "The plugin is not an active install.",
+      "install_not_bundled": "This plugin is not built into an image.",
+      "intake_digest_mismatch": "The staged copy's digest or size is not the one its report states.",
+      "intake_start_failed": "The intake job could not be started.",
+      "intake_timed_out": "The intake job ended without a report.",
+      "intake_unverified": "The intake's record does not verify.",
+      "marketplace_missing": "The repository has no readable .claude-plugin/marketplace.json at that commit.",
+      "marketplace_plugin_missing": "The marketplace does not list a plugin of that name.",
+      "marketplace_source_git": "The marketplace entry names a bare git URL, which this release refuses.",
+      "marketplace_source_npm": "The marketplace entry installs from npm, which this release refuses.",
+      "marketplace_source_pip": "The marketplace entry installs from pip, which this release refuses.",
+      "marketplace_source_unknown": "The marketplace entry's source is not a path or a GitHub repository.",
+      "overlay_too_large": "The overlay is larger than 64 KiB.",
+      "pinned_copy_differs": "A different copy is already stored under that digest.",
+      "plugin_built_in": "A built-in plugin is updated by an image release and cannot be removed.",
+      "plugin_name_taken": "An installed plugin in this catalogue already has that name; update it instead.",
+      "plugin_removed": "The plugin was removed from the catalogue.",
+      "ref_invalid": "The ref is not a tag, a branch or a commit name.",
+      "ref_not_found": "The ref does not name a commit in the repository.",
+      "report_invalid": "The intake job's report is not a valid report.",
+      "report_limits_differ": "The intake job's report was made under other limits.",
+      "report_mismatch": "The intake job's report is bound to another intake.",
+      "repository_invalid": "The repository is not an owner/name GitHub repository.",
+      "settings_key_missing": "This deployment has no settings key, so no plugin can be installed.",
+      "source_kind_refused": "A plugin comes from a GitHub repository, a marketplace entry or an uploaded archive.",
+      "source_unreachable": "GitHub could not be read; nothing was installed.",
+      "subdir_invalid": "The folder is not a relative path inside the repository.",
+      "upload_missing": "No uploaded archive was found for this intake.",
+      "upload_name_invalid": "An upload is one .zip, .tar.gz or .tgz file.",
+      "version_is_current": "That version is already the current one.",
+      "version_not_found": "That version is not one of the plugin's versions."
+    },
+    "intake": {
+      "archive_corrupt": "The archive cannot be read.",
+      "archive_empty": "The archive holds no files.",
+      "archive_format_unknown": "The archive is not a .zip or a .tar.gz file.",
+      "archive_too_large": "The archive is larger than 100 MiB.",
+      "dependencies_not_shipped": "A package.json lists dependencies but no node_modules folder is beside it.",
+      "entry_duplicate": "Two entries have the same path, ignoring case and Unicode normalisation.",
+      "entry_encrypted": "An entry is encrypted.",
+      "entry_escapes_root": "An entry's path leaves the plugin's folder.",
+      "entry_path_absolute": "An entry's path is absolute.",
+      "entry_path_invalid": "An entry's path holds a backslash, a NUL, a drive letter or bytes that are not UTF-8.",
+      "entry_path_parent": "An entry's path has a '..' segment.",
+      "entry_path_segment_too_long": "An entry's path has a segment longer than 255 bytes.",
+      "entry_path_too_deep": "An entry's path has more than 32 segments.",
+      "entry_setuid": "An entry has the setuid or setgid bit.",
+      "entry_special_file": "An entry is a device, a FIFO or a socket.",
+      "entry_type_unsupported": "An entry has a type the intake does not accept.",
+      "entry_under_link": "An entry's path passes through a symbolic link.",
+      "expansion_ratio": "The archive expands more than 100 times its packed size.",
+      "hardlink_escapes_root": "A hard link points outside the plugin's folder or to something that is not a file.",
+      "hook_path_missing": "A hook names a file in the plugin that is not there.",
+      "hook_unknown": "The plugin declares a hook event or type the intake does not accept.",
+      "hooks_invalid": "The plugin's hooks are not valid hook declarations.",
+      "intake_internal_error": "The intake job failed before it finished its checks.",
+      "link_escapes_root": "A symbolic link points outside the plugin's folder.",
+      "link_target_missing": "A symbolic link points to nothing in the archive.",
+      "link_to_link": "A symbolic link points to another symbolic link.",
+      "manifest_component_unknown": "The plugin declares a component in a shape the intake does not know.",
+      "manifest_invalid": "The plugin's .claude-plugin/plugin.json is not a valid manifest.",
+      "manifest_missing": "The plugin has no .claude-plugin/plugin.json and the overlay declares none.",
+      "manifest_path_missing": "The plugin's manifest names a path that is not in the archive.",
+      "manifest_path_outside_root": "The plugin's manifest names a path outside the plugin's folder.",
+      "manifest_user_config_invalid": "The plugin's userConfig has a field the intake does not accept.",
+      "mcp_invalid": "The plugin's MCP servers are not valid server declarations.",
+      "mcp_path_missing": "An MCP server names a file in the plugin that is not there.",
+      "overlay_conflict": "The plugin already holds a file the overlay writes.",
+      "overlay_hook_path_missing": "An overlay hook names a file that is not in the plugin.",
+      "overlay_invalid": "The overlay is not a valid overlay.",
+      "overlay_replaces_hooks": "The overlay declares hooks but the plugin ships its own.",
+      "overlay_replaces_manifest": "The overlay declares a manifest but the plugin ships its own.",
+      "overlay_variable_denied": "An overlay setting names an environment variable no plugin may set.",
+      "package_json_invalid": "A package.json is not a JSON object.",
+      "skill_invalid": "A skill's SKILL.md cannot be read.",
+      "subdir_invalid": "The requested folder is not a valid relative path.",
+      "subdir_missing": "The requested folder is not in the archive.",
+      "too_many_files": "The archive holds more than 20,000 files.",
+      "unpacked_too_large": "The archive unpacks to more than 500 MiB."
+    }
+  },
+  "read_scope_checks_collision_only": true,
+  "repository_url_prefixes": [
+    "https://",
+    "git@",
+    "ssh://"
+  ],
+  "scheduler_jobs": [
+    {
+      "job": "scheduler-tick",
+      "resource": "safety_tick",
+      "uri": null
+    },
+    {
+      "job": "reconciler-tick",
+      "resource": "reconciler",
+      "uri": "${trimsuffix(var.reconciler_endpoint, \"/\")}${var.reconciler_path}"
+    },
+    {
+      "job": "quota-refresh",
+      "resource": "quota_refresh",
+      "uri": "${trimsuffix(var.quota_broker_endpoint, \"/\")}${var.quota_broker_path}"
+    },
+    {
+      "job": "workflow-rollup-<tenant>",
+      "resource": "workflow_rollup",
+      "uri": "${trimsuffix(var.api_endpoint, \"/\")}/v1/admin/workflows/rollup?tenant_id=${urlencode(each.key)}&seal_outcomes=true"
+    },
+    {
+      "job": "issue-run-advance-<tenant>",
+      "resource": "issue_run_advance",
+      "uri": "${trimsuffix(var.api_endpoint, \"/\")}/v1/admin/runs/advance?tenant_id=${urlencode(each.key)}"
+    },
+    {
+      "job": "stranded-pr-sweep-<tenant>",
+      "resource": "stranded_pr_sweep",
+      "uri": "${trimsuffix(var.api_endpoint, \"/\")}/v1/admin/stranded-prs/sweep?tenant_id=${urlencode(each.key)}"
+    },
+    {
+      "job": "repo-index-poll-<tenant>",
+      "resource": "repo_index_poll",
+      "uri": "${trimsuffix(var.api_endpoint, \"/\")}/v1/admin/repositories/poll?tenant_id=${urlencode(each.key)}"
+    },
+    {
+      "job": "merge-wake-<tenant>",
+      "resource": "merge_wake",
+      "uri": "${trimsuffix(var.api_endpoint, \"/\")}/v1/admin/merges/wake?tenant_id=${urlencode(each.key)}"
+    },
+    {
+      "job": "forge-refresh",
+      "resource": "forge_refresh",
+      "uri": "${trimsuffix(var.api_endpoint, \"/\")}${var.forge_refresh_path}"
+    },
+    {
+      "job": "schedule-tick",
+      "resource": "schedule_tick",
+      "uri": "${trimsuffix(var.api_endpoint, \"/\")}/v1/admin/schedules/tick"
+    },
+    {
+      "job": "workspace-sweep",
+      "resource": "workspace_sweep",
+      "uri": "${trimsuffix(var.api_endpoint, \"/\")}${var.workspace_sweep_path}"
+    },
+    {
+      "job": "workspace-secrets-rotation-sweep",
+      "resource": "secrets_rotation_sweep",
+      "uri": "${trimsuffix(var.api_endpoint, \"/\")}${var.secrets_rotation_sweep_path}"
+    },
+    {
+      "job": "mcp-credentials-sweep",
+      "resource": "mcp_credentials_sweep",
+      "uri": "${trimsuffix(var.api_endpoint, \"/\")}${local.mcp_credentials_sweep_path}"
+    }
+  ],
+  "schema_fields": {
+    "StepPluginCreate": [
+      "mode",
+      "skills",
+      "overrides"
+    ],
+    "WorkflowStepCreate": [
+      "step_id",
+      "runner_profile",
+      "input",
+      "depends_on",
+      "resource_class",
+      "model_class",
+      "plugins",
+      "plugins_off",
+      "input_from",
+      "timeout_seconds",
+      "max_turns",
+      "budget",
+      "when",
+      "builds_on",
+      "repository_ref",
+      "allow_empty_diff",
+      "metadata",
+      "pr_role",
+      "merges",
+      "await_input",
+      "fix_loop",
+      "additional_repositories"
+    ]
+  },
+  "team_add_flags": [
+    "--context",
+    "--display-name",
+    "--first-admin",
+    "--git-owner",
+    "--json-events",
+    "--project"
+  ],
+  "workspace_secrets": {
+    "host_refused": "each host is a lower-case DNS name with a dot, matched exactly: no scheme, port, path, wildcard or IP address",
+    "host_scoped_slots": [
+      "cf-access"
+    ],
+    "hosts_needed": {
+      "cf-access": "a grant into the cf-access slot names the hosts its secret may be sent to (`hosts`, 1 to 16 host names); it is sent to no other"
+    },
+    "hosts_too_many": "`hosts` is a list of 1 to 16 host names",
+    "max_slot_hosts": 16,
+    "slot_host_pattern": "(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?"
+  }
+}
