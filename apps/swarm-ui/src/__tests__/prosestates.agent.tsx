@@ -11,7 +11,7 @@ import { fireEvent } from '@testing-library/react'
 import type { ProseState } from './prosestates'
 import { settle } from './proseapp'
 import { screenLoaded } from './screenLoaded'
-import { mountDiff, mountDiffPhone, mountStop, mountTabs, mountToolMenu, mountWait, refuseStop, releaseStop } from './prosestates.agent.mounts'
+import { LONG_PROMPT, mountDiff, mountDiffPhone, mountPrompt, mountStop, mountTabs, mountToolMenu, mountWait, refuseStop, releaseStop } from './prosestates.agent.mounts'
 import { click } from './prosestates.shell'
 
 /** The ordinary running agent the QA capture opens (qa/routes.json). */
@@ -334,5 +334,15 @@ export const AGENT: readonly ProseState[] = [
       'Every take is in the audit, and you can still take control from them.',
     ],
     walk: { open: `${BROWSER}/browser`, then: () => click('.live-open input[type="checkbox"]') },
+  },
+  {
+    key: 'agent/prompt-all',
+    group: 'agent',
+    files: ['Artifacts.tsx'],
+    shows: '.arts-prompt.is-all',
+    // The prompt is the submitter's text, drawn whole.
+    data: LONG_PROMPT.split('\n'),
+    mount: mountPrompt,
+    act: () => clickText('button', 'Show all'),
   },
 ]

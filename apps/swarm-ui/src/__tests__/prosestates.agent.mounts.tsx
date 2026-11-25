@@ -8,6 +8,7 @@
 import { useState, type ReactElement } from 'react'
 
 import { AgTabsEdge } from '../agent-split/tabs'
+import { PromptText } from '../Artifacts'
 import type { CancelResult } from '../api'
 import type { ApiError, Result } from '../fetch'
 import { DiffView } from '../diff/DiffView'
@@ -197,3 +198,8 @@ export function mountTabs(): ReactElement {
   stubNarrow(260, 120)
   return <Tabs />
 }
+
+/** A prompt long enough to be clamped: the reader's own words, shown as content. */
+export const LONG_PROMPT = Array.from({ length: 40 }, (_, i) => `Step ${i + 1}: read the pool table and note the queue depth of pool ${i + 1}.`).join('\n')
+
+export const mountPrompt = (): ReactElement => <PromptText text={LONG_PROMPT} />
