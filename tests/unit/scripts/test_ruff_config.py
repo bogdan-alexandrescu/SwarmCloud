@@ -32,7 +32,8 @@ SILENT_EXCEPT_RULES = ("BLE001", "S110", "S112")
 # site that arrived from the default branch (accountpool.py).
 # 1051 -> 1052 once (schedules.py), 1052 -> 1055 once, for three sites from the default branch
 # (livegate/__main__.py, swarm_api/routes/runs.py, agent_worker/handoff.py).
-SUPPRESSED_SITE_CEILING = 1055
+# 1055 -> 1061 once, for six sites from the default branch, each already marked inline.
+SUPPRESSED_SITE_CEILING = 1061
 
 
 def _project() -> dict:
