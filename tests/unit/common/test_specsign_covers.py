@@ -137,6 +137,10 @@ def test_every_metadata_key_the_worker_reads_is_signed():
         # The quota parks refunded so far (archived issue 2350), read by the quota park the
         # same way.
         "quota_park_resumes",
+        # The workflow-pause parks refunded so far (decision Q1 of
+        # docs/design/workflow-pause.md), read by the direct pause park the
+        # same way; swarm-api's `AttemptState.park` writes the same key.
+        "pause_refunds",
         # The continuations at the time limit so far (the owner, 2026-11-02), read
         # by the stop at the limit the same way.
         "time_limit_continuations",
