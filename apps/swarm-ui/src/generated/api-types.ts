@@ -358,6 +358,22 @@ export interface DenyRequest {
   reason: string
 }
 
+export interface DiagramAnchor {
+  part: 'plan' | 'step' | 'requirement' | 'overlap'
+  ref?: string | null
+}
+
+/**
+ * Where the diagram added comes from: one thread entry, or one diagram of one
+ * chat turn, of this run. Never a source text: only what an agent drew, and
+ * the API checked, is added this way.
+ */
+export interface DiagramSource {
+  entry_id?: string | null
+  chat_turn_id?: string | null
+  diagram_id?: string | null
+}
+
 export interface DismissBody {
   dismissed?: boolean
 }
@@ -910,6 +926,13 @@ export interface PickedTestRepository {
   repository: string
 }
 
+/** `plan:add-diagram`'s body. */
+export interface PlanAddDiagram {
+  plan_digest: string
+  from: DiagramSource
+  explains?: DiagramAnchor | null
+}
+
 export interface PlanApprove {
   plan_digest: string
 }
@@ -927,6 +950,18 @@ export interface PlanComment {
   text?: string | null
   entry_id?: string | null
   resolved?: boolean | null
+}
+
+/**
+ * `plan:diagram`'s body. There is no field for a profile, an image, a command,
+ * a resource or a model: the review agent's shape is fixed and its class is
+ * the settings' (invariant 10), and any other key is refused 422.
+ */
+export interface PlanDiagramAsk {
+  plan_digest: string
+  anchor: DiagramAnchor
+  ask: string
+  kind?: 'flow' | 'sequence' | 'architecture' | 'state' | 'data' | 'schematic' | null
 }
 
 export interface PlanEdit {
