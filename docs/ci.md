@@ -6139,6 +6139,14 @@ step), and the gate then ran the same guards again for 65-77 minutes. A
 runner without the gate (codex) keeps `scripts/changed-guards.sh` once at the
 end ([why](working-in-this-repository.md#swarmcloud-agent-tests)).
 
+**The worker count** (issue 422). The script passes pytest an explicit `-n`
+taken from `PYTEST_XDIST_AUTO_NUM_WORKERS`, the worker budget the platform sets
+from the container's memory, in the command it prints and in the run alike;
+without a positive integer there (CI, a laptop) it passes `-n auto`. `-n auto`
+read the same budget but hid it, and an agent copies the printed command and
+raises `-n`: six workers of `tests/unit/worker` OOM-killed an 8 GiB container
+twice ([the budget](agent-output.md#the-agent-is-told-its-memory-budget)).
+
 **What is related** (`scripts/lib/related_tests.py`, standard library only).
 Python: `select_unit_tests.py`'s rules, imported rather than restated -- the
 change's own tests, every test that imports a changed module through any chain
