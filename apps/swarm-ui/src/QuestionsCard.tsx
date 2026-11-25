@@ -472,13 +472,14 @@ function AskedCard({ task, count, id }: { task: Task; count: number; id: string 
       {state.status === 'loading' ? (
         <p className="dt-note">Reading the questions…</p>
       ) : state.status === 'error' ? (
-        <p className="dt-note">The questions could not be read: {errorHeading(state.error)}</p>
+        // COULD-NOT-CHECK, ONE SHORT LINE (issue 439): the fact, then why, as facts.
+        <p className="dt-note">Questions not read · {errorHeading(state.error)}</p>
       ) : data === null || data.status === 'none' ? (
         <p className="dt-note">
-          The questions could not be read: {count === 0 ? questionsRejected(task) : 'the API served none'}.
+          Questions not read · {count === 0 ? questionsRejected(task) : 'the API served none'}
         </p>
       ) : data.status === 'unavailable' ? (
-        <p className="dt-note">The questions could not be read: {data.unavailable_because ?? 'the API did not say why'}.</p>
+        <p className="dt-note">Questions not read · {data.unavailable_because ?? 'the API did not say why'}</p>
       ) : (
         <ol className="qc-list">
           {questions.map((q, i) => (

@@ -10,6 +10,7 @@ import { FixLoopPill } from './components/StatePill'
 import { useRoleGate } from './roleGate'
 import { Id } from './Shell'
 import { agentPath } from './OverviewRegions'
+import { InfoTip } from './InfoTip'
 import { addressToPath } from './paths'
 import {
   DEFAULT_SORT,
@@ -2075,8 +2076,13 @@ export function StepInspector({
             'no other workflow of this shape' sat between two disabled arrows
             over a lone strip mark. One sentence, the shape in its title. */}
         {siblings.length <= 1 ? (
-          <span className="wf-scrub-pos" title={`This workflow’s shape: ${shapeWords(shape)}. Only workflows of this shape are compared.`}>
-            No other workflow of this shape on this board
+          // SHORT, THE SENTENCE BEHIND THE (i) (issue 439), word for word, with the shape it names.
+          <span className="wf-scrub-pos">
+            No other workflow of this shape{' '}
+            <InfoTip
+              about="the shape"
+              tip={`No other workflow of this shape on this board. This workflow’s shape: ${shapeWords(shape)}. Only workflows of this shape are compared.`}
+            />
           </span>
         ) : (
         <>

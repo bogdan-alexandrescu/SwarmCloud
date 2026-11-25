@@ -24,6 +24,7 @@ import {
   mountStepCard,
   mountWorkflowFacts,
 } from './prosestates.workflows.mounts'
+import { mountAnsweredQuestions, mountWideStage } from './prosestates.workflows.board'
 import { mountRunApproveRefused, mountRunChecks, mountRunLongSummary, mountRunOverlaps, mountRunRejected } from './prosestates.workflows.runs'
 import { screenLoaded } from './screenLoaded'
 
@@ -279,6 +280,33 @@ export const WORKFLOWS: readonly ProseState[] = [
     walk: { open: `${AUDIT}/changes`, then: () => clickText('.chg-mx-chip.mono', 'publish') },
   },
   // ------------------------------------------------------------ mounted
+  {
+    key: 'workflow/stage-open',
+    group: 'workflows',
+    files: ['Workflows.tsx'],
+    shows: '.wf-band:has(> .wf-band-toggle[aria-expanded="true"])',
+    mount: mountWideStage,
+    act: () => click('.wf-band > .wf-band-toggle'),
+  },
+  {
+    key: 'workflow/card-step',
+    group: 'workflows',
+    files: ['Workflows.tsx', 'WorkflowViews.tsx'],
+    shows: '.wf-inspect',
+    lines: ['No other workflow of this shape'],
+    moved: ['No other workflow of this shape on this board.'],
+    mount: mountWideStage,
+    act: () => click('button[data-step="plan"]'),
+  },
+  {
+    key: 'workflow/questions-answered',
+    group: 'workflows',
+    files: ['WorkflowQuestions.tsx', 'QuestionsCard.tsx'],
+    shows: '.wq-step-body',
+    lines: ['Questions not read · the API served none'],
+    mount: mountAnsweredQuestions,
+    act: () => click('.wq-answered'),
+  },
   {
     key: 'step/details',
     group: 'workflows',
