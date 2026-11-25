@@ -11,7 +11,7 @@ import { fireEvent } from '@testing-library/react'
 import type { ProseState } from './prosestates'
 import { settle } from './proseapp'
 import { screenLoaded } from './screenLoaded'
-import { LONG_PROMPT, mountDiff, mountDiffPhone, mountPrompt, mountStop, mountTabs, mountToolMenu, mountWait, refuseStop, releaseStop } from './prosestates.agent.mounts'
+import { LONG_PROMPT, mountCheckpoint, mountDiff, mountDiffPhone, mountPrompt, mountStop, mountTabs, mountToolMenu, mountWait, refuseStop, releaseStop } from './prosestates.agent.mounts'
 import { click } from './prosestates.shell'
 
 /** The ordinary running agent the QA capture opens (qa/routes.json). */
@@ -344,5 +344,14 @@ export const AGENT: readonly ProseState[] = [
     data: LONG_PROMPT.split('\n'),
     mount: mountPrompt,
     act: () => clickText('button', 'Show all'),
+  },
+  {
+    key: 'agent/checkpoint-folder',
+    group: 'agent',
+    files: ['CheckpointBrowser.tsx'],
+    // A folder opens unfolded; the click folds it.
+    shows: '▸ progress/',
+    mount: mountCheckpoint,
+    act: () => click('.ckb li[role="treeitem"][aria-expanded="true"] .ckb-open'),
   },
 ]

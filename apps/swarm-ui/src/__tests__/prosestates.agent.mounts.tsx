@@ -11,6 +11,7 @@ import { AgTabsEdge } from '../agent-split/tabs'
 import { PromptText } from '../Artifacts'
 import type { CancelResult } from '../api'
 import type { ApiError, Result } from '../fetch'
+import { CheckpointBrowser, type CheckpointLoaders } from '../CheckpointBrowser'
 import { DiffView } from '../diff/DiffView'
 import { LiveToolMenu } from '../LiveToolMenu'
 import { StopRun } from '../StopRun'
@@ -203,3 +204,59 @@ export function mountTabs(): ReactElement {
 export const LONG_PROMPT = Array.from({ length: 40 }, (_, i) => `Step ${i + 1}: read the pool table and note the queue depth of pool ${i + 1}.`).join('\n')
 
 export const mountPrompt = (): ReactElement => <PromptText text={LONG_PROMPT} />
+
+// ------------------------------------------------------- the checkpoint browser
+
+const PREFIX = 'eng/task_a/att_1/ckpt-00001'
+const URI = ['gs:/', 'swarm-artifacts-example', PREFIX, 'archive.tar.gz'].join('/')
+type Files = Awaited<ReturnType<CheckpointLoaders['files']>>
+type FileRead = Awaited<ReturnType<CheckpointLoaders['file']>>
+type Member = Extract<Files, { status: 'ok' }>['data']['files'][number]
+
+function member(path: string, over: Partial<Member> = {}): Member {
+  return { path, size: 10, mode: 0o644, type: 'file', link: null, unsafe: false, undecodable: false, ...over }
+}
+
+const MEMBERS: Member[] = [
+  member('progress', { type: 'dir', size: 0, mode: 0o755 }),
+  member('progress/step-0001.md', { size: 32 }),
+  member('state.json', { size: 40 }),
+]
+
+const STATE_JSON = JSON.stringify({ pools: { a: { depth: 3 } } })
+
+const LOADERS: CheckpointLoaders = {
+  files: async () =>
+    ({
+      status: 'ok',
+      fetchedAt: Date.now(),
+      data: {
+        task_id: 'task_a', tenant_id: 'eng', attempt_id: 'att_1', checkpoint_id: 'ckpt-00001', prefix: PREFIX,
+        archive: { key: `${PREFIX}/archive.tar.gz`, uri: URI, bytes: 4096 },
+        manifest: { status: 'present', detail: null, file_count: 2, archive_bytes: 4096, archive_sha256: 'abc', created_at: null, label: 'periodic', archive_key_agrees: true },
+        status: 'ok', detail: null, files: MEMBERS, count: MEMBERS.length, truncated: false, truncated_reason: null,
+        file_count_agrees: true, scanned_bytes: 4096, inflated_bytes: 20480,
+        limits: { entries: 5000, scan_bytes: 268435456, inflate_bytes: 1073741824 },
+      },
+    }) as Files,
+  file: async (_t: string, _a: string, _c: string, path: string) => {
+    const text = path === 'state.json' ? STATE_JSON : '# step 1\n'
+    return {
+      status: 'ok',
+      fetchedAt: Date.now(),
+      data: {
+        task_id: 'task_a', tenant_id: 'eng', attempt_id: 'att_1', checkpoint_id: 'ckpt-00001', path,
+        content_type: path.endsWith('.json') ? 'application/json' : 'text/plain',
+        member: { type: 'file', mode: 0o644, size: text.length },
+        artifact: { name: path, bytes: text.length, uri: URI },
+        status: 'ok', detail: null, key: `${PREFIX}/archive.tar.gz`, uri: URI, content: text,
+        total_bytes: text.length, offset: 0, returned_bytes: text.length, next_offset: null, truncated: false,
+        redacted: false, redaction_count: 0, redaction: { applied_at_read_time: true, rules: 11 },
+      },
+    } as FileRead
+  },
+}
+
+export const mountCheckpoint = (): ReactElement => (
+  <CheckpointBrowser taskId="task_a" attemptId="att_1" checkpointId="ckpt-00001" onClose={() => undefined} loaders={LOADERS} />
+)
