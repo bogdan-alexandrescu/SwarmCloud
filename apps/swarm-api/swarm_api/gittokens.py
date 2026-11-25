@@ -1216,7 +1216,7 @@ class _LiteralFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         try:
             message = record.getMessage()
-        except Exception:
+        except Exception:  # noqa: BLE001
             return True
         if self._literal in message:
             record.msg = redact(message, extra=(self._literal,)).text
@@ -1348,7 +1348,7 @@ class _Forge:
     def _message(self, raw: bytes) -> str:
         try:
             data = _json.loads(raw.decode("utf-8"))
-        except Exception:
+        except Exception:  # noqa: BLE001
             return ""
         message = data.get("message") if isinstance(data, dict) else None
         if not isinstance(message, str):
@@ -1367,7 +1367,7 @@ class _Forge:
         self.gets += 1
         try:
             response = self._send(url, headers, self._timeout)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # The type only: a transport's message can quote the request.
             raise _Unanswered(f"{label}: the read failed ({type(exc).__name__})") from None
         finally:
@@ -1396,7 +1396,7 @@ class _Forge:
         if status == 200 and not git:
             try:
                 data = _json.loads(bytes(response.body or b"").decode("utf-8"))
-            except Exception:
+            except Exception:  # noqa: BLE001
                 data = None
         message = "" if status == 200 else self._message(bytes(response.body or b""))
         if not git or status == 403:
@@ -1769,14 +1769,14 @@ def run_probe(
     except _forge.ForgeReadError as failed:
         # Its sentences are constant and name the secret, never a value.
         return ProbeResult(attempted_at=now, complete=False, error=str(failed))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return ProbeResult(attempted_at=now, complete=False,
                            error=f"{record.secret_name} could not be read ({type(exc).__name__})")
     try:
         try:
             result = probe_token(value, repositories, send=send, now=now, clock=clock,
                                  budget_seconds=budget_seconds)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # A bug in a reader: named by type, never by text, never raised on.
             log.warning("git token probe failed tenant=%s token_id=%s (%s)",
                         record.tenant_id, record.token_id, type(exc).__name__)

@@ -211,7 +211,7 @@ def create_app(
             return {"status": "malformed"}
         try:
             outcome = _get_stopper().stop(**ids)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.error(
                 "stop request failed; Pub/Sub will retry it",
                 task_id=ids["task_id"],

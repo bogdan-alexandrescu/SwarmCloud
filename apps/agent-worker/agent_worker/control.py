@@ -1829,7 +1829,7 @@ class ControlPlane:
 
         try:
             self._run_transaction(_apply, call="event")
-        except Exception as exc:  # the view never costs the event
+        except Exception as exc:  # the view never costs the event  # noqa: BLE001
             self._log.warning("current account not stored", error_type=type(exc).__name__)
             return False
         return True
@@ -1856,7 +1856,7 @@ class ControlPlane:
         when the attempts cannot be read, so nothing is stored short."""
         try:
             docs = self._attempt_docs()
-        except Exception as exc:  # a view never fails the write it rides on
+        except Exception as exc:  # a view never fails the write it rides on  # noqa: BLE001
             self._log.warning("attempt totals not stored", error_type=type(exc).__name__)
             return None
         return stored_attempt_totals(docs, attempt_id=self.attempt_id,
@@ -1890,7 +1890,7 @@ class ControlPlane:
 
         try:
             self._run_transaction(_apply, call="attempt")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._log.warning("attempt totals not stored", error_type=type(exc).__name__)
 
     def store_pending_attempt_totals(self) -> None:
@@ -2013,7 +2013,7 @@ class ControlPlane:
         """`cancel_end_cause` of the task as it is now. One read, on a cancel only."""
         try:
             return cancel_end_cause(self.fetch_task())
-        except Exception:  # the cause must never stop the cancel itself
+        except Exception:  # the cause must never stop the cancel itself  # noqa: BLE001
             return EndCause.CANCEL_REQUESTED
 
     def advance_to_running(self) -> None:
@@ -2447,7 +2447,7 @@ class ControlPlane:
             self._quota_reporter.report(
                 provider=provider, tenant_id=self.tenant_id, route=route, body=body
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._log.warning(
                 "could not report a provider outcome to the quota broker; carrying on",
                 provider=provider,
@@ -2504,7 +2504,7 @@ class ControlPlane:
             self._quota_reporter.report(
                 provider=provider, tenant_id=self.tenant_id, route="exhausted", body=body
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._log.warning(
                 "could not report a key's spent credit to the quota broker; carrying on",
                 provider=provider,
@@ -2535,7 +2535,7 @@ class ControlPlane:
             self._quota_reporter.report(
                 provider=provider, tenant_id=self.tenant_id, route="account-error", body=body
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._log.warning(
                 "could not report an account error to the quota broker; carrying on",
                 provider=provider,
@@ -3371,7 +3371,7 @@ class ControlPlane:
                 )
             )
             outcome = "published" if published else "refused"
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # The type only: a transport error's text can name the request.
             outcome = f"error:{type(exc).__name__}"
         self._log.info("finish wake", state=state.value, outcome=outcome)
@@ -4153,7 +4153,7 @@ class RemoteControlPlane(ControlPlane):
             # and costs the spend nothing.
             try:
                 self._usage("credential", credential)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self._log.warning(
                     "could not record the attempt's credential; its spend is recorded",
                     error_type=type(exc).__name__,

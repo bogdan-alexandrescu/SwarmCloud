@@ -177,7 +177,7 @@ def push_reach(db: Any, tenant_id: str, repo_id: str, *, user: str | None, now: 
     record or no probe answers."""
     try:
         records = gittokens.GitTokens(db, now=lambda: now).list(tenant_id)
-    except Exception as exc:  # a read that fails is not a measurement
+    except Exception as exc:  # a read that fails is not a measurement  # noqa: BLE001
         log.warning("docs-drift token records unreadable tenant=%s (%s)", tenant_id, type(exc).__name__)
         records = []
     resolution = gittokens.resolve_r2(records, tenant_id=tenant_id, repo_id=repo_id, user=user, now=now)

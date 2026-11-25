@@ -942,7 +942,7 @@ def await_egress(egress: Any, url: str, logger: Any) -> bool:
             waited_seconds=round(time.monotonic() - started, 3),
         )
         return ready
-    except Exception as exc:  # a measurement never stops a clone
+    except Exception as exc:  # a measurement never stops a clone  # noqa: BLE001
         logger.warning("egress probe: wait failed; cloning as before",
                        error=type(exc).__name__)
         return False
@@ -2362,7 +2362,7 @@ def _git_stream(
                     continue
                 try:
                     consume(chunk)
-                except BaseException as exc:  # re-raised on the caller's thread
+                except BaseException as exc:  # re-raised on the caller's thread  # noqa: BLE001
                     failure.append(exc)
 
     reader = threading.Thread(target=drain, name=f"git-{slug}-stream", daemon=True)

@@ -186,7 +186,7 @@ def _chunk_totals(db: Any, tenant_id: str, chunk: list[str]) -> dict[str, dict[s
             if doc.get("tenant_id") != tenant_id or doc.get("task_id") not in members:
                 continue
             by_task[doc["task_id"]].append(attempt_from_dict(doc))
-    except Exception as exc:  # the tasks were read; only their attempts were not
+    except Exception as exc:  # the tasks were read; only their attempts were not  # noqa: BLE001
         log.warning("attempt totals read failed: %s", type(exc).__name__)
         return {t: unread_totals() for t in chunk}
     return {t: {**attempt_totals(rows), "attempts_read": "ok"} for t, rows in by_task.items()}

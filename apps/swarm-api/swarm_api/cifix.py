@@ -1722,7 +1722,7 @@ def postback_tenant(ctx: Any, tenant_id: str, *, limit: int) -> PostbackReport:
             if not token:
                 try:
                     token = ctx.forge_tokens.token_for(tenant)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     token_error = exc.code if isinstance(exc, ApiError) else type(exc).__name__
                     log.warning("ci-fix post-back tenant=%s: no forge token (%s)", tenant_id, token_error)
                     report.fail(task_id, token_error)
@@ -1733,7 +1733,7 @@ def postback_tenant(ctx: Any, tenant_id: str, *, limit: int) -> PostbackReport:
                 report.fail(task_id, refused.code)
                 _record(db, tenant_id, task_id, {POSTBACK_FIELD: GAVE_UP, "postback_code": refused.code})
                 continue
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
                 failures = (_positive_int(record.get("postback_failures")) or 0) + 1
                 log.warning("ci-fix post-back %s tenant=%s: not posted (%s, %d)",

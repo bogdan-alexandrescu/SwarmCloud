@@ -267,7 +267,7 @@ def organisation_seen() -> bool | None:
     try:
         gcp = preflight.GCP()
         return bool(gcp.organizations() or gcp.folders())
-    except Exception:  # no credentials yet, or no access: stage 0 checks it after its sign-in
+    except Exception:  # no credentials yet, or no access: stage 0 checks it after its sign-in  # noqa: BLE001
         return None
 
 
@@ -403,7 +403,7 @@ def _read_bucket(project: str) -> tuple[ObjectStore | None, InstallState | None,
     try:
         bucket = open_bucket(project)
         found = bucket.read(STATE_OBJECT)
-    except Exception as exc:  # no access: said, never taken as "no install"
+    except Exception as exc:  # no access: said, never taken as "no install"  # noqa: BLE001
         first = _first_run(exc)
         if first is not None:
             return None, None, first or None

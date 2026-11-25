@@ -152,7 +152,7 @@ class BrowserResume:
         """Keep the tabs in the spool and, in a personal tenant, the storage in its secret. Never raises."""
         try:
             tabs, _ = clean_tabs(self._call(TABS_EXPORT_OP, {}).get("tabs"))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning("could not read the browser's tabs at park", error=type(exc).__name__)
             tabs = []
         stored = self._store_session()
@@ -178,7 +178,7 @@ class BrowserResume:
             return False
         try:
             jar = self._call(EXPORT_OP, {"scope": PARK_SCOPE}).get("jar")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning("could not read the browser's session at park", error=type(exc).__name__)
             return False
         if jar is None or not valid_jar(jar):
@@ -198,7 +198,7 @@ class BrowserResume:
         except SlotRefused as exc:
             self.log.warning("the park's browser session was not stored", cause=exc.code)
             return False
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning("the park's browser session was not stored", error=type(exc).__name__)
             return False
         return True
@@ -222,7 +222,7 @@ class BrowserResume:
         if tabs:
             try:
                 answer = self._call(TABS_RESTORE_OP, {"tabs": tabs, "origins": origins})
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self.log.warning("the earlier attempt's tabs were not reopened", error=type(exc).__name__)
                 answer = {}
             opened, _ = clean_tabs([{"url": u} for u in answer.get("opened") or [] if isinstance(u, str)])
@@ -242,7 +242,7 @@ class BrowserResume:
         try:
             assert self._vault is not None
             envelope = _envelope(self._vault().read(secret))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning("the park's browser session could not be read", error=type(exc).__name__)
             return None
         if envelope is None or envelope.get("kind") != PARK_KIND:
@@ -257,7 +257,7 @@ class BrowserResume:
         # Origin storage goes with its tab (`tabs_restore`): a blank page cannot take it.
         try:
             self._call(IMPORT_OP, {"jar": {"v": JAR_VERSION, "cookies": jar["cookies"], "origins": []}})
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning("the park's cookies were not put back", error=type(exc).__name__)
             return False
         return True

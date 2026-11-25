@@ -757,7 +757,7 @@ class _UserSession:
         try:
             return self._hold(self._app._slots.read_access(self._caller.tenant_id,
                                                            self._suffix))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.warning("access could not read the current token connection=%s (%s)",
                         self._doc.get("connection_id"), type(exc).__name__)
             return ""
@@ -827,7 +827,7 @@ class _UserSession:
                                 login=login)
         try:
             refresh_token = app._slots.read_refresh(caller.tenant_id, refresh_suffix(suffix))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             app._finish(conn_id, holder, {})
             log.warning("access could not read the refresh slot connection=%s (%s)",
                         conn_id, type(exc).__name__)
@@ -851,7 +851,7 @@ class _UserSession:
         try:
             app._slots.add_version(caller.tenant_id, refresh_suffix(suffix), tokens.refresh)
             version = app._slots.add_version(caller.tenant_id, suffix, tokens.access)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.error("access could not store the refreshed tokens connection=%s (%s)",
                       conn_id, type(exc).__name__)
             app._mark_failed(current, holder, "the refreshed token could not be stored "
@@ -960,7 +960,7 @@ class AccessService:
         with ExitStack() as stack:
             try:
                 token = self._app._slots.read_access(caller.tenant_id, suffix)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 log.warning("access could not read the owner token tenant=%s user_hash=%s "
                             "owner=%s (%s)", caller.tenant_id, user_hash(caller.key), owner,
                             type(exc).__name__)
@@ -1623,7 +1623,7 @@ class AccessService:
             # Gone meanwhile, through `DELETE /v1/repositories`, which
             # disabled the grants in its own transaction.
             return False
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.warning("access unregister failed tenant=%s repo_id=%s reason=%s: %s; the "
                         "registration and its secrets' grants are kept as they were",
                         tenant_id, repo_id, type(exc).__name__, str(exc)[:300])

@@ -266,7 +266,7 @@ class _Reader:
                    "User-Agent": _USER_AGENT, "X-GitHub-Api-Version": "2022-11-28"}
         try:
             answer = self._send("GET", url, headers, None, self._timeout)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             raise _Unanswered(f"no answer ({type(exc).__name__})") from None
         limited = forge_limits.QUOTAS.observe_answer(answer, credential=credential)
         if limited is not None:
@@ -602,7 +602,7 @@ class ForgePermissions:
                     value = token()
                 except ApiError as exc:
                     token_error = exc.message
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     token_error = f"the tenant token could not be read ({type(exc).__name__})"
                 if value:
                     held.enter_context(redaction_literal(value))

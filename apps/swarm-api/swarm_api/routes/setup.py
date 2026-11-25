@@ -192,7 +192,7 @@ def _service_identity(ctx: AppContext, authorization: str | None,
             try:
                 claims = verifier.verify(token)
                 break
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S112
                 continue
     if not claims or claims.get("email_verified") is not True:
         return None

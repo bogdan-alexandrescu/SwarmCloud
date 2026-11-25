@@ -1125,7 +1125,7 @@ def _forge_json(forge: GitHubIssues, url: str, token: str, what: str) -> Any:
         raise IssueReadFailed(f"GitHub's answer for {what} is larger than this read holds")
     try:
         return json.loads(raw.decode("utf-8"))
-    except Exception:
+    except Exception:  # noqa: BLE001
         raise IssueReadFailed(f"GitHub's answer for {what} is not JSON") from None
 
 
@@ -1233,7 +1233,7 @@ def read_head_if_changed(
         headers["If-None-Match"] = etag
     try:
         answer = forge.probe_send(url, headers, forge.timeout)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         # The type only. A transport's message can quote the request.
         raise IssueReadFailed(
             f"{what} could not be read from GitHub ({type(exc).__name__})"
@@ -2767,7 +2767,7 @@ class RepoIndex:
         """
         try:
             pinned = self._all_pinned(tenant_id, repo_id)
-        except Exception as failed:  # retention never stops a promotion
+        except Exception as failed:  # retention never stops a promotion  # noqa: BLE001
             log.warning("repo index prune repo_id=%s pins unread error=%s",
                         repo_id, type(failed).__name__)
             return
@@ -2913,7 +2913,7 @@ class RepoIndex:
                                  tenant_id, repo_id, unread.code)
             return choose_kind(index, sha, requested=requested, version=version,
                                changes=changes, now=self._now())
-        except Exception as failed:  # the choice never stops a run: it is a full one
+        except Exception as failed:  # the choice never stops a run: it is a full one  # noqa: BLE001
             log.warning("repo index kind tenant=%s repo_id=%s error=%s",
                         tenant_id, repo_id, type(failed).__name__)
             return KindChoice("full", reason="the incremental conditions could not be read")
@@ -2932,7 +2932,7 @@ class RepoIndex:
             rows = [{"commit_sha": snap.id, **(snap.to_dict() or {})} for snap in
                     self._repo_ref(repo_id).collection(VERSIONS_COLLECTION).stream()]
             pinned = self._all_pinned(tenant_id, repo_id)
-        except Exception as failed:  # retention never stops a run
+        except Exception as failed:  # retention never stops a run  # noqa: BLE001
             log.warning("repo index keep set tenant=%s repo_id=%s error=%s",
                         tenant_id, repo_id, type(failed).__name__)
             return None
@@ -3654,7 +3654,7 @@ class RepoIndex:
                 send=getattr(self._forge, "probe_send", None) or urllib_probe_send,
                 clock=clock, budget_seconds=POLL_BUDGET_SECONDS - (clock() - started),
             ).to_api()
-        except Exception as failed:
+        except Exception as failed:  # noqa: BLE001
             report.git_tokens = {"error": type(failed).__name__}
             log.warning("repo index poll tenant=%s git token reverify error=%s",
                         tenant_id, type(failed).__name__)
@@ -3728,7 +3728,7 @@ class RepoIndex:
             self._poll_one(tenant_id, record, tenant, owner_auth, report)
         except ApiError as failed:
             code = failed.code
-        except Exception as failed:  # one registration never stops the pass
+        except Exception as failed:  # one registration never stops the pass  # noqa: BLE001
             code = "internal"
             log.warning("repo index poll tenant=%s repo_id=%s error=%s",
                         tenant_id, record.get("repo_id"), type(failed).__name__)
@@ -3876,7 +3876,7 @@ class RepoIndex:
             slot = service_slot(self.tenant(tenant_id), FirestoreSlotIndex(self._db))
             return indexfailure.credential_mark(
                 GitTokens(self._db, now=self._now).list(tenant_id), slot=slot.provider)
-        except Exception as failed:
+        except Exception as failed:  # noqa: BLE001
             log.warning("repo index credential mark tenant=%s error=%s",
                         tenant_id, type(failed).__name__)
             return None
@@ -3915,7 +3915,7 @@ class RepoIndex:
         try:
             self._update_index(tenant_id, repo_id, lambda index: indexfailure.after_failure(
                 index, failure, credential=mark, at=now))
-        except Exception as failed:
+        except Exception as failed:  # noqa: BLE001
             log.warning("repo index failure tenant=%s repo_id=%s error=%s",
                         tenant_id, repo_id, type(failed).__name__)
             return
@@ -3951,7 +3951,7 @@ class RepoIndex:
 
         try:
             _apply(transaction)
-        except Exception as failed:
+        except Exception as failed:  # noqa: BLE001
             log.warning("repo index poll tenant=%s repo_id=%s last_poll=%s",
                         tenant_id, repo_id, type(failed).__name__)
 
