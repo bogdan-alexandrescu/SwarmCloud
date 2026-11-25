@@ -46,7 +46,7 @@ function wideStage(n: number): Workflow {
     on_step_failure: 'FAIL_WORKFLOW',
     cancel_requested: false,
     steps,
-  } as Workflow
+  }
 }
 
 /** The card with real stores behind its stage expansion and its zoom, as the screen holds them. */
@@ -80,7 +80,7 @@ export function mountAnsweredQuestions(): ReactElement {
     completed_at: iso(-3_600_000),
     result_summary: { questions: 1 },
     owner_answers: [{ question_index: 0, question: 'Which layout?', choice: 'Grid', text: null, by: 'alex@example.com', at: iso(-600_000), history: [] }],
-  } as Partial<Task>)
-  const workflow = { ...wideStage(0), workflow_id: 'wf_asked', steps: [step('design', [], { task_id: 't_design' })] } as Workflow
+  })
+  const workflow = { ...wideStage(0), workflow_id: 'wf_asked', steps: [step('design', [], { task_id: 't_design' })] }
   return <WorkflowQuestions workflow={workflow} taskById={new Map([['t_design', design]])} stateOf={() => 'succeeded'} />
 }

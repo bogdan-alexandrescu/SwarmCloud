@@ -7526,6 +7526,11 @@
       "count": 2
     }
   },
+  "src/__tests__/prosestates.workflows.tsx": {
+    "testing-library/no-node-access": {
+      "count": 2
+    }
+  },
   "src/__tests__/provider-pool-units.test.tsx": {
     "@typescript-eslint/no-unnecessary-type-assertion": {
       "count": 1

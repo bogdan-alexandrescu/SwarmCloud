@@ -103,7 +103,7 @@ export const mountStepCard = (): ReactElement => (
     load={attemptsLoader}
     siblings={[
       { workflowId: 'wf_1', mark: 'failed', hue: 'bad', word: 'failed' },
-      { workflowId: 'wf_0', mark: 'succeeded', hue: 'ok', word: 'succeeded' },
+      { workflowId: 'wf_0', mark: 'succeeded', hue: 'neu', word: 'succeeded' },
     ]}
     siblingIndex={0}
     onSibling={() => undefined}
@@ -177,13 +177,13 @@ export const mountRunFiles = (): ReactElement => {
 /** A source that parses, drawn with mermaid's `render` replaced (jsdom lays nothing out). Open: `details.dg-text > summary`. */
 export function mountDiagram(): ReactElement {
   const spy = vi.spyOn(mermaid, 'render').mockImplementation(
-    async (id: string) =>
-      ({
+    (id: string) =>
+      Promise.resolve({
         svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 40"><rect width="100" height="40" fill="#fff"/><text x="4" y="20">Plan</text></svg>',
         diagramType: 'flowchart-v2',
         bindFunctions: undefined,
         id,
-      }) as unknown as Awaited<ReturnType<typeof mermaid.render>>,
+      } as unknown as Awaited<ReturnType<typeof mermaid.render>>),
   )
   restores.push(() => spy.mockRestore())
   const source = ['flowchart LR', '  A[Plan] -->|approve| B[Build]', '  B --> C[Review]', '  C -->|changes| A', '  C --> D[Merge]'].join('\n')
@@ -298,10 +298,15 @@ export function mountWorkflowFacts(): ReactElement {
 
 // ----------------------------------------------------------------- Cancel
 
-const refusedStop = async (): Promise<Result<CancelWorkflowResult>> => ({
-  status: 'error',
-  error: { kind: 'server_error', httpStatus: 500, code: 'internal', message: 'workflow store unavailable' },
-})
+/** The store refuses the write: the refusal the stop and pause dialogs show. */
+function refused<T>(): Promise<Result<T>> {
+  return Promise.resolve({
+    status: 'error',
+    error: { kind: 'server_error', httpStatus: 500, code: 'internal', message: 'workflow store unavailable' },
+  })
+}
+
+const refusedStop = (): Promise<Result<CancelWorkflowResult>> => refused<CancelWorkflowResult>()
 
 /** t_core is the step the `taskById` holds: RUNNING holds capacity, QUEUED does not. */
 function steps(core: 'RUNNING' | 'QUEUED'): ReadonlyMap<string, Task> {
@@ -323,10 +328,7 @@ export const mountCancelTyped = (): ReactElement => (
 
 // ------------------------------------------------------------------ Pause
 
-const refusedPause = async (): Promise<Result<PauseWorkflowResult>> => ({
-  status: 'error',
-  error: { kind: 'server_error', httpStatus: 500, code: 'internal', message: 'workflow store unavailable' },
-})
+const refusedPause = (): Promise<Result<PauseWorkflowResult>> => refused<PauseWorkflowResult>()
 
 /** The role gate reads the workspace role and leaves an unknown role enabled, so no stub. Click "Pause workflow": `.wfp-confirm-err` appears. */
 export const mountPauseRefused = (): ReactElement => (
