@@ -932,12 +932,24 @@ container) and the agent CLI's env carries:
 | variable | value |
 |---|---|
 | `SWARM_MEMORY_LIMIT_BYTES` | `memory.max`, in bytes |
-| `PYTEST_XDIST_AUTO_NUM_WORKERS` | max(1, min(floor(CPU limit), (limit − 2 GiB) // 1 GiB)): 6 at 8 GiB/6 CPU, 3 at 5 GiB/6 CPU, 2 at 5 GiB/2 CPU |
+| `PYTEST_XDIST_AUTO_NUM_WORKERS` | max(1, min(floor(CPU limit), (limit − 2 GiB) // 2 GiB)): 3 at 8 GiB/6 CPU, 1 at 5 GiB/6 CPU, 1 at 5 GiB/2 CPU, 6 at 16 GiB/6 CPU |
 
-The 2 GiB is what the worker, the CLI and the node toolchain keep resident
-(f-039's baseline was 1.47 GB before the agent ran anything); the 1 GiB is
-what one xdist worker of the api suite measured. With no CPU limit the cap is
-`os.cpu_count()`. Both are set after the runner's `extra_env` and are not
+The 2 GiB is what the worker, the CLI and the node toolchain keep charged
+before any test runs (f-039's baseline was 1.47 GB; issue 422 measured
+1.75 GB `memory.current` and a 0.70 GB working set on 2026-11-25). The 2 GiB a
+worker is what one xdist worker of `tests/unit/worker` costs the container,
+not its process. The old 1 GiB was one api-suite worker's resident size, and
+it gave 6 workers at 8 GiB: on `tests/unit/worker` that OOM-killed two
+attempts of one build at 8.35-8.44 GB (issue 422). That suite's tests start
+git and write repositories; a worker's Python heap stays under 1 GiB, but the
+subprocesses and the files are charged to the container, and on a
+memory-backed filesystem the files cannot be reclaimed. Measured at `-n 2` on
+the suite's 176 files that import `lifecycle` or `gitops`, with the tests'
+TMPDIR on tmpfs: `memory.peak` rose from 1.75 to 4.90 GB and the working set
+(`memory.current` less `inactive_file`) from 0.70 to 4.08 GB, 1.58-1.69 GB a
+worker, and a lower bound, because the 2 GiB tmpfs filled. That is over the
+1.5 GiB that would have allowed 4 workers at 8 GiB, so a worker is budgeted
+2 GiB and 8 GiB gets 3. With no CPU limit the cap is `os.cpu_count()`. Both are set after the runner's `extra_env` and are not
 passthroughs, so nothing a caller or the environment sends replaces them.
 
 `PYTEST_XDIST_AUTO_NUM_WORKERS` caps `-n auto` only, so a first start's prompt
