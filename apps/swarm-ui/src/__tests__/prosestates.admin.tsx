@@ -42,7 +42,24 @@ async function typeInto(selector: string, text: string): Promise<void> {
   await settle()
 }
 
-/** People's Nth Manage button. */
+/** Pool limits' folded cards, each with what its open body keeps and what it moved behind its (i). */
+const FOLDS: readonly { name: string; lines?: string[]; moved?: string[] }[] = [
+  { name: 'Additional repositories' },
+  {
+    name: 'Agent budget ceiling',
+    lines: ['Turns nothing on by itself'],
+    moved: ['The most any workspace’s per-agent budget can be.', 'It turns nothing on: a workspace that sets no budget has none.', 'At 80% of its budget an agent is told to finish and publish.'],
+  },
+  {
+    name: 'Jev’s rate',
+    lines: ['Prices Capacity › Jev usage'],
+    moved: ['What Jev costs, in dollars per million tokens.', 'Capacity › Jev usage prices its calls at this rate; until it is set, that page says “rate not set” and shows no dollars.'],
+  },
+  { name: 'Model prices' },
+  { name: 'GitHub fallback token' },
+]
+
+/** People's first Manage button. */
 const manage = (): Promise<void> => press('main', 'Manage')
 
 export const ADMIN: readonly ProseState[] = [
@@ -59,6 +76,9 @@ export const ADMIN: readonly ProseState[] = [
     group: 'admin',
     files: ['People.tsx'],
     shows: '.pp-drawer',
+    lines: ['Off'],
+    moved: ['An admin through a group is an admin but has no role recorded here, so they show as off.'],
+    data: [NOT_SERVED],
     walk: { open: PEOPLE, persona: ADMIN_P, then: manage },
   },
   {
@@ -110,6 +130,8 @@ export const ADMIN: readonly ProseState[] = [
     group: 'admin',
     files: ['AdminSettings.tsx'],
     shows: '.adm-drastic',
+    lines: ['Drastic change'],
+    moved: ['This is a drastic change: to 0, or a cut of half or more.'],
     walk: {
       open: LIMITS,
       persona: ADMIN_P,
@@ -141,12 +163,14 @@ export const ADMIN: readonly ProseState[] = [
     shows: '.adm-side',
     walk: { open: LIMITS, persona: ADMIN_P, then: () => click('button[aria-label="Edit ceiling for anthropic · u-owner"]') },
   },
-  ...['Additional repositories', 'Agent budget ceiling', 'Jev’s rate', 'Model prices', 'GitHub fallback token'].map(
-    (name): ProseState => ({
+  ...FOLDS.map(
+    ({ name, lines, moved }): ProseState => ({
       key: `admin/limits-fold-${name.toLowerCase().replace(/[^a-z]+/g, '-')}`,
       group: 'admin',
       files: ['AdminSettings.tsx'],
       shows: '.adm-fold-card.is-open',
+      ...(lines === undefined ? {} : { lines }),
+      ...(moved === undefined ? {} : { moved }),
       walk: { open: LIMITS, persona: ADMIN_P, then: () => clickText('.adm-fold', name) },
     }),
   ),
@@ -156,6 +180,8 @@ export const ADMIN: readonly ProseState[] = [
     group: 'admin',
     files: ['RunnerSizes.tsx'],
     shows: '.c-dlg',
+    lines: ['Writes a new version'],
+    moved: ['A restore writes a NEW version with version 1’s sizes; History keeps every version, and the next admission takes it.'],
     walk: { open: SIZES, persona: ADMIN_P, then: () => press('main', 'Restore version 1') },
   },
   {
@@ -163,6 +189,8 @@ export const ADMIN: readonly ProseState[] = [
     group: 'admin',
     files: ['RunnerSizes.tsx'],
     shows: '.c-dlg',
+    lines: ['Writes a new version'],
+    moved: ['A restore writes a NEW version with the code defaults’s sizes; History keeps every version, and the next admission takes it.'],
     walk: { open: SIZES, persona: ADMIN_P, then: () => press('main', 'Restore the code defaults') },
   },
   {
@@ -230,6 +258,8 @@ export const ADMIN: readonly ProseState[] = [
     group: 'admin',
     files: ['AdminSchedules.tsx'],
     shows: '.c-dlg',
+    lines: ['Live work is not cancelled.'],
+    moved: ['It stops firing until its workspace resumes it.', 'The change is written to the schedule’s audit as yours.'],
     mount: mountSchedules,
     act: () => press('main, body', 'Pause'),
   },
@@ -238,6 +268,8 @@ export const ADMIN: readonly ProseState[] = [
     group: 'admin',
     files: ['AdminSchedules.tsx'],
     shows: '.c-dlg',
+    lines: ['Live work is not cancelled.'],
+    moved: ['Every enabled schedule of eng stops firing.', 'Its members can resume each one.'],
     mount: mountSchedules,
     act: () => press('body', 'Pause all of'),
   },
@@ -309,6 +341,8 @@ export const ADMIN: readonly ProseState[] = [
     group: 'admin',
     files: ['voice/Projects.tsx'],
     shows: '.c-dlg',
+    lines: ['What it started keeps running.'],
+    moved: ['This deletes the project, its cards and turns, and its transcripts, mockups and plans.', 'What it started is not stopped: agents and workflows it launched keep running.'],
     mount: mountProjects,
     act: () => press('body', 'Delete'),
   },

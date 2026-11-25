@@ -23,6 +23,7 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react'
 
 import { Banner, Button, Dash, EmptyState, LoadingState, Table, TypedConfirm, type Column } from '../components'
 import { read, route, write } from '../fetch'
+import { InfoTip } from '../InfoTip'
 import { formatDateTime } from '../timezone'
 
 /** The person's projects in the selected workspace, newest first. */
@@ -307,8 +308,11 @@ export function VoiceProjects() {
           }}
         >
           <p>
-            This deletes the project, its cards and turns, and its transcripts, mockups and plans. What it started is not stopped:
-            agents and workflows it launched keep running.
+            What it started keeps running.{' '}
+            <InfoTip
+              about="deleting a project"
+              tip="This deletes the project, its cards and turns, and its transcripts, mockups and plans. What it started is not stopped: agents and workflows it launched keep running."
+            />
           </p>
         </TypedConfirm>
       )}

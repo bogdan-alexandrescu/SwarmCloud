@@ -10,6 +10,7 @@ import { Refusal } from './GitHubConnect'
 import { ACCESS } from './Onboarding'
 import { addressToPath } from './paths'
 import { HelpCard } from './HelpCard'
+import { InfoTip } from './InfoTip'
 import { POOLS_POLL_MS, capacityPoll, comparePools, poolViewer, tableMode, usePhoneTables } from './capacityPoll'
 import { Screen, timeAgo } from './Shell'
 import {
@@ -2320,7 +2321,9 @@ function SideEditor({
 
       {drastic && (
         <div className="adm-drastic">
-          <p className="adm-drastic-why">This is a drastic change: to 0, or a cut of half or more.</p>
+          <p className="adm-drastic-why">
+            Drastic change <InfoTip about="a drastic change" tip="This is a drastic change: to 0, or a cut of half or more." />
+          </p>
           <label className="adm-side-k" htmlFor={`${titleId}-confirm`}>
             Type <b className="mono">{pool.name}</b> to confirm
           </label>
@@ -2777,8 +2780,11 @@ export function JevRateCard({ fold = false }: { fold?: boolean } = {}) {
       ) : (
         <form className="adm-token-form" aria-label="Jev’s rate" onSubmit={(e) => void save(e)}>
           <p className="ur-small">
-            What Jev costs, in dollars per million tokens. Capacity › Jev usage prices its calls at this rate; until it
-            is set, that page says &ldquo;rate not set&rdquo; and shows no dollars.
+            Prices Capacity › Jev usage{' '}
+            <InfoTip
+              about="Jev’s rate"
+              tip="What Jev costs, in dollars per million tokens. Capacity › Jev usage prices its calls at this rate; until it is set, that page says “rate not set” and shows no dollars."
+            />
           </p>
           {(['input', 'output'] as const).map((k) => (
             <label key={k} htmlFor={`${id}-${k}`} className="ur-small">
@@ -2913,9 +2919,13 @@ export function AgentBudgetCeilingCard({ fold = false }: { fold?: boolean } = {}
         // would explain a control that is not there (and Pool limits is held
         // to a prose budget, the operator prose test).
         <form className="adm-token-form" aria-label="Agent budget ceiling" onSubmit={(e) => void save(e)}>
+          {/* The rule is the (i); what stays is the one line that nothing turns on by itself (issue 439). */}
           <p className="ur-small">
-            The most any workspace&rsquo;s per-agent budget can be. It turns nothing on: a workspace that sets no budget
-            has none. {BUDGET_DOES}
+            Turns nothing on by itself{' '}
+            <InfoTip
+              about="the agent budget ceiling"
+              tip={`The most any workspace’s per-agent budget can be. It turns nothing on: a workspace that sets no budget has none. ${BUDGET_DOES}`}
+            />
           </p>
           <div className="jb-options" role="radiogroup" aria-label="Ceiling">
             {([false, true] as const).map((v) => (

@@ -1791,13 +1791,17 @@ function AdminSwitch({ row, doc, reload }: { row: PersonRow; doc: PeopleDoc; rel
   const holder = holderOf(doc, row.email)
   const on = holder !== undefined
   const locked = !read || holder?.role === 'owner'
-  const why = !read
-    ? `The admin roles were not read (${doc.admins_error ?? 'not served'}), so this cannot be switched here.`
+  // The switch's state is one short line; why it is so is the (i) beside it (the owner's no-prose rule, issue 439).
+  const why: { line: string; tip: string } = !read
+    ? { line: 'Not read', tip: `The admin roles were not read (${doc.admins_error ?? 'not served'}), so this cannot be switched here.` }
     : holder?.role === 'owner'
-      ? 'Platform owner: set in the deployment’s configuration, so it is not switched here.'
+      ? { line: 'Platform owner', tip: 'Platform owner: set in the deployment’s configuration, so it is not switched here.' }
       : on
-        ? `Granted by ${holder.granted_by ?? 'unknown'}${holder.granted_at !== null ? ` ${timeAgo(holder.granted_at)}` : ''}. The last admin cannot be removed; the API says so when it refuses.`
-        : 'Off. An admin through a group is an admin but has no role recorded here, so they show as off.'
+        ? {
+            line: `Granted by ${holder.granted_by ?? 'unknown'}${holder.granted_at !== null ? ` ${timeAgo(holder.granted_at)}` : ''}`,
+            tip: 'The last admin cannot be removed; the API says so when it refuses.',
+          }
+        : { line: 'Off', tip: 'An admin through a group is an admin but has no role recorded here, so they show as off.' }
   const go = async () => {
     if (busy) return
     setBusy(true)
@@ -1824,7 +1828,9 @@ function AdminSwitch({ row, doc, reload }: { row: PersonRow; doc: PeopleDoc; rel
         >
           <span className="pp-switch-knob" aria-hidden="true" />
         </button>
-        <span className="ur-hint">{why}</span>
+        <span className="ur-hint">
+          {why.line} <InfoTip about="the Admin switch" tip={why.tip} />
+        </span>
       </div>
       {asking && (
         <Dialog

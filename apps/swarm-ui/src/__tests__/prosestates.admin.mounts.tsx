@@ -173,13 +173,13 @@ export async function mountDebugTrace(): Promise<ReactElement> {
 // ---------------------------------------------------------------- Voice it: the floating view, folded
 
 function heldSession(): VoiceSession {
-  const cards: CardListState = { lastSeq: 0, cards: [] } as unknown as CardListState
+  const cards: CardListState = { lastSeq: 0, cards: [] }
   return {
     phase: 'live', problem: null, problemTip: null, lines: [], debug: false, turn: null, voice: null, micStream: null, voicePlaying: false,
     sessionId: SESSION, projectId: 'vp_0001', talkMode: 'live', boot: [], speechState: null, fallback: null, dismissFallback: () => undefined,
     tierLine: null, onPlan: false, level: null, typed: null, draft: '', setDraft: () => undefined, cards, meter: null,
     mic: { muted: false, mode: 'open', held: false, permission: 'granted' },
-    setMuted: () => undefined, setMode: () => undefined, hold: () => undefined, start: async () => undefined, end: async () => undefined,
+    setMuted: () => undefined, setMode: () => undefined, hold: () => undefined, start: () => Promise.resolve(), end: () => Promise.resolve(),
     say: () => undefined, quiet: () => undefined, attach: () => () => undefined, navigate: () => undefined,
   } as unknown as VoiceSession
 }
@@ -191,7 +191,7 @@ export async function mountFloating(): Promise<ReactElement> {
   const { MIC_START } = await import('../voice/mic')
   window.sessionStorage.setItem(PLACE_KEY, JSON.stringify({ corner: 'br', collapsed: true }))
   forgetPlace()
-  const held = { ...heldSession(), feed: stageFeed(), mic: MIC_START } as unknown as VoiceSession
+  const held: VoiceSession = { ...heldSession(), feed: stageFeed(), mic: MIC_START }
   return <FloatingView held={held} go={() => undefined} />
 }
 
@@ -213,7 +213,7 @@ export async function mountProjects(): Promise<ReactElement> {
 /** A session's record, the transcript refused: Download names that it was not downloaded. */
 export async function mountSessionRecord(): Promise<ReactElement> {
   await live()
-  serve((m, url) => {
+  serve((_m, url) => {
     if (url.includes('/summary')) return { status: 200, body: { session_id: SESSION, state: 'written', text: 'Planned the export page.', at: at(60) } }
     if (url.includes('/transcript')) return { status: 403, body: { code: 'TRANSCRIPT_REFUSED', message: 'The transcript is held for its owner.' } }
     return null

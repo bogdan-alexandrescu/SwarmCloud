@@ -687,7 +687,11 @@ function RunnerSizesBody({
         <Button kind="primary" busy={busy ? 'Saving…' : false} disabledReason={why} onClick={save}>
           Save
         </Button>
-        {saved !== null && <p className="rs-saved" role="status">Saved version {saved}. The next admission takes it.</p>}
+        {saved !== null && (
+          <p className="rs-saved" role="status">
+            Saved version {saved} <InfoTip about="the saved version" tip="The next admission takes it." />
+          </p>
+        )}
         {failed !== null && <p className="rs-error" role="alert">Not saved: {failed}</p>}
       </div>
       {confirm !== null && (
@@ -1158,7 +1162,10 @@ function RestoreDialog({ version, doc, onClose, reload }: { version: number; doc
         </>
       }
     >
-      <p>A restore writes a NEW version with {what}’s sizes; History keeps every version, and the next admission takes it.</p>
+      <p>
+        Writes a new version{' '}
+        <InfoTip about="a restore" tip={`A restore writes a NEW version with ${what}’s sizes; History keeps every version, and the next admission takes it.`} />
+      </p>
       <div className="c-field">
         <label className="c-lbl" htmlFor={id}>Reason for the restore</label>
         <textarea id={id} className="c-inp" rows={2} maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />

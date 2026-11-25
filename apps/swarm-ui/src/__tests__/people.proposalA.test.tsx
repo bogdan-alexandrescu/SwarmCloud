@@ -426,7 +426,11 @@ describe('the Manage drawer', () => {
     let sw = within(drawer).getByRole('switch', { name: 'Admin' }) as HTMLButtonElement
     expect(sw.getAttribute('aria-checked')).toBe('true')
     expect(sw.disabled).toBe(true)
-    expect(visible(drawer)).toContain('Platform owner: set in the deployment’s configuration')
+    // The why is the switch's (i) now (issue 439): the line says Platform owner, the tip the sentence.
+    expect(visible(drawer)).toContain('Platform owner')
+    const info = within(drawer).getByRole('button', { name: 'About the Admin switch' })
+    const tip = screen.getAllByRole('tooltip', { hidden: true }).find((t) => t.id === info.getAttribute('aria-describedby'))
+    expect(visible(tip ?? null)).toContain('Platform owner: set in the deployment’s configuration')
     fireEvent.click(within(drawer).getByRole('button', { name: 'Close' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull(), WAIT)
     drawer = await manage('bob@example.com')

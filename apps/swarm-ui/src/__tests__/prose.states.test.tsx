@@ -217,7 +217,7 @@ describe('the cover: every screen file that draws an opener is visited', () => {
   })
 
   it('has no pending allowance: a new opener file no state names fails by name', () => {
-    const extra = { ...SOURCES, 'NewSheet.tsx': '<Dialog title="x" onClose={() => undefined}>y</Dialog>' }
+    const extra: Readonly<Record<string, string>> = { ...SOURCES, 'NewSheet.tsx': '<Dialog title="x" onClose={() => undefined}>y</Dialog>' }
     const all = Object.keys(extra).filter((f) => drawsOpener(extra[f] ?? '', OVERLAYS))
     expect(uncovered(all, REGISTRY, NAMED_BY_81)).toEqual(['NewSheet.tsx'])
   })

@@ -46,6 +46,7 @@ import { type ApiError } from './fetch'
 import { Absent } from './primitives'
 import { STATE_WORD, SpendFigure, localTime, untilWords } from './Schedules'
 import { InApp } from './InApp'
+import { InfoTip } from './InfoTip'
 import { scheduleAddress } from './schedulePaths'
 import { Screen, timeAgo } from './Shell'
 import { pluralise } from './types'
@@ -128,9 +129,12 @@ function ActionDialog({ row, action, onClose, onDone }: { row: AdminScheduleRow;
         </>
       }
     >
+      {/* What the change does is the (i); what stays is that live work goes on (issue 439). */}
       <p>
-        {row.tenant_id} · {row.type}. {ACTION_SAYS[action]} The change is written to the schedule’s audit as yours.
+        {row.tenant_id} · {row.type}{' '}
+        <InfoTip about="this change" tip={`${ACTION_SAYS[action]} The change is written to the schedule’s audit as yours.`} />
       </p>
+      {action !== 'enable' && <p>Live work is not cancelled.</p>}
       {action !== 'enable' && (
         <label className="c-field">
           <span className="c-lbl">Reason (shown to the workspace)</span>
@@ -189,7 +193,11 @@ function PauseTenant({ tenants, onDone }: { tenants: string[]; onDone: () => voi
           error={refused === null ? undefined : `Not paused: ${refused.message}`}
         >
           <p>
-            Every enabled schedule of {tenant} stops firing. Its members can resume each one. Live work is not cancelled.
+            Live work is not cancelled.{' '}
+            <InfoTip
+              about="pausing every schedule"
+              tip={`Every enabled schedule of ${tenant} stops firing. Its members can resume each one. Live work is not cancelled.`}
+            />
           </p>
         </TypedConfirm>
       )}
