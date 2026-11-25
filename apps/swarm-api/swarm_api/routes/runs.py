@@ -3123,14 +3123,15 @@ def ask_plan_chat(
     context = read_plan_context(ctx, tenant_id, run.issue, run_id=run.id,
                                 issue=run.issue_read, open_work=run.open_work)
     turn = planchat.turn_id()
+    nonce = issueruns_module.replan_nonce()
     prompt = planchat.chat_prompt(
         run, plan=plan, revision=revision,
         revisions=planchat.prompt_revisions(run, runs.plan_revisions(run)),
         thread=planchat.prompt_thread(run, thread_docs),
         transcript=planchat.prompt_transcript(run, chat.turns(run)),
         settings=settings, no_draw=no_draw, ask=ask, anchor=anchor,
-        index_section=planchat.index_sections(context.section, run.id),
-        nonce=issueruns_module.replan_nonce())
+        index_section=planchat.index_sections(context.section, run.id, nonce),
+        nonce=nonce)
     document = {
         "tenant_id": run.tenant_id, "run_id": run.id, "turn_id": turn,
         "asked_by": auth.email, "ask": ask, "anchor": anchor,

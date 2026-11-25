@@ -321,6 +321,39 @@ def test_the_prompt_fences_every_section_with_the_run_id_and_a_nonce(client, db,
     assert other != nonce
 
 
+def test_the_prompt_carries_the_index_and_graph_fenced_and_never_in_flight(
+        client, db, objects, monkeypatch):
+    from swarm_api import plancontext
+    from swarm_api.routes import runs as runs_routes
+    run = _planned(client, db, objects)
+    foreign = "run_" + secrets.token_hex(6)
+    index_word, graph_word = "idx" + secrets.token_hex(4), "gra" + secrets.token_hex(4)
+    flight_word = "fly" + secrets.token_hex(4)
+    rid = run["id"]
+    section = "\n".join([
+        f"=== REPO INDEX {rid} abc123 ===", f"index {index_word}", f"=== END REPO INDEX {rid} ===",
+        f"=== REPO GRAPH {rid} abc123 ===", f"graph {graph_word}", f"=== END REPO GRAPH {rid} ===",
+        f"=== IN FLIGHT {rid} ===", f"{foreign} {flight_word}", f"=== END IN FLIGHT {rid} ==="])
+    real = plancontext.read_plan_context
+
+    def seeded(*args, **kwargs):
+        got = real(*args, **kwargs)
+        return plancontext.PlanContext(section=section, index_sha="abc123",
+                                       index_digest=got.index_digest, record=got.record)
+
+    monkeypatch.setattr(runs_routes, "read_plan_context", seeded)
+    turn = _asked(client, run)
+    prompt = db.docs[f"tasks/{turn['task_id']}"]["input"]["prompt"]
+    nonce = re.search(rf"^=== THE ASK {rid} ([0-9a-f]{{32}}) ===$", prompt, re.M).group(1)
+    for title, word in (("THE REPO INDEX", index_word), ("THE REPO GRAPH", graph_word)):
+        start, end = f"=== {title} {rid} {nonce} ===", f"=== END {title} {rid} {nonce} ==="
+        assert start in prompt and end in prompt, title
+        assert word in prompt.split(start, 1)[1].split(end, 1)[0]
+    assert f"=== REPO INDEX {rid} abc123 ===" not in prompt
+    assert flight_word not in prompt and foreign not in prompt
+    assert "IN FLIGHT" not in prompt
+
+
 def test_the_prompt_carries_nothing_of_another_run(client, db, objects):
     secret_word = "zebra" + secrets.token_hex(6)
     other = _planned(client, db, objects)

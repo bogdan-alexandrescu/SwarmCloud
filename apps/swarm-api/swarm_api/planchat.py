@@ -385,10 +385,10 @@ def chat_prompt(run: IssueRun, *, plan: Mapping[str, Any], revision: int,
     )
 
 
-def index_sections(section: str | None, run_id: str) -> str | None:
+def index_sections(section: str | None, run_id: str, nonce: str) -> str | None:
     """Only the REPO INDEX and REPO GRAPH sections of the planner's context
-    (§7.3), each with its own fence lines: never its IN FLIGHT section, which
-    names other runs."""
+    (§7.3), each re-fenced between lines naming it, the run id and the turn's
+    nonce: never its IN FLIGHT section, which names other runs."""
     if not section:
         return None
     kept: list[str] = []
@@ -402,7 +402,10 @@ def index_sections(section: str | None, run_id: str) -> str | None:
         end = next((i for i in range(start + 1, len(lines))
                     if lines[i] == f"=== END {title} {run_id} ==="), None)
         if end is not None:
-            kept.extend(lines[start:end + 1])
+            start_line, end_line = issueruns.revise_markers(run_id, nonce, f"THE {title}")
+            body = [issueruns._strip_markers(line, start_line, end_line)
+                    for line in lines[start + 1:end]]
+            kept.extend([start_line, *body, end_line])
     return "\n".join(kept) + "\n" if kept else None
 
 
