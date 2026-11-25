@@ -117,6 +117,14 @@ export type Result<T> =
 /** The code swarm-api's own rate limiter refuses with (`RateLimited.code`). */
 export const API_RATE_LIMITED = 'rate_limited'
 
+/**
+ * Every code swarm-api itself answers a 429 with: its token bucket, and the
+ * per-run re-plan cap (`replan_cap`, docs/design/plans-pipeline.md §5.4), whose
+ * sentence says why Request changes is refused and what to do instead. A 429
+ * carrying any other body is Cloud Run's front end.
+ */
+export const API_OWN_429_CODES: ReadonlySet<string> = new Set([API_RATE_LIMITED, 'replan_cap'])
+
 /** What a 429 without that code says: Cloud Run's front end, not the API (archived issue 1816). */
 export const NO_INSTANCE_FREE = "SwarmCloud's API had no instance free (Cloud Run); retried when the pause ends."
 
@@ -185,7 +193,7 @@ export function classifyFailure(status: number, env: ErrorEnvelope | null, retry
   // `rate_limited` code (`RateLimited.code`, swarm_api/errors.py) and keeps
   // its message; anything else is Cloud Run's. Both stay `rate_limited`, so
   // the pause and its countdown are unchanged.
-  if (status === 429 && code !== API_RATE_LIMITED) {
+  if (status === 429 && (code === null || !API_OWN_429_CODES.has(code))) {
     return { ...base, kind: 'rate_limited', message: NO_INSTANCE_FREE, retryAfterSeconds: retryAfter }
   }
   if (status === 429) return { ...base, kind: 'rate_limited', retryAfterSeconds: retryAfter }
