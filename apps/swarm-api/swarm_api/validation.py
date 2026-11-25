@@ -1853,6 +1853,12 @@ def repository_userinfo(url: str) -> tuple[int, int] | None:
     return start, start + at
 
 
+#: The schemes a `repository_url` may start with: `check_repository_url`'s
+#: rule, and what the console's dispatch form warns against otherwise (it reads
+#: this tuple through `apps/swarm-ui/src/generated/constants/server.json`).
+REPOSITORY_URL_PREFIXES: tuple[str, ...] = ("https://", "git@", "ssh://")
+
+
 def check_repository_url(value: str | None) -> str | None:
     """The one `repository_url` rule, for `TaskCreate` and `WorkflowCreate` alike.
 
@@ -1860,7 +1866,7 @@ def check_repository_url(value: str | None) -> str | None:
     """
     if value is None:
         return None
-    if not value.startswith(("https://", "git@", "ssh://")):
+    if not value.startswith(REPOSITORY_URL_PREFIXES):
         raise ValueError("repository_url must be an https://, ssh:// or git@ URL")
     if repository_userinfo(value) is not None:
         # Constants only: see the section header.
