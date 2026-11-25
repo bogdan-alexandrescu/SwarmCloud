@@ -39,6 +39,7 @@ import { timeAgo } from './Shell'
 import { useNow } from './useNow'
 import { PlanThread, openComments, useBarRegistration, usePlanConversation, ReplanControls } from './PlanThread'
 import { PlanRevisionPicker } from './PlanRevisions'
+import { PlanEditorMount, useSavedOver } from './PlanEditor'
 import './styles/plan-document.css'
 
 type Json = Record<string, unknown>
@@ -149,7 +150,10 @@ function Names({ shown }: { shown: ShownRevision }) {
  * the verbs in `children` act on. Superseded (`D:P2c`), it holds no verb: it
  * names the newer revision and offers one button to read it.
  */
-export function PlanBar({ shown, newer, onRead, children }: { shown: ShownRevision; newer: NewerRevision | null; onRead: () => void; children: ReactNode }) {
+export function PlanBar({ shown, newer: polled, onRead, children }: { shown: ShownRevision; newer: NewerRevision | null; onRead: () => void; children: ReactNode }) {
+  // A revision saved over the shown one on this page (PlanEditor.tsx, D:P3c) supersedes it at once.
+  const saved = useSavedOver(shown.digest)
+  const newer = polled ?? (saved === null ? null : { revision: saved.revision, digest: saved.digest, changed: 0 })
   if (newer !== null) {
     const next = newer.revision === null ? 'the new revision' : `revision ${newer.revision}`
     return (
@@ -400,6 +404,8 @@ export function PlanDocument({
       {runId !== null && conversation.revisions.length > 0 && (
         <PlanRevisionPicker runId={runId} revisions={conversation.revisions} shown={shownRev} shownPlan={plan} complete={conversation.complete} />
       )}
+      {/* Edit by hand (U5, PlanEditor.tsx; D:P3b, D:P3c). */}
+      <PlanEditorMount runId={runId} run={run} plan={plan} digest={digest} />
       <Part label="Summary" anchor="plan" reason={text(plan.rationale)} thread={margin}>
         <p className="pd-summary" data-testid="pd-summary">
           {text(plan.summary) ?? <Dash why="no summary served" />}
