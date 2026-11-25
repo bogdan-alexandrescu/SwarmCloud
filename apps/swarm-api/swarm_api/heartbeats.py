@@ -112,7 +112,7 @@ def heartbeats_for_page(
         chunk = lease_ids[start : start + _BATCH]
         try:
             snaps = list(db.get_all([collection.document(lease_id) for lease_id in chunk]))
-        except Exception as exc:  # the tasks were read; only this reading failed
+        except Exception as exc:  # the tasks were read; only this reading failed  # noqa: BLE001
             log.warning("heartbeat: lease read failed: %s", type(exc).__name__)
             for lease_id in chunk:
                 for task in wanted[lease_id]:

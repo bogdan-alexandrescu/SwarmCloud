@@ -72,7 +72,7 @@ def wrong_project(plan: Mapping[str, Any], project: str) -> list[dict[str, Any]]
         done = subprocess.run([binary, "-c", "-L", str(directory), "--arg", "project", project, PROGRAM],
                               input=json.dumps(dict(plan)), capture_output=True, text=True,
                               timeout=JQ_TIMEOUT_SECONDS, check=False)
-    except Exception as exc:  # noqa: BLE001 -- any failure to run the rule refuses the plan
+    except Exception as exc:
         raise Unchecked(f"jq could not be run ({type(exc).__name__})") from exc
     if done.returncode != 0:
         raise Unchecked(f"jq exited {done.returncode}: {done.stderr.strip()[-300:]}")

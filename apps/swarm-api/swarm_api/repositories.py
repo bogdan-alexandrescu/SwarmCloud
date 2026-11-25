@@ -999,7 +999,7 @@ class Repositories:
         the refusal still stands, it just names no cause beyond the plain one."""
         try:
             return GitTokens(self._db, now=self._now).tenant_default(tenant_id)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.warning("repository register tenant=%s token evidence unreadable (%s)",
                         tenant_id, type(exc).__name__)
             return None

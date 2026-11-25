@@ -1225,7 +1225,7 @@ def place_in_line(db: Any, task: Task, waiting_for: Mapping[str, Any] | None) ->
         # Firestore's answer for an index that is missing or still building.
         log.warning("waiting: place-in-line count refused: %s", type(exc).__name__)
         return _no_line("the count's Firestore index is missing or still building", basis)
-    except Exception as exc:  # the task itself was read; only this count failed
+    except Exception as exc:  # the task itself was read; only this count failed  # noqa: BLE001
         log.warning("waiting: place-in-line count failed: %s", type(exc).__name__)
         return _no_line(f"the count query failed ({type(exc).__name__})", basis)
     return {"place_in_line": ahead + 1, "place_in_line_unavailable": None, "place_in_line_basis": basis}
@@ -1246,7 +1246,7 @@ def read_inputs(store: Any, task: Task, *, waiting_for: Mapping[str, Any] | None
     try:
         page = store.list_events(task.tenant_id, task.id, limit=EVENTS_READ, descending=True)
         events = list(page.items)
-    except Exception as exc:  # the task itself was read; only this reading failed
+    except Exception as exc:  # the task itself was read; only this reading failed  # noqa: BLE001
         log.warning("waiting: event read failed: %s", type(exc).__name__)
         events = None
     related: dict[str, Task] | None = None
@@ -1260,7 +1260,7 @@ def read_inputs(store: Any, task: Task, *, waiting_for: Mapping[str, Any] | None
             page = store.list_tasks(task.tenant_id, parent_task_id=task.id, limit=CHILDREN_READ,
                                     submitted_by=None)
             related = {t.id: t for t in page.items if t.tenant_id == task.tenant_id}
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         log.warning("waiting: related task read failed: %s", type(exc).__name__)
         related = None
     ready = task.state is TaskState.READY

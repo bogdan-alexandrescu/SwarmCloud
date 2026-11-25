@@ -201,7 +201,7 @@ def seal(public_key: str, raw: bytes) -> str:
 
     try:
         key = PublicKey(base64.b64decode(public_key, validate=True))
-    except Exception:
+    except Exception:  # noqa: BLE001
         raise UpstreamUnavailable("GitHub served a public key that is not a Curve25519 key; "
                                   "nothing was written") from None
     return base64.b64encode(SealedBox(key).encrypt(raw)).decode("ascii")
@@ -307,7 +307,7 @@ class ActionsSecrets:
             raw = json.dumps(dict(body)).encode("utf-8")
         try:
             answer = self._send(method, f"{API}{path}", headers, raw, self._timeout)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # The type only: a transport's message can quote the request.
             log.warning("actions secrets: GitHub %s %s: no answer (%s)", method,
                         path.split("/secrets/")[0], type(exc).__name__)

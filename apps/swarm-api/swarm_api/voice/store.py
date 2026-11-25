@@ -283,7 +283,7 @@ class GcsVoiceBlobs:
             blob = self._get_client().bucket(self.bucket).blob(key)
             blob.custom_time = self._now()
             blob.upload_from_string(data, content_type=content_type, if_generation_match=0)
-        except Exception as exc:  # the client's type only: its text can name the key
+        except Exception as exc:  # the client's type only: its text can name the key  # noqa: BLE001
             raise VoiceBlobFailed(
                 f"Voice it's storage did not create the object ({type(exc).__name__})") from None
         return f"gs://{self.bucket}/{key}"

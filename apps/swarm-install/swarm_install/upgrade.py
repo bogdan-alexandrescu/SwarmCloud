@@ -831,7 +831,7 @@ class Upgrade:
             except (WaitGaveUp, UpgradeRefused, KeyboardInterrupt):
                 self._stopped(name, done)
                 raise
-            except Exception as exc:  # noqa: BLE001 -- every failure is recorded, then reported
+            except Exception as exc:  # every failure is recorded, then reported
                 why = str(exc)[:500]
                 if name in ROLLED_BACK:
                     self._rollback(plan, name, why)

@@ -739,7 +739,7 @@ def merged_commit_contained(
             continue
         try:
             contained = bool(is_ancestor(read.commit))
-        except Exception:  # an unanswerable question never skips the agent
+        except Exception:  # an unanswerable question never skips the agent  # noqa: BLE001
             contained = False
         if contained:
             return ContainedMerge(task_id=task_id, commit=read.commit)

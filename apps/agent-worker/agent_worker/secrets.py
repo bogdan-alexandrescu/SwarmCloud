@@ -481,7 +481,7 @@ def call_reading_again(
     """
     try:
         return call(False)
-    except Exception as exc:  # noqa: BLE001 -- re-raised unless it is a 401
+    except Exception as exc:  # re-raised unless it is a 401
         if not refused(exc):
             raise
         logger.warning(
@@ -490,7 +490,7 @@ def call_reading_again(
         )
     try:
         return call(True)
-    except Exception as exc:  # noqa: BLE001 -- re-raised unless it is a 401
+    except Exception as exc:  # re-raised unless it is a 401
         if not refused(exc):
             raise
         logger.error("the forge refused the re-read credential as well", call=what)

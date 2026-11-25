@@ -723,7 +723,7 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
                 app.state.ctx.metrics.request_latency.labels(route=_template(request)).observe(
                     elapsed
                 )
-            except Exception:  # pragma: no cover - metrics must never 500 a request
+            except Exception:  # pragma: no cover - metrics must never 500 a request  # noqa: BLE001
                 log.debug("latency metric failed for %s", route)
         # A platform admin's audited request (§4.2.4): its row was written
         # before the route ran, by `deps.current_auth`; the status it ended
@@ -739,7 +739,7 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
                 method=request.method,
                 status=f"{response.status_code // 100}xx",
             ).inc()
-        except Exception:  # pragma: no cover
+        except Exception:  # pragma: no cover  # noqa: BLE001, S110
             pass
         return response
 
