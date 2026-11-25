@@ -938,6 +938,22 @@ export interface PlanApprove {
 }
 
 /**
+ * A question to the review agent. Text only: there is no field for a profile,
+ * an image, a command, a resource or a model (invariant 10); the class comes
+ * from the plan-review settings, and any other key is 422.
+ */
+export interface PlanChatAsk {
+  plan_digest: string
+  ask: string
+  anchor?: DiagramAnchor | null
+}
+
+/** Where in the thread a pinned answer is anchored. */
+export interface PlanChatPin {
+  anchor: DiagramAnchor
+}
+
+/**
  * `plan:comment`'s body (plans-pipeline.md §3.4): a new comment
  * (`plan_digest`, `anchor`, `text`) or a fold (`entry_id`, `resolved`).
  *
