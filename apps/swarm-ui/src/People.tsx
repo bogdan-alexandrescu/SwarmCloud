@@ -401,7 +401,8 @@ function Approve({ row, reload, confirm, onSaid }: { row: PersonRow; reload: () 
           }
         >
           <p>
-            Create a workspace for {row.email} with {ceiling} agents? A CI job will create its identity and namespace.
+            Create a workspace for {row.email} with {ceiling} agents?{' '}
+            <InfoTip about="what approving creates" tip="A CI job will create its identity and namespace." />
           </p>
         </Dialog>
       )}
@@ -771,15 +772,24 @@ function LoanPicker({
             </>
           }
         >
-          <p>{lend ? `Lend ${name} to ${row.email}?` : `Reclaim ${name} from ${row.email}?`}</p>
-          <p className="ur-hint">
-            {lend
-              ? `Their work may then run on an account ${lender(chosen.owner_tenant)} owns.`
-              : `${lender(chosen.owner_tenant)} stops lending it to them; their new work is no longer offered it.`}
+          <p>
+            {lend ? `Lend ${name} to ${row.email}?` : `Reclaim ${name} from ${row.email}?`}{' '}
+            <InfoTip
+              about={lend ? 'what lending does' : 'what reclaiming does'}
+              tip={
+                lend
+                  ? `Their work may then run on an account ${lender(chosen.owner_tenant)} owns.`
+                  : `${lender(chosen.owner_tenant)} stops lending it to them; their new work is no longer offered it.`
+              }
+            />
           </p>
           {lend && idle && (
             <p className="ur-hint" role="note" data-testid="pp-loan-idle">
-              This account is {accountStateWord(chosen.state ?? '')}: it starts no new agent until its owner makes it available again.
+              Starts no new agent{' '}
+              <InfoTip
+                about="an account that starts no new agent"
+                tip={`This account is ${accountStateWord(chosen.state ?? '')}: it starts no new agent until its owner makes it available again.`}
+              />
             </p>
           )}
         </Dialog>

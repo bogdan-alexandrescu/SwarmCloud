@@ -16,6 +16,7 @@ import {
   mountCostPill,
   mountDebugTrace,
   mountFloating,
+  mountPeopleLoans,
   mountProjects,
   mountRoster,
   mountSchedules,
@@ -303,6 +304,48 @@ export const ADMIN: readonly ProseState[] = [
     act: async () => {
       await typeInto('.asm-team input', 'eng@example.com')
       await press('body', 'Add the team')
+    },
+  },
+  // ---------------------------------------------------------------- People: the drawer's asks the fixture never draws
+  {
+    key: 'admin/people-approve-denied',
+    group: 'admin',
+    files: ['People.tsx'],
+    shows: '.c-dlg',
+    moved: ['A CI job will create its identity and namespace.'],
+    data: ['Use the eng space.'],
+    mount: mountPeopleLoans,
+    act: async () => {
+      await clickDrawn('tr[data-email="fay@example.com"] button')
+      await press('.pp-drawer', 'Approve')
+    },
+  },
+  {
+    key: 'admin/people-lend',
+    group: 'admin',
+    files: ['People.tsx'],
+    shows: '.c-dlg',
+    lines: ['Starts no new agent'],
+    moved: ['Their work may then run on an account eng owns.', 'This account is paused: it starts no new agent until its owner makes it available again.'],
+    data: ['Use the eng space.'],
+    mount: mountPeopleLoans,
+    act: async () => {
+      await clickDrawn('tr[data-email="bob@example.com"] button')
+      await typeInto('.pp-drawer [data-section="claude"] select', 'acct-eng-2')
+      await press('.pp-drawer [data-section="claude"]', 'Lend')
+    },
+  },
+  {
+    key: 'admin/people-reclaim',
+    group: 'admin',
+    files: ['People.tsx'],
+    shows: '.c-dlg',
+    moved: ['eng stops lending it to them; their new work is no longer offered it.'],
+    data: ['Use the eng space.'],
+    mount: mountPeopleLoans,
+    act: async () => {
+      await clickDrawn('tr[data-email="hal@example.com"] button')
+      await press('.pp-drawer [data-section="claude"]', 'Reclaim')
     },
   },
   // ---------------------------------------------------------------- Schedules, every workspace

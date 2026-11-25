@@ -46,6 +46,40 @@ export async function mountTeamRefused(): Promise<ReactElement> {
   return <AdminSetupTeam teams={[]} />
 }
 
+// ---------------------------------------------------------------- People: a denied request and a loan
+
+function workspace(state: string, id: string, over: Json = {}): Json {
+  return {
+    state, setup_url: '/setup#workspace', setup_command: '/sc:setup', workspace_id: id, request_id: `req-${id}`, requested_at: at(60),
+    requested_via: 'console', decision: null, limits: { max_active: 8, capacity_units: 8, quota_pods: 16, quota_cpu: 64 }, steps: {},
+    failure: null, ready_at: null, request_again_at: null, dispatch: null, run: null, retried_at: null, ...over,
+  }
+}
+
+function personRow(email: string, ws: Json, claude: Json = { source: 'none', own: 0, lent: 0, lent_by: [], provider_key: false }): Json {
+  return { email, teams: ['eng'], github: 'connected', workspace: ws, claude_account: claude, loan_request: null, first_seen: at(600), last_seen: at(5), last_submitted: null, last_active: at(5) }
+}
+
+const PAUSED = { account_id: 'acct-eng-2', owner_tenant: 'eng', label: 'eng paused', state: 'PAUSED', lend_to: [] }
+const LENT = { account_id: 'acct-eng-1', label: 'eng shared', owner_tenant: 'eng', owner_name: 'Engineering', state: 'AVAILABLE' }
+
+/** People with a denied request (the drawer's Approve asks), a person to lend to and one to reclaim from. */
+export async function mountPeopleLoans(): Promise<ReactElement> {
+  await live()
+  const rows = [
+    personRow('fay@example.com', workspace('denied', 'w-fa1000', { decision: { verdict: 'denied', reason: 'Use the eng space.', at: at(30) } })),
+    personRow('bob@example.com', workspace('ready', 'w-b0b000')),
+    personRow('hal@example.com', workspace('ready', 'w-4a1000'), { source: 'lent', own: 0, lent: 1, lent_by: ['eng'], lent_accounts: [LENT], provider_key: false }),
+  ]
+  const body = {
+    people: rows, count: rows.length, pending: 0, audit: [], lendable_accounts: [{ ...LENT, lend_to: [] }, PAUSED], lendable_error: null,
+    admins: [{ email: 'owner@example.com', role: 'owner', granted_by: 'config:PLATFORM_OWNER', granted_at: null }], admins_error: null,
+  }
+  serve((m, url) => (m === 'GET' && url === '/v1/admin/people' ? { status: 200, body } : null))
+  const { PeopleScreen } = await import('../People')
+  return <PeopleScreen />
+}
+
 // ---------------------------------------------------------------- Schedules, every workspace
 
 function scheduleRow(id: string, tenant: string): Json {
