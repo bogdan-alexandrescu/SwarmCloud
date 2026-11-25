@@ -279,6 +279,28 @@ describe('the workspace secrets one-time link', () => {
   })
 })
 
+// THE ADMIN REFUSAL CASES ALLOW FOR A SLOW APP LOAD (issue 410). One case,
+// "/admin/workspaces" below, timed out at 30s on a merge train's starved
+// runner. Each case loads the whole app afresh, and it must: api.ts reads
+// VITE_LIVE once, as it loads, and fetch.ts keeps settled reads in module
+// state. Measured on 2026-11-24 in a 6-CPU agent container: one app load
+// (`vi.resetModules()`, `import('../App')`, render, `screenLoaded()`) took
+// 0.3-0.8s (median ~0.43s) unthrottled and 1.0-2.3s (median ~1.1s) pinned to
+// one processor with two busy loops beside it; nearly all of it is the import.
+// The refusal itself lands within milliseconds of the load, in both.
+//
+// No race of help.vq055.test.tsx's kind (issue 400) is here: these cases wait
+// for the refusal itself, which, once both reads have answered, depends only
+// on those reads and the route, so it does not go again; and the bar's rewrite
+// of `/admin` runs in App's mount effect, before either read can answer.
+// What is left is time, so, as there: each wait is 10s, not setup.ts' 2s,
+// still a failure with a named message and not a hang, and each case's own
+// timeout leaves the waits room to run out first. A case loads the app once:
+// a loop of addresses in one case is a case per address, so a slow load costs
+// one address its limit, not the next ones theirs.
+const WAIT = { timeout: 10_000 }
+const CASE_TIMEOUT = 60_000
+
 describe('Admin is drawn only for an admin (CONFIG-NAV)', () => {
   // SOMEONE WHO ADMINISTERS NOTHING IS TOLD SO IN PLACE (visual QA pass 1
   // admin-shell-23, part of archived issue 2596; owner 2026-10-28 reversed CONFIG-NAV's
@@ -288,13 +310,22 @@ describe('Admin is drawn only for an admin (CONFIG-NAV)', () => {
     serve(ME(false), [PERSONAL, group('eng', 'member')])
     await app('/admin/limits')
     // MUTATION: keep the redirect to Overview (or drop the refusal) -> this is not found.
-    expect(await screen.findByText('Pool limits is for platform admins')).toBeTruthy()
-    expect(document.querySelector('[data-refused="admin"]')?.textContent).toMatch(/You are a member of \S+/)
-    expect(screen.getByRole('link', { name: 'Open Overview' })).toBeTruthy()
+    const refusal = await waitFor(() => {
+      const r = document.querySelector<HTMLElement>('[data-refused="admin"]')
+      expect(r, 'no refusal').not.toBeNull()
+      return r!
+    }, WAIT)
+    // In the refusal, not anywhere in the app: a query over the whole
+    // document is slow, and a role query slowest -- 3.3s unthrottled and ~10s
+    // on one busy processor for this link (jsdom computes each element's role
+    // and name against the shipped sheet).
+    expect(within(refusal).getByText('Pool limits is for platform admins')).toBeTruthy()
+    expect(refusal.textContent).toMatch(/You are a member of \S+/)
+    expect(within(refusal).getByRole('link', { name: 'Open Overview' })).toBeTruthy()
     expect(window.location.pathname).toBe('/admin/limits')
     // A member of a group workspace reaches Admin › Workspaces (owner, 3 November), and nothing else there.
-    await waitFor(() => expect(document.querySelector('.sk-spine a[data-sec="admin"]')?.getAttribute('href')).toBe('/admin/workspaces'))
-  })
+    await waitFor(() => expect(document.querySelector('.sk-spine a[data-sec="admin"]')?.getAttribute('href')).toBe('/admin/workspaces'), WAIT)
+  }, CASE_TIMEOUT)
 
   // QA1B-04 review: the owner of a personal workspace is its admin, as the
   // panel foot says, even when `/v1/tenants/mine` carries no stored role for it.
@@ -304,20 +335,20 @@ describe('Admin is drawn only for an admin (CONFIG-NAV)', () => {
     const { role: _stored, ...unroled } = PERSONAL
     serve(ME(false, 'u-ana'), [unroled])
     await app('/admin/limits')
-    await waitFor(() => expect(document.querySelector('[data-refused="admin"]')).not.toBeNull())
+    await waitFor(() => expect(document.querySelector('[data-refused="admin"]')).not.toBeNull(), WAIT)
     const said = document.querySelector('[data-refused="admin"]')!.textContent
     // MUTATION: name the role by `roleOf` alone -> "your role in ... was not read" and this fails.
     expect(said).not.toContain('was not read')
     expect(said).toMatch(/You are not a platform admin · \S.* is your own workspace/)
     expect(said).not.toContain('an admin of')
-  })
+  }, CASE_TIMEOUT)
 
   // QA1B-04 review: the refusal is drawn in the page's frame -- the gutter of
   // `.app` and the head of `PageHead` -- not flush against the panel.
   it('draws the refusal inside the page frame, under a head titled by the page', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'member')])
     await app('/admin/people')
-    await waitFor(() => expect(document.querySelector('[data-refused="admin"]')).not.toBeNull())
+    await waitFor(() => expect(document.querySelector('[data-refused="admin"]')).not.toBeNull(), WAIT)
     const refusal = document.querySelector('[data-refused="admin"]')!
     // MUTATION: draw `<AdminRoleRefusal/>` alone in the children's place -> no frame and this fails.
     const work = refusal.closest('main.work')
@@ -327,16 +358,17 @@ describe('Admin is drawn only for an admin (CONFIG-NAV)', () => {
     // The inset is `.app`'s own: a gutter on both sides at every width.
     const css = readFileSync(join(__dirname, '..', 'styles.css'), 'utf8')
     expect(css).toMatch(/\n\.app \{[^}]*padding: 0 var\(--app-pad\) 48px;/)
-  })
+  }, CASE_TIMEOUT)
 
   // One test per address: each has its own time limit and a failure names the address.
   it.each(['/admin/tenants', '/admin/people', '/admin/workspaces', '/admin'])('refuses a member in place at the Admin address %s, deep links included', async (path) => {
     serve(ME(false), [PERSONAL])
     await app(path)
-    await waitFor(() => expect(document.querySelector('[data-refused="admin"]'), path).not.toBeNull())
+    // MUTATION: drop the refusal for a member (render the page's children) -> no refusal, and this fails.
+    await waitFor(() => expect(document.querySelector('[data-refused="admin"]'), `${path}: no refusal`).not.toBeNull(), WAIT)
     // `/admin` is written as its first page; either way it stays in Admin.
     expect(window.location.pathname, path).toBe(path === '/admin' ? '/admin/limits' : path)
-  })
+  }, CASE_TIMEOUT)
 
   it('does not redirect while either read is in flight', async () => {
     serve(null, [PERSONAL])
@@ -344,19 +376,18 @@ describe('Admin is drawn only for an admin (CONFIG-NAV)', () => {
     await new Promise((r) => setTimeout(r, 30))
     // MUTATION: treat an unread session as "not an admin" -> redirected and this fails.
     expect(window.location.pathname).toBe('/admin/limits')
-  })
+  }, CASE_TIMEOUT)
 
-  it('keeps a platform admin and a workspace admin where they asked to go', async () => {
-    serve(ME(true), [PERSONAL])
-    await app('/admin/limits')
-    await waitFor(() => expect(document.querySelector('.sk-spine a[data-sec="admin"]')).not.toBeNull())
-    expect(window.location.pathname).toBe('/admin/limits')
-    cleanup()
-    serve(ME(false), [PERSONAL, group('eng', 'admin')])
-    await app('/admin/workspaces')
-    await waitFor(() => expect(document.querySelector('.sk-spine a[data-sec="admin"]')).not.toBeNull())
-    expect(window.location.pathname).toBe('/admin/workspaces')
-  })
+  // A case each (issue 410): one app load per case.
+  it.each([
+    ['a platform admin', '/admin/limits', ME(true), [PERSONAL]],
+    ['a workspace admin', '/admin/workspaces', ME(false), [PERSONAL, group('eng', 'admin')]],
+  ] as const)('keeps %s where they asked to go, %s', async (who, path, me, mine) => {
+    serve(me, [...mine])
+    await app(path)
+    await waitFor(() => expect(document.querySelector('.sk-spine a[data-sec="admin"]'), `${who}: no Admin on the spine`).not.toBeNull(), WAIT)
+    expect(window.location.pathname, who).toBe(path)
+  }, CASE_TIMEOUT)
 })
 
 describe('a workspace admin on a platform Admin page is refused in place, and a bare /admin goes to Workspaces you admin (ADMIN-REDIRECT)', () => {
@@ -370,21 +401,20 @@ describe('a workspace admin on a platform Admin page is refused in place, and a 
   // admin has a scoped People and roles page there (the case below).
   const PLATFORM_PAGES = ['/admin/limits', '/admin/tenants', '/admin/runner-sizes', '/admin/counts', '/admin']
 
-  it('refuses a workspace admin in place on every platform Admin address, and sends the bare /admin to /admin/workspaces', async () => {
-    for (const path of PLATFORM_PAGES) {
-      serve(ME(false), [PERSONAL, group('eng', 'admin')])
-      await app(path)
-      if (path === '/admin') {
-        await waitFor(() => expect(window.location.pathname, path).toBe('/admin/workspaces'))
-      } else {
-        // MUTATION: redirect the workspace admin again -> no refusal, and the address changes.
-        await waitFor(() => expect(document.querySelector('[data-refused="admin"]')?.textContent, path).toContain('is for platform admins'))
-        expect(window.location.pathname, path).toBe(path)
-      }
-      expect(document.querySelector('.sk-spine a[data-sec="admin"]'), path).not.toBeNull()
-      cleanup()
+  // One case per address (issue 410): five app loads in one case were five
+  // chances at its one time limit, and a failure names the address.
+  it.each(PLATFORM_PAGES)('refuses a workspace admin in place on the platform Admin address %s, and sends the bare /admin to /admin/workspaces', async (path) => {
+    serve(ME(false), [PERSONAL, group('eng', 'admin')])
+    await app(path)
+    if (path === '/admin') {
+      await waitFor(() => expect(window.location.pathname, path).toBe('/admin/workspaces'), WAIT)
+    } else {
+      // MUTATION: redirect the workspace admin again -> no refusal, and the address changes.
+      await waitFor(() => expect(document.querySelector('[data-refused="admin"]')?.textContent, path).toContain('is for platform admins'), WAIT)
+      expect(window.location.pathname, path).toBe(path)
     }
-  })
+    expect(document.querySelector('.sk-spine a[data-sec="admin"]'), path).not.toBeNull()
+  }, CASE_TIMEOUT)
 
   it('renders Platform people at /admin/people for a workspace admin instead of redirecting (ADMIN-PEOPLE-ROLES)', async () => {
     const scoped = {
@@ -397,8 +427,8 @@ describe('a workspace admin on a platform Admin page is refused in place, and a 
     }
     serve(ME(false), [PERSONAL, group('eng', 'admin')], (url) => (url.includes('/v1/admin/people') ? scoped : undefined))
     await app('/admin/people')
-    await screen.findByRole('heading', { name: 'Platform people', level: 1 })
-    await waitFor(() => expect(document.querySelector('.pp-grid th[data-tenant="eng"]')).not.toBeNull())
+    await screen.findByRole('heading', { name: 'Platform people', level: 1 }, WAIT)
+    await waitFor(() => expect(document.querySelector('.pp-grid th[data-tenant="eng"]')).not.toBeNull(), WAIT)
     await new Promise((r) => setTimeout(r, 30))
     // MUTATION: keep People out of a workspace admin's Admin pages -> the
     // redirect sends them to /admin/workspaces and this fails.
@@ -409,41 +439,36 @@ describe('a workspace admin on a platform Admin page is refused in place, and a 
     expect(rows.join(' ')).not.toMatch(/Pool limits|Runner sizes|Tenants|Platform counts/)
     // The Admin item still lands on Workspaces you admin, as ADMIN-REDIRECT drew it.
     expect(document.querySelector('.sk-spine a[data-sec="admin"]')?.getAttribute('href')).toBe('/admin/workspaces')
-  })
+  }, CASE_TIMEOUT)
 
   it('rewrites the bare /admin in place, so Back does not return to it', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'admin')])
     const push = vi.spyOn(window.history, 'pushState')
     await app('/admin')
-    await waitFor(() => expect(window.location.pathname).toBe('/admin/workspaces'))
+    await waitFor(() => expect(window.location.pathname).toBe('/admin/workspaces'), WAIT)
     // MUTATION: navigate with `go` (a push) -> Back lands on /admin/limits again.
     expect(push).not.toHaveBeenCalled()
     push.mockRestore()
-  })
+  }, CASE_TIMEOUT)
 
-  it('never redirects a platform admin, from any Admin page', async () => {
-    for (const path of PLATFORM_PAGES.filter((p) => p !== '/admin')) {
-      serve(ME(true), [PERSONAL, group('eng', 'admin')])
-      await app(path)
-      await waitFor(() => expect(document.querySelector('.sk-spine a[data-sec="admin"]')).not.toBeNull())
-      await new Promise((r) => setTimeout(r, 30))
-      // MUTATION: redirect on the stored role alone -> a platform admin who
-      // also administers a group is sent away and this fails.
-      expect(window.location.pathname, path).toBe(path)
-      cleanup()
-    }
-  })
+  // One case per page and one per role (issue 410): one app load per case.
+  it.each(PLATFORM_PAGES.filter((p) => p !== '/admin'))('never redirects a platform admin, from the Admin page %s', async (path) => {
+    serve(ME(true), [PERSONAL, group('eng', 'admin')])
+    await app(path)
+    await waitFor(() => expect(document.querySelector('.sk-spine a[data-sec="admin"]'), `${path}: no Admin on the spine`).not.toBeNull(), WAIT)
+    await new Promise((r) => setTimeout(r, 30))
+    // MUTATION: redirect on the stored role alone -> a platform admin who
+    // also administers a group is sent away and this fails.
+    expect(window.location.pathname, path).toBe(path)
+  }, CASE_TIMEOUT)
 
-  it('refuses a member and a viewer in place, never sending them to Workspaces you admin', async () => {
-    for (const role of ['member', 'viewer']) {
-      serve(ME(false), [PERSONAL, group('eng', role)])
-      await app('/admin/tenants')
-      // MUTATION: send everyone refused to /admin/workspaces -> this fails.
-      await waitFor(() => expect(document.querySelector('[data-refused="admin"]'), role).not.toBeNull())
-      expect(window.location.pathname, role).toBe('/admin/tenants')
-      cleanup()
-    }
-  })
+  it.each(['member', 'viewer'])('refuses a %s in place, never sending them to Workspaces you admin', async (role) => {
+    serve(ME(false), [PERSONAL, group('eng', role)])
+    await app('/admin/tenants')
+    // MUTATION: send everyone refused to /admin/workspaces -> this fails.
+    await waitFor(() => expect(document.querySelector('[data-refused="admin"]'), `${role}: no refusal`).not.toBeNull(), WAIT)
+    expect(window.location.pathname, role).toBe('/admin/tenants')
+  }, CASE_TIMEOUT)
 
   it('does not redirect a workspace admin while the identity read is in flight', async () => {
     serve(null, [PERSONAL, group('eng', 'admin')])
@@ -452,7 +477,7 @@ describe('a workspace admin on a platform Admin page is refused in place, and a 
     // MUTATION: decide on `/v1/tenants/mine` alone -> a platform admin whose
     // `/v1/tenants/me` is still loading would be redirected; this fails.
     expect(window.location.pathname).toBe('/admin/limits')
-  })
+  }, CASE_TIMEOUT)
 })
 
 describe('the setup strip (proposal E)', () => {
