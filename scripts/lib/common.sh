@@ -471,13 +471,17 @@ config_fetch() {
 #     token, the object's generation from the JSON API, then that generation's
 #     media, whose x-goog-generation must be the one asked for. Never chosen
 #     because gcloud is missing: a host with neither refuses, with no network
-#     call at all.
+#     call at all. Each of those three calls is tried again, a bounded number of
+#     times, on a timeout, no connection or an HTTP 5xx (the retry block below);
+#     the other two sources are read once here (gcloud retries a transient
+#     error itself).
 #
 # Returns 0 with the object cached; 2, quietly, when the source holds no such
 # object, after removing a cached copy (a deleted object reads as missing,
 # never as its last copy); 1, saying why, on anything else. A 403 says the
 # identity may not read the object -- never "log in again", which is
-# die_if_auth_failure's diagnosis of an expired session, and never "missing".
+# die_if_auth_failure's diagnosis of an expired session, and never "missing". A
+# REST read that never succeeds, its last try included, is still a 1.
 CONFIG_METADATA_TOKEN_URL="http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
 CONFIG_STORAGE_API="https://storage.googleapis.com/storage/v1"
 
@@ -493,8 +497,21 @@ CONFIG_STORAGE_API="https://storage.googleapis.com/storage/v1"
 # SWARM_CONFIG_READ_PAUSE override the two defaults; a value out of range
 # refuses before any network call rather than retrying without a bound.
 #
+# WHY A 5xx HERE, when curl_retry_no_answer never retries an HTTP status: that
+# function records the owner's decision of 2026-09-30 for ITS callers, and it
+# stands. The owner's comment on issue 370 (2026-11-24) asks for a 5xx to be
+# tried again on THIS read only. So the read does not go through that function
+# (which also writes curl's stdout into OUT, where this needs the status), and
+# nothing here widens it. config_fetch_one also serves private.tfvars.json
+# (scripts/lib/private-tfvars.sh): over REST it gets the same tries, which is
+# the same read of one object by its exact name.
+#
 # 3 tries: one try was what failed; a third covers a second blip without
-# turning an outage into a long wait. Kept at most 5.
+# turning an outage into a long wait. With the 30 s --max-time a timing-out
+# bucket call is asked at 0, 40 and 80 s and its verdict comes by 110 s, which
+# outlasts the 30-90 s in which a fresh Cloud Run instance gets no reply from
+# Google API addresses (archived issue 401, on curl_retry_no_answer). Kept at
+# most 5.
 CONFIG_READ_TRIES_DEFAULT=3
 # 10 s between tries: long enough for a dropped connection or a 503 to clear,
 # short enough for CI. Worst case, every call needing all its tries: the token

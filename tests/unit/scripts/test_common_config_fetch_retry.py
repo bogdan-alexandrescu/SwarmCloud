@@ -367,6 +367,22 @@ def test_a_403_is_refused_after_one_storage_call_and_no_pause(tmp_path: Path) ->
     assert _storage_calls(tmp_path) == 1
     assert not _log(tmp_path, "sleep.log")
     assert "try 2" not in proc.stderr
+    # A 403 is an answer about the identity, never an expired session.
+    assert "gcloud auth login" not in proc.stderr
+
+
+def test_a_404_drops_the_cached_copy_after_one_storage_call_and_no_pause(tmp_path: Path) -> None:
+    # MUTATION: read a 404 as a failed read (return 1) and the copy stays.
+    env = _setup(tmp_path)
+    _accepted(tmp_path, _run(env))
+    (tmp_path / "gcs" / BUCKET / OBJECT).unlink()
+    before = _storage_calls(tmp_path)
+    proc = _run(env)
+    _refused(tmp_path, proc)
+    assert "does not exist" in proc.stderr
+    assert _storage_calls(tmp_path) == before + 1
+    assert not _log(tmp_path, "sleep.log")
+    assert not _cached(tmp_path).exists()
 
 
 def test_a_404_reads_as_missing_after_one_storage_call_and_no_pause(tmp_path: Path) -> None:
