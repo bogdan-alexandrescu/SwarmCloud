@@ -101,13 +101,16 @@ export const mountStepCard = (): ReactElement => (
     changes={null}
     now={Date.parse(at(10))}
     load={attemptsLoader}
-    siblings={[{ workflowId: 'wf_1', mark: 'failed', hue: 'bad', word: 'failed' }]}
+    siblings={[
+      { workflowId: 'wf_1', mark: 'failed', hue: 'bad', word: 'failed' },
+      { workflowId: 'wf_0', mark: 'succeeded', hue: 'ok', word: 'succeeded' },
+    ]}
     siblingIndex={0}
     onSibling={() => undefined}
     stop={null}
     retry={<button>Retry</button>}
     hasExtras
-    extras={<section aria-label="Review verdict">Reviewed</section>}
+    extras={<section aria-label="Review verdict">Reviewed · approved</section>}
   />
 )
 

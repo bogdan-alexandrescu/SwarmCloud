@@ -22,6 +22,7 @@ import { interviewAddress, proposalAddress } from './interviewPaths'
 import { Absent } from './primitives'
 import { RunChangesTab, changesAtOf, withChangesAt } from './WorkflowChanges'
 import { Markdown } from './ArtifactViewer'
+import { InfoTip } from './InfoTip'
 import './styles/intake.css'
 import './styles/runs.css'
 
@@ -1105,9 +1106,10 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
     if (decided === null || decided.at !== at || run.state === 'PLANNED') return null
     return (
       <p className="rn-decided sb-note" role="status">
+        {/* THE ANSWER IS ONE WORD (issue 439): what it did to the run is behind the (i), word for word. */}
         {decided.what === 'approve'
-          ? <><b>Approved.</b> The run is {runStateWord(run.state)} now{run.workflow_id === null ? '.' : ', with its workflow created.'}</>
-          : <><b>Rejected.</b> The run is {runStateWord(run.state)} now; nothing ran.</>}
+          ? <><b>Approved.</b> <InfoTip about="the approval" tip={`The run is ${runStateWord(run.state)} now${run.workflow_id === null ? '.' : ', with its workflow created.'}`} /></>
+          : <><b>Rejected.</b> <InfoTip about="the rejection" tip={`The run is ${runStateWord(run.state)} now; nothing ran.`} /></>}
       </p>
     )
   }
@@ -1804,14 +1806,19 @@ export function PlanEditor({ plan, busy, onCancel, onSave }: {
         <input value={estimate} maxLength={200} onChange={(e) => setEstimate(e.target.value)} aria-describedby={`${hintId}-estimate`} />
       </label>
       {/* Beside the field, not in its label: the label stays its name alone. */}
-      <span className="sb-note" id={`${hintId}-estimate`}>Free text, as the planner wrote it: a time or a size, such as &ldquo;about 2 hours&rdquo;. Optional.</span>
+      <span className="sb-note" id={`${hintId}-estimate`}>
+        Optional <InfoTip about="the estimate" tip="Free text, as the planner wrote it: a time or a size, such as “about 2 hours”. Optional." />
+      </span>
       <label className="rn-field">
         <b>Requirements, one per line</b>
         <textarea value={requirements} rows={4} onChange={(e) => setRequirements(e.target.value)} />
       </label>
       <p className="sb-note">
-        The requirements are what the review checks, and what decides <code>Closes</code> against{' '}
-        <code>part of</code>. The mode and the overlaps are kept as the planner found them.
+        Checked by the review{' '}
+        <InfoTip
+          about="the requirements"
+          tip="The requirements are what the review checks, and what decides Closes against part of. The mode and the overlaps are kept as the planner found them."
+        />
       </p>
       {steps.map((s, i) => (
         <fieldset key={s.step.step_id} className="rn-field-set">
@@ -1844,8 +1851,9 @@ export function PlanEditor({ plan, busy, onCancel, onSave }: {
           </label>
         </fieldset>
       ))}
-      <p className="sb-note">Saving sends the digest of the plan you opened; an edit made by someone else since is refused.</p>
       <div className="rn-actions">
+        {/* What a save carries is behind its (i) (issue 439), beside the button it explains. */}
+        <InfoTip about="saving" tip="Saving sends the digest of the plan you opened; an edit made by someone else since is refused." />
         <Button type="submit" kind="primary" disabled={busy}
           disabledReason={blank ? `Not saved: ${blanks.join(', ')} ${blanks.length === 1 ? 'is' : 'are'} empty.` : undefined}>Save the plan</Button>
         <Button disabled={busy} onClick={onCancel}>Cancel</Button>
@@ -1972,15 +1980,23 @@ function Overlaps({ plan, openWork, folded, ended }: { plan: RunPlan; openWork: 
     <>
       {overlaps === undefined || overlaps === null ? (
         <p className="sb-note">
-          This plan does not say: it was written without the planner&rsquo;s read of the repository&rsquo;s open issues
-          and pull requests, so nothing here rules overlaps out.
+          Not checked{' '}
+          <InfoTip
+            about="overlaps"
+            tip="This plan does not say: it was written without the planner’s read of the repository’s open issues and pull requests, so nothing here rules overlaps out."
+          />
         </p>
       ) : overlaps.length === 0 ? (
         <p className="sb-note">
+          {/* What was read is facts, the sentence that says it behind the (i) (issue 439). */}
           None found{openWork === null ? '.' : <>
-            {' '}in {pluralise(openWork.issues.length, 'open issue')} and{' '}
-            {pluralise(openWork.pull_requests.length, 'open pull request')} read when the run was created
-            {openWork.issues_truncated || openWork.pull_requests_truncated ? ' (the list was cut, so not every one was read)' : ''}.
+            {' · '}{pluralise(openWork.issues.length, 'open issue')} · {pluralise(openWork.pull_requests.length, 'pull request')} read{' '}
+            {openWork.issues_truncated || openWork.pull_requests_truncated ? '· list cut ' : ''}
+            <InfoTip
+              about="the overlaps read"
+              tip={`None found in ${pluralise(openWork.issues.length, 'open issue')} and ${pluralise(openWork.pull_requests.length, 'open pull request')} read when the run was created${
+                openWork.issues_truncated || openWork.pull_requests_truncated ? ' (the list was cut, so not every one was read)' : ''}.`}
+            />
           </>}
         </p>
       ) : (

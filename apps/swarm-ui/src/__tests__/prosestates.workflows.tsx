@@ -74,8 +74,14 @@ export const WORKFLOWS: readonly ProseState[] = [
   {
     key: 'workflow/quiet-questions',
     group: 'workflows',
-    files: ['Workflows.tsx'],
-    shows: '.wfp-quiet-q[aria-expanded="true"]',
+    files: ['Workflows.tsx', 'QuestionsCard.tsx'],
+    shows: '.wfp-quiet-qs',
+    // The agent's own question, as it wrote it.
+    data: ['Rename the views flag in this change or in a follow-up?'],
+    lines: ['Asked instead of guessing'],
+    moved: [
+      'This agent (step implement) asked you these instead of guessing. Pick an option or write your own: the answer is stored on this agent, where whoever launched workflow wf_quiet_q_01 (alice@example.com) reads it with swarm_result.',
+    ],
     walk: { open: QUIET, then: () => click('.wfp-quiet-q') },
   },
   {
@@ -89,6 +95,8 @@ export const WORKFLOWS: readonly ProseState[] = [
     key: 'run/full-plan',
     group: 'workflows',
     files: ['Runs.tsx'],
+    // The plan as the planner wrote it, and its JSON.
+    data: ['Sum the steps\' recorded spend into the workflow read'],
     shows: 'details.rn-raw[open]',
     walk: { open: PLANNED, then: () => openDetails('details.rn-raw') },
   },
@@ -103,6 +111,8 @@ export const WORKFLOWS: readonly ProseState[] = [
     key: 'run/issue-body',
     group: 'workflows',
     files: ['Runs.tsx'],
+    // The issue's own body, as GitHub served it.
+    data: ['See what a finished workflow cost without opening each step.'],
     shows: 'details.rn-read-body[open]',
     walk: { open: PLANNED, then: () => openDetails('details.rn-read-body') },
   },
@@ -111,6 +121,8 @@ export const WORKFLOWS: readonly ProseState[] = [
     group: 'workflows',
     files: ['Runs.tsx'],
     shows: 'details.rn-fold[open]',
+    lines: ['Not checked'],
+    moved: ['This plan does not say: it was written without the planner’s read of the repository’s open issues and pull requests, so nothing here rules overlaps out.'],
     walk: { open: RUNNING, then: () => openDetails('details.rn-fold') },
   },
   {
@@ -125,6 +137,14 @@ export const WORKFLOWS: readonly ProseState[] = [
     group: 'workflows',
     files: ['Runs.tsx'],
     shows: '.rn-edit',
+    // The plan's own summary and prompts, in the fields that edit them.
+    data: ['Sum the steps\' recorded spend into the workflow read', 'Draw the column in Workflows.tsx'],
+    lines: ['Optional', 'Checked by the review'],
+    moved: [
+      'Free text, as the planner wrote it: a time or a size, such as “about 2 hours”. Optional.',
+      'The requirements are what the review checks, and what decides Closes against part of. The mode and the overlaps are kept as the planner found them.',
+      'Saving sends the digest of the plan you opened; an edit made by someone else since is refused.',
+    ],
     walk: { open: PLANNED, then: () => clickText('.rn-actions button', 'Edit plan') },
   },
   {
@@ -132,6 +152,7 @@ export const WORKFLOWS: readonly ProseState[] = [
     group: 'workflows',
     files: ['Runs.tsx'],
     shows: '.rn-decided',
+    moved: ['The run is Running now, with its workflow created.'],
     walk: { open: PLANNED, then: () => clickText('.rn-actions button', 'Approve and run') },
   },
   // ------------------------------------------------------------ mounted
@@ -192,7 +213,7 @@ export const WORKFLOWS: readonly ProseState[] = [
     key: 'workflow/facts-more',
     group: 'workflows',
     files: ['WorkflowFacts.tsx'],
-    shows: '.wff-more[aria-expanded="true"]',
+    shows: '.wff-parts:not(.is-clamped)',
     // The workflow's own description, as it was submitted.
     data: ['reads the pool table and notes the queue depth of pool'],
     mount: mountWorkflowFacts,
@@ -203,6 +224,8 @@ export const WORKFLOWS: readonly ProseState[] = [
     group: 'workflows',
     files: ['Workflows.tsx'],
     shows: '.wfp-confirm',
+    lines: ['1 waiting cancelled · results kept'],
+    moved: ['1 waiting step is cancelled now. Steps that finished keep their results.'],
     mount: mountCancelRefused,
     act: () => clickText('button', 'Stop workflow'),
   },
@@ -224,6 +247,7 @@ export const WORKFLOWS: readonly ProseState[] = [
     group: 'workflows',
     files: ['Workflows.tsx'],
     shows: '[role="dialog"]',
+    moved: ['1 running step is asked to stop and keeps its slot until its worker exits. Steps that finished keep their results.'],
     mount: mountCancelTyped,
     act: () => clickText('button', 'Stop workflow'),
   },
