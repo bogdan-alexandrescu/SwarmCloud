@@ -14,7 +14,9 @@ docs/ci.md#a-test-reads-only-its-own-tree).
 
 THE ONE EXCEPTION is SECURITY_GUARDS, below: a short named list of the tests
 that hold CI security decisions, kept by the owner's decision of 2026-11-25.
-A listed file may read CI YAML; every other file is held exactly as before.
+A listed file may read CI YAML (.github/) and nothing else: its reads of
+docs prose, a root *.md or the Makefile are reported as anywhere else; every
+other file is held exactly as before.
 A listed path that no longer exists, or that no longer reads anything out of
 its tree, is red too, so the list cannot outlive what it excuses.
 
@@ -55,7 +57,10 @@ IT IS A LOWER BOUND. It does not see: a root from `git rev-parse
 --show-toplevel`, Path.cwd() or a relative "docs/x.md" opened from the
 working directory; a root handed in by a pytest fixture or a parameter; a path
 held in a container (dict, list) and read later; a path built in a loop over
-names it cannot resolve; an attribute of an object (self.root); a helper
+names it cannot resolve; an attribute of an object (self.root); a path
+joined with str.join ("/".join((str(ROOT), "docs", "ci.md"))) or built by a
+string-method call or %-format ("{}/docs".format(ROOT), .replace, "%s" %
+ROOT); a helper
 module outside tests/; a subprocess (`grep`, `git show`) that reads the file;
 a read through a function of another module whose body builds the path. A
 clean run means no read it can see, not no read at all.
@@ -281,6 +286,8 @@ class Scanner:
         self.busy: set[str] = set()
         self.found_modules: dict = {}
         self.heads: dict[str, frozenset[str]] = {}
+        # Per file, the heads read on each reported line.
+        self.line_heads: dict[str, dict[int, frozenset[str]]] = {}
         self.tainted: dict[tuple, bool] = {}
 
     def may_read(self, rel: str, text: str) -> bool:
@@ -393,6 +400,7 @@ class Scanner:
         env: dict = {}
         scan.run(env)
         self.heads[rel] = frozenset(scan.heads)
+        self.line_heads[rel] = {n: frozenset(h) for n, h in scan.line_heads.items()}
         self.modules.setdefault(rel, env)
         lines = text.splitlines()
         return sorted({(n, lines[n - 1].strip() if n <= len(lines) else "") for n in scan.found})
@@ -407,6 +415,8 @@ class FileScan:
         self.found: set[int] = set()
         # The first part of each path found: docs, .github, a root file.
         self.heads: set[str] = set()
+        # The heads read on each line found: a listed guard may read .github only.
+        self.line_heads: dict[int, set[str]] = {}
         # The head of every finding in order, so a function knows its own.
         self.reads: list[str] = []
         # Built on the first finding: most files parsed have none.
@@ -466,7 +476,10 @@ class FileScan:
                     break
             if joiner is None and len(self.reads) > reads_before:
                 # A function whose body reads: calling it reads too.
-                joiner = Reader(self.reads[reads_before])
+                # Its head is one it reads past CI YAML if there is one, so a
+                # listed guard calling it is still held to CI YAML only.
+                read = self.reads[reads_before:]
+                joiner = Reader(next((h for h in read if h != ".github"), read[0]))
             env[stmt.name] = joiner
             return
         if isinstance(stmt, ast.ClassDef):
@@ -662,6 +675,7 @@ class FileScan:
                 return
             self.found.add(node.lineno)
             self.heads.add(value.parts[0])
+            self.line_heads.setdefault(node.lineno, set()).add(value.parts[0])
             self.reads.append(value.parts[0])
 
     def absorbed(self, node: ast.AST, env: dict) -> bool:
@@ -1224,9 +1238,23 @@ def main(argv: list[str] | None = None) -> int:
         if not (root / rel).is_file():
             bad += 1
             print(f"{rel}: listed in SECURITY_GUARDS but no such file; drop it from the list")
-        elif not scanner.scan(rel):
+            continue
+        found = scanner.scan(rel)
+        if not found:
             bad += 1
             print(f"{rel}: listed in SECURITY_GUARDS but reads nothing out of its tree; drop it from the list")
+            continue
+        # A listed file may read CI YAML only: its reads of docs prose, a
+        # root *.md or the Makefile are held exactly as anywhere else.
+        heads = scanner.line_heads.get(rel, {})
+        prose = [(line, text) for line, text in found if heads.get(line, frozenset()) - {".github"}]
+        if prose:
+            bad += 1
+            if args.list_files:
+                print(rel)
+            else:
+                for line, text in prose:
+                    print(f"{rel}:{line}: {text} (SECURITY_GUARDS excuses CI YAML only)")
     for rel in files:
         if rel in SECURITY_GUARDS:
             continue

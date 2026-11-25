@@ -27,14 +27,14 @@ job-level `if:` and tries every value the classification can write.
 WHAT THIS CANNOT PROVE: that the `dev-iam` environment has a required
 reviewer. GitHub creates an environment a workflow names, with no protection,
 if it does not exist; docs/ci.md has the `gh api` command that sets it, and
-the owner runs it. Nor that Terraform refuses a saved plan whose state has
+the owner runs it. No test pins that docs command: a listed CI security guard
+may read CI YAML only (scripts/check_test_reads.py, issue 71). Nor that Terraform refuses a saved plan whose state has
 moved on ("Saved plan is stale") -- that is Terraform's documented behaviour,
 not observed here.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import re
 
 import pytest
@@ -52,10 +52,6 @@ from .test_release_prod_gate import (
     _shell,
 )
 from .test_release_reuses_ci_images import REPO, _evaluate, _needs, _upstream, _workflow
-
-_spec = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
-placeholders = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(placeholders)
 
 INFRA = "infrastructure"
 _STEP_OUTPUT = re.compile(r"^\$\{\{\s*steps\.([\w-]+)\.outputs\.([\w-]+)\s*\}\}$")
@@ -322,12 +318,3 @@ def test_the_checksum_is_taken_of_the_plan_that_was_classified():
         if str(s.get("uses", "")).startswith("actions/upload-artifact"):
             assert "tfplan" not in str((s.get("with") or {}).get("path")), "the saved plan is uploaded as an artifact"
 
-
-def test_the_owner_has_the_command_that_protects_dev_iam():
-    """The environment is a repository setting the owner creates."""
-    doc = (REPO / "docs" / "ci.md").read_text()
-    assert f"repos/{placeholders.GITHUB_REPOSITORY}/environments/dev-iam" in doc
-    assert re.search(r"gh api[^\n]*-X PUT[^\n]*environments/dev-iam", doc) or re.search(
-        r"gh api --method PUT[^\n]*\n?[^\n]*environments/dev-iam", doc
-    ), "docs/ci.md has no `gh api` PUT for the dev-iam environment"
-    assert "reviewers" in doc
