@@ -35,7 +35,7 @@ export const refuse: { cancel: Result<CancelResult> | null } = { cancel: null }
 
 /** The next stop is released at once (it held no capacity), until restored. */
 export function releaseStop(): void {
-  refuse.cancel = { status: 'ok', fetchedAt: Date.now(), data: { released_immediately: true } } as Result<CancelResult>
+  refuse.cancel = { status: 'ok', fetchedAt: Date.now(), data: { released_immediately: true } }
   restores.push(() => {
     refuse.cancel = null
   })
@@ -44,7 +44,7 @@ export function releaseStop(): void {
 /** The next stop is refused by the API with `message`, until restored. */
 export function refuseStop(message: string): void {
   const error: ApiError = { kind: 'server_error', httpStatus: 500, code: 'internal', message }
-  refuse.cancel = { status: 'error', error } as Result<CancelResult>
+  refuse.cancel = { status: 'error', error }
   restores.push(() => {
     refuse.cancel = null
   })
@@ -81,7 +81,7 @@ export function stubNarrow(room: number, each: number): void {
     Object.defineProperty(proto, k, {
       configurable: true,
       get(this: HTMLElement) {
-        if (this.closest('.ps-narrow') === null) return d?.get?.call(this) ?? 0
+        if (this.closest('.ps-narrow') === null) return (d?.get?.call(this) as number | undefined) ?? 0
         return k === 'clientWidth' ? room : each
       },
     })
@@ -104,7 +104,7 @@ export function runningTask(over: Partial<Task> = {}): Task {
     started_at: at(1),
     current_generation: 2,
     ...over,
-  } as Partial<Task>)
+  })
 }
 
 function history(n: number): WaitingHistoryEntry[] {
@@ -123,11 +123,11 @@ export function parkedTask(n: number): Task {
     history: history(n),
     history_read: true,
     read_at: at(120),
-  } as Waiting
+  }
   return task({
     id: 'task_31c301ecb33940eeb278',
     state: 'PARKED',
-    park_reason: 'CI_PENDING' as Task['park_reason'],
+    park_reason: 'CI_PENDING',
     next_eligible_at: w.next_check_at,
     waiting: w,
   })

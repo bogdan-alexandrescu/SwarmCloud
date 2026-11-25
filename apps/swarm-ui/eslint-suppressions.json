@@ -3925,7 +3925,7 @@
   },
   "src/__tests__/artifacts.rawpatch.fixture.test.tsx": {
     "testing-library/no-node-access": {
-      "count": 6
+      "count": 8
     }
   },
   "src/__tests__/artifacts.rawpatch.test.tsx": {
@@ -6338,7 +6338,7 @@
       "count": 2
     },
     "testing-library/no-node-access": {
-      "count": 8
+      "count": 9
     },
     "testing-library/no-unnecessary-act": {
       "count": 1
@@ -7514,6 +7514,11 @@
   "src/__tests__/prosebase.ts": {
     "sonarjs/no-os-command-from-path": {
       "count": 2
+    }
+  },
+  "src/__tests__/prosestates.agent.tsx": {
+    "testing-library/no-node-access": {
+      "count": 1
     }
   },
   "src/__tests__/prosestates.shell.tsx": {
