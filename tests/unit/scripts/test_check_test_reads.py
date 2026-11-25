@@ -359,5 +359,6 @@ def test_the_list_is_the_owners_and_each_entry_says_what_it_holds():
         "tests/unit/scripts/test_trivy_new_findings.py",
         "tests/unit/scripts/test_ci_early.py",
         "tests/unit/scripts/test_release_reuses_ci_images.py",
+        "tests/unit/scripts/test_workflow_id_token_scope.py",
     }
     assert all(reason.strip() for reason in ctr.SECURITY_GUARDS.values())

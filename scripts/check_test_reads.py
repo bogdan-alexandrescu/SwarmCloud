@@ -116,6 +116,9 @@ SECURITY_GUARDS: dict[str, str] = {
     "tests/unit/scripts/test_release_reuses_ci_images.py":
         "the release ships only images CI built and scans them before the approval "
         "(the release guards' helper, a release gate itself)",
+    "tests/unit/scripts/test_workflow_id_token_scope.py":
+        "the Google identity token is held to the jobs that authenticate, and the "
+        "deployer trusts exactly the workflows that authenticate as it",
 }
 
 

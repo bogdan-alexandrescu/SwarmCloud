@@ -4979,7 +4979,8 @@ guards below.
 workflows, because a security property of a workflow -- that a fork's pull
 request never reaches the self-hosted runners or their secrets, that the
 release reaches production only through its gate, that its IAM apply and its
-identity token are held to the jobs that need them, that the repository's
+identity token are held to the jobs that need them (and, in every workflow, the
+deployer trusts exactly the workflows that authenticate as it), that the repository's
 secrets sit behind their environment, that the tenant-isolation acceptance
 job runs, that the security scan gates on new findings, keeps no checkout
 credential and compares with the right base -- has no other place a pull
