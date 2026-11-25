@@ -42,10 +42,12 @@
 //
 // THE REGISTRY: prosestates.<group>.tsx, one file per section, each slice
 // prose.states.<group>.test.tsx a few lines long. prose.states.test.tsx's
-// cover test reads every screen file that draws an opener and fails one that
-// no state names; PENDING below lists the ones not yet registered, and it
-// only shrinks: a step registers a file's states, clears what they show, and
-// takes the file out of PENDING. The last step deletes PENDING.
+// cover test reads every screen file that draws an opener and fails, by
+// name, one that no state names (issue 81's own state tests aside). While
+// the sections were registered one step at a time, a PENDING list here held
+// the files not yet registered so the cover could pass between steps; every
+// section is registered now and PENDING is gone: a new opener file needs a
+// state before it merges.
 
 import type { ReactElement } from 'react'
 import { render } from '@testing-library/react'
@@ -98,30 +100,6 @@ export type ProseState = StateCommon &
         act?: () => void | Promise<void>
       }
   )
-
-/**
- * The screen files that draw an opener (prose.states.test.tsx's cover test
- * says which) and that no state names yet, by the section whose step will
- * register them. It only shrinks; the last step deletes it.
- */
-export const PENDING: readonly string[] = [
-  // admin (Admin and Voice it)
-  'AdminSchedules.tsx',
-  'AdminSettings.tsx',
-  'AdminSetupHealth.tsx',
-  'AdminSetupSteps.tsx',
-  'AdminSetupTeam.tsx',
-  'RunnerSizes.tsx',
-  'voice/CostPill.tsx',
-  'voice/DebugTrace.tsx',
-  'voice/Floating.tsx',
-  'voice/Projects.tsx',
-  'voice/Roster.tsx',
-  'voice/SessionRecord.tsx',
-  'voice/Settings.tsx',
-  'voice/Stage.tsx',
-  'voice/WorkingCard.tsx',
-]
 
 /** The first element `shows` selects, or null; null too when it is not a selector at all (it is text). */
 function asSelector(shows: string): HTMLElement | null {

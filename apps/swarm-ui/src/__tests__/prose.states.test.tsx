@@ -1,6 +1,6 @@
 // The states guard's own rules (prosestates.tsx), on hand-built states, and
 // THE COVER TEST: every screen file that draws an opener is named by a state,
-// or by issue 81's state tests, or waits in PENDING.
+// or by issue 81's state tests; there is no pending allowance.
 
 import { useState, type ReactElement } from 'react'
 import { fireEvent } from '@testing-library/react'
@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import * as Overlay from '../components/Overlay'
 import { InfoTip } from '../InfoTip'
-import { PENDING, visitMount, type ProseState, type Theme } from './prosestates'
+import { visitMount, type ProseState, type Theme } from './prosestates'
 import { ADMIN } from './prosestates.admin'
 import { AGENT } from './prosestates.agent'
 import { CONFIG } from './prosestates.config'
@@ -182,10 +182,10 @@ export function drawsOpener(src: string, overlays: readonly string[]): boolean {
   return overlays.some((name) => new RegExp(`<${name}\\b`).test(code))
 }
 
-/** The opener files nothing accounts for: no state names them, they are not pending and issue 81 did not name them. */
-export function uncovered(openers: readonly string[], states: readonly ProseState[], pending: readonly string[], named81: readonly string[]): string[] {
+/** The opener files nothing accounts for: no state names them and issue 81 did not name them. */
+export function uncovered(openers: readonly string[], states: readonly ProseState[], named81: readonly string[]): string[] {
   const named = new Set(states.flatMap((s) => s.files))
-  return openers.filter((f) => !named.has(f) && !pending.includes(f) && !named81.includes(f))
+  return openers.filter((f) => !named.has(f) && !named81.includes(f))
 }
 
 describe('the cover: every screen file that draws an opener is visited', () => {
@@ -202,25 +202,24 @@ describe('the cover: every screen file that draws an opener is visited', () => {
     const by81 = openers.filter((f) => NAMED_BY_81.includes(f))
     console.log(
       `PROSE STATES COVER: ${openers.length} files draw an opener; ${covered.length} named by a state, ` +
-        `${PENDING.length} pending, ${by81.length} named by issue 81; ${REGISTRY.length} states`,
+        `${by81.length} named by issue 81; ${REGISTRY.length} states`,
     )
   })
 
-  it('names every opener file by a state, by issue 81 or in PENDING', () => {
-    const left = uncovered(openers, REGISTRY, PENDING, NAMED_BY_81)
-    expect(left, `register a state for each (prosestates.<group>.tsx) or, for now, list it in PENDING:\n${left.join('\n')}`).toEqual([])
+  it('names every opener file by a state or by issue 81', () => {
+    const left = uncovered(openers, REGISTRY, NAMED_BY_81)
+    expect(left, `register a state for each (prosestates.<group>.tsx):\n${left.join('\n')}`).toEqual([])
   })
 
   it('fails a file when the one state that names it is taken out', () => {
     const bell = REGISTRY.filter((s) => !s.files.includes('Notifications.tsx'))
-    expect(uncovered(openers, bell, PENDING, NAMED_BY_81)).toEqual(['Notifications.tsx'])
+    expect(uncovered(openers, bell, NAMED_BY_81)).toEqual(['Notifications.tsx'])
   })
 
-  it('keeps PENDING to files that draw an opener and that no state names', () => {
-    const both = PENDING.filter((f) => named.has(f))
-    expect(both, 'a file in PENDING is named by a state: take it out of PENDING').toEqual([])
-    const stale = PENDING.filter((f) => !openers.includes(f))
-    expect(stale, 'a file in PENDING draws no opener (or does not exist)').toEqual([])
+  it('has no pending allowance: a new opener file no state names fails by name', () => {
+    const extra = { ...SOURCES, 'NewSheet.tsx': '<Dialog title="x" onClose={() => undefined}>y</Dialog>' }
+    const all = Object.keys(extra).filter((f) => drawsOpener(extra[f] ?? '', OVERLAYS))
+    expect(uncovered(all, REGISTRY, NAMED_BY_81)).toEqual(['NewSheet.tsx'])
   })
 
   it("names only files that exist", () => {
