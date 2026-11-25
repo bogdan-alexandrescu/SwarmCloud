@@ -1,4 +1,3 @@
-# source-text: contract - run_console_url must follow the /runs/<id> address paths.ts builds
 """An issue run writes back to its issue: the plan, one status comment, the PR keyword (archived issue 454).
 
 What these tests hold, in the order they matter:
@@ -26,7 +25,6 @@ import json
 import re
 import urllib.error
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pytest
 
@@ -57,7 +55,6 @@ from .test_issue_runs import (
 )
 
 CONSOLE = "https://console.example.test"
-REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 class Clock:
@@ -603,9 +600,11 @@ def test_the_production_transport_sends_to_api_github_com_only():
         forgewrite._urllib_send("POST", "https://example.com/repos/a/b", {}, b"{}", 1.0)
 
 
-def test_the_console_run_link_is_the_route_paths_ts_serves():
-    paths = (REPO_ROOT / "apps/swarm-ui/src/paths.ts").read_text()
-    assert "return `/runs/${encodeURIComponent(run)}`" in paths
+def test_the_console_run_link_is_one_run_its_id_uri_encoded():
+    """`/runs/<id>`, as `console_links.run` in the generated routes.json
+    records it; apps/swarm-ui/src/__tests__/contract.routes.test.ts resolves
+    that path with the console's own router (part of #72)."""
+    assert run_console_url(CONSOLE, "run_1") == f"{CONSOLE}/runs/run_1"
     assert run_console_url(CONSOLE + "/", "run_a b") == f"{CONSOLE}/runs/run_a%20b"
     assert run_console_url("", "run_1") is None
 

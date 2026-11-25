@@ -13,8 +13,6 @@
  *
  * Each case was written before the card existed and failed without it.
  */
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 
 import { render, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
@@ -24,6 +22,7 @@ import type { Result } from '../fetch'
 import type { WorkflowBoard, WorkflowRead, WorkflowUsage } from '../api'
 import type { IssueRun, Task, TaskState, Workflow, WorkflowStep } from '../types'
 import { ownFromBoard } from './workflowsById'
+import server from '../generated/constants/server.json'
 
 const api = vi.hoisted(() => ({
   loadWorkflowBoard: vi.fn(),
@@ -182,13 +181,11 @@ describe('which steps have a merge card', () => {
     expect(mergeCardOf(task('t_x', 'SUCCEEDED', { result_summary: { merge: { merged_by_this_task: true } } }), [])).toBeNull()
   })
 
-  it('holds the worker\'s bound on branch updates, read from merge.py\'s source', () => {
-    // The console carries no worker, so the cap is restated; this reads the
-    // worker's own assignment, as the API's test_the_cap_is_the_workers does.
-    const merge = join(__dirname, '..', '..', '..', 'agent-worker', 'agent_worker', 'merge.py')
-    const found = [...readFileSync(merge, 'utf8').matchAll(/^MERGE_MAX_HEAD_UPDATES\s*=\s*(\d+)\s*$/gm)]
-    expect(found).toHaveLength(1)
-    expect(MERGE_MAX_HEAD_UPDATES).toBe(Number(found[0]?.[1]))
+  it('holds the worker\'s bound on branch updates, as the generated server.json has it', () => {
+    // The console carries no worker, so the cap is restated; server.json holds
+    // agent_worker.merge.MERGE_MAX_HEAD_UPDATES, read from the live module.
+    expect(Number.isInteger(server.merge_max_head_updates)).toBe(true)
+    expect(MERGE_MAX_HEAD_UPDATES).toBe(server.merge_max_head_updates)
   })
 })
 
