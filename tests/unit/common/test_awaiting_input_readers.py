@@ -10,7 +10,9 @@ every restatement of the enum; what they cannot catch is a reader that names
   * every non-test file under `apps/` and `scripts/` that names
     `HUMAN_REQUIRED` must name `AWAITING_INPUT`, or be on `MUST_IGNORE` below
     with its reason. A new file that names one and not the other fails here
-    until someone decides which it is;
+    until someone decides which it is. The console's own sources are held to
+    the same rule by its `contract.constants.test.ts`, so no Python test reads
+    them (part of #72);
   * the three readers that must ignore it are held behaviourally: the
     scheduler's human-wait sweep leaves a 25-hour-old AWAITING_INPUT park
     alone, `human-ready` on one is 409, and the `handoffs` bell derives
@@ -54,6 +56,8 @@ NEW = ParkReason.AWAITING_INPUT.value
 
 #: Source files only: a test that names HUMAN_REQUIRED tests the hand-off.
 SUFFIXES = (".py", ".ts", ".tsx", ".js", ".mjs", ".sh", ".jq")
+#: The console's readers are its own test's (`contract.constants.test.ts`).
+CONSOLE = ("apps", "swarm-ui")
 SKIP_DIRS = {"node_modules", "dist", "build", ".venv", "__pycache__", "__tests__", "tests"}
 
 #: The files that name HUMAN_REQUIRED and must IGNORE AWAITING_INPUT, each
@@ -106,18 +110,6 @@ MUST_IGNORE: dict[str, str] = {
         "item kind, listed as information, is lane HW-MCP's",
     "apps/swarm-mcp/swarm_mcp/server.py":
         "`/sc check`'s help text for the hand-off row; lane HW-MCP's",
-    "apps/swarm-ui/src/AgentSplit.tsx":
-        "a merge held by the owner's questions has no Browser tab (#2313), read "
-        "through `ownerQuestionsHold`; an await-input step is no browser either",
-    "apps/swarm-ui/src/QuestionsCard.tsx":
-        "a merge held by the owner's questions (#2313) and an agent's blocking "
-        "questions; an await-input step is answered on its own card (lane HW-UI's)",
-    "apps/swarm-ui/src/AgentDetail.tsx":
-        "the live-browser hand-off banner; the await-input card is lane HW-UI's",
-    "apps/swarm-ui/src/Handoff.tsx":
-        "the live-browser hand-off view; the await-input card is lane HW-UI's",
-    "apps/swarm-ui/src/LiveBrowser.tsx":
-        "the live browser; an await-input step has none",
     "scripts/acceptance/groups/live-browser.sh":
         "the live-browser acceptance group's stuck-state comment: a hand-off whose "
         "hold ran out parks on HUMAN_REQUIRED; the group submits a "
@@ -127,6 +119,8 @@ MUST_IGNORE: dict[str, str] = {
 
 def _is_source(path: Path, root: Path) -> bool:
     rel = path.relative_to(root)
+    if rel.parts[:2] == CONSOLE:
+        return False
     if path.suffix not in SUFFIXES or not path.is_file():
         return False
     if any(part in SKIP_DIRS for part in rel.parts[:-1]):
@@ -185,8 +179,6 @@ def test_the_restatements_name_both():
     """The files this lane edited are deciders, not ignorers."""
     for rel in (
         "apps/common/swarm_common/states.py",
-        "apps/swarm-ui/src/types.ts",
-        "apps/swarm-ui/src/components/StatePill.tsx",
         "apps/swarm-mcp/swarm_mcp/progress.py",
         "apps/swarm-mcp/swarm_mcp/compact.py",
     ):
@@ -215,6 +207,9 @@ def test_the_scan_refuses_a_reader_that_has_not_decided(tmp_path):
     listed.write_text(f"echo {OLD}\n", encoding="utf-8")
     a_test = tmp_path / "apps" / "svc" / "tests" / "test_reader.py"
     a_test.write_text(f"assert '{OLD}'\n", encoding="utf-8")
+    (tmp_path / "apps" / "swarm-ui").mkdir()
+    console = tmp_path / "apps" / "swarm-ui" / "reader.ts"
+    console.write_text(f"const a = '{OLD}'\n", encoding="utf-8")
 
     assert undecided(tmp_path, {"scripts/listed.sh": "a reason"}) == ["apps/svc/reader.py"]
     assert undecided(tmp_path, {}) == ["apps/svc/reader.py", "scripts/listed.sh"]

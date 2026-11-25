@@ -193,4 +193,8 @@ def test_inputs_mode_prints_them_without_importing_the_api(capsys, monkeypatch):
 
     monkeypatch.setattr(gen, "openapi_document", refuse)
     assert gen.main(["--inputs"]) == 0
-    assert capsys.readouterr().out.splitlines() == list(gen.INPUTS)
+    printed = capsys.readouterr().out.splitlines()
+    # The generator's own inputs first, then the constants groups' (held in
+    # tests/unit/scripts/test_api_constants.py).
+    assert printed[:len(gen.INPUTS)] == list(gen.INPUTS)
+    assert printed == gen.all_inputs()

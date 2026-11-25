@@ -33,6 +33,7 @@ import { EVENT_PAGE_LIMIT } from '../api'
 import { PeakMemoryChart } from '../charts/PeakMemory'
 import type { TaskEvent } from '../types'
 import { at, attempt, ev, task } from './runfixture'
+import server from '../generated/constants/server.json'
 
 const api = vi.hoisted(() => ({
   loadCheckpoints: vi.fn(),
@@ -53,13 +54,9 @@ const STALE = /no page token|asks for no page size|sends no `limit`/i
 /** What `event-paging` says, and what each sentence must say instead. */
 const TRUE = /does not follow the page token/i
 
+/** Whether routes/tasks.py's list_events pages (takes `page_token`), from the generated server.json. */
 function routePages(): boolean {
-  const route = readFileSync(join(SRC, '..', '..', 'swarm-api', 'swarm_api', 'routes', 'tasks.py'), 'utf8')
-  const start = route.indexOf('def list_events(')
-  expect(start, 'routes/tasks.py has no list_events; this check is reading the wrong file').toBeGreaterThanOrEqual(0)
-  const end = route.indexOf('\n@router', start)
-  const body = route.slice(start, end === -1 ? undefined : end)
-  return body.includes('page_token') && body.includes('"next_page_token"')
+  return server.events_route_pages
 }
 
 function run(over: Partial<AgentRun>): AgentRun {

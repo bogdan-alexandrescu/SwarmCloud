@@ -1,4 +1,3 @@
-# source-text: contract - McpServers.tsx and BrowserToolPicker.tsx must spell the declared-input keys and fields the capacity API serves
 """GET /v1/capacity serves each runner profile's DECLARED inputs (MCP-INPUTS, part of archived issue 1433).
 
 THE GAP THIS CLOSES. The Submit form's MCP server picker (MCP-UI) and its
@@ -26,7 +25,7 @@ no emulator, no network.
 
 from __future__ import annotations
 
-import re
+import importlib.util
 from pathlib import Path
 
 import pytest
@@ -37,9 +36,7 @@ from swarm_api.runnerinputs import input_contract
 
 from .conftest import auth_header
 
-UI = Path(__file__).resolve().parents[3] / "apps/swarm-ui/src"
-
-needs_ui = pytest.mark.skipif(not UI.is_dir(), reason="apps/swarm-ui/src is not present")
+ROOT = Path(__file__).resolve().parents[3]
 
 #: Every field a served declaration carries. Each names a bound or a meaning a
 #: form can check locally; none names an image, a command, a resource or a
@@ -129,40 +126,45 @@ def test_nothing_served_names_an_image_command_resource_or_backend():
 
 
 # --------------------------------------------------------------------------
-# The console's spelling, held to the API's
+# What the console's pickers are held to (part of #72)
 # --------------------------------------------------------------------------
-
-#: (file, the key constant's name, the function that reads the declaration).
-PICKERS = (
-    ("McpServers.tsx", "MCP_SERVERS_KEY", "declaredMcpServers"),
-    ("BrowserToolPicker.tsx", "BROWSER_TOOL_KEY", "declaredBrowserTools"),
-)
-
-
-def _function_body(source: str, name: str) -> str:
-    start = source.index(f"export function {name}(")
-    end = source.find("\nexport ", start + 1)
-    return source[start:] if end == -1 else source[start:end]
+# The MCP-server and browser-tool pickers were held here by reading
+# McpServers.tsx and BrowserToolPicker.tsx as text. Now the `profiles`
+# constants group (scripts/api_constants/profiles.py) serves the declared keys
+# and the field names of a served declaration, `--check` keeps the generated
+# file equal to it, and apps/swarm-ui/src/__tests__/contract.profiles.test.tsx
+# calls `declaredMcpServers` and `declaredBrowserTools` on a declaration
+# carrying only those fields. This half holds what the group serves to the
+# route.
 
 
-@needs_ui
-@pytest.mark.parametrize(("filename", "constant", "reader"), PICKERS)
-def test_each_picker_reads_a_key_and_fields_this_api_serves(client, filename, constant, reader):
-    source = (UI / filename).read_text()
-    match = re.search(rf"export const {constant} = '([a-z_]+)'", source)
-    assert match, f"{filename} no longer spells {constant} as a literal; this check would be vacuous"
-    key = match.group(1)
-    body = _function_body(source, reader)
-    assert "contract.inputs" in body, f"{reader} no longer reads input_contract.inputs"
-    assert f"inputs[{constant}]" in body, f"{reader} no longer indexes inputs by {constant}"
-    fields = set(re.findall(r"\bdecl\.(\w+)", body))
-    assert fields, f"{reader} reads no field of the declaration; this check would be vacuous"
+def _built() -> dict:
+    """What the `profiles` constants group builds, from the live objects."""
+    path = ROOT / "scripts/api_constants/profiles.py"
+    spec = importlib.util.spec_from_file_location("api_constants_profiles_under_test", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.build()
 
-    profiles = _served(client)
-    serving = [n for n, p in profiles.items() if key in p["input_contract"]["inputs"]]
-    assert serving, f"no profile serves {key!r}; {filename}'s picker would never be drawn"
-    for name in serving:
-        entry = profiles[name]["input_contract"]["inputs"][key]
-        assert fields <= set(entry), (
-            f"{reader} reads {sorted(fields - set(entry))} off {name}.{key}, which this API does not serve"
-        )
+
+def test_the_group_serves_the_fields_this_route_serves(client):
+    built = _built()
+    assert built["declaration_fields"] == sorted(DECLARATION_FIELDS)
+    served = _served(client)
+    for name, entry in built["profiles"].items():
+        assert entry["declared_inputs"] == list(served[name]["input_contract"]["inputs"]), name
+
+
+@pytest.mark.parametrize("key", ["mcp_servers", "browser_tool"])
+def test_the_group_names_a_profile_serving_each_pickers_key(client, key):
+    """A picker whose key no profile serves is never drawn."""
+    built = _built()["profiles"]
+    declaring = sorted(n for n, e in built.items() if key in e["declared_inputs"])
+    assert declaring, f"no profile declares {key!r}; its picker would never be drawn"
+    served = _served(client)
+    for name in declaring:
+        assert key in served[name]["input_contract"]["inputs"], name
+    if key == "browser_tool":
+        for name in declaring:
+            assert built[name]["input_choices"][key] == served[name]["input_contract"]["inputs"][key]["choices"]
