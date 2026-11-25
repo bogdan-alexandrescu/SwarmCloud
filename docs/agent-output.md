@@ -460,6 +460,69 @@ those). `SWARM_STEP_PUBLISHES` is still `1` for a contributor, amender or
 carrier step, for which no change is not a failure: there the turn is one
 cheap turn whose `verification.md` also makes the worker record `no_change`.
 
+## A merge from a partial clone publishes (issue 367)
+
+**Why it failed.** On 2026-11-24 the fix step of an `integrate` workflow
+finished its agent and then failed at publish: "could not fetch the agent's
+work into the worker's clean repository ... could not fetch <sha> from
+promisor remote ... git-pack-objects died". The agent had fetched the other
+contributors' branches with `--filter=blob:none` and merged them. That made
+its clone a **partial clone** (`remote.origin.promisor=true`) whose history
+reaches blobs it never downloaded. The worker publishes from a clean
+repository it builds itself, fetching the agent's commits in with every
+object checked, and the upload side of that fetch runs in the agent's clone
+with **lazy fetching off**: a lazy fetch would run the transport, ssh command
+or credential helper the agent's config names, as the worker. So
+`pack-objects` died on the first missing blob, and nothing was published.
+
+**What the worker does now** (`gitops._complete_publish_fetch`). Only when
+that first fetch has already failed -- a publish that works today is
+unchanged, and makes neither of the extra fetches below:
+
+1. it reads the clone's commit graph, commits only (`--filter=tree:0`: no
+   blob is read), through the same hardened upload-pack, into a scratch
+   repository of its own, and lists the heads the agent merged (every
+   parent of every merge, on either side; with no merge, every parent in
+   walk order, for a branch the agent rebased onto). That scratch fetch's own lazy fetch is shut off too:
+   git 2.39.5 was measured starting a plain `git-upload-pack` in the clone
+   mid-fetch without it;
+2. it fetches each merged head **from origin** into the clean repository at
+   depth 1, with its own credential and time bound (the same fetch it already
+   makes for shallow cut-offs, archived issue 2901);
+3. a head that landed as itself is origin's commit, so the walk may stop
+   there: it joins the upload side's boundary and is sent as a `have`;
+4. the fetch is retried once with no thin pack (`pack.window=0`), because a
+   thin pack reads the `have`s' objects as delta bases, which the clone may
+   lack too.
+
+The boundary only grows by commits origin served to the worker's own fetch,
+so everything under it is already on the forge, and every commit the agent
+wrote above it is still fetched, checked and scanned. A head origin does not
+serve adds nothing and the retry is not made.
+
+**What the failure says when that is not enough.** If the retried fetch
+still fails, or no merged head could be completed, and git named the object
+it could not read ("could not fetch <sha> from promisor remote"), the
+publish raises `gitops.PublishFetchIncomplete`. Its message keeps the fixed
+text first, verbatim, then names the object and one of **origin has it**,
+**origin does not have it** or **origin was not asked**: the worker asks
+the forge once, with its own credential, in a fresh probe repository
+(`gitops.forge_holds_object`). A failure that names no object is the plain
+error, as before.
+
+**The step is retried, not failed** (`publish_retry.PublishRetryMixin`).
+Such a failure ended the step `publish_failed`, the workflow FAILED, and the
+work lived only in `swarm-work.patch`. Now the attempt ends retryably
+(cause `publish_fetch_incomplete`, end cause `outputs_missing` once
+attempts are spent), the task goes back to READY so its dependants keep
+waiting, and the patch and final checkpoint are kept. The retry publishes the
+kept work without running the agent when origin has, or was not asked about,
+the object and the restored clone is still at the head and base that failed
+-- the same check a push outage's retry makes. When origin does not have the
+object, the same publish would fail again, so the agent runs. The owner's
+open question -- park for a person instead -- was answered with the
+recommended option: retry with the work kept.
+
 ## Sessions and resumes: the context ceiling
 
 Nothing used to end a session as its context grew. In the week [the owner] measured
