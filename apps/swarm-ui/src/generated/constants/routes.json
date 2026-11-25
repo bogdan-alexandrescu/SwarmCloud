@@ -1203,6 +1203,22 @@
     },
     {
       "method": "GET",
+      "path": "/v1/runs/{run_id}/plan-chat"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/runs/{run_id}/plan-chat"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/runs/{run_id}/plan-chat/{turn_id}/stream"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/runs/{run_id}/plan-chat/{turn_id}:pin"
+    },
+    {
+      "method": "GET",
       "path": "/v1/runs/{run_id}/plan-revisions/{revision}"
     },
     {

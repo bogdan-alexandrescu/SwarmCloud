@@ -1338,6 +1338,7 @@
       "automate/schedules",
       "automate/approvals",
       "automate/pipeline",
+      "automate/settings",
       "capacity/pools",
       "capacity/profiles",
       "capacity/catalogue",
