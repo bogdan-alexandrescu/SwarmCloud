@@ -303,6 +303,22 @@ export const ADMIN: readonly ProseState[] = [
     walk: { open: SETUP, persona: ADMIN_P, then: () => hover('main') },
   },
   {
+    key: 'admin/setup-sign-in-opened',
+    group: 'admin',
+    files: ['AdminSetupSteps.tsx'],
+    shows: 'main p.c-hint[role="status"], main [role="alert"]',
+    walk: {
+      open: SETUP,
+      persona: ADMIN_P,
+      then: async () => {
+        await press('[data-step="accounts"]', '5. Claude accounts')
+        fireEvent.change(screen.getAllByLabelText('Account label')[0]!, { target: { value: 'ana' } })
+        await settle()
+        await press('main', 'Sign in my Claude account')
+      },
+    },
+  },
+  {
     key: 'admin/health-tip',
     group: 'admin',
     files: ['AdminSetupHealth.tsx'],
