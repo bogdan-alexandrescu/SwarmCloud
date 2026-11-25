@@ -83,12 +83,27 @@ export interface Conversation {
   setReplan: (replan: Json) => void
 }
 
+const idOf = (e: Json): string | null => text(e.entry_id)
+
 function mergeEntries(served: Json[], local: Json[]): Json[] {
-  const byId = new Map(local.map((e) => [String(e.entry_id), e]))
-  const out = served.map((e) => (e.entry_id !== undefined && byId.has(String(e.entry_id)) ? byId.get(String(e.entry_id))! : e))
-  const have = new Set(served.map((e) => String(e.entry_id)))
-  for (const e of local) if (!have.has(String(e.entry_id))) out.push(e)
+  const byId = new Map(local.flatMap((e) => (idOf(e) === null ? [] : [[idOf(e)!, e] as const])))
+  const out = served.map((e) => byId.get(idOf(e) ?? '') ?? e)
+  const have = new Set(served.flatMap((e) => idOf(e) ?? []))
+  for (const e of local) if (!have.has(idOf(e) ?? '')) out.push(e)
   return out
+}
+
+/** The entries this page wrote that `fresh` (a new run read) does not serve yet. */
+function unserved(local: Json[], fresh: Json): Json[] {
+  const have = new Set(objs(fresh.plan_thread).flatMap((e) => idOf(e) ?? []))
+  return local.filter((e) => !have.has(idOf(e) ?? ''))
+}
+
+/** What the reader may do (§8): the run's `may_decide`, or -- past PLANNED, where none is served -- the role floor for a comment. */
+function mayOf(md: Json | null | undefined, roleGate: string | null): { comment: boolean; edit: boolean } {
+  if (md === undefined) return { comment: false, edit: false }
+  if (md === null) return { comment: roleGate === null, edit: false }
+  return { comment: md.comment === true || (md.comment === undefined && roleGate === null), edit: md.edit === true }
 }
 
 /**
@@ -114,10 +129,9 @@ export function usePlanConversation(runId: string | null, run: Json | null): Con
         (r) => {
           if (!alive || (r.status !== 'ok' && r.status !== 'stale')) return
           const fresh = r.data.run as unknown as Json
-          const have = new Set(objs(fresh.plan_thread).map((e) => String(e.entry_id)))
           setServed(fresh)
           setOwnReplan(null)
-          setLocal((l) => l.filter((e) => !have.has(String(e.entry_id))))
+          setLocal((l) => unserved(l, fresh))
         },
         () => undefined,
       )
@@ -129,14 +143,9 @@ export function usePlanConversation(runId: string | null, run: Json | null): Con
   }, [runId, live])
   const roleGate = useRoleGate('member', 'comment')
   const md = base?.may_decide === undefined ? undefined : obj(base?.may_decide)
-  const may =
-    md === undefined
-      ? { comment: false, edit: false }
-      : md === null
-        ? { comment: roleGate === null, edit: false }
-        : { comment: md.comment === true || (md.comment === undefined && roleGate === null), edit: md.edit === true }
+  const may = mayOf(md, roleGate)
   const thread = base === null || !Array.isArray(base.plan_thread) ? null : mergeEntries(objs(base.plan_thread), local)
-  const addEntry = useCallback((entry: Json) => setLocal((l) => [...l.filter((e) => e.entry_id !== entry.entry_id), entry]), [])
+  const addEntry = useCallback((entry: Json) => setLocal((l) => [...l.filter((e) => idOf(e) !== idOf(entry)), entry]), [])
   const setReplan = useCallback((r: Json) => setOwnReplan(r), [])
   return {
     runId,
@@ -207,7 +216,7 @@ const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`
  * Cancel the re-plan (§5.3). Nothing when the document registered nothing
  * for this digest (no thread served, or the run is not the one shown).
  */
-export function ReplanControls({ digest }: { digest: string | null }) {
+export function ReplanControls({ digest }: Readonly<{ digest: string | null }>) {
   const entry = useSyncExternalStore(subscribe, () => (digest === null ? undefined : bars.get(digest)))
   const [busy, setBusy] = useState(false)
   const [refused, setRefused] = useState<ApiError | null>(null)
@@ -387,7 +396,7 @@ function eventWords(e: Json): ReactNode {
 }
 
 /** A revision newer than the one on screen: its diff against the shown plan. */
-function NewerDiff({ runId, revision, shownPlan }: { runId: string; revision: number; shownPlan: Json }) {
+function NewerDiff({ runId, revision, shownPlan }: Readonly<{ runId: string; revision: number; shownPlan: Json }>) {
   const got = useRevisionPlan(runId, revision)
   if (got === null || got.status === 'loading') return <span className="pd-dim">…</span>
   if (got.status === 'error')
@@ -399,7 +408,7 @@ function NewerDiff({ runId, revision, shownPlan }: { runId: string; revision: nu
   return <PlanDiff rows={diffPlans(shownPlan, got.plan)} />
 }
 
-function When({ at }: { at: unknown }) {
+function When({ at }: Readonly<{ at: unknown }>) {
   const now = useNow()
   const t = text(at)
   if (t === null) return null
@@ -416,7 +425,7 @@ interface EntryCtx {
   shownPlan: Json
 }
 
-function Entry({ e, ctx }: { e: Json; ctx: EntryCtx }) {
+function Entry({ e, ctx }: Readonly<{ e: Json; ctx: EntryCtx }>) {
   const { c, shownRevision, shownPlan } = ctx
   const [busy, setBusy] = useState(false)
   const [refused, setRefused] = useState<ApiError | null>(null)
@@ -473,7 +482,7 @@ function Entry({ e, ctx }: { e: Json; ctx: EntryCtx }) {
   )
 }
 
-function Composer({ c, anchorKey: key, label, digest, requirements }: { c: Conversation; anchorKey: string; label: string; digest: string; requirements: number }) {
+function Composer({ c, anchorKey: key, label, digest, requirements }: Readonly<{ c: Conversation; anchorKey: string; label: string; digest: string; requirements: number }>) {
   const [open, setOpen] = useState(false)
   const [body, setBody] = useState('')
   const [req, setReq] = useState('1')
@@ -548,14 +557,14 @@ export function PlanThread({
   plan,
   digest,
   shownRevision,
-}: {
+}: Readonly<{
   c: Conversation
   anchorKey: string
   label: string
   plan: Json
   digest: string | null
   shownRevision: number | null
-}) {
+}>) {
   if (c.thread === null) return null
   const stepIds = new Set(objs(plan.steps).flatMap((s, i) => text(s.step_id) ?? `step-${i + 1}`))
   const mine = inOrder(c.thread.filter((e) => anchorKey(e, stepIds) === key))

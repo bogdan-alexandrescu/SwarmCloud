@@ -52,7 +52,10 @@ function stepKey(step: Json, i: number): string {
 
 function row(path: string, before: string | null, after: string | null): DiffRow[] {
   if (before === after) return []
-  return [{ path, op: before === null ? 'add' : after === null ? 'remove' : 'replace', before, after }]
+  let op: DiffRow['op'] = 'replace'
+  if (before === null) op = 'add'
+  else if (after === null) op = 'remove'
+  return [{ path, op, before, after }]
 }
 
 const listText = (v: unknown): string | null => {
@@ -86,7 +89,7 @@ export function diffPlans(from: Json, to: Json): DiffRow[] {
 }
 
 /** The diff as rows: the path, what was struck and what was added. */
-export function PlanDiff({ rows }: { rows: DiffRow[] }) {
+export function PlanDiff({ rows }: Readonly<{ rows: DiffRow[] }>) {
   if (rows.length === 0)
     return (
       <p className="pr-diff is-same" data-testid="pr-diff">
@@ -119,11 +122,12 @@ export function useRevisionPlan(runId: string | null, revision: number | null, k
     void loadPlanRevision(runId, revision).then(
       (r) => {
         if (!live) return
+        const none: ApiError = { kind: 'server_error', httpStatus: null, code: null, message: `revision ${revision} served no plan` }
         if (r.status === 'ok' || r.status === 'stale') {
           const plan = obj(r.data.revision?.plan)
-          setGot({ key, of: plan === null ? { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: `revision ${revision} served no plan` } as ApiError } : { status: 'ok', plan } })
+          setGot({ key, of: plan === null ? { status: 'error', error: none } : { status: 'ok', plan } })
         } else if (r.status === 'error') setGot({ key, of: { status: 'error', error: r.error } })
-        else if (r.status === 'empty') setGot({ key, of: { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: `revision ${revision} served no plan` } as ApiError } })
+        else if (r.status === 'empty') setGot({ key, of: { status: 'error', error: none } })
       },
       () => undefined,
     )
@@ -139,7 +143,7 @@ export function useRevisionPlan(runId: string | null, revision: number | null, k
 const usd = (n: number) => `$${n.toFixed(2)}`
 
 /** A revision's cost (§5.4): dollars, or a dash with its reason; nothing when none is recorded. */
-export function RevisionCost({ cost }: { cost: unknown }) {
+export function RevisionCost({ cost }: Readonly<{ cost: unknown }>) {
   const c = obj(cost)
   if (c === null) return null
   const n = num(c.usd)
@@ -155,7 +159,7 @@ export function who(by: unknown): string {
 }
 
 /** One revision drawn whole and read-only: no composer, no verb. */
-function ReadOnlyPlan({ plan }: { plan: Json }) {
+function ReadOnlyPlan({ plan }: Readonly<{ plan: Json }>) {
   const steps = objs(plan.steps)
   const reqs = texts(plan.requirements)
   return (
@@ -182,10 +186,26 @@ function ReadOnlyPlan({ plan }: { plan: Json }) {
 }
 
 /** The picked revision, read-only, with its diff against the newest. */
-function RevisionView({ runId, revision, newest, newestKnown, onClose }: { runId: string; revision: number; newest: number; newestKnown: Json | null; onClose: () => void }) {
+function RevisionView({ runId, revision, newest, newestKnown, onClose }: Readonly<{ runId: string; revision: number; newest: number; newestKnown: Json | null; onClose: () => void }>) {
   const picked = useRevisionPlan(runId, revision)
   const top = useRevisionPlan(runId, newest, newestKnown)
-  const failed = picked?.status === 'error' ? picked.error : top?.status === 'error' ? top.error : null
+  let failed: ApiError | null = null
+  if (picked?.status === 'error') failed = picked.error
+  else if (top?.status === 'error') failed = top.error
+  let body = <span className="pd-dim">…</span>
+  if (failed !== null)
+    body = (
+      <p className="pt-refused" role="alert">
+        {failed.message || errorHeading(failed)}
+      </p>
+    )
+  else if (picked?.status === 'ok')
+    body = (
+      <>
+        <ReadOnlyPlan plan={picked.plan} />
+        {top?.status === 'ok' ? <PlanDiff rows={diffPlans(picked.plan, top.plan)} /> : <span className="pd-dim">…</span>}
+      </>
+    )
   return (
     <section className="pr-view" aria-label={`Revision ${revision}, read-only`} data-testid="pr-view">
       <header className="pr-view-h">
@@ -198,18 +218,7 @@ function RevisionView({ runId, revision, newest, newestKnown, onClose }: { runId
           Close
         </Button>
       </header>
-      {failed !== null ? (
-        <p className="pt-refused" role="alert">
-          {failed.message || errorHeading(failed)}
-        </p>
-      ) : picked?.status === 'ok' ? (
-        <>
-          <ReadOnlyPlan plan={picked.plan} />
-          {top?.status === 'ok' ? <PlanDiff rows={diffPlans(picked.plan, top.plan)} /> : <span className="pd-dim">…</span>}
-        </>
-      ) : (
-        <span className="pd-dim">…</span>
-      )}
+      {body}
     </section>
   )
 }
@@ -225,13 +234,13 @@ export function PlanRevisionPicker({
   shown,
   shownPlan,
   complete,
-}: {
+}: Readonly<{
   runId: string
   revisions: Json[]
   shown: number | null
   shownPlan: Json
   complete: boolean
-}) {
+}>) {
   const [picked, setPicked] = useState<number | null>(null)
   const numbered = revisions.filter((r) => num(r.revision) !== null)
   if (numbered.length === 0) return null
