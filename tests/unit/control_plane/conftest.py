@@ -127,6 +127,27 @@ def _cost_hold_and_readiness_prepass_off(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _plan_diagrams_off(request, monkeypatch):
+    """Diagrams in plans (plans-pipeline.md §6) are on by default in every
+    deployment; off here because the issue-run fixtures' plans predate them
+    (no `diagrams`, no `no_diagram`). Their own tests ask for
+    `plan_diagrams_on`, which leaves the shipped reading in place."""
+    if "plan_diagrams_on" in request.fixturenames:
+        return
+    from swarm_api.routes import runs
+
+    monkeypatch.setattr(
+        runs, "planning_settings",
+        lambda ctx, tenant_id, schedule: {"diagrams": False, "from": "platform",
+                                          "read_at": ctx.now().isoformat()})
+
+
+@pytest.fixture
+def plan_diagrams_on():
+    """The shipped reading of the plan-diagram setting in plans (§6.4)."""
+
+
+@pytest.fixture(autouse=True)
 def _rendered_deny_list(monkeypatch):
     monkeypatch.setenv("SWARM_SHARED_DENY_LIST", json.dumps(list(RENDERED_DENY_LIST)))
     monkeypatch.setenv("SWARM_SHARED_DENY_LIST_SET", "1")
