@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react'
+import { InfoTip, SaidLine, type Said } from './InfoTip'
 import {
   type SecretStoreApi,
   type WorkspaceSecret,
@@ -11,6 +12,7 @@ import {
 } from './api'
 import { Banner, Button, Dash, TypedConfirm } from './components'
 import type { ApiError } from './fetch'
+import { hostProblem, hostsNeeded, isHostScoped, MAX_SLOT_HOSTS } from './slotHosts'
 import { timeAgo } from './types'
 import './styles/keys.css'
 
@@ -146,7 +148,10 @@ export function SecretList({
     <>
       {deleted !== null && (
         <p className="pk-saved" role="status">
-          {deleted} was deleted. Running attempts keep the copy they were given.
+          <SaidLine
+            said={{ line: `${deleted} was deleted.`, tip: `${deleted} was deleted. Running attempts keep the copy they were given.` }}
+            about="running attempts"
+          />
         </p>
       )}
       {data.secrets.length === 0 ? (
@@ -264,11 +269,16 @@ function DeleteSecret({ secret, store, onKeep, onDone }: { secret: WorkspaceSecr
       onClose={onKeep}
     >
       <p>
-        Every version of <code>{secret.name}</code> is destroyed, not disabled: the only way back is adding the value
-        again.
+        Every version is destroyed, not disabled.{' '}
+        <InfoTip
+          about={`deleting ${secret.name}`}
+          tip={`Every version of ${secret.name} is destroyed, not disabled: the only way back is adding the value again. Running attempts keep the copy they were already given; the next attempt gets nothing.`}
+        />
       </p>
       {on.length === 0 ? (
-        <p>No grant is enabled, so no consumer loses it.</p>
+        <p>
+          No grant is enabled. <InfoTip about="its grants" tip="No grant is enabled, so no consumer loses it." />
+        </p>
       ) : (
         <>
           <p>These grants are disabled:</p>
@@ -277,7 +287,6 @@ function DeleteSecret({ secret, store, onKeep, onDone }: { secret: WorkspaceSecr
           </ul>
         </>
       )}
-      <p>Running attempts keep the copy they were already given; the next attempt gets nothing.</p>
     </TypedConfirm>
   )
 }
@@ -343,36 +352,6 @@ export function cellOf(secret: Pick<WorkspaceSecret, 'kind'>, c: WorkspaceSecret
 }
 
 /**
- * HOST-SCOPED SLOTS AND THEIR RULE, as swarm_api/workspace_secrets.py states
- * them (`HOST_SCOPED_SLOTS`, `MAX_SLOT_HOSTS`, `SLOT_HOST`, `slot_hosts`).
- * The API is still the gate; these let the form refuse before the call, in
- * the API's words, and a test holds them to that module.
- */
-export const HOST_SCOPED_SLOTS: readonly string[] = ['cf-access']
-export const MAX_SLOT_HOSTS = 16
-/** A lower-case DNS name with a dot: no port, IP literal, wildcard, scheme or path. Matched exactly. */
-export const SLOT_HOST = /^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/
-/** `slot_hosts`' refusal of an enabled grant with no host. */
-export const hostsNeeded = (slot: string) =>
-  `a grant into the ${slot} slot names the hosts its secret may be sent to (\`hosts\`, 1 to ${MAX_SLOT_HOSTS} host names); it is sent to no other`
-/** `slot_hosts`' refusal of a list over the cap. */
-export const HOSTS_TOO_MANY = `\`hosts\` is a list of 1 to ${MAX_SLOT_HOSTS} host names`
-/** `slot_hosts`' refusal of a host `SLOT_HOST` does not match. */
-export const HOST_REFUSED = 'each host is a lower-case DNS name with a dot, matched exactly: no scheme, port, path, wildcard or IP address'
-
-export function isHostScoped(slot: string | null): boolean {
-  return slot !== null && HOST_SCOPED_SLOTS.includes(slot)
-}
-
-/** Why `host` cannot join `hosts`, in the API's words, or null when it can. */
-export function hostProblem(hosts: readonly string[], host: string): string | null {
-  if (!SLOT_HOST.test(host)) return HOST_REFUSED
-  if (hosts.includes(host)) return `${host} is listed already`
-  if (hosts.length >= MAX_SLOT_HOSTS) return HOSTS_TOO_MANY
-  return null
-}
-
-/**
  * ONE COLUMN OF THE MATRIX: a consumer, or one host-scoped slot of it. `view`
  * is the consumer as that column offers it (its other slots, or that slot
  * alone), which `cellOf` decides from; `hostSlot` names the slot a
@@ -425,7 +404,7 @@ export function GrantMatrix({ data, store, catalogue, onChange }: { data: Worksp
   // the API answered. Cleared when the list is read again, which then says.
   const [moved, setMoved] = useState<Readonly<Record<string, boolean>>>({})
   const [busy, setBusy] = useState<Readonly<Record<string, true>>>({})
-  const [said, setSaid] = useState<{ ok: boolean; words: string } | null>(null)
+  const [said, setSaid] = useState<{ ok: boolean; words: string; tip?: string } | null>(null)
   // A host-scoped cell's list as edited here, and what the form refused in
   // it; both cleared when the list is read again, which then shows the
   // grant's own hosts.
@@ -440,8 +419,16 @@ export function GrantMatrix({ data, store, catalogue, onChange }: { data: Worksp
   const groups = GROUPS.map(([kind, label]) => ({ label, cols: catalogue.consumers.filter((c) => c.kind === kind).flatMap(columnsOf) }))
     .filter((g) => g.cols.length > 0)
   const cols = groups.flatMap((g) => g.cols)
-  if (cols.length === 0) return <p className="ur-small">The catalogue names no consumer, so there is nothing to grant to.</p>
-  if (data.secrets.length === 0) return <p className="ur-small">No secret is stored yet, so there is nothing to grant.</p>
+  if (cols.length === 0) return (
+    <p className="ur-small">
+      Nothing to grant to. <InfoTip about="the missing consumers" tip="The catalogue names no consumer, so there is nothing to grant to." />
+    </p>
+  )
+  if (data.secrets.length === 0) return (
+    <p className="ur-small">
+      No secret is stored yet. <InfoTip about="granting" tip="No secret is stored yet, so there is nothing to grant." />
+    </p>
+  )
 
   const hostsOf = (secret: WorkspaceSecret, col: Column): readonly string[] =>
     drafts[cellKey(secret.name, col.key)] ?? grantIn(secret, col)?.hosts ?? []
@@ -487,7 +474,8 @@ export function GrantMatrix({ data, store, catalogue, onChange }: { data: Worksp
     const to = now && sent !== null ? `, sent only to ${(served?.hosts ?? sent).join(', ')}` : ''
     setSaid({
       ok: true,
-      words: `${col.consumer.consumer} ${now ? 'may now read' : 'may no longer read'} ${secret.name}${where}${to}. This takes effect at the next attempt; an attempt already running keeps what it was given.`,
+      words: `${col.consumer.consumer} ${now ? 'may now read' : 'may no longer read'} ${secret.name}${where}${to}.`,
+      tip: 'This takes effect at the next attempt; an attempt already running keeps what it was given.',
     })
     onChange()
   }
@@ -500,12 +488,23 @@ export function GrantMatrix({ data, store, catalogue, onChange }: { data: Worksp
 
   return (
     <>
+      {/* ISSUE 81: one short line; the sentences it was are behind the (i), word for word. */}
       <p className="pk-lead">
-        Tick a box to let that runner profile, tool or platform component read the secret. A box that cannot be
-        ticked says why: the consumer reads another kind, or reads no secret yet. A <code>cf-access</code> grant
-        also names the hosts its secret may be sent to, exactly, and no other.
+        Tick a box to grant the secret.{' '}
+        <InfoTip
+          about="the grant matrix"
+          tip="Tick a box to let that runner profile, tool or platform component read the secret. A box that cannot be ticked says why: the consumer reads another kind, or reads no secret yet. A cf-access grant also names the hosts its secret may be sent to, exactly, and no other."
+        />
       </p>
-      {!data.can_manage && <p className="ur-small">You can read the grants here; only someone who manages this workspace&rsquo;s secrets can change them.</p>}
+      {!data.can_manage && (
+        <p className="ur-small">
+          Read only for you.{' '}
+          <InfoTip
+            about="who changes grants"
+            tip="You can read the grants here; only someone who manages this workspace’s secrets can change them."
+          />
+        </p>
+      )}
       <div className="table-wrap" role="region" aria-label="Grant matrix" tabIndex={0}>
         <table className="pools sec-matrix" aria-label="Secret grants">
           <thead>
@@ -571,7 +570,12 @@ export function GrantMatrix({ data, store, catalogue, onChange }: { data: Worksp
         </table>
       </div>
       {said !== null && (said.ok
-        ? <p className="pk-saved" role="status">{said.words}</p>
+        ? (
+          <p className="pk-saved" role="status">
+            <span>{said.words}</span>
+            {said.tip !== undefined && <>{' '}<span>From the next attempt.</span>{' '}<InfoTip about="when it takes effect" tip={said.tip} /></>}
+          </p>
+        )
         : <Banner tone="bad" title={said.words} role="alert" />)}
     </>
   )
@@ -684,12 +688,12 @@ export function RotateSecret({
   store: SecretStoreApi
   takeToken: () => string | null
   onCancel: () => void
-  onDone: (words: string) => void
+  onDone: (said: Said) => void
 }) {
   const id = useId()
   const [filled, setFilled] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [failed, setFailed] = useState<string | null>(null)
+  const [failed, setFailed] = useState<Said | null>(null)
   const value = useRef<HTMLInputElement>(null)
   const first = useRef<HTMLInputElement>(null)
   const second = useRef<HTMLInputElement>(null)
@@ -717,20 +721,30 @@ export function RotateSecret({
     setBusy(false)
     if (r.status === 'error') {
       setFailed(r.error.code === 'SECRET_LINK_INVALID'
-        ? `${secret.name} was not rotated: the one-time link is used, expired or not yours. Nothing was written. Open the form again from Rotate, or ask /sc for a new link.`
-        : `${secret.name} was not rotated: ${r.error.message}`)
+        ? {
+            line: `${secret.name} was not rotated: its link is spent.`,
+            tip: `${secret.name} was not rotated: the one-time link is used, expired or not yours. Nothing was written. Open the form again from Rotate, or ask /sc for a new link.`,
+          }
+        : { line: `${secret.name} was not rotated: ${r.error.message}` })
       return
     }
     const version = r.status === 'ok' ? r.data?.current_version ?? null : null
-    onDone(`${secret.name} was rotated${version === null ? '' : `: version ${version} is current`}. The previous version stays enabled for 24 hours, then is disabled.`)
+    onDone({
+      line: `${secret.name} was rotated${version === null ? '' : ` · version ${version} is current`} · the previous stays enabled 24 hours`,
+      tip: 'The previous version stays enabled for 24 hours, then is disabled.',
+    })
   }
 
   return (
     <>
       <form className="pk-form" autoComplete="off" aria-label={`Rotate ${secret.name}`} onSubmit={(e) => void save(e)}>
+        {/* ISSUE 81: the old value's 24 hours is said before the action; what happens to running attempts is behind the (i), word for word. */}
         <p className="pk-lead">
-          A new version of <code>{secret.name}</code>. Attempts that start after this read the new value; the
-          previous one stays enabled for 24 hours, for attempts already running.
+          The old value works 24 more hours.{' '}
+          <InfoTip
+            about="a new version"
+            tip="Attempts that start after this read the new value; the previous one stays enabled for 24 hours, for attempts already running."
+          />
         </p>
         {structured === undefined ? (
           <SecretField id={`${id}-value`} label="New value" masked input={value} onInput={recheck} />
@@ -751,17 +765,24 @@ export function RotateSecret({
           </Button>
         </div>
       </form>
-      {failed !== null && <Banner tone="bad" title={failed} role="alert" />}
+      {failed !== null && (
+        <Banner tone="bad" title={failed.line} role="alert">
+          {failed.tip === undefined ? undefined : <InfoTip about="the spent link" tip={failed.tip} />}
+        </Banner>
+      )}
     </>
   )
 }
 
 /** A create's refusal, in words. The API's message never carries a value. */
-function refusalWords(e: ApiError, name: string): string {
+function refusalWords(e: ApiError, name: string): Said {
   if (e.code === 'SECRET_LINK_INVALID') {
-    return `${name} was not added: the one-time link is used, expired or not yours. Nothing was written. Open the form again from Add a secret, or ask /sc for a new link.`
+    return {
+      line: `${name} was not added: its link is spent.`,
+      tip: `${name} was not added: the one-time link is used, expired or not yours. Nothing was written. Open the form again from Add a secret, or ask /sc for a new link.`,
+    }
   }
-  return `${name} was not added: ${e.message}`
+  return { line: `${name} was not added: ${e.message}` }
 }
 
 /** What the wizard already chose, so the form asks only for the value (SSC-UI). */
@@ -799,7 +820,7 @@ export function AddSecret({
   const [filled, setFilled] = useState(false)
   const [busy, setBusy] = useState(false)
   const [added, setAdded] = useState<string | null>(null)
-  const [failed, setFailed] = useState<string | null>(null)
+  const [failed, setFailed] = useState<Said | null>(null)
   const value = useRef<HTMLInputElement>(null)
   const first = useRef<HTMLInputElement>(null)
   const second = useRef<HTMLInputElement>(null)
@@ -869,8 +890,12 @@ export function AddSecret({
             if (added !== null) setAdded(null)
           }} />
         <span id={`${id}-name-why`} className="jb-note">
-          What grants name: lower-case letters, digits and hyphens, starting with a letter or a digit. Never the value.
+          Lower-case letters, digits, hyphens; never the value.
         </span>
+        <InfoTip
+          about="the name"
+          tip="What grants name: lower-case letters, digits and hyphens, starting with a letter or a digit. Never the value."
+        />
         {/* Each label with its control, so a narrow form wraps a pair, never a label from its select. */}
         <div className="pk-form-row">
           <span className="pk-form-row">
@@ -910,10 +935,17 @@ export function AddSecret({
       </form>
       {added !== null && fixed === null && (
         <p className="pk-saved" role="status">
-          {added} was added. Grant it to a profile, tool or component before an agent can use it.
+          <SaidLine
+            said={{ line: `${added} was added.`, tip: `${added} was added. Grant it to a profile, tool or component before an agent can use it.` }}
+            about="granting it"
+          />
         </p>
       )}
-      {failed !== null && <Banner tone="bad" title={failed} role="alert" />}
+      {failed !== null && (
+        <Banner tone="bad" title={failed.line} role="alert">
+          {failed.tip === undefined ? undefined : <InfoTip about="the spent link" tip={failed.tip} />}
+        </Banner>
+      )}
     </>
   )
 }

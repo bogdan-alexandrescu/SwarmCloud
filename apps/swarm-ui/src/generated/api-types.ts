@@ -358,6 +358,22 @@ export interface DenyRequest {
   reason: string
 }
 
+export interface DiagramAnchor {
+  part: 'plan' | 'step' | 'requirement' | 'overlap'
+  ref?: string | null
+}
+
+/**
+ * Where the diagram added comes from: one thread entry, or one diagram of one
+ * chat turn, of this run. Never a source text: only what an agent drew, and
+ * the API checked, is added this way.
+ */
+export interface DiagramSource {
+  entry_id?: string | null
+  chat_turn_id?: string | null
+  diagram_id?: string | null
+}
+
 export interface DismissBody {
   dismissed?: boolean
 }
@@ -910,8 +926,31 @@ export interface PickedTestRepository {
   repository: string
 }
 
+/** `plan:add-diagram`'s body. */
+export interface PlanAddDiagram {
+  plan_digest: string
+  from: DiagramSource
+  explains?: DiagramAnchor | null
+}
+
 export interface PlanApprove {
   plan_digest: string
+}
+
+/**
+ * A question to the review agent. Text only: there is no field for a profile,
+ * an image, a command, a resource or a model (invariant 10); the class comes
+ * from the plan-review settings, and any other key is 422.
+ */
+export interface PlanChatAsk {
+  plan_digest: string
+  ask: string
+  anchor?: DiagramAnchor | null
+}
+
+/** Where in the thread a pinned answer is anchored. */
+export interface PlanChatPin {
+  anchor: DiagramAnchor
 }
 
 /**
@@ -927,6 +966,18 @@ export interface PlanComment {
   text?: string | null
   entry_id?: string | null
   resolved?: boolean | null
+}
+
+/**
+ * `plan:diagram`'s body. There is no field for a profile, an image, a command,
+ * a resource or a model: the review agent's shape is fixed and its class is
+ * the settings' (invariant 10), and any other key is refused 422.
+ */
+export interface PlanDiagramAsk {
+  plan_digest: string
+  anchor: DiagramAnchor
+  ask: string
+  kind?: 'flow' | 'sequence' | 'architecture' | 'state' | 'data' | 'schematic' | null
 }
 
 export interface PlanEdit {
@@ -948,6 +999,19 @@ export interface PlanReviewCapsRequest {
   diagram_asks?: number | null
   chat_turns?: number | null
   review_usd?: number | null
+}
+
+/**
+ * `plan:revise`'s body: a request for changes (`plan_digest`, and `entries` to
+ * send only some open comments), or `cancel` naming the re-plan to stop. There
+ * is no field for a profile, an image, a command, a resource or a model: the
+ * agent's shape is the run's planner's (invariant 10), and any other key is
+ * refused 422.
+ */
+export interface PlanRevise {
+  plan_digest?: string | null
+  entries?: string[] | null
+  cancel?: string | null
 }
 
 /**

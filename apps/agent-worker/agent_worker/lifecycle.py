@@ -177,6 +177,7 @@ from .spend import SpendMixin
 from .live_browser_end import LiveBrowserEndMixin
 from .accountpool import AccountPoolMixin
 from .parking import ParkMixin
+from .publish_retry import PublishRetryMixin
 from . import owner_questions as owner_questions_mod
 from . import questions as questions_mod
 from . import flow_output as flow_output_mod
@@ -237,6 +238,7 @@ from .gitops import (
     MergedHeadUnreadable,
     MergeOutcome,
     PeerPin,
+    PublishFetchIncomplete,
     PushRejected,
     PushUnreachable,
     base_merge_tip,
@@ -551,6 +553,15 @@ PUBLISH_UNREACHABLE_FIELD = "forge_unreachable"
 #: rather than the probe or the pull request. Read by the retry, which then
 #: publishes the kept work without running the agent (`_push_to_republish`).
 REPUBLISH_PUSH = "push"
+#: The `publish` a `PUBLISH_UNREACHABLE_FIELD` marker carries when the clean
+#: repository's fetch of the agent's work met an object its partial clone
+#: never downloaded and origin could not complete it
+#: (`gitops.PublishFetchIncomplete`, issue 367). The marker also carries
+#: `missing` and `on_origin`; the retry publishes the kept work without the
+#: agent unless origin said it does not have the object (`_push_to_republish`).
+REPUBLISH_FETCH = "fetch"
+#: The cause, and the error's prefix, of an attempt that ended on such a fetch.
+PUBLISH_FETCH_INCOMPLETE = "publish_fetch_incomplete"
 #: The `result_summary.git` key `_publish_git` sets when git itself failed
 #: the publish -- the push, or the commit, fold or authorship check before it
 #: (archived issue 872). Read by `_publish_failed`: a pull-request step that ends with it
@@ -909,7 +920,8 @@ def _cut_at_word(text: str, limit: int) -> str:
 
 
 class Worker(
-    HeartbeatMixin, CheckpointMixin, SpendMixin, LiveBrowserEndMixin, AccountPoolMixin, ParkMixin
+    HeartbeatMixin, CheckpointMixin, SpendMixin, LiveBrowserEndMixin, AccountPoolMixin, ParkMixin,
+    PublishRetryMixin,
 ):
     """One attempt, start to finish."""
 
@@ -7820,7 +7832,15 @@ class Worker(
         summary = task.get("result_summary")
         git = summary.get("git") if isinstance(summary, dict) else None
         marker = git.get(PUBLISH_UNREACHABLE_FIELD) if isinstance(git, dict) else None
-        if not isinstance(marker, dict) or marker.get("publish") != REPUBLISH_PUSH:
+        if not isinstance(marker, dict) or marker.get("publish") not in (
+            REPUBLISH_PUSH, REPUBLISH_FETCH,
+        ):
+            return None
+        if marker.get("publish") == REPUBLISH_FETCH and marker.get("on_origin") is False:
+            # Origin does not have the object the partial clone lacked (issue
+            # 367): the same publish would fail again, so the agent runs.
+            self.log.info("origin does not have the object the previous attempt's "
+                          "publish fetch lacked; the agent runs again")
             return None
         head, base = marker.get("head"), marker.get("base")
         if not (
@@ -9302,90 +9322,6 @@ class Worker(
             "tries": int(exc.tries),
             "retry_after_seconds": exc.retry_after_seconds,
         }
-
-    def _push_unreachable_marker(
-        self, exc: PushUnreachable, *, work_head: str | None
-    ) -> dict[str, Any]:
-        """What `_publish_git` records of a push the forge never answered (archived issue 2833).
-
-        `_unreachable_marker`'s shape, so `_publish_unreachable` reads it the
-        same way, and `publish: push` with the two shas the retry checks
-        before it publishes this work without running the agent again
-        (`_push_to_republish`): `head`, the clone's HEAD the harvest read
-        (the agent's last commit), and `base`, the clone base the worker
-        recorded in the checkpoint manifest -- before any rebase the harvest
-        adopted, since that is what the retry's restore reads back.
-        """
-        base = self._checkpointed_base or self.checkpoints.clone_base
-        return {
-            "reason": str(self._scrub(str(exc)[:500])),
-            "tries": int(exc.tries),
-            "retry_after_seconds": None,
-            "publish": REPUBLISH_PUSH,
-            "head": work_head if isinstance(work_head, str) else None,
-            "base": base if isinstance(base, str) else None,
-        }
-
-    def _fail_for_publish_unreachable(
-        self, marker: dict[str, Any], summary: dict[str, Any], *, exit_code: int
-    ) -> Outcome:
-        """Fail this ATTEMPT, retryably, because the forge stayed down at publish.
-
-        The same path `_fail_issue_unreachable` takes before the agent runs:
-        `fail_retryably` with cause `forge_unreachable`, so the task goes back
-        to READY while it has attempts left, its lease and its pool capacity
-        are released, and the scheduler admits it again after the forge's own
-        `Retry-After` or `FORGE_UNREACHABLE_RETRY_DELAY_SECONDS`, whichever is
-        longer. Not `finish(SUCCEEDED)`: a pull-request step with no pull
-        request has not delivered. Not `_fail_for_published_nothing`: that is
-        for a forge that answered "no", which a retry would meet again; an
-        outage may be over by then. The branch, if it was pushed, stays; the
-        next attempt resumes from the final checkpoint, pushes the same branch
-        and adopts any pull request this attempt opened before losing the
-        answer (`open_pull_request`'s 422). Once attempts are spent it ends
-        OUTPUTS_MISSING, as `_fail_for_published_nothing` does: the step's
-        promised deliverable does not exist.
-
-        A PUSH THE FORGE NEVER ANSWERED ENDS HERE TOO (archived issue 2833), not in
-        `_publish_failed`: its marker says `publish: push`. The task goes back
-        to READY, so its dependants keep waiting rather than being cancelled,
-        and the retry publishes the work this attempt kept without running
-        the agent again (`_push_to_republish`).
-        """
-        reason = str(marker.get("reason") or "the forge did not answer")
-        tries = marker.get("tries")
-        retry_after = marker.get("retry_after_seconds")
-        pushing = marker.get("publish") == REPUBLISH_PUSH
-        error = self._scrub(
-            f"{FORGE_UNREACHABLE}: the step's branch push met a forge that did not "
-            f"answer after {tries} tries: {reason}. The work is kept in {PATCH_NAME} "
-            "and the final checkpoint; the attempt is retried while the task has "
-            "attempts left, and the retry publishes that work without running the "
-            "agent again."
-            if pushing else
-            f"{FORGE_UNREACHABLE}: the step was to open a pull request, and the "
-            f"forge did not answer after {tries} tries: {reason}. The attempt is "
-            "retried while the task has attempts left."
-        )
-        state = self._fail_retryably_terminal(
-            exit_code=exit_code,
-            error=error,
-            cause=FORGE_UNREACHABLE,
-            result_summary=summary,
-            retry_delay_seconds=max(
-                FORGE_UNREACHABLE_RETRY_DELAY_SECONDS,
-                int(retry_after) if isinstance(retry_after, int) else 0,
-            ),
-            detail={"publish": REPUBLISH_PUSH if pushing else "pull_request", "tries": tries},
-            end_cause=EndCause.OUTPUTS_MISSING,
-        )
-        self.log.warning(
-            "the forge did not answer at publish; failing the attempt retryably",
-            cause=FORGE_UNREACHABLE,
-            tries=tries,
-            task_state=state.value,
-        )
-        return Outcome(exit_code=ExitCode.FAILED, state=state)
 
     def _fail_for_published_nothing(
         self, reason: str, summary: dict[str, Any], *, exit_code: int
@@ -12738,6 +12674,17 @@ class Worker(
                 # Fails closed, and says so where a reader of the publish looks.
                 out["published"] = False
                 out["publish_reason"] = f"nothing was published: {out['error']}"
+                if isinstance(exc, PublishFetchIncomplete):
+                    # A partial clone's publish fetch (issue 367): the attempt
+                    # ends retryably with the work kept below, and the retry
+                    # checks this head and base before it republishes.
+                    try:
+                        clone_head: str | None = read_head_as_data(repo)
+                    except GitError:
+                        clone_head = None
+                    out[PUBLISH_UNREACHABLE_FIELD] = self._fetch_incomplete_marker(
+                        exc, work_head=clone_head
+                    )
             # THE WORK IS STILL RECOVERABLE (archived issue 2544, owner decision 2026-10-28).
             # The publish-fetch that failed here took the patch with it: TOKEN-A
             # and U01 lost their integrator's whole run to it. The patch is the
@@ -13128,6 +13075,9 @@ class Worker(
                 # What the relay did not answer, fetched from the forge by the
                 # worker itself (archived issue 2901): a merge of the base publishes.
                 fetch_on_origin=self._origin_line_fetcher(fenced),
+                # Whether origin holds the object a partial clone's publish
+                # fetch could not read, so the failure says (issue 367).
+                probe_on_origin=self._origin_object_prober(fenced),
             )
         finally:
             # `prepare_publish_repo` reads a confirmer or an origin fetch that
@@ -14446,6 +14396,16 @@ class Worker(
                 out[PUBLISH_UNREACHABLE_FIELD] = self._unreachable_marker(exc.cause)
                 self.log.warning("could not read the pull request before the push",
                                  error=str(exc))
+                return out
+            if isinstance(exc, PublishFetchIncomplete):
+                # A partial clone's publish fetch (issue 367): retried with
+                # the work kept, never `publish_failed`.
+                out[PUBLISH_UNREACHABLE_FIELD] = self._fetch_incomplete_marker(
+                    exc, work_head=harvested_head
+                )
+                self.log.warning("the publish fetch met an object the partial clone never "
+                                 "downloaded; the attempt is retried with its work kept",
+                                 missing=exc.missing, on_origin=exc.on_origin)
                 return out
             if isinstance(exc, PushUnreachable):
                 # The forge did not answer the push through every try (archived issue 2833):

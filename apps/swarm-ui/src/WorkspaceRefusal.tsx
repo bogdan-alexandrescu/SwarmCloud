@@ -139,17 +139,17 @@ export function AdminRoleRefusal({
   )
 }
 
-/** Why the reader does not qualify, then their role in the workspace in hand: never a role guessed. */
+/**
+ * Why the reader does not qualify, then their role in the workspace in hand:
+ * never a role guessed. SHORT FACTS JOINED BY ' · ' (issue 81): two sentences
+ * in a row read as a paragraph; each fact here is one short line.
+ */
 function refusalLine(audience: 'platform' | 'workspace', role: string | null, workspace: string, personal: boolean): string {
-  const lead = audience === 'workspace' ? 'This page is for admins of a group workspace; you administer none.' : null
-  if (personal) return `${lead ?? 'You are not a platform admin.'} ${workspace} is your own workspace.`
-  if (role === null || role === '') {
-    return lead === null
-      ? `You are not a platform admin, and your role in ${workspace} was not read.`
-      : `${lead} Your role in ${workspace} was not read.`
-  }
-  const yours = `You are ${article(role)} ${role} of ${workspace}.`
-  return lead === null ? yours : `${lead} ${yours}`
+  const lead = audience === 'workspace' ? 'You administer no group workspace' : null
+  if (personal) return `${lead ?? 'You are not a platform admin'} · ${workspace} is your own workspace`
+  if (role === null || role === '') return `${lead ?? 'You are not a platform admin'} · your role in ${workspace} was not read`
+  const yours = `You are ${article(role)} ${role} of ${workspace}`
+  return lead === null ? yours : `${lead} · ${yours}`
 }
 
 /** "a member", "an admin": the article a role's name takes. */

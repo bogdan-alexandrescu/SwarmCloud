@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { PoolAccount } from '../accountsPool'
 import { Forecast, Verdict } from '../AccountsVerdict'
+import { helpIn } from './proseruns'
 
 const H = 3_600_000
 const D = 24 * H
@@ -109,7 +110,7 @@ describe('capacity-21: the forecast and the verdict speak in the reader’s word
     )
     const verdict = container.querySelector('.acct-verdict') as HTMLElement
     // MUTATION: restore `This broker does not say which accounts can take a new agent.`
-    expect(verdict.textContent).toContain('This deployment does not say which accounts can take a new agent.')
+    expect(helpIn(verdict)).toContain('This deployment does not say which accounts can take a new agent.')
     const said = [...verdict.querySelectorAll('[title]')].map((e) => e.getAttribute('title') ?? '')
     expect(`${verdict.textContent} ${said.join(' ')}`).not.toMatch(/broker|can_take_new_agent/)
   })

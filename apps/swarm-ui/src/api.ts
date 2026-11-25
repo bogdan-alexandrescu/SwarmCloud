@@ -1714,6 +1714,60 @@ export async function rejectPlan(runId: string, planDigest: string | null, reaso
   return write(route('/v1/runs/{id}/plan:reject', { id: runId }), 'POST', body) as Promise<Result<IssueRunRead>>
 }
 
+/** Where a plan thread entry sits (docs/design/plans-pipeline.md §3.4): the whole plan has no ref. */
+export interface PlanAnchor {
+  part: 'plan' | 'step' | 'requirement' | 'overlap' | 'diagram'
+  ref: string | null
+}
+
+/** One stored entry of `plan_thread` (§3.4), as `plan:comment` answers it. */
+export interface PlanThreadEntryRead {
+  entry: Record<string, unknown>
+}
+
+/** The run's re-plan record (§3.5), as `plan:revise` answers it. */
+export interface PlanReplanRead {
+  replan: Record<string, unknown>
+}
+
+/** `GET /v1/runs/{run_id}/plan-revisions/{revision}`: one revision with its whole plan (§3.3). */
+export interface PlanRevisionRead {
+  revision: Record<string, unknown> & { plan?: Record<string, unknown> | null; digest?: string | null }
+}
+
+/**
+ * Comment on the revision on screen (§3.4). `planDigest` is the digest of that
+ * revision, so a comment says which plan it was written on; a comment never
+ * changes the plan.
+ */
+export async function commentOnPlan(runId: string, planDigest: string, anchor: PlanAnchor, text: string): Promise<Result<PlanThreadEntryRead>> {
+  return write(route('/v1/runs/{id}/plan:comment', { id: runId }), 'POST', { plan_digest: planDigest, anchor, text }) as Promise<Result<PlanThreadEntryRead>>
+}
+
+/** Fold (or unfold) a comment: its author's, or anyone's at the edit level (§3.4). */
+export async function resolvePlanComment(runId: string, entryId: string, resolved: boolean): Promise<Result<PlanThreadEntryRead>> {
+  return write(route('/v1/runs/{id}/plan:comment', { id: runId }), 'POST', { entry_id: entryId, resolved }) as Promise<Result<PlanThreadEntryRead>>
+}
+
+/**
+ * Request changes (§3.5, §5): every open comment on the shown revision goes to
+ * the planner with that revision's digest. Nothing else is sent: the agent's
+ * shape is the run's planner's (invariant 10).
+ */
+export async function revisePlan(runId: string, planDigest: string): Promise<Result<PlanReplanRead>> {
+  return write(route('/v1/runs/{id}/plan:revise', { id: runId }), 'POST', { plan_digest: planDigest }) as Promise<Result<PlanReplanRead>>
+}
+
+/** Cancel the re-plan that runs (§5.3), by its id. */
+export async function cancelReplan(runId: string, replanId: string): Promise<Result<PlanReplanRead>> {
+  return write(route('/v1/runs/{id}/plan:revise', { id: runId }), 'POST', { cancel: replanId }) as Promise<Result<PlanReplanRead>>
+}
+
+/** One revision's whole plan (§3.3): the run read serves every revision without its plan. */
+export async function loadPlanRevision(runId: string, revision: number): Promise<Result<PlanRevisionRead>> {
+  return read<PlanRevisionRead>(route('/v1/runs/{id}/plan-revisions/{revision}', { id: runId, revision }), () => false)
+}
+
 /**
  * THE DEVELOPMENT FIXTURES FOR RUNS. Example data, in the mock-up's words
  * (intake-tenants.html): one run waiting for approval and one running. Each
@@ -2506,6 +2560,56 @@ export async function cancelWorkflow(workflowId: string): Promise<Result<CancelW
   return write(route('/v1/workflows/{id}/cancel', { id: workflowId }), 'POST') as Promise<
     Result<CancelWorkflowResult>
   >
+}
+
+/**
+ * What this client reads of a pause or resume answer
+ * (apps/swarm-api/swarm_api/routes/workflows.py `pause_workflow`,
+ * `resume_workflow`; docs/design/workflow-pause.md §3). Nothing on the page
+ * draws its fields: `PauseWorkflow` re-reads the workflow, whose `paused`,
+ * `paused_at` and `paused_by` are the record. A repeat answers
+ * `already_paused` / `already_running` and writes nothing.
+ */
+export interface PauseWorkflowResult {
+  workflow_id?: string
+  paused?: boolean
+  paused_at?: string | null
+  already_paused?: boolean
+  already_running?: boolean
+}
+
+/**
+ * PAUSE ONE WORKFLOW. `POST /v1/workflows/{id}/pause` with an empty body: the
+ * console sends no reason. Any member may (owner decision Q3); a viewer is
+ * refused 403 `role_member_required`, a finished workflow 409
+ * `workflow_terminal`, one being cancelled 409 `workflow_cancel_requested`,
+ * and a step that stayed contended 503 `pause_contended` (a retry finishes it
+ * without moving `paused_at`). Called by `PauseWorkflow` in Workflows.tsx.
+ * The fixture build records the probe and pauses nothing.
+ */
+export async function pauseWorkflow(workflowId: string): Promise<Result<PauseWorkflowResult>> {
+  return pauseOrResume(route('/v1/workflows/{id}/pause', { id: workflowId }), workflowId)
+}
+
+/**
+ * RESUME ONE PAUSED WORKFLOW. `POST /v1/workflows/{id}/resume` with an empty
+ * body (the route accepts no field). The same gate and refusals as pause; the
+ * scheduler's sweep promotes the parked steps. Called by `PauseWorkflow`.
+ */
+export async function resumeWorkflow(workflowId: string): Promise<Result<PauseWorkflowResult>> {
+  return pauseOrResume(route('/v1/workflows/{id}/resume', { id: workflowId }), workflowId)
+}
+
+async function pauseOrResume(target: ApiRoute, workflowId: string): Promise<Result<PauseWorkflowResult>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 60))
+    fixturePaused.set(workflowId, target.template.endsWith('/pause'))
+    // The same `route()` as the live path, so the fixture lands in the same
+    // registry record a live write would (CH-18). It claims no step it signalled.
+    noteFixtureProbe(target, 60, true)
+    return { status: 'ok', fetchedAt: Date.now(), data: { workflow_id: workflowId } }
+  }
+  return write(target, 'POST', {}) as Promise<Result<PauseWorkflowResult>>
 }
 
 /**
@@ -7060,7 +7164,12 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
   // wf_audit_01's were typed as one succeeded beside two step tasks the
   // Timeline drew as succeeded. Counted here as `rollup.py` counts them: each
   // step's task state, `unstarted` for a step with no task yet.
-  return [...fixtureWorkflowsMade, ...workflows].map((w) => {
+  return [...fixtureWorkflowsMade, ...workflows].map((made) => {
+    // THE PAUSE THE FIXTURE HOLDS: one queued workflow starts paused so Resume
+    // and the paused mark can be looked at, and a fixture pause or resume flips it.
+    const flip = fixturePaused.get(made.workflow_id)
+    const w: Workflow =
+      flip === undefined ? made : flip ? { ...made, paused: true, paused_by: 'alice@example.com', paused_at: FIXTURE_PAUSED_AT } : { ...made, paused: false }
     if (w.rollup === undefined || w.rollup === null) return w
     const counts: Record<string, number> = {}
     for (const st of w.steps) {
@@ -7078,6 +7187,10 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
  * derives a workflow none of whose steps has started (`steps_not_started`).
  */
 const fixtureWorkflowsMade: Workflow[] = []
+
+const FIXTURE_PAUSED_AT = '2026-11-24T08:00:00Z'
+/** Workflow id -> whether the fixture holds it paused; `wf_bcdc9180e4fb4a209f31` starts paused. */
+const fixturePaused = new Map<string, boolean>([['wf_bcdc9180e4fb4a209f31', true]])
 
 type FixtureStepAsked = { step_id: string; depends_on: string[]; runner_profile: string; resource_class?: string; input_from?: Record<string, string> }
 
@@ -14434,6 +14547,139 @@ function scheduleNotServed<T>(target: ApiRoute): Result<T> {
 async function scheduleWrite(target: ApiRoute, method: 'POST' | 'PATCH', body: unknown): Promise<Result<{ schedule: Schedule }>> {
   if (USE_FIXTURES) return scheduleNotServed(target)
   return (await write(target, method, body)) as Result<{ schedule: Schedule }>
+}
+
+/**
+ * What a schedule's `inherit` resolves to now:
+ * `GET /v1/workspaces/{tenant_id}/plan-settings` `.effective.diagrams.value`
+ * (the workspace's choice over the platform's), or null when it was not read.
+ */
+export async function loadEffectivePlanDiagrams(tenantId: string): Promise<'on' | 'off' | null> {
+  if (USE_FIXTURES) return null
+  const r = await read<unknown>(route('/v1/workspaces/{tenant_id}/plan-settings', { tenant_id: tenantId }), () => false)
+  if (r.status !== 'ok' && r.status !== 'stale') return null
+  return diagramsWord((r.data as { effective?: { diagrams?: { value?: unknown } } } | null)?.effective?.diagrams?.value)
+}
+
+/**
+ * `plansettings.resolve` serves the resolved switch as a boolean
+ * (`{"value": true, "from": "platform"}`); an older reader took `on`/`off`, so both read.
+ */
+function diagramsWord(value: unknown): 'on' | 'off' | null {
+  if (value === true || value === 'on') return 'on'
+  if (value === false || value === 'off') return 'off'
+  return null
+}
+
+/** Where a plan-review setting came from (`plansettings.PLATFORM`, `WORKSPACE`). */
+export type PlanSettingFrom = 'platform' | 'workspace' | 'schedule'
+
+/**
+ * `GET /v1/workspaces/{tenant_id}/plan-settings` (`plansettings.view`,
+ * docs/design/plans-pipeline.md §6.4, §7.8): the workspace's own choices
+ * (null where it follows the platform), what each resolves to for a run made
+ * by hand, the platform's caps read-only, and whether the caller may change it.
+ */
+export interface PlanSettings {
+  tenant_id: string
+  plans: { diagrams: 'on' | 'off' | null; chat_model_class: string | null }
+  effective: {
+    diagrams: { value: 'on' | 'off'; from: PlanSettingFrom }
+    chat_model_class: { value: string; from: PlanSettingFrom; fell_through: string | null }
+  }
+  caps: { replans: number; diagram_asks: number; chat_turns: number; review_usd: number; set_by: string | null; set_at: string | null }
+  /** The classes the plan chat may run at: the ones `claude-code` carries. */
+  chat_model_classes: string[]
+  updated_at: string | null
+  updated_by: string | null
+  /** The workspace's admin (a workspace admin, a personal workspace's owner, a platform admin). */
+  can_edit: boolean
+}
+
+/** `PUT .../plan-settings`: one or both keys; `inherit` clears the workspace's choice. */
+export interface PlanSettingsBody {
+  diagrams?: 'on' | 'off' | 'inherit'
+  chat_model_class?: string
+}
+
+/** The view as served, its switch read as a word; null for a body that is not one. */
+function planSettingsOf(raw: unknown): PlanSettings | null {
+  if (raw === null || typeof raw !== 'object') return null
+  const v = raw as Record<string, unknown> & { plans?: Record<string, unknown>; effective?: Record<string, Record<string, unknown> | undefined>; caps?: Record<string, unknown> }
+  const diagrams = diagramsWord(v.effective?.diagrams?.value)
+  const model = v.effective?.chat_model_class
+  if (diagrams === null || model === undefined || typeof model.value !== 'string' || v.caps === undefined) return null
+  const num = (x: unknown, fallback: number) => (typeof x === 'number' && Number.isFinite(x) ? x : fallback)
+  const str = (x: unknown) => (typeof x === 'string' && x !== '' ? x : null)
+  const from = (x: unknown): PlanSettingFrom => (x === 'workspace' || x === 'schedule' ? x : 'platform')
+  const stored = v.plans?.diagrams
+  return {
+    tenant_id: String(v.tenant_id ?? ''),
+    plans: { diagrams: stored === 'on' || stored === 'off' ? stored : null, chat_model_class: str(v.plans?.chat_model_class) },
+    effective: {
+      diagrams: { value: diagrams, from: from(v.effective?.diagrams?.from) },
+      chat_model_class: { value: model.value, from: from(model.from), fell_through: str(model.fell_through) },
+    },
+    // The figures `plansettings.CAPS_DEFAULT` names stand in only for a key the body left out.
+    caps: {
+      replans: num(v.caps.replans, 5),
+      diagram_asks: num(v.caps.diagram_asks, 20),
+      chat_turns: num(v.caps.chat_turns, 40),
+      review_usd: num(v.caps.review_usd, 25),
+      set_by: str(v.caps.set_by),
+      set_at: str(v.caps.set_at),
+    },
+    chat_model_classes: Array.isArray(v.chat_model_classes) ? v.chat_model_classes.filter((c): c is string => typeof c === 'string') : [],
+    updated_at: str(v.updated_at),
+    updated_by: str(v.updated_by),
+    can_edit: v.can_edit === true,
+  }
+}
+
+/** A read or write's answer with its view parsed; a body that is not one is an error naming the route. */
+function asPlanSettings(r: Result<unknown>, template: string): Result<PlanSettings> {
+  if (r.status !== 'ok' && r.status !== 'stale') return r as Result<PlanSettings>
+  const data = planSettingsOf(r.data)
+  if (data === null) {
+    return { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: 'The plan settings answer was not one this console reads.', template } }
+  }
+  return { ...r, data }
+}
+
+/** The fixture build's workspace: every setting the platform's, read by a workspace admin. */
+function fixturePlanSettings(tenantId: string): PlanSettings {
+  return {
+    tenant_id: tenantId,
+    plans: { diagrams: null, chat_model_class: null },
+    effective: { diagrams: { value: 'on', from: 'platform' }, chat_model_class: { value: 'sonnet', from: 'platform', fell_through: null } },
+    caps: { replans: 5, diagram_asks: 20, chat_turns: 40, review_usd: 25, set_by: null, set_at: null },
+    chat_model_classes: ['haiku', 'sonnet', 'opus'],
+    updated_at: null,
+    updated_by: null,
+    can_edit: true,
+  }
+}
+
+/** `GET /v1/workspaces/{tenant_id}/plan-settings`: any member reads it. */
+export async function loadPlanSettings(tenantId: string): Promise<Result<PlanSettings>> {
+  const target = route('/v1/workspaces/{tenant_id}/plan-settings', { tenant_id: tenantId })
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 90))
+    noteFixtureProbe(target, 90, true)
+    return { status: 'ok', fetchedAt: Date.now(), data: fixturePlanSettings(tenantId) }
+  }
+  return asPlanSettings(await read<unknown>(target, () => false), target.template)
+}
+
+/**
+ * `PUT /v1/workspaces/{tenant_id}/plan-settings`: the workspace's admin, audited
+ * (`workspace_plan_settings_set`). Anyone else is 403 `role_admin_required`, and
+ * a class the profile does not carry 422; the refusal is returned as served.
+ */
+export async function savePlanSettings(tenantId: string, body: PlanSettingsBody): Promise<Result<PlanSettings>> {
+  const target = route('/v1/workspaces/{tenant_id}/plan-settings', { tenant_id: tenantId })
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return asPlanSettings(await write(target, 'PUT', body), target.template)
 }
 
 /** `GET /v1/schedule-types`: the types this caller may create, with their gates. */

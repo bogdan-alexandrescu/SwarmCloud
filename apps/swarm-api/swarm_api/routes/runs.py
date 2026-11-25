@@ -7,6 +7,9 @@
     POST /v1/runs/{run_id}/plan:approve   {"plan_digest"}  -> a new workflow
     POST /v1/runs/{run_id}/plan:edit      {"plan_digest", "plan"}
     POST /v1/runs/{run_id}/plan:reject    {"plan_digest"?, "reason"?}
+    POST /v1/runs/{run_id}/plan:revise    {"plan_digest", "entries"?} -> one re-plan agent
+                                          answering the open comments, or
+                                          {"cancel": "<replan_id>"} (plans-pipeline §5)
     POST /v1/runs/{run_id}:end            {"reason"}  the workspace's admin: an
                                           APPROVED run whose workflow was never
                                           stored ends FAILED (archived issue 3612)
@@ -75,8 +78,10 @@ from datetime import datetime
 from typing import Callable, Mapping
 
 from fastapi import APIRouter, Depends, Query, Response, status
-from pydantic import Field
+from fastapi.responses import StreamingResponse
+from pydantic import Field, model_validator
 from google.cloud import firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common import specsign
 from swarm_common.admission import _snapshot
@@ -86,7 +91,8 @@ from swarm_common.states import TaskState
 
 from ..auth import AuthContext
 from .. import issueruns as issueruns_module
-from .. import planfiles, planhistory, planlint, refusals, roles, stepclass
+from .. import (planchat, planfiles, planhistory, planlint, plansettings, refusals, roles,
+               stepclass)
 from ..admins import AUDIT_COLLECTION
 from ..deps import AppContext, admin_auth, current_auth, get_context, paged_limit, tenant_scope
 from ..errors import (
@@ -155,10 +161,12 @@ from ..repositories import (
     workflow_files_of,
 )
 from ..plancontext import read_plan_context
+from ..redaction import redact_detail
 from ..reviewcontext import read_review_context
 from ..specsigning import SpecSigningUnavailable
 from ..schemas import PlanApprove, PlanEdit, PlanReject, RunCreate, StrictModel
 from ..validation import parse_issue_ref
+from .plan_settings import plan_settings_store
 from .tasks import require_member
 
 log = logging.getLogger(__name__)
@@ -180,11 +188,14 @@ def _runs(ctx: AppContext) -> IssueRuns:
 # --------------------------------------------------------------------------
 
 def _read_plan(ctx: AppContext, tenant_id: str, task_id: str, *,
-               lane_refs: Mapping[str, str] | None = None) -> tuple[str, dict]:
+               lane_refs: Mapping[str, str] | None = None,
+               diagrams: bool | None = None) -> tuple[str, dict]:
     """`plan.json` out of the planner's artifacts, through the API's own masked
     reader: `("plan", plan)`, or `("not_ready", verdict)` when the planner
     found the issue not ready (`issueruns.parse_planner_output`). `lane_refs`
-    is the run's IN FLIGHT run-lane map (`_lane_refs`, archived issue 3507)."""
+    is the run's IN FLIGHT run-lane map (`_lane_refs`, archived issue 3507);
+    `diagrams` the diagram setting the run planned under (plans-pipeline
+    §6.4), None when it recorded none."""
     try:
         window = ctx.inspection.read_artifact(
             tenant_id, task_id, submitted_by=None, name=PLAN_FILE, limit_bytes=MAX_PLAN_BYTES
@@ -197,7 +208,34 @@ def _read_plan(ctx: AppContext, tenant_id: str, task_id: str, *,
         raise InvalidPlan(f"the planner task's {PLAN_FILE} is not text")
     if window.get("truncated"):
         raise InvalidPlan(f"the planner task's {PLAN_FILE} is larger than {MAX_PLAN_BYTES} bytes")
-    return parse_planner_output(window.get("content") or "", lane_refs=lane_refs)
+    return parse_planner_output(_plan_text(window), lane_refs=lane_refs, diagrams=diagrams)
+
+
+def _plan_text(window: Mapping) -> str:
+    return window.get("content") or ""
+
+
+def _read_replan(ctx: AppContext, tenant_id: str, task_id: str, *,
+                 lane_refs: Mapping[str, str] | None = None, diagrams: bool | None = None,
+                 before: Mapping | None = None) -> tuple[str, dict, dict]:
+    """A person-asked re-plan's `plan.json`, read as `_read_plan` reads the
+    planner's: `(kind, value, answers)` (`issueruns.parse_replan_output`).
+    `before` is the plan it revises, whose diagrams it may keep when they are
+    off."""
+    try:
+        window = ctx.inspection.read_artifact(
+            tenant_id, task_id, submitted_by=None, name=PLAN_FILE, limit_bytes=MAX_PLAN_BYTES
+        )
+    except NotFound:
+        raise InvalidPlan(f"the re-plan task {task_id} wrote no {PLAN_FILE}") from None
+    except Gone:
+        raise InvalidPlan(f"the re-plan's {PLAN_FILE} is no longer in the bucket") from None
+    if window.get("status") != "ok":
+        raise InvalidPlan(f"the re-plan's {PLAN_FILE} is not text")
+    if window.get("truncated"):
+        raise InvalidPlan(f"the re-plan's {PLAN_FILE} is larger than {MAX_PLAN_BYTES} bytes")
+    return issueruns_module.parse_replan_output(_plan_text(window), lane_refs=lane_refs,
+                                                diagrams=diagrams, before=before)
 
 
 def _lane_refs(run: IssueRun) -> dict[str, str]:
@@ -410,7 +448,9 @@ def _from_planner(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
         )
     if task.state == TaskState.SUCCEEDED:
         try:
-            kind, plan = _read_plan(ctx, tenant_id, task.id, lane_refs=_lane_refs(run))
+            kind, plan = _read_plan(
+                ctx, tenant_id, task.id, lane_refs=_lane_refs(run),
+                diagrams=issueruns_module.planned_diagrams(run.plan_settings))
         except InvalidPlan as refused:
             # An output that does not parse is re-planned once, then held
             # for a person (`_plan_refused`); with the lint switched off it
@@ -652,6 +692,23 @@ def _read_readiness(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
     return _submit_planner(ctx, tenant_id, run)
 
 
+def _effective_plan_settings(ctx: AppContext, tenant_id: str, schedule: Mapping | None) -> dict:
+    """The plan settings in effect now for a run of `tenant_id` whose schedule
+    mark is `schedule` (plans-pipeline §6.4, §7.8). The schedule is read by
+    the mark's id under the tenant; another tenant's, or one that is gone, is
+    none, so the workspace's setting applies."""
+    document = None
+    if schedule:
+        document = approvals.read_schedule(ctx.db, tenant_id, schedule.get("schedule_id"))
+    return plan_settings_store(ctx).effective_plan_settings(tenant_id, document)
+
+
+def planning_settings(ctx: AppContext, tenant_id: str, schedule: Mapping | None) -> dict:
+    """The `plan_settings` record of a planner submitted now (§6.4): written
+    once, with the run or its planner's link, and never rewritten."""
+    return plansettings.plan_settings_record(_effective_plan_settings(ctx, tenant_id, schedule))
+
+
 def _submit_planner(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
     """The full planner, submitted as the run's creator (`run_owner_auth`)
     with exactly the prompt `start_run` builds, then linked once."""
@@ -664,7 +721,9 @@ def _submit_planner(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
         earlier = [r for r in _runs(ctx).for_issue(tenant_id, run.issue,
                                                    limit=planhistory.EARLIER_RUNS_READ)
                    if r.id != run.id]
+        settings = planning_settings(ctx, tenant_id, run.schedule)
         spec = planner_task(run.issue, run.id, run.open_work, context=context.section,
+                            diagrams=settings["diagrams"],
                             claude_session=run.claude_session,
                             model_class=named if isinstance(named, str) else None,
                             class_models=stepclass.class_models_of(ctx),
@@ -692,6 +751,7 @@ def _submit_planner(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
             raise Conflict(f"run {current.id}'s planner is linked already")
         return {"planner_task_id": task_id, "index_sha": context.index_sha,
                 "index_digest": context.index_digest, "index_context": context.record,
+                "plan_settings": settings,
                 "readiness": {**(current.readiness or {}), "planner_claimed_at": None}}
 
     return _runs(ctx).transition(tenant_id, run.id, RunState.PLANNING, by=SYSTEM,
@@ -841,7 +901,9 @@ def _earlier_plan(ctx: AppContext, tenant_id: str, run: IssueRun, *,
         if skip_current and task_id == run.planner_task_id:
             continue
         try:
-            kind, plan = _read_plan(ctx, tenant_id, task_id, lane_refs=_lane_refs(run))
+            kind, plan = _read_plan(
+                ctx, tenant_id, task_id, lane_refs=_lane_refs(run),
+                diagrams=issueruns_module.planned_diagrams(run.plan_settings))
         except ApiError:
             continue
         if kind == "plan":
@@ -1047,10 +1109,15 @@ def _approve(
             patch={"error": failure_text(f"the compiled workflow was refused: {reason}")},
         )
         raise
-    return runs.transition(
+    running = runs.transition(
         tenant_id, run.id, RunState.RUNNING, by=by,
         patch={"workflow_id": submission.workflow.workflow_id},
     )
+    # Q7 (plans-pipeline.md §5.3): the approval is of the digest on screen,
+    # and it cancels a re-plan that runs; its answer, if it lands anyway, is
+    # the "not applied" entry.
+    _cancel_replan_quietly(ctx, auth, tenant_id, running, why="approved", by=by)
+    return running
 
 
 class RunOwnerNotMember(Forbidden):
@@ -1418,6 +1485,15 @@ def _settle_submission(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueR
 def _advance_state(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
     """Move `run` as far as its tasks say it has gone. Never raises for a race."""
     try:
+        if issueruns_module.replan_waiting(run):
+            # A person-asked re-plan (plans-pipeline.md §5.2): its answer is
+            # read whatever the run did since -- approved, rejected or
+            # edited, it is then the "not applied" entry.
+            run = _from_person_replan(ctx, tenant_id, run)
+        if issueruns_module.diagram_current(run) is not None:
+            # An on-demand diagram (§6.5): its answer fills its thread entry
+            # whatever the run did since, and never moves the run or its plan.
+            run = _from_diagram(ctx, tenant_id, run)
         if run.state == RunState.APPROVED and not run.workflow_id:
             run = _settle_submission(ctx, tenant_id, run)
         if run.state == RunState.PLANNING:
@@ -1791,7 +1867,9 @@ def start_run(
     # another workspace's run of the same issue is never in the prompt.
     earlier = _runs(ctx).for_issue(tenant_id, ref,
                                    limit=planhistory.EARLIER_RUNS_READ)
+    settings = planning_settings(ctx, tenant_id, schedule)
     planner_spec = planner_task(ref, run_id, open_work, context=context.section,
+                                diagrams=settings["diagrams"],
                                 claude_session=claude_session, model_class=model_class,
                                 class_models=stepclass.class_models_of(ctx),
                                 earlier_runs=earlier, tenant_id=tenant_id)
@@ -1810,6 +1888,7 @@ def start_run(
             index_sha=context.index_sha,
             index_digest=context.index_digest,
             index_context=context.record,
+            plan_settings=settings,
             issue_read=issue_read,
             issue_read_error=issue_read_error,
         )
@@ -1925,6 +2004,11 @@ def get_run(
     row["plan_risk"] = plan_risk(ctx, tenant_id, run)
     row["expected_cost_usd"] = expected_cost_usd(ctx, run)
     row["may_decide"] = run_may_decide(ctx, auth, tenant_id, run)
+    # §6.3: the rule's reading beside the planner's, advisory.
+    row["diagram_expected"] = (
+        issueruns_module.diagram_expected(run.plan, run.source,
+                                          labels=(run.issue_read or {}).get("labels") or ())
+        if run.plan is not None else None)
     row = with_plan_revisions(ctx, run, row)
     row = with_plan_thread(ctx, run, row)
     return {"run": with_planner_documents(ctx, tenant_id, run, row)}
@@ -2033,7 +2117,29 @@ def edit_plan(
     # An overlap carried over unchanged from a plan stored before
     # `PlanOverlap.action` (archived issue 587) may still lack one; any other may not. The
     # transition's digest check refuses the edit if the plan moved since.
-    plan = parse_edited_plan(body.plan, current.plan)
+    settings = _revision_settings(runs, current)
+    plan = parse_edited_plan(body.plan, current.plan,
+                             diagrams=issueruns_module.planned_diagrams(settings))
+    run = _store_edit(ctx, auth, tenant_id, current, plan, digest=body.plan_digest,
+                      made_by="edit", settings=settings)
+    return {"run": sync_issue(ctx, run).to_api()}
+
+
+def _revision_settings(runs: IssueRuns, run: IssueRun) -> dict | None:
+    """The `plan_settings` the run's current revision was made under (§6.4),
+    which a hand edit of it is made under too; a planless run's are the run's."""
+    if run.plan is None:
+        return run.plan_settings
+    return runs.plan_revision(run.tenant_id, run.id, run.plan_revision or 1).get("plan_settings")
+
+
+def _store_edit(ctx: AppContext, auth: AuthContext, tenant_id: str, current: IssueRun, plan: dict,
+                *, digest: str | None, made_by: str, settings: Mapping | None) -> IssueRun:
+    """`plan`, parsed by `parse_edited_plan`, as the run's next revision by the
+    person asking: `plan:edit`'s transaction, which `plan:add-diagram` (§6.5)
+    uses as it is -- the same refusals, hold, digest check and re-signing."""
+    runs = _runs(ctx)
+    run_id = current.id
     refused = workflow_paths(
         plan, workflow_files=workflow_files_of(_registration(ctx, tenant_id, current)))
     if refused:
@@ -2058,7 +2164,7 @@ def edit_plan(
     # digest to send, so the edit sends none: it is checked against there
     # still being none. An edit sending none to a run that has a plan was
     # shown a plan that is no longer the run's.
-    planless = body.plan_digest is None
+    planless = digest is None
     if planless and current.plan_digest is not None:
         raise PlanChanged(
             f"the plan of run {run_id!r} has changed since it was shown; read the run "
@@ -2066,7 +2172,16 @@ def edit_plan(
             detail={"plan_digest": current.plan_digest, "sent": None},
         )
 
+    if issueruns_module.replan_active(current):
+        refusals.refuse(issueruns_module.replan_running(current))
+
     def edited(latest: IssueRun) -> dict:
+        if issueruns_module.replan_active(latest):
+            # §5.3: two writers making revision N+1 from N is the overwrite
+            # the digest exists to stop; checked again in the transaction.
+            # Off, the edit goes ahead and the re-plan's answer, landing on a
+            # plan that moved, is the "not applied" entry.
+            refusals.refuse(issueruns_module.replan_running(latest))
         if planless and latest.plan_digest is not None:
             raise PlanChanged(
                 f"the plan of run {run_id!r} has changed since it was shown; read the run "
@@ -2085,9 +2200,9 @@ def edit_plan(
             patch["plan_lint"] = {**latest.plan_lint, "findings": planlint.lint(plan)}
         return patch
 
-    run = runs.transition(
+    return runs.transition(
         tenant_id, run_id, RunState.PLANNED, by=auth.email,
-        digest=None if planless else body.plan_digest,
+        digest=None if planless else digest,
         from_states=_PLANNED_ONLY,
         patch=edited,
         # Re-signed over the edited plan, its new revision and the widened
@@ -2096,9 +2211,9 @@ def edit_plan(
         sign=owner_resigner(ctx),
         # Kept as revision N+1, replacing revision N's digest, in the same
         # transaction (plans-pipeline.md §3.3).
-        revision=PlanRevisionWrite(author_kind="person", by=auth.email, made_by="edit"),
+        revision=PlanRevisionWrite(author_kind="person", by=auth.email, made_by=made_by,
+                                   plan_settings=settings),
     )
-    return {"run": sync_issue(ctx, run).to_api()}
 
 
 class PlanThreadAnchor(StrictModel):
@@ -2184,7 +2299,957 @@ def reject_plan(
         from_states=_PLANNED_ONLY,
         patch={"rejected_by": auth.email, "rejection_reason": body.reason},
     )
+    _cancel_replan_quietly(ctx, auth, tenant_id, run, why="rejected", by=auth.email)
     return {"run": sync_issue(ctx, run).to_api()}
+
+
+# -- the person-asked re-plan: POST plan:revise (plans-pipeline.md §3.5, §5) --
+
+#: How long a re-plan may sit `submitting` before a read stops waiting for the
+#: request that claimed it: past this, that request died between its claim
+#: and its link. One submission takes seconds; this is generous.
+REPLAN_SUBMIT_BOUND_SECONDS = 300
+
+#: The task states after which a re-plan's answer is read.
+_REPLAN_ENDED = frozenset({TaskState.SUCCEEDED, TaskState.FAILED, TaskState.DEAD_LETTERED,
+                           TaskState.CANCELLED})
+
+
+class PlanRevise(StrictModel):
+    """`plan:revise`'s body: a request for changes (`plan_digest`, and
+    `entries` to send only some open comments), or `cancel` naming the
+    re-plan to stop. There is no field for a profile, an image, a command, a
+    resource or a model: the agent's shape is the run's planner's (invariant
+    10), and any other key is refused 422."""
+
+    plan_digest: str | None = Field(default=None, min_length=1, max_length=128)
+    entries: list[str] | None = Field(default=None, min_length=1,
+                                      max_length=issueruns_module.MAX_REPLAN_ENTRIES)
+    cancel: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+def _replan_caps(ctx: AppContext) -> int:
+    """`plan_review_caps.replans`, the platform setting (§5.4, §7.8): its
+    default (5) when unset or out of range."""
+    caps = plansettings.platform_value(plansettings.CAPS_SETTING,
+                                       ctx.store.get_platform_settings() or {})
+    return int(caps["replans"])
+
+
+def _require_edit_level(ctx: AppContext, auth: AuthContext, tenant_id: str, run: IssueRun,
+                        *, what: str = "a re-plan is an edit the planner makes; write a comment "
+                        "instead, which the next re-plan carries") -> None:
+    """The owner's Q6: a re-plan or a diagram is asked for at the level a
+    person's own edit needs (`may_decide.edit`); a member who may only comment
+    is refused."""
+    levels = run_may_decide(ctx, auth, tenant_id, run) or {}
+    if levels.get("edit") is not True:
+        refusals.refuse(issueruns_module.EditLevelRequired(
+            f"you may comment on run {run.id!r}'s plan but not edit it, and {what}",
+            detail={"may_decide": {"edit": levels.get("edit"), "comment": levels.get("comment")}},
+        ))
+
+
+@router.post("/{run_id}/plan:revise")
+def revise_plan(
+    run_id: str,
+    body: PlanRevise,
+    response: Response,
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Ask the planner to answer the open comments with a new revision, or
+    cancel the re-plan that runs (plans-pipeline.md §3.5, §5).
+
+    Who: the role floor `plan:edit` uses, read fresh before anything is read
+    (a viewer is `role_member_required`), then the edit level on this open
+    plan (Q6). Another tenant's run is the same 404 as no run, before any
+    other check. What: ONE `claude-code` agent at the run's own planner
+    class, submitted as the run's owner in the run's tenant -- nothing in it
+    comes from the request. The cap (`plan_review_caps.replans`) is checked
+    in the transaction that records the ask, before any task exists."""
+    approvals.require_decider(ctx, auth)
+    runs = _runs(ctx)
+    run = runs.get(tenant_id, run_id)  # 404 first: another tenant's run is not there
+    if body.cancel is not None:
+        if body.plan_digest is not None or body.entries is not None:
+            raise ValidationFailed("a cancel sends `cancel` and nothing else",
+                                   detail={"fields": sorted(body.model_dump(exclude_none=True))})
+        if run.state == RunState.PLANNED:
+            _require_edit_level(ctx, auth, tenant_id, run)
+        record = _cancel_replan(ctx, auth, tenant_id, run, why="cancelled", by=auth.email,
+                                replan_id=body.cancel)
+        return {"replan": issueruns_module.served_replan(record)}
+    if body.plan_digest is None:
+        raise ValidationFailed("a re-plan sends the `plan_digest` of the plan on screen",
+                               detail={"fields": sorted(body.model_dump(exclude_none=True))})
+    if issueruns_module.replan_waiting(run):
+        # The last re-plan's answer, if it has ended, before this one is asked.
+        run = _from_person_replan(ctx, tenant_id, run)
+    if run.state != RunState.PLANNED:
+        raise Conflict(
+            f"run {run_id!r} is {run.state.value}; only a PLANNED run's plan can be re-planned",
+            detail={"state": run.state.value},
+        )
+    _require_edit_level(ctx, auth, tenant_id, run)
+    if run.plan_digest != body.plan_digest:
+        raise PlanChanged(
+            f"the plan of run {run_id!r} has changed since it was shown; read the run again "
+            "and ask for changes to the plan it now holds",
+            detail={"plan_digest": run.plan_digest, "sent": body.plan_digest},
+        )
+    if issueruns_module.replan_active(run):
+        refusals.refuse(issueruns_module.replan_running(run))
+        # Off: this ask replaces the one that runs, which is cancelled first
+        # so no agent is left running that nothing reads.
+        _cancel_replan(ctx, auth, tenant_id, run, why="superseded", by=auth.email)
+        run = runs.get(tenant_id, run_id)
+    cap = _replan_caps(ctx)
+    if run.plan_replans >= cap:
+        refusals.refuse(issueruns_module.ReplanCap(run.plan_replans, cap))
+    comments = runs.open_comments(run, body.entries)
+    if not comments:
+        # Off, the planner re-plans with an empty comments fence.
+        refusals.refuse(issueruns_module.NothingToRevise(
+            f"run {run_id!r}'s plan has no open comment to send to the planner; comment on "
+            "it first (plan:comment), then ask for changes",
+            detail={"entries": []},
+        ))
+    try:
+        planner = ctx.store.get_task(tenant_id, run.planner_task_id, submitted_by=None)
+    except NotFound:
+        raise Conflict(f"run {run_id!r}'s planner task no longer exists; its class cannot be "
+                       "read, so no re-plan is submitted",
+                       detail={"planner_task_id": run.planner_task_id}) from None
+    replan_id = issueruns_module.new_replan_id()
+    record = {
+        "replan_id": replan_id, "task_id": None, "from_digest": run.plan_digest,
+        "entries": [str(doc.get("entry_id")) for doc in comments],
+        "requested_by": auth.email, "at": ctx.now(), "model_class": planner.model_class,
+        "state": "submitting", "cancelled": None,
+        # §6.4: read when the re-plan is asked for; its revision records it.
+        "plan_settings": planning_settings(ctx, tenant_id, run.schedule),
+    }
+    claimed = runs.claim_replan(tenant_id, run.id, digest=body.plan_digest, record=record, cap=cap)
+    try:
+        owner = run_owner_auth(ctx, claimed)
+        context = read_plan_context(ctx, tenant_id, claimed.issue, run_id=claimed.id,
+                                    issue=claimed.issue_read, open_work=claimed.open_work)
+        earlier = [r for r in runs.for_issue(tenant_id, claimed.issue,
+                                             limit=planhistory.EARLIER_RUNS_READ)
+                   if r.id != claimed.id]
+        base = planner_task(claimed.issue, claimed.id, claimed.open_work, context=context.section,
+                            claude_session=claimed.claude_session,
+                            class_models=stepclass.class_models_of(ctx),
+                            earlier_runs=earlier, tenant_id=tenant_id,
+                            diagrams=record["plan_settings"]["diagrams"])
+        spec = issueruns_module.revise_task(
+            claimed, base_prompt=str(base.input.get("prompt") or ""), plan=claimed.plan or {},
+            comments=comments, replan_id=replan_id, nonce=issueruns_module.replan_nonce(),
+            planner=planner, class_models=stepclass.class_models_of(ctx),
+        )
+        with issueruns_module.submitting(spec):
+            submission = ctx.submissions.submit_tasks(owner, [spec])
+    except Exception as exc:
+        # A refusal (a budget's 429, the owner's 403, the bucket's 503) comes
+        # before the task is stored: the claim ends `failed` and is not
+        # counted against the cap. Any other exception may have come after
+        # the store write, so the claim stays `submitting` and is adopted
+        # (or failed, still counted) by a later read.
+        if not isinstance(exc, ApiError):
+            raise
+        reason = exc.message
+        try:
+            runs.update_replan(tenant_id, run.id, replan_id, states={"submitting"},
+                               changes={"state": "failed", "ended_at": ctx.now(),
+                                        "error": failure_text(reason)},
+                               count_back=True)
+        except ApiError:
+            log.warning("issue run %s: re-plan %s's refused submission could not be recorded",
+                        run.id, replan_id)
+        raise
+    task_id = submission.tasks[0].id
+    try:
+        linked = runs.update_replan(tenant_id, run.id, replan_id, states={"submitting"},
+                                    changes={"state": "running", "task_id": task_id})
+    except Conflict:
+        # Cancelled (or superseded) while it was submitted: the task is
+        # stopped whatever the record says now; it is linked only while the
+        # record is still this request's.
+        _stop_replan_task(ctx, auth, tenant_id, task_id, by=auth.email)
+        try:
+            linked = runs.update_replan(tenant_id, run.id, replan_id, states={"cancelling"},
+                                        changes={"task_id": task_id})
+        except Conflict:
+            raise Conflict(f"run {run_id!r}'s re-plan {replan_id} was cancelled while it was "
+                           "submitted; its task was stopped",
+                           detail={"replan_id": replan_id, "task_id": task_id}) from None
+    log.info("issue run %s tenant=%s: re-plan %s submitted for %d comments as task %s",
+             run.id, tenant_id, replan_id, len(comments), task_id)
+    response.status_code = status.HTTP_202_ACCEPTED
+    return {"replan": issueruns_module.served_replan(linked.plan_replan)}
+
+
+def _stop_replan_task(ctx: AppContext, auth: AuthContext | None, tenant_id: str, task_id: str,
+                      *, by: str) -> None:
+    """Ask the store to cancel the re-plan's task, then its execution to stop
+    (archived issue 627), as `POST /v1/tasks/{id}/cancel` does. The task is
+    the run's tenant's: it was read off the run's own record."""
+    task, target = ctx.store.request_cancel_with_target(
+        tenant_id, task_id, by=by,
+        tenant_member=getattr(auth, "tenant_member", "") if auth is not None else "",
+    )
+    if target is not None:
+        try:
+            ctx.executions.cancel(target)
+        except Exception as exc:  # noqa: BLE001 -- the flag is durable; the worker reads it
+            log.warning("re-plan task %s: its execution could not be stopped now (%s)",
+                        task_id, type(exc).__name__)
+
+
+def _cancel_replan(ctx: AppContext, auth: AuthContext | None, tenant_id: str, run: IssueRun, *,
+                   why: str, by: str, replan_id: str | None = None) -> dict:
+    """Cancel the run's re-plan: the record moves to `cancelling` with
+    `cancelled: <why>` in one transaction, then its task is cancelled. Its
+    answer, if it lands anyway, is read as the "not applied" entry."""
+    record = run.plan_replan or {}
+    if replan_id is not None and record.get("replan_id") != replan_id:
+        raise NotFound(f"run {run.id!r} has no re-plan {replan_id[:64]!r}")
+    if record.get("state") not in issueruns_module.REPLAN_ACTIVE_STATES:
+        raise Conflict(f"run {run.id!r}'s re-plan {record.get('replan_id')} is not running "
+                       f"(it is {record.get('state')})",
+                       detail={"replan_id": record.get("replan_id"), "state": record.get("state")})
+    moved = _runs(ctx).update_replan(
+        tenant_id, run.id, str(record.get("replan_id")),
+        states=issueruns_module.REPLAN_ACTIVE_STATES,
+        changes={"state": "cancelling", "cancelled": why, "cancelled_by": by,
+                 "cancelled_at": ctx.now()},
+    )
+    task_id = (moved.plan_replan or {}).get("task_id")
+    if task_id:
+        _stop_replan_task(ctx, auth, tenant_id, str(task_id), by=by)
+    log.info("issue run %s tenant=%s: re-plan %s cancelled (%s)", run.id, tenant_id,
+             record.get("replan_id"), why)
+    return dict(moved.plan_replan or {})
+
+
+def _cancel_replan_quietly(ctx: AppContext, auth: AuthContext | None, tenant_id: str,
+                           run: IssueRun, *, why: str, by: str) -> None:
+    """`_cancel_replan` after an approval or a rejection, when one runs. It
+    never fails the decision: the decision is already durable, and a re-plan
+    not cancelled here still ends in the "not applied" entry."""
+    current = _runs(ctx).get(tenant_id, run.id)
+    if not issueruns_module.replan_active(current):
+        return
+    try:
+        _cancel_replan(ctx, auth, tenant_id, current, why=why, by=by)
+    except ApiError as exc:
+        log.warning("issue run %s: the re-plan could not be cancelled after %s (%s)",
+                    run.id, why, exc.code)
+
+
+def _adopt_replan(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
+    """A re-plan left `submitting` past REPLAN_SUBMIT_BOUND_SECONDS: its
+    request died between claim and link. A task of the run's own tenant
+    carrying its `replan` id WAS submitted and is linked; else it ends
+    `failed`, still counted (a submission may have been paid for)."""
+    record = run.plan_replan or {}
+    at = record.get("at")
+    if isinstance(at, datetime) and (ctx.now() - at).total_seconds() < REPLAN_SUBMIT_BOUND_SECONDS:
+        return run
+    replan_id = str(record.get("replan_id"))
+    rows = (ctx.db.collection(issueruns_module.TASKS_COLLECTION)
+            .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+            .where(filter=FieldFilter(
+                f"metadata.{issueruns_module.REPLAN_METADATA_KEY}", "==", replan_id))
+            .where(filter=FieldFilter("metadata.issue_run", "==", run.id))
+            .limit(1).stream())
+    found = [(snap.to_dict() or {}, snap.id) for snap in rows]
+    found = [(doc, sid) for doc, sid in found if doc.get("tenant_id") == tenant_id]
+    if found:
+        task_id = str(found[0][0].get("id") or found[0][1] or "")
+        if task_id:
+            return _runs(ctx).update_replan(tenant_id, run.id, replan_id, states={"submitting"},
+                                            changes={"state": "running", "task_id": task_id})
+    return _runs(ctx).update_replan(
+        tenant_id, run.id, replan_id, states={"submitting"},
+        changes={"state": "failed", "ended_at": ctx.now(),
+                 "error": "the request that asked for it ended before its task was linked"})
+
+
+def _from_person_replan(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
+    """Read the re-plan's answer once its agent ended (plans-pipeline.md §5.2).
+
+    A valid plan, on a run still PLANNED on the digest it was asked about, is
+    revision N+1 in one transaction with its answered comments and one answer
+    entry per comment. Anything else is ONE answer entry and no revision: a
+    plan that moved ("not applied"), a refused plan, a failed or cancelled
+    agent, a not-ready verdict. The run's state is never moved here. Every
+    write re-checks the record in its transaction, so two readers write it
+    once; the loser's Conflict sends `_advance_state` to re-read."""
+    record = dict(run.plan_replan or {})
+    if record.get("state") == "submitting":
+        return _adopt_replan(ctx, tenant_id, run)
+    task_id = str(record.get("task_id") or "")
+    if record.get("state") not in issueruns_module.REPLAN_READ_STATES or not task_id:
+        return run
+    try:
+        task = ctx.store.get_task(tenant_id, task_id, submitted_by=None)
+    except NotFound:
+        task = None
+    if task is not None and task.state not in _REPLAN_ENDED:
+        return run
+    runs = _runs(ctx)
+    now = ctx.now()
+    replan_id = str(record.get("replan_id"))
+    revision = record.get("from_revision")
+    usd = _task_cost(ctx, tenant_id, task_id) if task is not None else None
+    cost = issueruns_module.replan_cost(task_id, record.get("model_class"), usd)
+
+    def end(state: str, text: str, *, plan: dict | None = None) -> IssueRun:
+        document = issueruns_module.replan_answer_document(run, record, text=text, at=now,
+                                                           cost=cost, plan=plan)
+
+        def write(txn, ref, after: IssueRun) -> None:
+            txn.set(ref.collection(issueruns_module.PLAN_THREAD_COLLECTION)
+                    .document(document["entry_id"]), document)
+
+        log.info("issue run %s tenant=%s: re-plan %s ended %s", run.id, tenant_id, replan_id,
+                 state)
+        return runs.update_replan(tenant_id, run.id, replan_id,
+                                  states=issueruns_module.REPLAN_READ_STATES,
+                                  changes={"state": state, "ended_at": now, "cost": cost},
+                                  also=write)
+
+    kept = "no revision was made, and the comments stay open"
+    if task is None or task.state != TaskState.SUCCEEDED:
+        ended = task.state.value if task is not None else "missing"
+        if record.get("cancelled") or (task is not None and task.state == TaskState.CANCELLED):
+            return end("cancelled", f"The planner's re-plan of revision {revision} was cancelled "
+                                    f"({record.get('cancelled') or 'its task'}); {kept}.")
+        why = f": {task.last_error}" if task is not None and task.last_error else ""
+        return end("failed", failure_text(
+            f"The planner's re-plan of revision {revision} ended {ended}{why}; {kept}."))
+    try:
+        kind, value, answers = _read_replan(
+            ctx, tenant_id, task_id, lane_refs=_lane_refs(run), before=run.plan,
+            diagrams=issueruns_module.planned_diagrams(record.get("plan_settings")))
+    except InvalidPlan as refused:
+        return end("refused", failure_text(
+            f"The planner's answer to revision {revision} was refused: {refused.message}; "
+            f"{kept}."))
+    except UpstreamUnavailable:
+        return run  # the bucket, not the answer: the next read tries again
+    if kind == "not_ready":
+        needs = "; ".join(str(n) for n in value.get("needs") or [])
+        return end("not_ready", failure_text(
+            f"The planner now finds the issue not ready: {value.get('reason') or ''}"
+            + (f" Needs: {needs}." if needs else "") + f" {kept[0].upper()}{kept[1:]}; "
+            "a person decides whether to reject the plan."))
+    plan = value
+    # plan:edit's own checks (§5.2): an answer cannot add what an edit could not.
+    refused_paths = workflow_paths(
+        plan, workflow_files=workflow_files_of(_registration(ctx, tenant_id, run)))
+    unlisted = deny_list_refusal(plan)
+    if refused_paths or unlisted:
+        why = (f"it changes workflow files ({', '.join(refused_paths[:10])})" if refused_paths
+               else unlisted)
+        return end("refused", failure_text(
+            f"The planner's answer to revision {revision} was refused: {why}; {kept}."),
+            plan=plan)
+    if record.get("cancelled") and run.state == RunState.PLANNED \
+            and run.plan_digest == record.get("from_digest"):
+        # A cancelled re-plan's answer is never a revision (§5.3), whatever
+        # state its task ended in: one entry, its plan kept to read.
+        return end("not_applied",
+                   f"The planner's answer to revision {revision}, not applied: the re-plan was "
+                   f"cancelled ({record.get('cancelled')}) before it was read. Its plan is kept "
+                   "here to read; no revision was made.", plan=plan)
+    if run.state != RunState.PLANNED or run.plan_digest != record.get("from_digest"):
+        return _not_applied(run, record, plan, end)
+    found = hard_stops_at_plan(ctx, tenant_id, run, plan)
+    entries = [str(e) for e in record.get("entries") or []]
+    documents, _ = runs.plan_thread_documents(run)
+    comments = {str(doc.get("entry_id")): doc for doc in documents
+                if doc.get("tenant_id") == tenant_id and doc.get("run_id") == run.id
+                and doc.get("kind") == "comment"}
+    answered = [e for e in entries if e in comments]
+
+    def applied(latest: IssueRun) -> dict:
+        current = latest.plan_replan or {}
+        if (current.get("replan_id") != replan_id or current.get("cancelled")
+                or current.get("state") == "cancelling"
+                or current.get("state") not in issueruns_module.REPLAN_READ_STATES):
+            raise Conflict(f"run {latest.id}'s re-plan {replan_id} was read by another request")
+        number = latest.plan_revision + 1
+        patch = {
+            "plan": plan, "plan_digest": plan_digest(plan), "plan_revision": number,
+            # The requester made this revision happen: a `second_member`
+            # hold does not admit them (§5.2, `approvals.hold_excluded`).
+            "plan_edited_by": record.get("requested_by"),
+            "approval_hold": widen_hold(latest.approval_hold, found),
+            "plan_replan": {**current, "state": "applied", "ended_at": now, "cost": cost,
+                            "revision": number},
+        }
+        if latest.plan_lint is not None:
+            patch["plan_lint"] = {**latest.plan_lint, "findings": planlint.lint(plan)}
+        return patch
+
+    def thread(txn, ref, after: IssueRun) -> None:
+        threads = ref.collection(issueruns_module.PLAN_THREAD_COLLECTION)
+        for index, entry_id in enumerate(answered):
+            txn.update(threads.document(entry_id), {"answered_by_revision": after.plan_revision})
+            line = answers.get(entry_id) or "The planner gave no one-line answer to this comment."
+            answer = issueruns_module.replan_answer_document(
+                after, record, text=f"Revision {after.plan_revision}: {line}", at=now,
+                anchor=comments[entry_id].get("anchor"),
+                cost=cost if index == 0 else None, suffix=f"_{index}")
+            answer["answers_entry"] = entry_id
+            txn.set(threads.document(answer["entry_id"]), answer)
+
+    try:
+        moved = runs.transition(
+            tenant_id, run.id, RunState.PLANNED, by=SYSTEM,
+            digest=str(record.get("from_digest")), from_states=_PLANNED_ONLY, patch=applied,
+            sign=owner_resigner(ctx),
+            revision=PlanRevisionWrite(author_kind="planner", by=PLANNER_AUTHOR,
+                                       made_by="revise", answers=tuple(answered), cost=cost,
+                                       plan_settings=record.get("plan_settings")),
+            also=thread,
+        )
+    except PlanChanged:
+        # It moved between the read and the transaction: not applied.
+        latest = runs.get(tenant_id, run.id)
+        if not issueruns_module.replan_waiting(latest):
+            return latest
+        return _not_applied(latest, record, plan, end)
+    log.info("issue run %s tenant=%s: re-plan %s is revision %d", run.id, tenant_id, replan_id,
+             moved.plan_revision)
+    return moved
+
+
+def _not_applied(run: IssueRun, record: Mapping, plan: dict,
+                 end: Callable[..., IssueRun]) -> IssueRun:
+    """The answer to a plan that moved: one entry, its plan readable, no revision."""
+    now_on = (f"the run is {run.state.value}" if run.state != RunState.PLANNED
+              else f"revision {run.plan_revision} is on screen now")
+    return end("not_applied",
+               f"The planner's answer to revision {record.get('from_revision')}, not applied: "
+               f"the plan moved ({now_on}). Its plan is kept here to read; no revision was made.",
+               plan=plan)
+
+
+# -- diagrams on demand: POST plan:diagram, plan:add-diagram (plans-pipeline.md §6.5) --
+
+#: The task states after which an ask's answer is read.
+_DIAGRAM_ENDED = _REPLAN_ENDED
+_DRAWS = ("a diagram is asked for by someone who may edit this plan; write a comment instead, "
+          "which an editor can turn into an ask")
+_ADDS = "adding a diagram to the plan is an edit of it"
+
+
+class DiagramAnchor(StrictModel):
+    part: issueruns_module.DiagramPart
+    ref: str | None = Field(default=None, max_length=300)
+
+
+class PlanDiagramAsk(StrictModel):
+    """`plan:diagram`'s body. There is no field for a profile, an image, a
+    command, a resource or a model: the review agent's shape is fixed and its
+    class is the settings' (invariant 10), and any other key is refused 422."""
+
+    plan_digest: str = Field(min_length=1, max_length=128)
+    anchor: DiagramAnchor
+    ask: str = Field(min_length=1, max_length=issueruns_module.MAX_DIAGRAM_ASK_CHARS,
+                     pattern=r"\S")
+    kind: issueruns_module.DiagramKind | None = None
+
+
+class DiagramSource(StrictModel):
+    """Where the diagram added comes from: one thread entry, or one diagram of
+    one chat turn, of this run. Never a source text: only what an agent drew,
+    and the API checked, is added this way."""
+
+    entry_id: str | None = Field(default=None, max_length=64, pattern=r"^pth_[0-9a-z_]+$")
+    chat_turn_id: str | None = Field(default=None, max_length=64, pattern=r"^pct_[0-9a-z_]+$")
+    diagram_id: str | None = Field(default=None, max_length=40, pattern=r"^d-[a-z0-9-]+$")
+
+    @model_validator(mode="after")
+    def _names_one(self) -> "DiagramSource":
+        turn = self.chat_turn_id is not None
+        if turn == (self.entry_id is not None) or turn != (self.diagram_id is not None):
+            raise ValueError("`from` names one `entry_id`, or one `chat_turn_id` with its "
+                             "`diagram_id`")
+        return self
+
+
+class PlanAddDiagram(StrictModel):
+    """`plan:add-diagram`'s body."""
+
+    plan_digest: str = Field(min_length=1, max_length=128)
+    source: DiagramSource = Field(alias="from")
+    explains: DiagramAnchor | None = None
+
+
+def _planned_for_diagrams(run: IssueRun, what: str) -> None:
+    if run.state != RunState.PLANNED:
+        raise Conflict(
+            f"run {run.id!r} is {run.state.value}; only a PLANNED run's plan {what}",
+            detail={"state": run.state.value},
+        )
+
+
+@router.post("/{run_id}/plan:diagram")
+def ask_for_diagram(
+    run_id: str,
+    body: PlanDiagramAsk,
+    response: Response,
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Ask for a diagram of a part of the plan (plans-pipeline.md §6.5).
+
+    Who: the role floor `plan:edit` uses, read fresh before anything is read
+    (a viewer is `role_member_required`), then the edit level on this open
+    plan (the owner's Q6). Another tenant's run is the same 404 as no run,
+    before any other check. What: ONE review agent in the run's tenant, as
+    the person asking, at the class the plan settings resolve. The caps are
+    checked in the transaction that records the ask, before any task exists.
+    Its answer fills the pending entry and never changes the plan."""
+    approvals.require_decider(ctx, auth)
+    runs = _runs(ctx)
+    run = runs.get(tenant_id, run_id)  # 404 first: another tenant's run is not there
+    if issueruns_module.diagram_current(run) is not None:
+        # The last ask's answer, if its agent has ended, before this one.
+        try:
+            run = _from_diagram(ctx, tenant_id, run)
+        except Conflict:
+            run = runs.get(tenant_id, run_id)
+    _planned_for_diagrams(run, "takes a diagram ask")
+    _require_edit_level(ctx, auth, tenant_id, run, what=_DRAWS)
+    effective = _effective_plan_settings(ctx, tenant_id, run.schedule)
+    settings = plansettings.plan_settings_record(effective)
+    if not settings["diagrams"]:
+        refusals.refuse(issueruns_module.diagrams_off(run, settings))
+    if issueruns_module.diagram_current(run) is not None:
+        refusals.refuse(issueruns_module.diagram_running(run))
+        # Off: this ask ends the one that draws, whose agent is stopped so
+        # none is left running that nothing reads.
+        _supersede_diagram(ctx, auth, tenant_id, run)
+    if ctx.submissions.tenant_for(auth).tenant_id != tenant_id:
+        # The agent is the run's tenant's or none (invariant 9).
+        raise NotFound(f"run {run_id!r} not found")
+    model = effective["chat_model_class"]
+    choice = issueruns_module.review_agent_class(
+        str(model["value"]), str(model["from"]), stepclass.class_models_of(ctx))
+    ask = redact_detail(body.ask, limit=issueruns_module.MAX_DIAGRAM_ASK_CHARS)
+    claimed, entry, plan = runs.claim_diagram(
+        tenant_id, run.id, digest=body.plan_digest, anchor_part=body.anchor.part,
+        anchor_ref=body.anchor.ref, ask=ask, kind=body.kind, by=auth.email, settings=settings,
+        model_class=choice.model_class, caps=effective["caps"],
+    )
+    entry_id = entry["entry_id"]
+    try:
+        spec = issueruns_module.diagram_task(
+            claimed, entry_id=entry_id, plan=plan, ask=ask, anchor=entry["anchor"],
+            kind=body.kind, nonce=issueruns_module.replan_nonce(), choice=choice)
+        with issueruns_module.submitting(spec):
+            submission = ctx.submissions.submit_tasks(auth, [spec])
+    except ApiError as refused:
+        # A refusal comes before the task is stored, so the ask ends `failed`
+        # and is not counted. Any other exception may have come after the
+        # store write: the claim stays and a later read adopts its task.
+        try:
+            runs.update_diagram(
+                tenant_id, run.id, entry_id, states={"submitting"}, ended=True, count_back=True,
+                entry={"state": "failed", "text": failure_text(
+                    f"The review agent could not be submitted: {refused.message}")})
+        except ApiError:
+            log.warning("issue run %s: diagram ask %s's refused submission could not be recorded",
+                        run.id, entry_id)
+        raise
+    task_id = submission.tasks[0].id
+    try:
+        runs.update_diagram(tenant_id, run.id, entry_id, states={"submitting"}, task_id=task_id)
+    except Conflict:
+        # Superseded while it was submitted: nothing will read its answer.
+        _stop_replan_task(ctx, auth, tenant_id, task_id, by=auth.email)
+        raise
+    log.info("issue run %s tenant=%s: diagram ask %s submitted as task %s", run.id, tenant_id,
+             entry_id, task_id)
+    response.status_code = status.HTTP_202_ACCEPTED
+    return {"entry": issueruns_module.served_thread_entry({**entry, "task_id": task_id})}
+
+
+def _supersede_diagram(ctx: AppContext, auth: AuthContext, tenant_id: str, run: IssueRun) -> None:
+    """End the ask in flight for a newer one, and stop its agent."""
+    current = issueruns_module.diagram_current(run) or {}
+    task_id = current.get("task_id")
+    _runs(ctx).update_diagram(
+        tenant_id, run.id, str(current.get("entry_id")), ended=True,
+        entry={"state": "failed", "text": "A newer ask for a diagram replaced this one.",
+               "cost": issueruns_module.replan_cost(str(task_id or ""),
+                                                    current.get("model_class"), None)})
+    if task_id:
+        _stop_replan_task(ctx, auth, tenant_id, str(task_id), by=auth.email)
+
+
+def _adopt_diagram(ctx: AppContext, tenant_id: str, run: IssueRun, current: Mapping) -> IssueRun:
+    """An ask left `submitting` past REPLAN_SUBMIT_BOUND_SECONDS: a task of the
+    run's own tenant carrying its entry id WAS submitted and is linked; else
+    it ends `failed`, still counted (a submission may have been paid for)."""
+    at = current.get("at")
+    if isinstance(at, datetime) and (ctx.now() - at).total_seconds() < REPLAN_SUBMIT_BOUND_SECONDS:
+        return run
+    entry_id = str(current.get("entry_id"))
+    rows = (ctx.db.collection(issueruns_module.TASKS_COLLECTION)
+            .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+            .where(filter=FieldFilter(
+                f"metadata.{issueruns_module.DIAGRAM_METADATA_KEY}", "==", entry_id))
+            .where(filter=FieldFilter("metadata.issue_run", "==", run.id))
+            .limit(1).stream())
+    for snap in rows:
+        doc = snap.to_dict() or {}
+        if doc.get("tenant_id") == tenant_id:
+            return _runs(ctx).update_diagram(tenant_id, run.id, entry_id, states={"submitting"},
+                                             task_id=str(doc.get("id") or snap.id))
+    return _runs(ctx).update_diagram(
+        tenant_id, run.id, entry_id, states={"submitting"}, ended=True,
+        entry={"state": "failed", "cost": issueruns_module.replan_cost(
+                   "", current.get("model_class"), None),
+               "text": "The request that asked for it ended before its task was linked."})
+
+
+def _read_chat_answer(ctx: AppContext, tenant_id: str, task_id: str,
+                      anchor: Mapping) -> tuple[str, dict | None]:
+    """The review agent's answer, through the API's own masked reader."""
+    name, limit = issueruns_module.CHAT_ANSWER_FILE, issueruns_module.MAX_CHAT_ANSWER_BYTES
+    try:
+        window = ctx.inspection.read_artifact(tenant_id, task_id, submitted_by=None, name=name,
+                                              limit_bytes=limit)
+    except NotFound:
+        raise InvalidPlan(f"the review agent wrote no {name}") from None
+    except Gone:
+        raise InvalidPlan(f"the review agent's {name} is no longer in the bucket") from None
+    if window.get("status") != "ok":
+        raise InvalidPlan(f"the review agent's {name} is not text")
+    if window.get("truncated"):
+        raise InvalidPlan(f"the review agent's {name} is larger than {limit} bytes")
+    return issueruns_module.parse_chat_answer(window.get("content") or "", anchor)
+
+
+def _from_diagram(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
+    """Read the ask's answer once its agent ended: its thread entry becomes
+    `drawn`, with the diagram checked and its cost, or `failed` saying why.
+    The run's state, plan, digest and revision are never touched. The write
+    re-checks the record in its transaction, so two readers write it once."""
+    current = issueruns_module.diagram_current(run)
+    if current is None:
+        return run
+    task_id = str(current.get("task_id") or "")
+    if current.get("state") == "submitting" or not task_id:
+        return _adopt_diagram(ctx, tenant_id, run, current)
+    try:
+        task = ctx.store.get_task(tenant_id, task_id, submitted_by=None)
+    except NotFound:
+        task = None
+    if task is not None and task.state not in _DIAGRAM_ENDED:
+        return run
+    usd = _task_cost(ctx, tenant_id, task_id) if task is not None else None
+    fields: dict = {"state": "failed", "ended_at": ctx.now(),
+                    "cost": issueruns_module.replan_cost(task_id, current.get("model_class"), usd)}
+    if task is None:
+        fields["text"] = "The review agent's task no longer exists; no diagram was drawn."
+    elif task.state == TaskState.CANCELLED:
+        fields["text"] = "The review agent was cancelled; no diagram was drawn."
+    elif task.state != TaskState.SUCCEEDED:
+        why = f": {task.last_error}" if task.last_error else ""
+        fields["text"] = failure_text(f"The review agent ended {task.state.value}{why}; "
+                                      "no diagram was drawn.")
+    else:
+        try:
+            note, drawn = _read_chat_answer(ctx, tenant_id, task_id, current.get("anchor") or {})
+        except InvalidPlan as refused:
+            fields["text"] = failure_text(f"The review agent's answer was refused: "
+                                          f"{refused.message}")
+        except UpstreamUnavailable:
+            return run  # the bucket, not the answer: the next read tries again
+        else:
+            if drawn is None:
+                fields["text"] = failure_text(
+                    "The review agent drew no diagram" + (f": {note}" if note else "."))
+            else:
+                fields.update(state="drawn", diagram=drawn, text=note)
+    entry_id = str(current.get("entry_id"))
+    log.info("issue run %s tenant=%s: diagram ask %s ended %s", run.id, tenant_id, entry_id,
+             fields["state"])
+    return _runs(ctx).update_diagram(tenant_id, run.id, entry_id, states={"drawing"}, ended=True,
+                                     entry=fields)
+
+
+@router.post("/{run_id}/plan:add-diagram")
+def add_diagram(
+    run_id: str,
+    body: PlanAddDiagram,
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Add a diagram already drawn to the plan (plans-pipeline.md §6.5): the
+    edit level, because it makes revision N+1 in `plan:edit`'s own transaction
+    (`_store_edit`). No agent runs. The whole plan is checked as an edit's is,
+    so the source check runs again on what is stored (§6.6), whatever the
+    thread or the transcript held. Another tenant's run is the same 404 as no
+    run, and another run's entry or turn the same 404 as none."""
+    approvals.require_decider(ctx, auth)
+    runs = _runs(ctx)
+    run = runs.get(tenant_id, run_id)  # 404 first: another tenant's run is not there
+    _planned_for_diagrams(run, "takes a diagram")
+    _require_edit_level(ctx, auth, tenant_id, run, what=_ADDS)
+    if run.plan is None or run.plan_digest != body.plan_digest:
+        raise PlanChanged(
+            f"the plan of run {run_id!r} has changed since it was shown; read the run again "
+            "and add the diagram to the plan it now holds",
+            detail={"plan_digest": run.plan_digest, "sent": body.plan_digest},
+        )
+    if issueruns_module.replan_active(run):
+        refusals.refuse(issueruns_module.replan_running(run))
+    settings = planning_settings(ctx, tenant_id, run.schedule)
+    if not settings["diagrams"]:
+        refusals.refuse(issueruns_module.diagrams_off(run, settings))
+    source = body.source
+    if source.entry_id is not None:
+        drawn, anchor = runs.diagram_of_entry(run, source.entry_id)
+    else:
+        drawn, anchor = runs.diagram_of_turn(run, str(source.chat_turn_id), str(source.diagram_id))
+    explains = body.explains.model_dump() if body.explains is not None else anchor
+    wanted = issueruns_module.with_diagram(run.plan, issueruns_module.explained(drawn, explains))
+    if len(wanted["diagrams"]) > issueruns_module.MAX_PLAN_DIAGRAMS:
+        # Off, the plan's own schema refuses it below.
+        refusals.refuse(issueruns_module.DiagramsCap(
+            f"the plan of run {run_id!r} holds {issueruns_module.MAX_PLAN_DIAGRAMS} diagrams "
+            "already; remove one with an edit first",
+            detail={"cap": "diagrams", "limit": issueruns_module.MAX_PLAN_DIAGRAMS},
+        ))
+    # None, not False, when the refusal above is off: the person's add goes
+    # ahead, and everything but the on/off rule is still checked.
+    plan = parse_edited_plan(wanted, run.plan, diagrams=True if settings["diagrams"] else None)
+    edited = _store_edit(ctx, auth, tenant_id, run, plan, digest=body.plan_digest,
+                         made_by="add_diagram", settings=settings)
+    log.info("issue run %s tenant=%s: a diagram joined the plan as revision %s by=%s", run.id,
+             tenant_id, edited.plan_revision, auth.email)
+    return {"run": sync_issue(ctx, edited).to_api()}
+
+
+# -- the plan review chat: ask, list, stream, pin (plans-pipeline.md §7) --------
+
+
+class PlanChatAsk(StrictModel):
+    """A question to the review agent. Text only: there is no field for a
+    profile, an image, a command, a resource or a model (invariant 10); the
+    class comes from the plan-review settings, and any other key is 422."""
+
+    plan_digest: str = Field(min_length=1, max_length=128)
+    ask: str = Field(min_length=1, max_length=planchat.MAX_ASK_CHARS, pattern=r"\S")
+    anchor: DiagramAnchor | None = None
+
+
+class PlanChatPin(StrictModel):
+    """Where in the thread a pinned answer is anchored."""
+
+    anchor: DiagramAnchor
+
+
+def _chat(ctx: AppContext) -> planchat.PlanChat:
+    return planchat.PlanChat(ctx.db, now=ctx.now)
+
+
+@router.post("/{run_id}/plan-chat")
+def ask_plan_chat(
+    run_id: str,
+    body: PlanChatAsk,
+    response: Response,
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Ask the review agent one question about the plan (plans-pipeline.md §7).
+
+    Who: the role floor every decision uses, read fresh (a viewer is
+    `role_member_required`), then the comment level on this open plan; a
+    member below the edit level is answered but may not draw (§6.5). Another
+    tenant's run is the same 404 as no run, before any other check. What: ONE
+    `claude-code` review agent in the run's tenant, as the asker, at the class
+    the settings resolve. One turn in flight per run (409 `chat_busy`) and the
+    caps (429 `chat_cap`) are checked in the transaction that records the turn,
+    before any task exists. Its answer never changes the plan."""
+    approvals.require_decider(ctx, auth)
+    runs, chat = _runs(ctx), _chat(ctx)
+    run = runs.get(tenant_id, run_id)  # 404 first: another tenant's run is not there
+    data = planchat.settle(ctx, chat, runs, run)
+    if run.state != RunState.PLANNED:
+        refusals.refuse(planchat.ChatClosed(
+            f"run {run_id!r} is {run.state.value}; its chat is read-only after the decision",
+            detail={"state": run.state.value}))
+    held = planchat.current_turn(data)
+    if held is not None:
+        raise planchat.busy(run, held)
+    if ctx.submissions.tenant_for(auth).tenant_id != tenant_id:
+        # The agent is the run's tenant's or none (invariant 9).
+        raise NotFound(f"run {run_id!r} not found")
+    levels = run_may_decide(ctx, auth, tenant_id, run) or {}
+    if levels.get("comment") is not True:
+        refusals.refuse(planchat.CommentLevelRequired(
+            f"you may not comment on run {run_id!r}'s plan, so you may not ask its review agent",
+            detail={"may_decide": {"comment": levels.get("comment")}}))
+    effective = _effective_plan_settings(ctx, tenant_id, run.schedule)
+    settings = plansettings.plan_settings_record(effective)
+    caps = effective["caps"]
+    refused = planchat.chat_cap(data, caps)
+    if refused is not None:
+        refusals.refuse(refused)
+    model = planchat.resolve_model(effective, data)
+    choice = issueruns_module.review_agent_class(model["class"], model["from"],
+                                                 stepclass.class_models_of(ctx))
+    no_draw = planchat.may_draw(edit=levels.get("edit") is True, settings=settings, data=data,
+                                caps=caps)
+    plan, revision = runs._plan_on(run, body.plan_digest)
+    anchor = (issueruns_module.thread_anchor(body.anchor.part, body.anchor.ref, plan)
+              if body.anchor is not None else None)
+    ask = planchat.masked_text(body.ask, planchat.MAX_ASK_CHARS)
+    thread_docs, _ = runs.plan_thread_documents(run)
+    context = read_plan_context(ctx, tenant_id, run.issue, run_id=run.id,
+                                issue=run.issue_read, open_work=run.open_work)
+    turn = planchat.turn_id()
+    nonce = issueruns_module.replan_nonce()
+    prompt = planchat.chat_prompt(
+        run, plan=plan, revision=revision,
+        revisions=planchat.prompt_revisions(run, runs.plan_revisions(run)),
+        thread=planchat.prompt_thread(run, thread_docs),
+        transcript=planchat.prompt_transcript(run, chat.turns(run)),
+        settings=settings, no_draw=no_draw, ask=ask, anchor=anchor,
+        index_section=planchat.index_sections(context.section, run.id, nonce),
+        nonce=nonce)
+    document = {
+        "tenant_id": run.tenant_id, "run_id": run.id, "turn_id": turn,
+        "asked_by": auth.email, "ask": ask, "anchor": anchor,
+        "on_digest": body.plan_digest, "on_revision": revision, "state": "starting",
+        "task_id": None, "answer": None, "error": None, "cost": None, "first_token_ms": None,
+        "plan_settings": settings, "no_draw": no_draw,
+        "model": {**model, "model_id": None, "why_none": None,
+                  "submitted_as": choice.model_class},
+        "caps": None, "pinned_as": None, "at": ctx.now(), "answered_at": None,
+    }
+    chat.claim(run, document, digest=body.plan_digest, caps=caps)
+    try:
+        spec = planchat.chat_task(run, turn=turn, prompt=prompt, choice=choice)
+        with issueruns_module.submitting(spec):
+            submission = ctx.submissions.submit_tasks(auth, [spec])
+    except ApiError as refusal:
+        # A refusal comes before the task is stored: the turn ends `failed`
+        # and is not counted. Any other exception may have come after the
+        # store write: the claim stays and a later read adopts its task.
+        try:
+            chat.move(run, turn, states={"starting"}, ended=True, count_back=True, fields={
+                "state": "failed", "answered_at": ctx.now(), "error": failure_text(
+                    f"The review agent could not be submitted: {refusal.message}")})
+        except ApiError:
+            log.warning("issue run %s: chat turn %s's refused submission could not be recorded",
+                        run.id, turn)
+        raise
+    task_id = submission.tasks[0].id
+    try:
+        chat.move(run, turn, states={"starting"}, fields={}, task_id=task_id)
+    except Conflict:
+        _stop_replan_task(ctx, auth, tenant_id, task_id, by=auth.email)
+        raise
+    log.info("issue run %s tenant=%s: chat turn %s submitted as task %s by=%s", run.id,
+             tenant_id, turn, task_id, auth.email)
+    response.status_code = status.HTTP_202_ACCEPTED
+    return {"turn": planchat.served_turn({**(chat.turn(run, turn) or document),
+                                          "task_id": task_id})}
+
+
+@router.get("/{run_id}/plan-chat")
+def list_plan_chat(
+    run_id: str,
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The run's chat transcript, oldest first, bounded at the highest cap:
+    every member of the workspace reads it, viewers included (Q10). Another
+    tenant's run is the same 404 as no run."""
+    runs, chat = _runs(ctx), _chat(ctx)
+    run = runs.get(tenant_id, run_id)
+    data = planchat.settle(ctx, chat, runs, run)
+    caps = _effective_plan_settings(ctx, tenant_id, run.schedule)["caps"]
+    return {"run_id": run.id, "turns": [planchat.served_turn(t) for t in chat.turns(run)],
+            "open": run.state == RunState.PLANNED, "usage": planchat.usage(data, caps)}
+
+
+@router.get("/{run_id}/plan-chat/{turn_id}/stream")
+def stream_plan_chat(
+    run_id: str,
+    turn_id: str,
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> StreamingResponse:
+    """One turn as server-sent events (§7.1): the assistant's text deltas
+    only, each redacted, never a tool call, a tool result, a file's contents
+    or a system line; then the turn's final answer. Any member reads it.
+    Another tenant's run, or another run's turn, is the same 404 as none."""
+    runs, chat = _runs(ctx), _chat(ctx)
+    run = runs.get(tenant_id, run_id)
+    if chat.turn(run, turn_id) is None:
+        raise NotFound(f"run {run_id!r} has no chat turn {turn_id[:64]!r}")
+    return StreamingResponse(planchat.stream(ctx, chat, runs, run, turn_id),
+                             media_type="text/event-stream",
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
+@router.post("/{run_id}/plan-chat/{turn_id}:pin")
+def pin_plan_chat(
+    run_id: str,
+    turn_id: str,
+    body: PlanChatPin,
+    response: Response,
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Copy an answered turn into the thread as a `chat_pin` entry, by the
+    person pinning, quoting the agent (§7.5): the comment level, once per
+    turn. It is then a comment like any other; nothing in it changes the
+    plan."""
+    approvals.require_decider(ctx, auth)
+    runs, chat = _runs(ctx), _chat(ctx)
+    run = runs.get(tenant_id, run_id)
+    turn = chat.turn(run, turn_id)
+    if turn is None:
+        raise NotFound(f"run {run_id!r} has no chat turn {turn_id[:64]!r}")
+    if run.state not in issueruns_module.THREAD_OPEN_STATES:
+        refusals.refuse(issueruns_module.PlanThreadClosed(
+            f"run {run_id!r} is {run.state.value}; its plan takes no comment",
+            detail={"state": run.state.value}))
+    if turn.get("state") != "answered" or not isinstance(turn.get("answer"), Mapping):
+        raise planchat.TurnNotAnswered(
+            f"chat turn {turn_id!r} of run {run_id!r} has no answer to pin "
+            f"({turn.get('state')})", detail={"state": turn.get("state")})
+    digest = str(turn.get("on_digest") or run.plan_digest or "")
+    plan, revision = runs._plan_on(run, digest)
+    anchor = issueruns_module.thread_anchor(body.anchor.part, body.anchor.ref, plan)
+    entry = planchat.pin_entry(run, turn, anchor=anchor, by=auth.email,
+                               entry_id=issueruns_module.thread_entry_id(), on_digest=digest,
+                               on_revision=revision, at=ctx.now())
+    chat.pin(run, turn_id, entry)
+    log.info("issue run %s tenant=%s: chat turn %s pinned as %s by=%s", run.id, tenant_id,
+             turn_id, entry["entry_id"], auth.email)
+    response.status_code = status.HTTP_201_CREATED
+    return {"entry": issueruns_module.served_thread_entry(entry)}
 
 
 class RunEnd(StrictModel):

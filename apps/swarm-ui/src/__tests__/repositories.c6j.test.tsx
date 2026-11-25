@@ -18,6 +18,7 @@
 //     that has more tabs behind it;
 //   * G4-20 "Index runs are not served", not "index runs is not served".
 
+import { helpIn } from './proseruns'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { readFileSync } from 'node:fs'
@@ -299,7 +300,8 @@ describe('G4-14: the full index run is a labelled head action, not a control on 
     await waitFor(() => expect(document.querySelector('.ur-locked')).not.toBeNull(), WAIT)
     expect(screen.queryByRole('button', { name: /Re-run LSP pass/ })).toBeNull()
     const cols = document.querySelector<HTMLElement>('.ur-cols')!
-    expect(within(cols).queryAllByRole('button').filter((b) => !(b as HTMLButtonElement).disabled && b.getAttribute('aria-checked') === null)).toEqual([])
+    // An (i) (`About ...`, issue 81) opens a tip and changes nothing: it is not a mutating button.
+    expect(within(cols).queryAllByRole('button').filter((b) => !(b as HTMLButtonElement).disabled && b.getAttribute('aria-checked') === null && !/^About /.test(b.getAttribute('aria-label') ?? ''))).toEqual([])
     const full = screen.getByRole('button', { name: 'Queue full index run (re-resolves with LSP)' })
     // Beside Index now, in the page head.
     const head = full.closest('.c-phead')!
@@ -357,7 +359,7 @@ describe('G4-20: "not served" agrees with its subject', () => {
     routes({ detail: { status: 200, body: bare } })
     await mount(`repo=${ID}&tab=index-runs`)
     await waitFor(() => expect(document.querySelector('[data-notserved]')).not.toBeNull(), WAIT)
-    expect(visible(document.querySelector('[data-notserved]'))).toContain('Index runs are not served by this API yet.')
+    expect(helpIn(document.querySelector('[data-notserved]'))).toContain('Index runs are not served by this API yet.')
     expect(document.body.textContent).not.toContain('runs is not served')
   })
 
@@ -367,6 +369,6 @@ describe('G4-20: "not served" agrees with its subject', () => {
     routes({ detail: { status: 200, body: bare } })
     await mount(`repo=${ID}&tab=used-by`)
     await waitFor(() => expect(document.querySelector('[data-notserved]')).not.toBeNull(), WAIT)
-    expect(visible(document.querySelector('[data-notserved]'))).toContain('The runs and workflows that used this index are not served by this API yet.')
+    expect(helpIn(document.querySelector('[data-notserved]'))).toContain('The runs and workflows that used this index are not served by this API yet.')
   })
 })

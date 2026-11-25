@@ -433,7 +433,22 @@ dependency bot, an App that echoes a commenter's text) can post it, so a bot
 is trusted only as the platform's App; when that id is unknown -- the agent
 worker reads no App key, so today it always is -- no bot comment is kept. A
 platform comment posted with the owner's token is kept by its `OWNER`
-association. `CONTRIBUTOR`,
+association.
+
+Why the id is unknown today: the platform App's id is `var.github_app_id`
+(`terraform/infra/github_app.tf`), rendered as `GITHUB_APP_ID` into
+swarm-api's environment only (`terraform/infra/locals.tf`, the `swarm-api`
+service). No worker Job environment, no `WorkerConfig` field, no field of the
+signed task (`swarm_common.specsign`) and no answer of the forge broker
+(`forgebroker.py`, which returns a slot's name and token) carries it, and
+`REVIEW_APP_ID` names the review App on the merge and post-verdict Jobs, not
+the App that posts the platform's comments. The id is never taken from a
+task's input, the issue or a comment. To trust the platform's App comments,
+the id has to reach the worker from a platform-configured source -- Terraform
+rendering `var.github_app_id` onto every worker Job and GKE worker pod (it is
+public, not a secret), read by `WorkerConfig` -- and the lifecycle then passes
+it to both `IssuePrefetch` and `stage_issue`, which reuse a prefetch only when
+it was made with the same id. `CONTRIBUTOR`,
 `FIRST_TIMER`, `FIRST_TIME_CONTRIBUTOR`, `MANNEQUIN`, `NONE`, a missing value
 and any value GitHub does not define are not trusted. An untrusted comment is
 not written at all, nor its author: the file ends with one line counting the
@@ -2105,8 +2120,21 @@ recorded shut, contract request 157): the review gate is decided in
 Either key may be left out: `min_lines` is 300, and without `risk_paths` the
 platform's list applies (credentials and the git token path, tenant
 isolation, redaction, IAM including `terraform/**/iam*` and
-`terraform/bootstrap/`, `.github/workflows/` and `.github/actions/`, and
-`apps/common/swarm_common/`). swarm-api refuses
+`terraform/bootstrap/`, `.github/workflows/` and `.github/actions/`,
+`apps/common/swarm_common/`, and the security checks' own switches: the
+files that switch a scan off or narrow it -- the image scan's accept list
+and configuration `.trivyignore*` and `trivy.y*ml`, the secret scan's
+`.gitleaks.toml`, `.gitleaksignore` and `.github/secret_scanning.yml`, and
+the code-scanning `.github/codeql/`, `.checkov.y*ml` and `.semgrepignore`).
+Those last are there because an accept or allowlist edit is small by nature:
+a 27-line edit of the image scan's accept list was skipped as a small change
+and its pull request labelled ready (2026-11-25, issue 430). Every one of
+them is anchored at the repository root, where the scanners read them by
+default, never written with a leading `**/`: an issue run reads a plan
+entry with no extension, or one starting with `.`, as a possible directory
+and counts it as a hit wherever the risk entry has `**`, so a
+`**/.trivyignore*` would give every plan naming any directory a security
+lens. swarm-api refuses
 any other key, a `min_lines` that is not a whole number, and a `risk_paths`
 that is not a list of repository-relative globs, with a 422
 (`invalid_review_gate`, a refusal switch that ships on; turned off, the block
@@ -2137,8 +2165,14 @@ gate off for that one step: its review always runs.
   `risk_paths` a step or a workspace names, the platform's risk paths stay
   in the list (`reviewgate._gate_from`): a list adds to them and never
   replaces them, so a one-line change to credentials, IAM, redaction,
-  tenant isolation, `.github/workflows/` or `apps/common/swarm_common/` is
-  never skipped on its line count.
+  tenant isolation, `.github/workflows/`, `apps/common/swarm_common/` or a
+  security check's own switch (`.trivyignore*`, `trivy.y*ml`,
+  `.gitleaks.toml`, `.gitleaksignore`, `.github/secret_scanning.yml`,
+  `.github/codeql/`, `.checkov.y*ml`, `.semgrepignore`) is never skipped on
+  its line count, and the gate writes no SKIPPED verdict for it. An edit
+  that accepts a scan finding or allowlists a secret is a few lines by
+  nature, so its size can never be what decides it (issue 430: a 27-line
+  edit of `.trivyignore.yaml` was skipped and labelled ready, 2026-11-25).
 
 When every parent has SUCCEEDED, what they changed is final. The scheduler
 does not promote a step carrying `review_gate`: it holds it PARKED under the
@@ -3363,7 +3397,9 @@ lost, from the per-tenant merge-wake tick (`fixloop.sweep_tenant`).
 | what ended | what the loop does |
 |---|---|
 | the first review says MERGE | ends SUCCEEDED with no round |
+| the first review was skipped because the build changed nothing, and no head was pushed | ends SUCCEEDED, `nothing_to_change`, with no round and no verdict; the merge step behind it then skips too, with no pull request to merge |
 | a re-review says MERGE | ends SUCCEEDED; its `final_review` is that re-review |
+| the first review, or a re-review with rounds left, is blocked only by "not reviewed rendered" | starts a re-review of the same head on `claude-code-browser`, counted as a round, instead of a fix: no code change answers it. When that re-review could not render either, parks for a person, `fix_changed_nothing` with `code: "not_rendered"`, and the round a person adds is a re-review again |
 | a re-review says NOT_YET, rounds left | starts the next fix with that verdict's findings, from the head a person pushed if one did |
 | a re-review says NOT_YET, no round left | parks for a person, `fix_loop_exhausted` |
 | a fix pushed nothing, or the same head | parks for a person, `fix_changed_nothing` |
@@ -3376,7 +3412,10 @@ lost, from the per-tenant merge-wake tick (`fixloop.sweep_tenant`).
 Why the loop stops at a person rather than running on: a review that
 disagrees with a fix `max_rounds` times is a disagreement a person settles,
 and every other row is a fault a further round would only repeat. A
-verdict that does not read is never read as MERGE.
+verdict that does not read is never read as MERGE. A first review the
+worker skipped while a head WAS pushed still parks `review_unreadable`
+(`verdict_absent`): there is code nobody reviewed, so the loop never ends as
+if there were nothing to change.
 
 **The loop holds nothing** (invariant 1). The scheduler parks it
 `FIX_ROUNDS_RUNNING` and never leases it; it has no pod, no lease and no pool

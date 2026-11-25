@@ -439,7 +439,9 @@ const TALK_CARDS_ON_GLASS: Exemption = {
   matches: (f) =>
     f.kind === 'divider-under-floor' &&
     ((f.where === 'section.c-card' && f.detail.endsWith('on rgb(186 187 188)')) ||
-      (f.where === 'a.c-btn.is-sm' && f.detail.endsWith('on rgb(181 181 181)'))),
+      // The waiting card's (i) (issue 81: its how-to sentence sits behind
+      // it): the same control boundary on the same measured ground.
+      ((f.where === 'a.c-btn.is-sm' || f.where === 'button.c-btn.is-ghost.is-icon.is-sm') && f.detail.endsWith('on rgb(181 181 181)'))),
 }
 
 /**
@@ -590,7 +592,7 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
   // page's tab since the admin routes lane, part of archived issue 2688). Workspace setup
   // (Work › Setup until then) is a part of Workspace Settings with no tab of
   // its own, so no slice reaches it.
-  { name: 'setup', routes: ['config/github', 'config/repositories', 'automate/schedules', 'automate/approvals', 'automate/pipeline'], floor: 90 },
+  { name: 'setup', routes: ['config/github', 'config/repositories', 'automate/schedules', 'automate/approvals', 'automate/pipeline', 'automate/settings'], floor: 90 },
   // THE SECRETS PAGE'S (i)s (no-prose rule, 5 November 2026; part of archived issue 2688).
   // Config › Secrets moved its explanations behind Profile's `AboutTip`, a
   // `.ctl-q-glyph` 20px disc in the card heads' action row and beside the

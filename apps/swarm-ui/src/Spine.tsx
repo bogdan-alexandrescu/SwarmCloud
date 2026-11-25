@@ -140,6 +140,7 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     { key: 'schedules', label: 'Schedules', icon: 'schedules', to: 'automate/schedules' },
     { key: 'pipeline', label: 'Pipeline', icon: 'workflows', to: 'automate/pipeline' },
     { key: 'approvals', label: 'Approvals', icon: 'approvals', to: 'automate/approvals' },
+    { key: 'settings', label: 'Settings', icon: 'gear', to: 'automate/settings' },
   ],
   capacity: [
     {
@@ -2743,7 +2744,7 @@ export function SkyShell({
                                 </>
                               }
                             >
-                              {adminOf.length > 0 ? `You are not a platform admin. You administer ${listed(adminOf)}.` : 'You are not a platform admin.'}
+                              {adminOf.length > 0 ? `You are not a platform admin · you administer ${listed(adminOf)}` : 'You are not a platform admin'}
                             </Banner>
                           </div>
                         )}

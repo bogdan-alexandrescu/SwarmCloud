@@ -288,6 +288,24 @@ class ReconcilerConfig:
     #: 2026-10-05 history, so ten minutes caps the loss at under 2% of that.
     cancel_enforce_after_seconds: int = 600
 
+    #: How long after its workflow was paused a step's current attempt may
+    #: still be active before the reconciler stops it through the backend,
+    #: fences its generation, releases its lease and writes READY, where the
+    #: scheduler's admission gate parks it WORKFLOW_PAUSED
+    #: (`detect.detect_pause_overdue`, issue 7, docs/design/workflow-pause.md
+    #: section 6). Measured from the later of the pause and the lease's
+    #: creation, so a step leased in the admission race gets the whole bound.
+    #:
+    #: 600s, the cancel bound's value for the cancel bound's reason: the
+    #: worker's pause path costs what its cancel path does -- one control poll
+    #: (10s), then the WORKER_FINALISE_BUDGET_SECONDS (300s) work of stopping
+    #: the runner, the `workflow-pause` checkpoint and the uploads -- and
+    #: twice that leaves a slow upload its room and a pass its slack. Its own
+    #: setting, not `cancel_enforce_after_seconds` (owner decision Q2,
+    #: 2026-11-24): an overdue pause kills work somebody wants to keep, so an
+    #: operator may loosen it without loosening the cancel bound.
+    pause_enforce_after_seconds: int = 600
+
     #: How long after its task reached a terminal state an attempt that never
     #: recorded its end, with no live execution, waits before the reconciler
     #: records the end for it and gives back its account holds
@@ -540,6 +558,7 @@ class ReconcilerConfig:
             stuck_evidence_max_gap_seconds=_int("STUCK_EVIDENCE_MAX_GAP_SECONDS", 600),
             left_running_grace_seconds=_int("LEFT_RUNNING_GRACE_SECONDS", 300),
             cancel_enforce_after_seconds=_int("CANCEL_ENFORCE_AFTER_SECONDS", 600),
+            pause_enforce_after_seconds=_int("PAUSE_ENFORCE_AFTER_SECONDS", 600),
             ended_execution_grace_seconds=_int("ENDED_EXECUTION_GRACE_SECONDS", 30),
             lost_after_finish_grace_seconds=_int("LOST_AFTER_FINISH_GRACE_SECONDS", 300),
             lost_after_finish_lookback_seconds=_int(

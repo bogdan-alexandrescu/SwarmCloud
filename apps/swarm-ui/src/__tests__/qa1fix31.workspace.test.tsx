@@ -35,7 +35,7 @@ describe('admin-shell-23: an Admin page refused by role', () => {
     // MUTATION: drop AdminRoleRefusal (or its title) and this is not found.
     expect(screen.getByText('Pool limits is for platform admins')).toBeTruthy()
     // MUTATION: say the role without its article ("You are member") and this fails.
-    expect(visible(container)).toContain('You are a member of Alex.')
+    expect(visible(container)).toContain('You are a member of Alex')
     const link = screen.getByRole('link', { name: 'Open Overview' })
     // MUTATION: point the link anywhere but Overview and this fails.
     expect(link.getAttribute('href')).toBe('/overview')
@@ -154,7 +154,8 @@ describe('config-30: QA flows per step drawn once', () => {
     expect(qa.querySelector('[data-qa-flows-per-step]')).toBeNull()
     expect(visible(qa)).not.toContain('(the default)')
     expect(visible(qa).match(/QA flows per step/g)?.length).toBe(1)
-    expect(visible(qa).match(/default is 15/g)?.length).toBe(1)
+    // Issue 81: one fact list, `A whole number, 1-30 · default 15`, not two sentences.
+    expect(visible(qa).match(/default 15/g)?.length).toBe(1)
   })
 
   it('a reader still sees the figure with its default', async () => {

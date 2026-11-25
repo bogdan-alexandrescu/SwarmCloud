@@ -4751,7 +4751,15 @@ bisects as before and still names the check. Check runs are read whole, every
 page compared with `total_count`; a read that is not whole is unreadable,
 never green. Every failing check is named with its title, whichever app
 made it, and rule 1 says a check that is not an Actions job is one no re-run
-changes. [The runbook](runbooks/merge-train.md#a-red-train) states the rules.
+changes. Rule 1 (retry once) re-runs a failed job at once, without waiting
+for unrelated jobs of the same run such as `build changed images without
+pushing` (issue 387): one job of a run still in progress through
+`actions/jobs/<id>/rerun`, a finished failed run through `rerun-failed-jobs`.
+If GitHub refuses a job's re-run while its run is in progress, the train waits
+for every run as before, says so on one log line, and spends no retry. Its log
+gives the seconds from the first failed job's end to the retry, and a train
+still lands only when every required check at its head is green.
+[The runbook](runbooks/merge-train.md#a-red-train) states the rules.
 
 **What a lane gives up.** A lane's pull request no longer catches a lint,
 format or contract slip before the train does: the lane's agent runs the
@@ -6086,6 +6094,14 @@ agents' own runs hit their 10-minute command limit (about ten minutes a
 step), and the gate then ran the same guards again for 65-77 minutes. A
 runner without the gate (codex) keeps `scripts/changed-guards.sh` once at the
 end ([why](working-in-this-repository.md#swarmcloud-agent-tests)).
+
+**The worker count** (issue 422). The script passes pytest an explicit `-n`
+taken from `PYTEST_XDIST_AUTO_NUM_WORKERS`, the worker budget the platform sets
+from the container's memory, in the command it prints and in the run alike;
+without a positive integer there (CI, a laptop) it passes `-n auto`. `-n auto`
+read the same budget but hid it, and an agent copies the printed command and
+raises `-n`: six workers of `tests/unit/worker` OOM-killed an 8 GiB container
+twice ([the budget](agent-output.md#the-agent-is-told-its-memory-budget)).
 
 **What is related** (`scripts/lib/related_tests.py`, standard library only).
 Python: `select_unit_tests.py`'s rules, imported rather than restated -- the

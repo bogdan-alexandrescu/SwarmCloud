@@ -42,6 +42,7 @@ import {
   type PoolWaiting,
 } from './accountsPool'
 import { FIVE_HOUR, SEVEN_DAY, pluralise } from './types'
+import { InfoTip } from './InfoTip'
 import './styles/accounts-ranked.css'
 
 /** Work › Agents › Waiting, where the parked agents are listed. */
@@ -106,11 +107,11 @@ export function Info({ about, tip }: { about: string; tip: string }) {
       >
         i
       </button>
-      <span id={id} hidden>
+      <span id={id} hidden data-help-description="">
         {tip}
       </span>
       {open && (
-        <span role="tooltip" className="c-tip" aria-hidden="true">
+        <span role="tooltip" className="c-tip" aria-hidden="true" data-help-description="">
           {tip}
         </span>
       )}
@@ -176,6 +177,20 @@ function Name({ a }: { a: PoolAccount }) {
   return <b className="acct-nm">{accountName(a)}</b>
 }
 
+/** Facts in a row, each its own: joined by ` · `. */
+function Facts({ of }: { readonly of: readonly ReactNode[] }) {
+  return (
+    <>
+      {of.map((f, i) => (
+        <Fragment key={i}>
+          {i > 0 && <> &middot; </>}
+          {f}
+        </Fragment>
+      ))}
+    </>
+  )
+}
+
 function WaitBox({ read, free }: { read: WaitRead; free: number | null }) {
   if (read.kind !== 'ok') {
     return (
@@ -207,7 +222,13 @@ function WaitBox({ read, free }: { read: WaitRead; free: number | null }) {
         </small>
       )}
       {startable > 0 && (
-        <small>the pool can start {startable} of them now, oldest first; another ceiling may start fewer</small>
+        <small>
+          {startable} can start now &middot; oldest first{' '}
+          <InfoTip
+            about="what can start now"
+            tip={`the pool can start ${startable} of them now, oldest first; another ceiling may start fewer`}
+          />
+        </small>
       )}
     </div>
   )
@@ -232,92 +253,119 @@ export function Verdict({
   // when the head said "this list is short" and the verdict "none registered").
   const unread = v.m === 0 && shortfall > 0
   const of = `of ${v.short ? 'at least ' : ''}${unread ? shortfall : v.m}`
+  // ISSUE 81: each state is facts on the surface, each under nine words; the
+  // sentences they were, word for word, are the verdict's (i) (`tip`).
   let head: ReactNode
   let sub: ReactNode = null
+  let tip: string[] = []
   if (unread) {
-    head = 'No account here could be read, so no agent that needs the pool can start.'
-    sub = `${pluralise(shortfall, 'registered account')} could not be read, so nothing on this page counts ${shortfall === 1 ? 'it' : 'them'}.`
+    head = 'No account here could be read.'
+    tip = [
+      'No account here could be read, so no agent that needs the pool can start.',
+      `${pluralise(shortfall, 'registered account')} could not be read, so nothing on this page counts ${shortfall === 1 ? 'it' : 'them'}.`,
+    ]
   } else if (v.m === 0) {
-    head = 'No account is registered, so no agent that needs the pool can start.'
-    sub =
-      'Agents whose runner profile uses the pool wait until an account is added here, or one is lent to this workspace. Agents with their own key are not affected.'
+    head = 'No account is registered.'
+    tip = [
+      'No account is registered, so no agent that needs the pool can start.',
+      'Agents whose runner profile uses the pool wait until an account is added here, or one is lent to this workspace. Agents with their own key are not affected.',
+    ]
   } else if (v.n === null) {
     // Plain words (capacity-21): `broker` is the service's own name for itself.
-    head = 'This deployment does not say which accounts can take a new agent.'
-    sub = 'It is older than the per-account answer; the table shows the windows it reported.'
+    head = 'Which accounts can take one is not said.'
+    tip = [
+      'This deployment does not say which accounts can take a new agent.',
+      'It is older than the per-account answer; the table shows the windows it reported.',
+    ]
   } else if (v.n === 0) {
     const next = v.next
     head = next ? (
       <>
-        No account can take a new agent. Next: <Nm a={next.account} /> at {utcAt(next.at, now)}.
+        No account can take a new agent &middot; next <Nm a={next.account} /> at {utcAt(next.at, now)}
       </>
     ) : v.full ? (
-      <>No account can take a new agent. Next: <Nm a={v.full} />, when one of its agents finishes.</>
+      <>
+        No account can take a new agent &middot; next <Nm a={v.full} />, when an agent finishes
+      </>
     ) : (
-      'No account can take a new agent, and no clock says when one will.'
+      'No account can take a new agent.'
     )
     const top = v.underBy[0]
-    sub = (
-      <>
-        {next && (
-          <>
-            {inTime(next.at, now)}
-            {next.window !== null && <>, when its {windowName(next.window)} window resets</>}.{' '}
-          </>
-        )}
-        {v.then && (
-          <>
-            Then <Name a={v.then.account} /> at <b>{utcAt(v.then.at, now)}</b>.{' '}
-          </>
-        )}
-        {next && v.full && (
-          <>
-            <Name a={v.full} /> frees sooner if one of its agents finishes.{' '}
-          </>
-        )}
-        {top !== undefined && (
-          <>
-            {top.count} of the {v.m} {top.count === 1 ? 'is' : 'are'} under the floor on {top.count === 1 ? 'its' : 'their'}{' '}
-            {windowName(top.window)} window.
-          </>
-        )}
-      </>
-    )
+    tip = [
+      next
+        ? `No account can take a new agent. Next: ${accountName(next.account)} at ${utcAt(next.at, now)}.`
+        : v.full
+          ? `No account can take a new agent. Next: ${accountName(v.full)}, when one of its agents finishes.`
+          : 'No account can take a new agent, and no clock says when one will.',
+    ]
+    if (next && v.full) tip.push(`${accountName(v.full)} frees sooner if one of its agents finishes.`)
+    if (top !== undefined)
+      tip.push(
+        `${top.count} of the ${v.m} ${top.count === 1 ? 'is' : 'are'} under the floor on ${top.count === 1 ? 'its' : 'their'} ${windowName(top.window)} window.`,
+      )
+    const facts: ReactNode[] = []
+    if (next)
+      facts.push(
+        <>
+          {inTime(next.at, now)}
+          {next.window !== null && <>, when its {windowName(next.window)} window resets</>}
+        </>,
+      )
+    if (v.then)
+      facts.push(
+        <>
+          then <Name a={v.then.account} /> at <b>{utcAt(v.then.at, now)}</b>
+        </>,
+      )
+    if (next && v.full)
+      facts.push(
+        <>
+          <Name a={v.full} /> sooner if an agent finishes
+        </>,
+      )
+    if (top !== undefined)
+      facts.push(
+        <>
+          {top.count} of {v.m} under the {windowName(top.window)} floor
+        </>,
+      )
+    sub = facts.length === 0 ? null : <Facts of={facts} />
   } else {
     const slots = pluralise(v.free, 'free slot')
     const each = v.open.map(freeSlots)
     head =
       v.n === 1 ? (
         <>
-          1 account can take a new agent: {slots} on <Nm a={v.open[0]!} />.
+          1 account can take a new agent &middot; {slots} on <Nm a={v.open[0]!} />
         </>
       ) : (
         <>
-          {v.n} accounts can take a new agent: {slots}.
+          {v.n} accounts can take a new agent &middot; {slots}
         </>
       )
-    const rest = v.next ? (
-      <>
-        {' '}
-        Of the rest, <Name a={v.next.account} /> frees first, at <b>{utcAt(v.next.at, now)}</b>.
-      </>
-    ) : v.full ? (
-      <>
-        {' '}
-        Of the rest, <Name a={v.full} /> frees when one of its agents finishes.
-      </>
-    ) : null
-    sub = (
-      <>
-        {v.n > 1 && (
-          <>
-            {andNames(v.open)}
-            {each.every((x) => x === each[0]) ? `, ${each[0]} each.` : ` (${andList(each.map(String))}).`}
-          </>
-        )}
-        {rest}
-      </>
-    )
+    const facts: ReactNode[] = []
+    if (v.n > 1)
+      facts.push(
+        <>
+          {andNames(v.open)}
+          {each.every((x) => x === each[0]) ? `, ${each[0]} each` : ` (${andList(each.map(String))})`}
+        </>,
+      )
+    if (v.next)
+      facts.push(
+        <>
+          of the rest, <Name a={v.next.account} /> frees first, at <b>{utcAt(v.next.at, now)}</b>
+        </>,
+      )
+    else if (v.full) {
+      facts.push(
+        <>
+          of the rest, <Name a={v.full} /> when an agent finishes
+        </>,
+      )
+      tip = [`Of the rest, ${accountName(v.full)} frees when one of its agents finishes.`]
+    }
+    sub = facts.length === 0 ? null : <Facts of={facts} />
   }
   const tone = v.n !== null && v.n > 0 ? 'is-some' : 'is-none'
   return (
@@ -328,8 +376,16 @@ export function Verdict({
       </div>
       <div className="acct-verdict-say">
         <p className="acct-verdict-head">
-          {head}
-          {v.m > 0 && <Info about="which accounts can take a new agent" tip={ruleOf(accounts)} />}
+          <span>{head}</span>
+          {(tip.length > 0 || v.m > 0) && (
+            <>
+              {' '}
+              <Info
+                about="which accounts can take a new agent"
+                tip={[...tip, ...(v.m > 0 ? [ruleOf(accounts)] : [])].join(' ')}
+              />
+            </>
+          )}
         </p>
         {sub !== null && <p className="acct-verdict-sub">{sub}</p>}
       </div>
@@ -469,7 +525,7 @@ export function DuplicateBanner({
             {/* MUST STAY: who can fix it, when it is not this workspace. */}
             {!owned && (
               <p>
-                {x} is lent to you; {extra.owner_tenant} can fix it.
+                {x} is lent to you &middot; {extra.owner_tenant} can fix it
               </p>
             )}
             <div className="acct-dup-acts">
@@ -531,7 +587,11 @@ export function Forecast({ accounts, scope, now }: { accounts: readonly PoolAcco
         'no subscription here takes agents'
       ) : (
         <>
-          {andNames(left)} {left.length === 1 ? 'has' : 'have'} no 7-day reading to take a pace from
+          {andNames(left)} {left.length === 1 ? 'has' : 'have'} no 7-day reading{' '}
+          <InfoTip
+            about="the forecast"
+            tip={`${andList(left.map(accountName))} ${left.length === 1 ? 'has' : 'have'} no 7-day reading to take a pace from`}
+          />
         </>
       )
     tiles = (
@@ -586,12 +646,20 @@ export function Forecast({ accounts, scope, now }: { accounts: readonly PoolAcco
   return (
     <section className="acct-forecast" aria-label="Forecast">
       <div className="acct-fc-headrow">
-        <h3>Forecast: when the pool goes dark, and when it comes back</h3>
+        <h3>
+          Forecast{' '}
+          <InfoTip about="the forecast’s times" tip="Forecast: when the pool goes dark, and when it comes back" />
+        </h3>
         <span className="acct-fc-sub">
           7-day windows, at this pace
           {k > 0 && (
             <>
-              : together {pluralise(k, 'subscription')} spend {pct(f.poolPerHour * 24)} of one week&rsquo;s window a day
+              {' '}
+              &middot; together {pluralise(k, 'subscription')} spend {pct(f.poolPerHour * 24)} a day{' '}
+              <InfoTip
+                about="the pool’s pace"
+                tip={`7-day windows, at this pace: together ${pluralise(k, 'subscription')} spend ${pct(f.poolPerHour * 24)} of one week’s window a day`}
+              />
             </>
           )}
         </span>

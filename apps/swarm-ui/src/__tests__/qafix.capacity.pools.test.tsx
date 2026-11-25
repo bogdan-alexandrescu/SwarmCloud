@@ -10,6 +10,7 @@
 //   QA-056  The matrix caption says `cells` when a tie outlines several.
 //   QA-057  Provider quota's Feeds pool column takes the table's slack.
 
+import { helpIn } from './proseruns'
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -185,7 +186,7 @@ describe('QA-056: the matrix caption follows how many cells are outlined', () =>
   it('says `cells` when a tie outlines three, and `cell` when one is', () => {
     render(<ProfileMatrix capacity={capacity(['global', 'resource:standard', 'backend:CLOUD_RUN_JOB'])} />)
     expect(document.querySelectorAll('tr[data-profile="mock"] td.is-binding')).toHaveLength(3)
-    const note = document.querySelector('.cap-mx-note')!.textContent ?? ''
+    const note = helpIn(document.querySelector('.cap-mx-note'))
     // MUTATION: keep the singular caption for every matrix -- three outlined
     // cells sit over `The outlined cell runs out first`.
     expect(note).toMatch(/The outlined cells run out first/)
@@ -194,7 +195,7 @@ describe('QA-056: the matrix caption follows how many cells are outlined', () =>
     render(<ProfileMatrix capacity={capacity(['global'])} />)
     expect(document.querySelectorAll('tr[data-profile="mock"] td.is-binding')).toHaveLength(1)
     // MUTATION: always say `cells` -- one outlined cell is named as several.
-    expect(document.querySelector('.cap-mx-note')!.textContent).toMatch(/The outlined cell runs out first\./)
+    expect(helpIn(document.querySelector('.cap-mx-note'))).toMatch(/The outlined cell runs out first\./)
   })
 })
 

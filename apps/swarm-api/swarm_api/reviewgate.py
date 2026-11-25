@@ -47,8 +47,13 @@ paths and changed-line counts:
 
   * the review RUNS when that touches any risk path (`DEFAULT_RISK_PATHS`
     when the block names none: credentials and the git token path, tenant
-    isolation, redaction, IAM, the frozen contract) or changes more than
-    `min_lines` lines in total;
+    isolation, redaction, IAM, the frozen contract, the CI workflow files,
+    and the security checks' own switches -- the image scan's accept list
+    `.trivyignore*` and `trivy.y*ml`, the secret scan's `.gitleaks.toml`,
+    `.gitleaksignore` and `.github/secret_scanning.yml`, the code-scanning
+    `.github/codeql/`, `.checkov.y*ml` and `.semgrepignore` (issue 430: an
+    accept or allowlist edit is small by nature, so the line count can never
+    be what decides it)) or changes more than `min_lines` lines in total;
   * the review RUNS when a parent it depends on hands it work that is not
     code lines (FOUND 2026-11-05: both mock-up reviews of the workflow-graph
     directions were skipped on "0 changed lines" while their parents handed
@@ -180,6 +185,26 @@ DEFAULT_RISK_PATHS: tuple[str, ...] = (
     # CI: what runs with the repository's tokens (the owner 2026-10-28, archived issue 2524).
     ".github/workflows/",
     ".github/actions/",
+    # Security checks' own switches: the files that switch a scan off or
+    # narrow it (issue 430) -- the image scan's accept list and config, the
+    # secret scan's config and allowlists, the code-scanning configuration.
+    # An accept or allowlist edit is small by nature (a 27-line edit of
+    # `.trivyignore.yaml` was skipped as a small change, 2026-11-25), so the
+    # line count can never be what decides it. EVERY ENTRY IS ANCHORED AT THE
+    # REPOSITORY ROOT, where the scanners read them by default and where this
+    # repository keeps them: never a leading `**/`. `issueruns._risky_entry`
+    # reads a plan entry with no extension, or one starting with `.`, as a
+    # possible directory and calls it a hit as soon as the risk entry's segment
+    # at that depth is `**`, so a `**/.trivyignore*` would give every plan
+    # naming any directory (or `.gitignore`) a security lens.
+    ".trivyignore*",
+    "trivy.y*ml",
+    ".gitleaks.toml",
+    ".gitleaksignore",
+    ".github/secret_scanning.yml",
+    ".github/codeql/",
+    ".checkov.y*ml",
+    ".semgrepignore",
 )
 
 #: The marker `validation.REVIEW_GATE_DEFAULT_BLOCK` stores on a review step
@@ -226,6 +251,15 @@ SHOT_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 #: frames (archived issue 3066). `agent_worker.verdict.RENDERED_REVIEW_PROFILE`, restated here
 #: because swarm-api cannot import the worker; held equal by the test.
 RENDERED_REVIEW_PROFILE = "claude-code-browser"
+#: The words the rendered-review gate's finding starts with, and the paths it
+#: gates. `agent_worker.verdict.NOT_REVIEWED_RENDERED`, `UI_PATH_PREFIXES` and
+#: the test-path rule, restated for the fix loop (issue 393); held equal by
+#: the test.
+NOT_REVIEWED_RENDERED = "not reviewed rendered"
+UI_PATH_PREFIXES = ("apps/swarm-ui/", "docs/web-ui/")
+TEST_DIRECTORIES = ("__tests__", "tests")
+TEST_FILE_MARKS = (".test.", ".spec.")
+TEST_FILE_MARK_PREFIX = "apps/swarm-ui/"
 
 #: Task documents read per decision, as in `scheduler.runtime.MAX_DOCUMENTS_READ`.
 MAX_DOCUMENTS_READ = 40
@@ -250,6 +284,21 @@ REASON_RENDERED_REVIEW = "rendered_review"
 #: and a verdict (`VERDICT_FILE`, a review's reading, not its subject).
 COUNTED_HANDOFFS = ("swarm-work.patch", VERDICT_FILE)
 
+
+
+def is_ui_path(path: Any) -> bool:
+    """Whether a changed path is one a rendered review must see (test files are
+    not): `agent_worker.verdict.is_ui_path`, restated."""
+    if not isinstance(path, str):
+        return False
+    text = path.lstrip("/")
+    parts = text.split("/")
+    if any(part in TEST_DIRECTORIES for part in parts[:-1]):
+        return False
+    if text.startswith(TEST_FILE_MARK_PREFIX) and any(
+            mark in parts[-1] for mark in TEST_FILE_MARKS):
+        return False
+    return text.startswith(UI_PATH_PREFIXES)
 
 
 @lru_cache(maxsize=256)
@@ -298,8 +347,12 @@ def _gate_from(block: Mapping[str, Any]) -> Gate | None:
     The platform's risk paths are ALWAYS among the gate's (the owner 2026-10-28):
     a step or a workspace naming its own list adds to them, and never
     narrows them, so a change to credentials, IAM, redaction, tenant
-    isolation, `.github/workflows/` or the frozen contract is never skipped
-    on its line count.
+    isolation, `.github/workflows/`, the frozen contract or a security check's
+    own switch (`.trivyignore*`, `trivy.y*ml`, `.gitleaks.toml`,
+    `.gitleaksignore`, `.github/secret_scanning.yml`, `.github/codeql/`,
+    `.checkov.y*ml`, `.semgrepignore`; issue 430) is never skipped on its line
+    count. An edit that accepts a finding or allowlists a secret is small by
+    nature: the line count can never be what decides it.
     """
     min_lines = block.get("min_lines", DEFAULT_MIN_LINES)
     if (isinstance(min_lines, bool) or not isinstance(min_lines, int)

@@ -568,6 +568,16 @@ NOT_SWITCHABLE_CODES = frozenset({
     # as a SECOND submission under a key whose whole promise is one.
     "idempotency_key_reused",
     "idempotency_replay_incomplete",
+    # The plan review chat (docs/design/plans-pipeline.md §7, lane P7):
+    # raised only by the /v1/runs/{id}/plan-chat routes, which that lane
+    # introduces, so no existing caller can be refused by them. Continuing
+    # past either is the breach itself: a second question while one is in
+    # flight would overwrite the run's one in-flight turn, leaving an agent
+    # whose answer and cost the chat no longer tracks (§7: one turn in flight
+    # per run); a pin of a turn with no answer, or pinned already, would write
+    # a thread entry quoting nothing, or a second entry for one answer.
+    "chat_busy",
+    "turn_not_pinnable",
 })
 
 #: What the guard lets through without a switch.

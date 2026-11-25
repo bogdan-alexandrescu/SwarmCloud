@@ -28,6 +28,7 @@
 // Nothing here is credential-shaped: no token is needed, and none is built.
 
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { helpIn } from './proseruns'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Result } from '../fetch'
@@ -84,10 +85,13 @@ describe('admin-shell-09: an API without the QA identity routes is said for a re
     const p = await mount(unread(404, null, 'Not Found'))
     const text = visible(p)
     expect(text).not.toContain('This API serves no QA identity routes')
-    expect(text).toContain('QA identity grants cannot be read from this deployment')
+    // Issue 81: one short line on the surface, the why behind its (i).
+    expect(text).toContain('QA identity grants could not be read here.')
+    const tip = helpIn(p)
+    expect(tip).toContain('QA identity grants cannot be read from this deployment')
     // Why, and the next step: the routes come with a newer swarm-api release.
-    expect(text).toMatch(/swarm-api/)
-    expect(text).toMatch(/Deploy the current release/)
+    expect(tip).toMatch(/swarm-api/)
+    expect(tip).toMatch(/Deploy the current release/)
     // Information, not a failure: no red alert.
     expect(p.querySelector('[role="alert"]')).toBeNull()
   })
@@ -95,7 +99,8 @@ describe('admin-shell-09: an API without the QA identity routes is said for a re
   it('still draws a coded 404 as the API’s own words (the control)', async () => {
     const p = await mount(unread(404, 'not_found', 'No such identity.'))
     expect(p.querySelector('[role="alert"]')?.textContent).toContain('No such identity.')
-    expect(visible(p)).not.toContain('cannot be read from this deployment')
+    expect(p.textContent).not.toContain('cannot be read from this deployment')
+    expect(p.textContent).not.toContain('could not be read here')
   })
 })
 

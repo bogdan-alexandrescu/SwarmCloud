@@ -213,7 +213,6 @@ submission would reopen every one of those checks. The mergewake shape
    "fix_round":    {"runner_profile": "claude-code", "model_class": "opus",
                     "prompt": "optional; the fix step's prompt when absent"},
    "re_review":    {"runner_profile": "claude-code-browser", "model_class": "fable",
-                    "runtime": "browser_if_ui",
                     "prompt": "optional; the review step's prompt when absent"}
  }}
 ```
@@ -281,6 +280,8 @@ frozen contract needs a new field for the block itself.
   and `re-review:2`, and so on, until `re-review:<max_rounds>`.
 * **Under `direct-pr`**, the review judged the implementer's head. The loop's
   first action is `review-fix:1`, then `re-review:1`, and so on.
+* **A first review blocked only by the rendered-review gate** starts
+  `re-review:1` under either strategy (§4.4, issue 393). It is round 1.
 * **If the first review says MERGE**, the loop runs nothing.
   * Under `integrate`, the gated fix publishes and the loop ends SUCCEEDED
     with `rounds: 0`, at no pod cost.
@@ -360,10 +361,24 @@ round kind.
   * The worker's rendered-review rule reads that list as the patch headers it
     would otherwise read (`agent_worker.verdict`, `UI_PATH_PREFIXES`,
     lane FL-WORKER).
-  * `runtime: browser_if_ui` resolves from the same list at submission.
+    The worker reads it at the top of the dispatch block, so swarm-api signs
+    it there as well as in `fix_loop_round`. Until issue 393 it was signed
+    only inside the record, where the gate does not look, and no re-review
+    was gated.
+  * The re-review's profile resolves from the same list at submission, by
+    `browser_if_ui`'s rule. A round is a lone step, so the scheduler has no
+    parent to resolve it from. A list naming a UI path (test files are not
+    UI) raises the re-review to `claude-code-browser`, the platform's
+    constant, whatever profile the first review ran on; any other list keeps
+    the review's. A signed `re_review.runner_profile` wins, except on a round
+    that answers "not reviewed rendered" (§4.4): a profile that cannot render
+    cannot answer it.
 
   A list that cannot be built resolves to the browser and to UI-gated, as
-  today's failed read does.
+  today's failed read does. So does a list that names no UI path when a
+  verdict of the loop named the gate's finding. The rounds' signed
+  `must_render` carries that forward, so the finding is only ever answered by
+  a review that did render.
 
 **What drives it.** The loop needs no clock. It needs to know when a round's
 agent ended. So it hangs off the `task_finished` wake that swarm-api already
@@ -407,13 +422,17 @@ After each `re-review:k` ends, swarm-api reads its `verdict.json`:
 | what the loop reads | what it does | loop ends as |
 |---|---|---|
 | `review` says MERGE (round 0) | nothing more | SUCCEEDED, `rounds: 0` |
+| `review` (round 0) was skipped by the worker for nothing to change (`result_summary.skipped`: the build ended `no_change`, so no agent ran and no `verdict.json` exists) and no head was pushed | nothing to review and nothing to fix: no round, and no verdict recorded -- it is never read as MERGE. The merge step behind the loop is then promoted, and the worker skips it in turn, because the pull request it would merge was never pushed (issue 392) | SUCCEEDED, `phase: "nothing_to_change"`, `rounds: 0`, `verdict`, `final_review` and `final_head` null |
 | `re-review:k` says MERGE | records `final_review: <task>`, `final_head` | **SUCCEEDED** |
-| `re-review:k` says NOT_YET, k < `max_rounds` | claims and submits `review-fix:k+1` | stays parked |
-| `re-review:k` says NOT_YET, k = `max_rounds` | records the last verdict | **PARKED `HUMAN_REQUIRED`, `park_phase: "fix_loop_exhausted"`** (§4.5) |
+| `review` (round 0) says NOT_YET and every blocking finding is the rendered-review gate's (its text starts "not reviewed rendered", written by the gate or by the review) | submits `re-review:1` on `claude-code-browser` at the head the review judged (under `integrate`, the declared fix's, which rightly changed nothing), instead of a fix: no code change answers it (issue 393). It is round 1 of `max_rounds` | stays parked |
+| `re-review:k` says NOT_YET only for the gate's finding, k < `max_rounds`, and it was not itself answering one | submits `re-review:k+1` on `claude-code-browser` at the same head, instead of a fix | stays parked |
+| `re-review:k` was answering the gate's finding (its signed `answers_not_rendered`) and is blocked only by it again | it could not render either, and another look at the same head would only repeat it | PARKED `HUMAN_REQUIRED`, `park_phase: "fix_changed_nothing"`, `code: "not_rendered"` |
+| `re-review:k` says NOT_YET with any other finding, k < `max_rounds` | claims and submits `review-fix:k+1` | stays parked |
+| `re-review:k` says NOT_YET, k = `max_rounds` | records the last verdict; `code: "not_rendered"` in the park's detail when only the gate's finding blocks it | **PARKED `HUMAN_REQUIRED`, `park_phase: "fix_loop_exhausted"`** (§4.5) |
 | `review-fix:k` SUCCEEDED and pushed a head ≠ `start_head` | submits `re-review:k` at that head | stays parked |
 | `review-fix:k` SUCCEEDED and pushed nothing (head = `start_head`) | no re-review: the head the last NOT_YET judged is unchanged, so a review agent would only repeat it | PARKED `HUMAN_REQUIRED`, `park_phase: "fix_changed_nothing"` |
 | a round FAILED, was CANCELLED or DEAD_LETTERED (its own retries spent) | records it | PARKED `HUMAN_REQUIRED`, `park_phase: "round_failed"`, naming the agent and its end cause |
-| `review` (round 0) or `re-review:k` SUCCEEDED but its verdict does not read (not JSON, no or bad `verdict`, over 256 KiB, missing, a mask in a key the loop reads, a spec or round record that does not verify) | never read as MERGE (it would merge unreviewed work) and never as NOT_YET (it would fix findings that are not there), the §2.1 rule. The park's detail carries `code` (the read's decline code such as `credential`, `verdict_unreadable` or `verdict_absent`; else `spec_unverified`, `round_unsigned` or `no_head`), `keys` when a key refused the file (never a value), `error` as a sentence, and `head`, the head that was judged, when one exists. At round 0 that is the root's pushed head | PARKED `HUMAN_REQUIRED`, `park_phase: "review_unreadable"` |
+| `review` (round 0) or `re-review:k` SUCCEEDED but its verdict does not read (a review that ran and wrote none included, and a skipped first review while a head WAS pushed, since that head was never judged; not JSON, no or bad `verdict`, over 256 KiB, missing, a mask in a key the loop reads, a spec or round record that does not verify) | never read as MERGE (it would merge unreviewed work) and never as NOT_YET (it would fix findings that are not there), the §2.1 rule. The park's detail carries `code` (the read's decline code such as `credential`, `verdict_unreadable` or `verdict_absent`; else `spec_unverified`, `round_unsigned` or `no_head`), `keys` when a key refused the file (never a value), `error` as a sentence, and `head`, the head that was judged, when one exists. At round 0 that is the root's pushed head | PARKED `HUMAN_REQUIRED`, `park_phase: "review_unreadable"` |
 | the round's submission was refused (submitter left the tenant, or a 422) | recorded on the round as `error` | PARKED `HUMAN_REQUIRED`, `park_phase: "round_refused"` |
 | the pull request was merged or closed outside the workflow | read once per wake, the `_ended_outside` idea | SUCCEEDED ("merged outside") or CANCELLED |
 | the pull request's head moved to a commit no round pushed (a person pushed) | the next round starts from the new head, and the re-review judges it | as above |
@@ -438,7 +457,8 @@ execution. A person may then do one of three things:
    * It records who and when, in a transaction guarded on the park.
    * Then the decision table runs again. After `fix_changed_nothing` or
      `round_failed`, the added round is a fix. After `review_unreadable`, it
-     is a re-review of the same head. At round 0 (the first review did not
+     is a re-review of the same head, and so it is after any park whose
+     `code` is `not_rendered`: on the browser, since no fix answers that. At round 0 (the first review did not
      read) that head is the root's pushed head (§4.3). The park carries it,
      and add-round reads it again from the tasks the signed block names.
      So the added round is `re-review:1` on that head. Before issue 338 a

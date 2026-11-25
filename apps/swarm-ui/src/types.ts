@@ -8,6 +8,22 @@
 import type { Task as ApiTask } from './generated/api-types'
 import { currentZone, formatClock, formatDateTime, isToday } from './timezone'
 
+/**
+ * A schedule's own "Diagrams in plans" (`schedules.SchedulePatch.plan_diagrams`,
+ * docs/design/plans-pipeline.md §6.4). `inherit` follows the workspace, which
+ * follows the platform.
+ */
+export type PlanDiagrams = 'inherit' | 'on' | 'off'
+
+/**
+ * `plan_diagrams` on a schedule, as `GET /v1/schedules/{id}` serves it and its
+ * `PATCH` takes it. Absent on a stored schedule means `inherit`; absent from a
+ * PATCH means unchanged, so going back to the workspace's sends `inherit`.
+ */
+export interface SchedulePlanDiagrams {
+  plan_diagrams?: PlanDiagrams
+}
+
 /** `pool_to_api` in codec.py. */
 export interface Pool {
   name: string
@@ -1108,8 +1124,10 @@ export function consequenceOf(
           pullRequests: 0,
           atMost: false,
           pushes: false,
-          headline: 'No pull request. Nothing is pushed.',
+          // ONE SENTENCE ON THE OPTION (issue 81): it was two, a long run.
+          headline: 'Nothing is pushed; no pull request.',
           detail:
+            'No pull request. Nothing is pushed. ' +
             `Each of the ${plural(n, 'step')} harvests its patch into the agent's own GCS ` +
             'prefix and the run ends there. Nothing reaches the repository, so this is ' +
             'the only strategy that works with a read-only token.',
@@ -1126,8 +1144,11 @@ export function consequenceOf(
             pullRequests: 1,
             atMost: true,
             pushes: true,
-            headline: 'One pull request, from this agent’s branch — none if it changed nothing.',
+            // UNDER NINE WORDS (issue 81); "none if it changed nothing" is the
+            // detail, which the option's (i) carries.
+            headline: 'One pull request, from this agent’s branch.',
             detail:
+              'One pull request, from this agent’s branch — none if it changed nothing. ' +
               'The agent pushes its own branch and opens one pull request from it. An agent that ' +
               'changed nothing opens none, which is why this is a ceiling and not a count.',
           },
