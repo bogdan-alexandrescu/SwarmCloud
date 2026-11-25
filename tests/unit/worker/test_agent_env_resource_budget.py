@@ -11,8 +11,9 @@ What holds now, one test per property:
 
 1. the agent CLI's env carries SWARM_MEMORY_LIMIT_BYTES, the cgroup's
    `memory.max`, and PYTEST_XDIST_AUTO_NUM_WORKERS, max(1, min(floor(cpu),
-   (limit - 2 GiB) // 1 GiB)) -- 6 for 8 GiB/6 cpu, 2 for 5 GiB/2 cpu, 3 for
-   5 GiB/6 cpu;
+   (limit - 2 GiB) // 2 GiB)) -- 3 for 8 GiB/6 cpu, 1 for 5 GiB/2 or 6 cpu,
+   6 for 16 GiB/6 cpu (issue 422: 6 workers OOM-killed an 8 GiB container,
+   so 8 GiB gets at most 4, and the prompt's `-n` ceiling is the env's count);
 2. its stdin prompt carries one line naming the budget in GiB and the worker
    count, telling it to stop dev servers before tsc or the tests and never to
    set --max-old-space-size above the budget;
