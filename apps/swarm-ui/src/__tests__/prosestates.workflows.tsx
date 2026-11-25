@@ -24,6 +24,7 @@ import {
   mountStepCard,
   mountWorkflowFacts,
 } from './prosestates.workflows.mounts'
+import { mountRunApproveRefused, mountRunChecks, mountRunLongSummary, mountRunOverlaps, mountRunRejected } from './prosestates.workflows.runs'
 import { screenLoaded } from './screenLoaded'
 
 /** The fixture workflow of five checks and a synthesis, one failed. */
@@ -375,6 +376,61 @@ export const WORKFLOWS: readonly ProseState[] = [
       clickText('[role="radio"].qc-pick', 'per workflow')
       await drawn()
       clickText('button', 'Answer')
+    },
+  },
+  {
+    key: 'run/summary-whole',
+    group: 'workflows',
+    files: ['Runs.tsx'],
+    shows: '.rn-summary:has(.rn-more-btn[aria-expanded="true"])',
+    // The plan's own summary, as the planner wrote it.
+    data: ['Sum each step', 'The sum is taken in the route', 'The UI then draws the column', 'A workflow with no priced step'],
+    mount: mountRunLongSummary,
+    act: () => click('.rn-more-btn'),
+  },
+  {
+    key: 'run/overlap-open',
+    group: 'workflows',
+    files: ['Runs.tsx'],
+    shows: 'details.rn-overlap[open]',
+    // The planner's own note on the overlap.
+    data: ['Already edits routes/workflows.py, so the two changes will conflict unless this plan waits for it.'],
+    mount: mountRunOverlaps,
+    act: () => openDetails('details.rn-overlap'),
+  },
+  {
+    key: 'run/check-list',
+    group: 'workflows',
+    files: ['Runs.tsx'],
+    shows: 'details.rn-check-list[open]',
+    mount: mountRunChecks,
+    act: () => openDetails('details.rn-check-list'),
+  },
+  {
+    key: 'run/approve-refused',
+    group: 'workflows',
+    files: ['Runs.tsx'],
+    shows: '.rn-wait .state.failed',
+    data: ['the store refused the approval'],
+    lines: ['The change was not confirmed'],
+    moved: ['The platform did not confirm this change. Read the page again to see whether it was made before sending it again.'],
+    mount: mountRunApproveRefused,
+    act: () => clickText('.rn-actions button', 'Approve and run'),
+  },
+  {
+    key: 'run/rejected',
+    group: 'workflows',
+    files: ['Runs.tsx'],
+    shows: '.rn-decided',
+    moved: ['The run is Rejected now; nothing ran.'],
+    mount: mountRunRejected,
+    act: async () => {
+      clickText('.rn-actions button', 'Reject')
+      await drawn()
+      const reason = document.querySelector<HTMLTextAreaElement>('.rn-reject textarea')
+      if (reason === null) throw new Error('no reason field in the reject form')
+      fireEvent.change(reason, { target: { value: 'Out of scope' } })
+      clickText('.rn-reject button', 'Reject this plan')
     },
   },
 ]
