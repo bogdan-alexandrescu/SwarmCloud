@@ -12,6 +12,12 @@ its guard: it holds the whole tree with no baseline, so a read anywhere
 under tests/ or in a JS/TS test is red (the rule:
 docs/ci.md#a-test-reads-only-its-own-tree).
 
+THE ONE EXCEPTION is SECURITY_GUARDS, below: a short named list of the tests
+that hold CI security decisions, kept by the owner's decision of 2026-11-25.
+A listed file may read CI YAML; every other file is held exactly as before.
+A listed path that no longer exists, or that no longer reads anything out of
+its tree, is red too, so the list cannot outlive what it excuses.
+
 AN OUT-OF-TREE READ is an expression in a .py file under tests/ (test
 modules, conftest.py, helper modules) that builds a path of THIS repository,
 anchored on the repository root, to
@@ -82,6 +88,35 @@ import re
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
+
+
+# ---------------------------------------------------------------------------
+# The named exceptions. THE OWNER'S DECISION OF 2026-11-25: the tests that
+# hold CI SECURITY decisions stay, as this list; every other docs or CI pin is
+# deleted (issue 71). One clause per file: the security decision it holds.
+
+SECURITY_GUARDS: dict[str, str] = {
+    "tests/unit/scripts/test_fork_prs_off_self_hosted.py":
+        "a fork's pull request never reaches the self-hosted runners or their secrets",
+    "tests/unit/scripts/test_release_prod_gate.py":
+        "the release reaches production only through its approval gate",
+    "tests/unit/scripts/test_release_dev_iam_gate.py":
+        "the release's IAM apply waits for its own gate",
+    "tests/unit/scripts/test_release_id_token_scope.py":
+        "the release's Google identity token is held to the jobs that authenticate",
+    "tests/unit/scripts/test_repo_secrets_environment.py":
+        "the repository's secrets sit behind their environment",
+    "tests/unit/scripts/test_accept_tenant_isolation_job.py":
+        "the tenant-isolation acceptance job runs and gates as decided",
+    "tests/unit/scripts/test_trivy_new_findings.py":
+        "the security scan gates on new findings, uploads its report, keeps no "
+        "checkout credential, fetches the merge base's history and scans the branch a PR targets",
+    "tests/unit/scripts/test_ci_early.py":
+        "the scan gate step's environment (its tests of exception 7 only)",
+    "tests/unit/scripts/test_release_reuses_ci_images.py":
+        "the release ships only images CI built and scans them before the approval "
+        "(the release guards' helper, a release gate itself)",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -1180,7 +1215,18 @@ def main(argv: list[str] | None = None) -> int:
     files = sorted(f for f in args.files if wanted(f)) if args.files else test_files(root)
     scanner = Scanner(root)
     bad = 0
+    for rel in sorted(SECURITY_GUARDS):
+        # The list cannot rot: a listed guard that is gone or reads nothing
+        # out of its tree is red, whichever files this run was handed.
+        if not (root / rel).is_file():
+            bad += 1
+            print(f"{rel}: listed in SECURITY_GUARDS but no such file; drop it from the list")
+        elif not scanner.scan(rel):
+            bad += 1
+            print(f"{rel}: listed in SECURITY_GUARDS but reads nothing out of its tree; drop it from the list")
     for rel in files:
+        if rel in SECURITY_GUARDS:
+            continue
         found = scanner.scan(rel) if rel.endswith(".py") else js_scan(root, rel)
         if not found:
             continue

@@ -11,8 +11,38 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from .test_release_reuses_ci_images import _code
+
 REPO = Path(__file__).resolve().parents[3]
 WIF_TF = REPO / "terraform" / "bootstrap" / "wif.tf"
+
+# For test_release_id_token_scope.py, a CI security guard the owner kept on
+# 2026-11-25 (scripts/check_test_reads.py, SECURITY_GUARDS): what an "auth
+# step" is. Nothing here reads a workflow; the guard hands in the job.
+
+# The runner variables an OIDC token is requested with. A step that reads
+# either can mint the job's identity token without any action.
+ID_TOKEN_REQUEST_VARS = ("ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+
+
+def _reads_id_token_request(step: dict) -> bool:
+    """A step whose script, env or inputs name the OIDC request variables.
+
+    Comment lines in `run:` are dropped: a comment explaining the variable does
+    not read it.
+    """
+    text = "\n".join([
+        _code(str(step.get("run") or "")),
+        *(str(v) for v in (step.get("env") or {}).values()),
+        *(str(v) for v in (step.get("with") or {}).values()),
+    ])
+    return any(var in text for var in ID_TOKEN_REQUEST_VARS)
+
+
+def _auth_steps(job: dict):
+    for step in job.get("steps") or []:
+        if str(step.get("uses", "")).startswith("google-github-actions/auth@") or _reads_id_token_request(step):
+            yield step
 
 
 def _deployer_workflows_in_terraform() -> set[str]:

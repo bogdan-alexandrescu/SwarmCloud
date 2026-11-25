@@ -45,6 +45,37 @@ GROUPS = ("mock", "generic", "claude-code", "workflow", "browser", "live-browser
 #: variable common.sh and lib.sh set.
 ENTRY_SCRIPTS = ("run.sh", *(f"{g}.sh" for g in GROUPS), "github-cleanup.sh", "github-verify.sh", "sandbox-sync.sh", "parsers.sh")
 
+# For test_accept_tenant_isolation_job.py, a CI security guard the owner kept
+# on 2026-11-25 (scripts/check_test_reads.py, SECURITY_GUARDS): the accepting
+# jobs, each group's peak of tasks in flight, and a GitHub expression
+# evaluator. Nothing here reads a workflow.
+
+#: Each group's peak of tasks in flight at once, read from its group file on
+#: 2026-10-08 (groups/*.sh's headers); a group that grows past it should move waves.
+PEAK = {"mock": 13, "generic": 8, "workflow": 4, "claude-code": 3, "browser": 3, "live-browser": 1,
+        "git-tools": 5, "tenant-isolation": 1}
+
+ACCEPT_JOBS = ("acceptance", "acceptance-2")
+
+
+def _starts_with(a, b) -> bool:
+    # GitHub's startsWith is case-insensitive.
+    return str(a or "").lower().startswith(str(b or "").lower())
+
+
+def _gh(expression, **context) -> object:
+    """A GitHub expression with `startsWith` as well as the family
+    test_release_reuses_ci_images._evaluate reads."""
+    body = re.fullmatch(r"\s*\$\{\{(.*)\}\}\s*", str(expression), re.S)
+    text = body.group(1) if body else str(expression)
+    for name, value in context.items():
+        text = re.sub(rf"(?<![\w.]){re.escape(name)}(?![\w.])", repr(value), text)
+    text = text.replace("&&", " and ").replace("||", " or ")
+    text = re.sub(r"!(?!=)", " not ", text)
+    return eval(  # noqa: S307 -- repository file, test only
+        text, {"__builtins__": {}}, {"format": lambda t, *a: str(t).format(*a), "startsWith": _starts_with}
+    )
+
 
 # ---------------------------------------------------------------------------
 # accept.yml: it judges exactly what is deployed
