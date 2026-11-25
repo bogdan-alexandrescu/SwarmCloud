@@ -28,6 +28,7 @@ import { InfoTip } from './InfoTip'
 import { useRoleGate } from './roleGate'
 import type { PlanStepDoc, RunPlan } from './types'
 import './styles/intake.css'
+import './styles/plan-document.css'
 
 type Json = Record<string, unknown>
 
