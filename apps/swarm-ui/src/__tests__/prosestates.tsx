@@ -105,21 +105,6 @@ export type ProseState = StateCommon &
  * register them. It only shrinks; the last step deletes it.
  */
 export const PENDING: readonly string[] = [
-  // overview (Overview, Automate and Capacity)
-  'AccountHealthPage.tsx',
-  'ApprovalDecision.tsx',
-  'Holders.tsx',
-  'InterviewPage.tsx',
-  'LlmApiKeys.tsx',
-  'LlmPlans.tsx',
-  'Overview.tsx',
-  'OverviewRegions.tsx',
-  'PermissionCards.tsx',
-  'PlanDocument.tsx',
-  'PlanThread.tsx',
-  'PlatformOverTime.tsx',
-  'ScheduleDetail.tsx',
-  'Schedules.tsx',
   // config
   'ConfigSetup.tsx',
   'GitTokens.tsx',
