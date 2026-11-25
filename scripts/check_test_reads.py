@@ -13,7 +13,10 @@ under tests/ or in a JS/TS test is red (the rule:
 docs/ci.md#a-test-reads-only-its-own-tree).
 
 THE ONE EXCEPTION is SECURITY_GUARDS, below: a short named list of the tests
-that hold CI security decisions, kept by the owner's decision of 2026-11-25.
+that hold CI security decisions, kept by the owner's decision of 2026-11-25
+(and every test the issue 71 pull request deleted that holds a workflow's
+permissions, secrets, triggers, gates, redaction or supply chain, restored
+under one rule the same day).
 A listed file may read CI YAML (.github/) and nothing else: its reads of
 docs prose, a root *.md or the Makefile are reported as anywhere else; every
 other file is held exactly as before.
@@ -152,6 +155,109 @@ SECURITY_GUARDS: dict[str, str] = {
         "the deployment-values check keeps its required name and holds no credential",
     "tests/unit/scripts/test_coverage_workflow.py":
         "coverage.yml's permissions are explicit and only its report job writes",
+    "tests/unit/install/test_addons.py":
+        "the CI add-on action declares the App token inputs it mints with",
+    "tests/unit/scripts/test_acceptance_roles.py":
+        "the roles probe runs only in accept.yml's existing smoke job",
+    "tests/unit/scripts/test_build_images_incremental.py":
+        "the application workflow's incremental build keeps its permissions and its "
+        "full-build dispatch",
+    "tests/unit/scripts/test_build_images_local.py":
+        "the pull request's local image build holds read permissions, no cloud identity and "
+        "no checkout credential, and pins its actions",
+    "tests/unit/scripts/test_build_images_pr_check.py":
+        "a pull request builds without pushing or a cloud identity, and main's build and "
+        "push keep their conditions",
+    "tests/unit/scripts/test_check_action_pins.py":
+        "quick-checks runs the action-pin check",
+    "tests/unit/scripts/test_check_closing_references.py":
+        "the enable job runs the closing-reference check from the default branch and the "
+        "gate refuses on it",
+    "tests/unit/scripts/test_check_pr_dependencies.py":
+        "the enable job runs the dependency check from the default branch and the gate "
+        "fails on its finding",
+    "tests/unit/scripts/test_ci_built_images.py":
+        "main builds even when a needed check was skipped, and the release is gated on "
+        "every job ci-gate needs",
+    "tests/unit/scripts/test_ci_fix.py":
+        "the CI fixer never checks out or interpolates the pull request it fixes, and runs "
+        "only on a red run",
+    "tests/unit/scripts/test_ci_fold.py":
+        "every required check name still reports from the folded jobs, and a name keeper "
+        "reads only its own verdict",
+    "tests/unit/scripts/test_ci_once_per_head.py":
+        "every required check runs on every pull request, main keeps its push runs and no "
+        "lane head runs twice",
+    "tests/unit/scripts/test_ci_reuse.py":
+        "ci-gate runs the reuse verdict, the reuse lookup's permissions and triggers, and "
+        "the release still waits for what was not reused",
+    "tests/unit/scripts/test_ci_select.py":
+        "the selector's triggers and permissions, and the required check names the ruleset "
+        "reads",
+    "tests/unit/scripts/test_ci_tfvars_workflow.py":
+        "the state bucket is a secret and the plan reads only the fetched tfvars, never the "
+        "checkout's",
+    "tests/unit/scripts/test_ci_tool_versions.py":
+        "every setup-kubectl and setup-uv installs a pinned version",
+    "tests/unit/scripts/test_egress_rollout.py":
+        "the release rolls swarm-egress only after the relay and gates on it",
+    "tests/unit/scripts/test_fast_checks_on_lane_prs.py":
+        "the lane rule: which events run which jobs, main-only heavy jobs, and ci-gate's "
+        "judgement",
+    "tests/unit/scripts/test_flaky_quarantine.py":
+        "the gating run deselects the quarantine and cannot be skipped by it",
+    "tests/unit/scripts/test_hotfix_superseded.py":
+        "a superseded hotfix promotes, applies and deploys nothing",
+    "tests/unit/scripts/test_iam_refusal_probe.py":
+        "the IAM refusal probe's identity, token scope, by-hand trigger and always-run "
+        "revert",
+    "tests/unit/scripts/test_image_streaming.py":
+        "the image-streaming gate holds the release before anything is promoted",
+    "tests/unit/scripts/test_install_trivy.py":
+        "trivy is installed through the checksummed script, never its own installer",
+    "tests/unit/scripts/test_issue_forms.py":
+        "the hotfix label is declared and gated on",
+    "tests/unit/scripts/test_join_acceptance_probe.py":
+        "the join probe's account settings come from secrets and run only in the smoke job",
+    "tests/unit/scripts/test_merge_app_permissions_doc.py":
+        "the workflows mint the merge App token",
+    "tests/unit/scripts/test_merge_queue_workflows.py":
+        "merge-group triggers: required contexts produced once and never skipped, and "
+        "nothing that mints a cloud identity, releases or auto-merges runs there",
+    "tests/unit/scripts/test_plan_text_never_public.py":
+        "plan text is never printed beyond its summary line, teed, uploaded or left on "
+        "stderr, and the summary masks addresses",
+    "tests/unit/scripts/test_plugin_tag.py":
+        "only the tag job writes contents, on a push to main only, and the gate waits for "
+        "it",
+    "tests/unit/scripts/test_pr_image_scan.py":
+        "main fills the tool mirror first, ruff is a gated job, and the pull request scans "
+        "at the release's trivy pin",
+    "tests/unit/scripts/test_private_tfvars.py":
+        "every deploying plan passes the private values it wrote",
+    "tests/unit/scripts/test_refresh_weights_workflow.py":
+        "refresh-weights' triggers, read permissions, App key scope and credential-free "
+        "checkout",
+    "tests/unit/scripts/test_release_acceptance_job.py":
+        "acceptance's triggers, main-only and prod conditions, no environment, and the "
+        "sandbox token kept from the suite",
+    "tests/unit/scripts/test_release_held_plan_workflow.py":
+        "no condition or job output reads a secret, and the CI fixer is gated on its mapped "
+        "account",
+    "tests/unit/scripts/test_release_newest_only.py":
+        "a running release is never cancelled, and a superseded one approves and promotes "
+        "nothing",
+    "tests/unit/scripts/test_release_size_record.py":
+        "the size record writes the job summary and names no token",
+    "tests/unit/scripts/test_runner_fallback_workflow.py":
+        "the runner fallback's triggers, token scopes and which job reaches the pool",
+    "tests/unit/scripts/test_unit_shards.py":
+        "every unit-test check name still reports and gates the release",
+    "tests/unit/scripts/test_warm_jobs.py":
+        "the release warms only after verifying the digests and never fails on it",
+    "tests/unit/scripts/test_workflow_needs_result_status.py":
+        "a job reading another job's result names a status function, so it cannot be "
+        "skipped",
 }
 
 

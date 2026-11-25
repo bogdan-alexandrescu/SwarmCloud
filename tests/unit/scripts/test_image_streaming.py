@@ -1,5 +1,5 @@
-"""No runner image repeats a layer, so GKE can stream it (IMG-STREAM; owner
-request 2026-10-13).
+"""No runner image repeats a layer, so GKE can stream it, and a release refuses
+one that does (IMG-STREAM; owner request 2026-10-13).
 
 WHY. GKE Autopilot streams every eligible image, and "container images with
 duplicate layers are not supported" (GKE: Image streaming, read 2026-10-13;
@@ -38,6 +38,7 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO = Path(__file__).resolve().parents[3]
 IMAGES = REPO / "images"
@@ -45,6 +46,7 @@ BASE = IMAGES / "agent-runtime-base" / "Dockerfile"
 BROWSER = IMAGES / "agent-runtime-browser" / "Dockerfile"
 INDEXER = IMAGES / "agent-runtime-indexer" / "Dockerfile"
 LIGHTPANDA = IMAGES / "agent-runtime-lightpanda" / "Dockerfile"
+RELEASE_IMAGES = REPO / ".github" / "actions" / "release-images" / "action.yml"
 
 
 def _instructions(path: Path) -> list[str]:
@@ -122,3 +124,37 @@ def test_the_indexer_runs_its_self_tests_in_one_run():
     runs = [_runs_containing(INDEXER, c) for c in checks]
     assert all(len(r) == 1 for r in runs) and runs[0] == runs[1] == runs[2], runs
 
+
+def _steps(path: Path) -> list[dict]:
+    return yaml.safe_load(path.read_text(encoding="utf-8"))["runs"]["steps"]
+
+
+def _gate_step() -> dict:
+    found = [s for s in _steps(RELEASE_IMAGES) if "--duplicate-layers" in s.get("run", "")]
+    assert len(found) == 1, "release-images has no single step running image-sizes.sh --duplicate-layers"
+    return found[0]
+
+
+def test_the_release_refuses_a_repeated_layer_before_anything_is_promoted():
+    steps = _steps(RELEASE_IMAGES)
+    gate = _gate_step()
+    assert "./scripts/image-sizes.sh --duplicate-layers" in gate["run"]
+    # The record the promotion promotes: the scanned one, every image in it.
+    assert '"build/images-${ENVIRONMENT}.json"' in gate["run"]
+    names = [s.get("name", "") for s in steps]
+    scan = next(i for i, s in enumerate(steps) if "--scan-only" in s.get("run", ""))
+    hand = names.index("hand the scanned record to the promotion")
+    # After the record is scanned and BEFORE it is handed on: a record with a
+    # repeated layer never reaches the promotion, so no channel tag moves.
+    assert scan < steps.index(gate) < hand
+
+
+def test_the_gate_holds_the_release_and_is_bounded():
+    gate = _gate_step()
+    # A refusal must fail the job, unlike the size record after the promotion.
+    assert not gate.get("continue-on-error"), gate
+    assert not gate.get("if"), "the gate runs whenever the scan ran"
+    # A composite step has no timeout-minutes.
+    assert gate["run"].lstrip().startswith("timeout ")
+    for needle in ("print-access-token", "ACCESS_TOKEN", "Bearer"):
+        assert needle not in gate["run"] + str(gate.get("env", {}))

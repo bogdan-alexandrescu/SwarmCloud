@@ -4987,7 +4987,14 @@ credential and compares with the right base, that a lane push never releases,
 builds or plans; and, added the same day on the security review's
 recommendation, the hotfix lane's gates and the merge workflows' tests of who
 may merge or release, of least-privilege tokens and of attacker-controlled
-text reaching a shell only through `env` -- has no other place a pull
+text reaching a shell only through `env`; and, under one rule applied to every
+test the issue 71 pull request deleted, each that asserts a workflow's
+permissions or token scope, its secrets, environments or identities, who or
+what can start it, that it never runs a pull request's code holding a
+credential, that no expression reaches a shell but through `env`, that a
+security step cannot be cancelled or skipped, that a required job cannot leave
+the gate, that private text is never printed or uploaded, or its supply chain
+(installers, checksums, pinned actions) -- has no other place a pull
 request would see it broken. They are a short **named** list,
 `SECURITY_GUARDS` in `scripts/check_test_reads.py`, one clause per file saying
 which decision it holds; every other test is refused exactly as before. A
@@ -5015,6 +5022,46 @@ tree, is red. A new entry is the owner's decision, not a lane's. The files:
 * `tests/unit/scripts/test_ci_gate.py`
 * `tests/unit/scripts/test_deployment_values_workflow.py`
 * `tests/unit/scripts/test_coverage_workflow.py`
+* `tests/unit/install/test_addons.py`
+* `tests/unit/scripts/test_acceptance_roles.py`
+* `tests/unit/scripts/test_build_images_incremental.py`
+* `tests/unit/scripts/test_build_images_local.py`
+* `tests/unit/scripts/test_build_images_pr_check.py`
+* `tests/unit/scripts/test_check_action_pins.py`
+* `tests/unit/scripts/test_check_closing_references.py`
+* `tests/unit/scripts/test_check_pr_dependencies.py`
+* `tests/unit/scripts/test_ci_built_images.py`
+* `tests/unit/scripts/test_ci_fix.py`
+* `tests/unit/scripts/test_ci_fold.py`
+* `tests/unit/scripts/test_ci_once_per_head.py`
+* `tests/unit/scripts/test_ci_reuse.py`
+* `tests/unit/scripts/test_ci_select.py`
+* `tests/unit/scripts/test_ci_tfvars_workflow.py`
+* `tests/unit/scripts/test_ci_tool_versions.py`
+* `tests/unit/scripts/test_egress_rollout.py`
+* `tests/unit/scripts/test_fast_checks_on_lane_prs.py`
+* `tests/unit/scripts/test_flaky_quarantine.py`
+* `tests/unit/scripts/test_hotfix_superseded.py`
+* `tests/unit/scripts/test_iam_refusal_probe.py`
+* `tests/unit/scripts/test_image_streaming.py`
+* `tests/unit/scripts/test_install_trivy.py`
+* `tests/unit/scripts/test_issue_forms.py`
+* `tests/unit/scripts/test_join_acceptance_probe.py`
+* `tests/unit/scripts/test_merge_app_permissions_doc.py`
+* `tests/unit/scripts/test_merge_queue_workflows.py`
+* `tests/unit/scripts/test_plan_text_never_public.py`
+* `tests/unit/scripts/test_plugin_tag.py`
+* `tests/unit/scripts/test_pr_image_scan.py`
+* `tests/unit/scripts/test_private_tfvars.py`
+* `tests/unit/scripts/test_refresh_weights_workflow.py`
+* `tests/unit/scripts/test_release_acceptance_job.py`
+* `tests/unit/scripts/test_release_held_plan_workflow.py`
+* `tests/unit/scripts/test_release_newest_only.py`
+* `tests/unit/scripts/test_release_size_record.py`
+* `tests/unit/scripts/test_runner_fallback_workflow.py`
+* `tests/unit/scripts/test_unit_shards.py`
+* `tests/unit/scripts/test_warm_jobs.py`
+* `tests/unit/scripts/test_workflow_needs_result_status.py`
 
 **A value that really crosses trees is published by its owner as generated
 JSON.** The one such value here is the shell of the workflow steps that are

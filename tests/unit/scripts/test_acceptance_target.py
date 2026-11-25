@@ -745,6 +745,24 @@ def test_the_release_sweeps_the_sandbox_with_the_sandbox_token_not_the_github_to
     assert "github.token" not in str(sweep), "the job's own token reaches only the public repository"
 
 
+def test_the_release_syncs_the_fixtures_into_the_sandbox_before_the_suite():
+    jobs = _jobs()
+    (sync,) = _steps_running("sandbox-sync.sh")
+    env = sync.get("env", {})
+    assert "secrets.SWARM_SANDBOX_GITHUB_TOKEN" in str(env.get("SWARM_ACCEPTANCE_GITHUB_TOKEN", ""))
+    syncing = [j for j, job in jobs.items() if sync in (job.get("steps") or [])]
+    suites = [j for j, job in jobs.items() if any("verify-remote.sh \"acceptance/" in str(s.get("run", "")) for s in job.get("steps") or [])]
+    assert suites, "no job runs the suite"
+    # The scheduled live-browser job (off the red path since 2026-10-14) does
+    # not sync: it runs beside, not after, a post-release run, and its task
+    # clones the fixtures the last post-release run synced from what dev runs.
+    # Two writers would race on the sandbox's one branch.
+    assert "live-browser" in suites, "the scheduled live-browser job runs the suite"
+    for job_id in [j for j in suites if j != "live-browser"]:
+        needs = jobs[job_id].get("needs") or []
+        assert syncing[0] in needs, f"{job_id} can start before the fixtures are on the sandbox"
+
+
 def test_the_acceptance_job_cannot_write_to_the_public_repository():
     for job_id, job in _jobs().items():
         perms = job.get("permissions", {})

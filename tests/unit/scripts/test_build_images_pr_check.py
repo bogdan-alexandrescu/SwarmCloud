@@ -81,6 +81,51 @@ ALL = PYTHON_SERVICES | WORKER | {"swarm-ui", "swarm-verify", "swarm-live", "swa
                                   "swarm-plugin-bundler", "workspace-apply"}
 
 
+WORKFLOW = REPO / ".github" / "workflows" / "application.yml"
+
+
+def _pr_job() -> tuple[str, dict]:
+    hits = [
+        (job_id, job)
+        for job_id, job in _jobs().items()
+        if any("--build-only" in str(s.get("run", "")) for s in job.get("steps") or [])
+    ]
+    assert len(hits) == 1, f"expected one job running build-images.sh --build-only, found {hits}"
+    return hits[0]
+
+
+LANE_SKIP = ("!(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') "
+             "&& github.event.pull_request.head.repo.full_name == github.repository)")
+
+
+def _balanced(text: str) -> bool:
+    depth = 0
+    for char in re.sub(r"'[^']*'", "", text):
+        depth += {"(": 1, ")": -1}.get(char, 0)
+        if depth < 0:
+            return False
+    return depth == 0
+
+
+def without_lane_clause(condition: object) -> str:
+    """A job's `if:` before the lane clause every job ends with
+    (test_fast_checks_on_lane_prs.py), `${{ }}` and all. Fails when the clause is missing."""
+    text = str(condition or "").strip()
+    inner = text.removeprefix("${{").removesuffix("}}").strip()
+    if inner == LANE_SKIP:
+        before = ""
+    else:
+        assert inner.endswith(" && " + LANE_SKIP), inner
+        before = inner[: -len(" && " + LANE_SKIP)]
+        if before.startswith("(") and before.endswith(")") and _balanced(before[1:-1]):
+            before = before[1:-1]
+    return "${{ " + before + " }}" if text.startswith("${{") and before else before
+
+
+def _jobs() -> dict:
+    return yaml.safe_load(WORKFLOW.read_text())["jobs"]
+
+
 def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
@@ -547,3 +592,40 @@ def test_a_build_still_needs_a_project(tmp_path):
     assert proc.returncode != 0
     assert "PROJECT_ID is not set" in proc.stderr, proc.stderr
 
+
+def test_a_pull_request_job_maps_the_change_and_builds_without_pushing():
+    job_id, job = _pr_job()
+    assert "pull_request" in str(job.get("if", "")), job.get("if")
+    runs = "\n".join(str(s.get("run", "")) for s in job["steps"])
+    assert "build-images.sh --affected-by" in runs, runs
+    # Three dots: what the pull request merges, not what main gained since.
+    assert "...${HEAD_SHA}" in runs, runs
+    for step in job["steps"]:
+        assert "upload-artifact" not in str(step.get("uses", "")), (
+            f"{job_id} records a build no release may promote"
+        )
+        assert "GCP_DEPLOY_SA" not in json.dumps(step), (
+            f"{job_id} authenticates as the deployer on a pull request: {step}"
+        )
+    # The build and its identity only when something was mapped.
+    gated = [s for s in job["steps"] if "--build-only" in str(s.get("run", ""))
+             or str(s.get("uses", "")).startswith("google-github-actions/")]
+    assert gated and all("steps." in str(s.get("if", "")) for s in gated), gated
+
+
+def test_mains_build_and_push_is_unchanged():
+    build = _jobs()["build"]
+    # ...and not on a merge queue entry, whose ref the pool rejects as it
+    # rejects a pull request's (test_merge_queue_workflows.py).
+    # (Then the lane clause every job ends with, test_fast_checks_on_lane_prs.py.)
+    assert without_lane_clause(build["if"]) == ("${{ !cancelled() && !failure() && github.event_name != 'pull_request' && github.event_name != 'merge_group' "
+        # A lane push (`swarm/**`) runs the tests but never builds (LANE CI-EARLY, test_ci_early.py).
+        "&& github.ref == 'refs/heads/main' || !cancelled() && !failure() && github.event_name == 'workflow_dispatch' }}")
+    runs = [str(s.get("run", "")) for s in build["steps"] if s.get("run")]
+    # Main builds and pushes: incrementally since observer proposal H
+    # (test_build_images_incremental.py), never without pushing.
+    builds = [r for r in runs if "./scripts/build-images.sh" in r]
+    assert len(builds) == 1, runs
+    assert "./scripts/build-images.sh --incremental" in builds[0], builds[0]
+    assert not re.search(r"--(build-only|local)\b", builds[0]), builds[0]
+    assert "build-not-run" not in _jobs(), "the 'not built' notice outlived the pull-request build"

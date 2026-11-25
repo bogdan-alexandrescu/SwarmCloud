@@ -9,16 +9,165 @@ October one head's checks took 1.5 to 4 hours behind 23 to 28 queued merges
 although no job ran over about 20 minutes. The owner chose to run CI once per
 head: on the pull request.
 
-What this holds: the merge step and swarm-api's check reading decide a head
-that carries only pull_request runs (they never required a push run). The
-pins that read the workflow YAML and docs/ci.md (one event per lane head,
-main's push runs, every required check on every pull request) were deleted
-by issue 71.
+What this holds, reading the workflow YAML (the trigger decisions the owner
+kept on 2026-11-25, issue 71): no workflow a lane branch's pull request
+triggers is also triggered by a push to that lane branch; `main` keeps its own
+push runs; every required check is a job of a workflow that runs on every pull
+request with no path filter and on `synchronize`. And: the merge step and
+swarm-api's check reading decide a head that carries only pull_request runs
+(they never required a push run).
 """
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
+import yaml
+
+REPO = Path(__file__).resolve().parents[3]
+WORKFLOWS = REPO / ".github" / "workflows"
+#: The platform's branches start `swarm/` (agent_worker publishes
+#: `swarm/<task id>`); both shapes a lane head takes.
+LANE_REFS = ("swarm/task_0123456789abcdef0123", "swarm/task_0123456789abcdef0123-fix")
+#: Workflows CI-EARLY gave a lane push; each must keep main's.
+MAIN_PUSH_WORKFLOWS = ("application.yml", "security.yml", "terraform.yml")
+
+
+def _workflows() -> list[Path]:
+    found = sorted([*WORKFLOWS.glob("*.yml"), *WORKFLOWS.glob("*.yaml")])
+    assert len(found) >= 10, found  # the sweep ran over the real directory
+    return found
+
+
+def _on(path: Path) -> dict:
+    data = yaml.safe_load(path.read_text())
+    # PyYAML reads the bare key `on` as True.
+    on = data.get("on", data.get(True))
+    if isinstance(on, str):
+        return {on: None}
+    if isinstance(on, list):
+        return {event: None for event in on}
+    assert isinstance(on, dict), (path.name, on)
+    return on
+
+
+def _glob(pattern: str) -> re.Pattern[str]:
+    """GitHub's branch filter glob: `**` any characters, `*` any but `/`,
+    `?` one character (docs.github.com, filter pattern cheat sheet)."""
+    out, i = [], 0
+    while i < len(pattern):
+        if pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif pattern[i] == "?":
+            out.append(".")
+            i += 1
+        else:
+            out.append(re.escape(pattern[i]))
+            i += 1
+    return re.compile("".join(out) + r"\Z")
+
+
+def _branch_triggers(trigger: dict | None, branch: str) -> bool:
+    """Whether a push/pull_request trigger block fires for `branch`
+    (for pull_request, the base branch; for push, the pushed branch)."""
+    trigger = trigger or {}
+    if "branches" in trigger:
+        included = False
+        for pattern in trigger["branches"]:
+            if pattern.startswith("!"):
+                if _glob(pattern[1:]).match(branch):
+                    included = False
+            elif _glob(pattern).match(branch):
+                included = True
+        return included
+    if "branches-ignore" in trigger:
+        return not any(_glob(p).match(branch) for p in trigger["branches-ignore"])
+    return True
+
+
+@pytest.mark.parametrize("lane", LANE_REFS)
+def test_no_lane_head_runs_a_workflow_on_both_push_and_pull_request(lane):
+    """A lane head's pull request targets main; a workflow that runs on that
+    pull request must not also run on the push of the lane branch, or every
+    check it holds runs twice at the same head. MUTATION: keep `swarm/**` in
+    any workflow's push branches (CI-EARLY's triggers)."""
+    visited, twice = 0, []
+    for path in _workflows():
+        visited += 1
+        on = _on(path)
+        if "pull_request" not in on or not _branch_triggers(on["pull_request"], "main"):
+            continue
+        if "push" in on and _branch_triggers(on["push"], lane):
+            twice.append(path.name)
+    assert visited >= 10, visited
+    assert twice == [], f"run on both push and pull_request at a lane head: {twice}"
+
+
+@pytest.mark.parametrize("name", MAIN_PUSH_WORKFLOWS)
+def test_main_keeps_its_own_push_runs(name):
+    """Main's push run builds the images, records the tested tree and starts
+    the release; only the lane branches lose theirs. MUTATION: drop the push
+    trigger, or drop `main` from it."""
+    push = _on(WORKFLOWS / name).get("push") or {}
+    assert push.get("branches") == ["main"], push
+    assert "paths" not in push and "paths-ignore" not in push, push
+
+
+#: The `required_status_checks` contexts of the `main-protection` ruleset
+#: (the contexts the owner requires; each is a job name in a workflow here).
+REQUIRED_CONTEXTS = (
+    "secret scan",
+    "trivy (repo)",
+    "checkov (terraform + kubernetes)",
+    "platform policy assertions",
+    "deployment-values",
+    "ci-gate",
+)
+
+
+def _required_contexts() -> list[str]:
+    assert "ci-gate" in REQUIRED_CONTEXTS and len(REQUIRED_CONTEXTS) >= 5, REQUIRED_CONTEXTS
+    return list(REQUIRED_CONTEXTS)
+
+
+def _jobs_by_name() -> dict[str, list[str]]:
+    named: dict[str, list[str]] = {}
+    for path in _workflows():
+        jobs = (yaml.safe_load(path.read_text()) or {}).get("jobs") or {}
+        for job_id, job in jobs.items():
+            named.setdefault(str(job.get("name", job_id)), []).append(path.name)
+    return named
+
+
+def test_every_required_check_is_produced_on_every_pull_request():
+    """Each required check is a job of a workflow that runs on every pull
+    request to main with no path filter -- GitHub holds a required check whose
+    workflow was filtered out as pending forever -- and on `synchronize`, so
+    the up-to-date rule's re-test after the base moves still reports.
+    MUTATION: give security.yml's pull_request a `paths:` list, or narrow its
+    `types:` to `[opened]`."""
+    named = _jobs_by_name()
+    contexts = _required_contexts()
+    checked = 0
+    for context in contexts:
+        files = named.get(context)
+        assert files, f"no workflow job is named {context!r}"
+        (owner,) = files
+        on = _on(WORKFLOWS / owner)
+        assert "pull_request" in on, (context, owner)
+        pull_request = on["pull_request"] or {}
+        assert _branch_triggers(pull_request, "main"), (context, pull_request)
+        assert "paths" not in pull_request and "paths-ignore" not in pull_request, (context, pull_request)
+        types = pull_request.get("types")
+        assert types is None or {"opened", "synchronize", "reopened"} <= set(types), (context, types)
+        checked += 1
+    assert checked == len(contexts) >= 5, (checked, contexts)
 
 
 def _run(run_id: int, conclusion: str | None, status: str = "completed") -> dict:

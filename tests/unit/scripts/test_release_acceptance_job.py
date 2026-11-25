@@ -35,6 +35,7 @@ import pytest
 
 from .ci_run_blocks import run_block
 from .test_hotfix_release import _order, world  # noqa: F401 -- `world` is a fixture
+from .test_release_reuses_ci_images import _code, _needs, _workflow
 
 ROOT = Path(__file__).resolve().parents[3]
 ACCEPTANCE = ROOT / "scripts" / "acceptance"
@@ -57,6 +58,22 @@ PEAK = {"mock": 13, "generic": 8, "workflow": 4, "claude-code": 3, "browser": 3,
 
 ACCEPT_JOBS = ("acceptance", "acceptance-2")
 
+#: Groups OFF THE RED PATH (owner decision 2026-10-14, lane SPEED-C2): run by
+#: the scheduled job, never by the post-release waves, until
+#: scripts/accept-live-browser-streak.sh says they passed five scheduled runs
+#: in a row and the operator moves them back (docs/ci.md, "live-browser runs
+#: on a schedule"). Measured that day: live-browser failed 18 of 34
+#: post-release runs; every other group 0-3.
+SCHEDULED_GROUPS = ("live-browser",)
+#: The scheduled job and its report. Neither is an accepting job: they judge
+#: what dev runs every three hours, not a deployment, and cancel nothing.
+SCHEDULED_JOB = "live-browser"
+SCHEDULED_REPORT = "live-browser-report"
+
+
+def _accept() -> dict:
+    return _workflow("accept.yml")
+
 
 def _starts_with(a, b) -> bool:
     # GitHub's startsWith is case-insensitive.
@@ -75,6 +92,129 @@ def _gh(expression, **context) -> object:
     return eval(  # noqa: S307 -- repository file, test only
         text, {"__builtins__": {}}, {"format": lambda t, *a: str(t).format(*a), "startsWith": _starts_with}
     )
+
+
+def _run_context(event: str, conclusion: str = "success", run_event: str = "push", title: str = "a commit",
+                 scope: str = "all") -> dict:
+    return {
+        "github.event_name": event,
+        "github.ref": "refs/heads/main",
+        "github.run_id": "7",
+        # A dispatch's `scope` input; GitHub renders an absent input as ''.
+        "inputs.scope": scope if event == "workflow_dispatch" else "",
+        "github.event.workflow_run.conclusion": conclusion if event == "workflow_run" else None,
+        "github.event.workflow_run.event": run_event if event == "workflow_run" else None,
+        "github.event.workflow_run.display_title": title if event == "workflow_run" else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# release.yml: nothing of acceptance is left on dev
+# ---------------------------------------------------------------------------
+
+
+def test_a_prod_release_says_so_in_its_run_name():
+    """accept.yml tells a prod release from a dev one by this alone."""
+    name = str(_workflow("release.yml").get("run-name", ""))
+    assert "format('release {0} {1}', inputs.environment" in name, name
+    assert "github.event_name == 'workflow_dispatch'" in name, name
+
+
+# ---------------------------------------------------------------------------
+# accept.yml: when it runs, and what it cancels
+# ---------------------------------------------------------------------------
+
+
+def test_it_runs_after_release_completes_on_main_by_dispatch_and_on_a_schedule():
+    on = _accept()["on"]
+    assert set(on) == {"workflow_run", "workflow_dispatch", "schedule"}, on
+    assert on["workflow_run"]["workflows"] == ["release"]
+    assert on["workflow_run"]["types"] == ["completed"]
+    assert on["workflow_run"]["branches"] == ["main"]
+    # Every three hours: often enough that five in a row is a day, not a week.
+    (cron,) = [entry["cron"] for entry in on["schedule"]]
+    assert re.fullmatch(r"\d{1,2} \*/3 \* \* \*", cron), cron
+    scope = on["workflow_dispatch"]["inputs"]["scope"]
+    assert scope["type"] == "choice" and scope["default"] == "all", scope
+    assert set(scope["options"]) == {"all", "live-browser"}, scope
+
+
+def test_the_decide_job_has_no_concurrency_and_the_workflow_has_none_either():
+    """MUTATION: put a concurrency block back on the workflow or on `target`.
+    A completion that accepts nothing would then cancel a real in-flight
+    acceptance and decide accept=false, leaving the deployed SHA unaccepted."""
+    accept = _accept()
+    assert "concurrency" not in accept, "a workflow-level group is joined by every completion, even one that accepts nothing"
+    assert "concurrency" not in accept["jobs"]["target"]
+
+
+@pytest.mark.parametrize(
+    "context",
+    [
+        _run_context("workflow_run", conclusion="failure"),
+        _run_context("workflow_run", conclusion="cancelled"),
+        _run_context("workflow_run", run_event="workflow_dispatch", title="release prod main"),
+    ],
+    ids=["failed-release", "cancelled-release", "prod-release"],
+)
+def test_a_trigger_that_accepts_nothing_runs_no_accepting_job(context):
+    assert not _gh(_accept()["jobs"]["target"]["if"], **context)
+
+
+@pytest.mark.parametrize(
+    "context",
+    [_run_context("schedule"), _run_context("workflow_dispatch", scope="live-browser")],
+    ids=["schedule", "live-browser-dispatch"],
+)
+def test_the_schedule_and_a_live_browser_dispatch_accept_nothing(context):
+    """MUTATION: drop the schedule clause from `target`'s if. Every three
+    hours a full acceptance would then run, and cancel the real one."""
+    jobs = _accept()["jobs"]
+    assert not _gh(jobs["target"]["if"], **context)
+    assert _gh(jobs[SCHEDULED_JOB]["if"], **context)
+
+
+@pytest.mark.parametrize(
+    "context",
+    [_run_context("workflow_run"), _run_context("workflow_dispatch"),
+     {**_run_context("schedule"), "github.ref": "refs/heads/feature"}],
+    ids=["release", "full-dispatch", "off-main"],
+)
+def test_the_scheduled_job_runs_only_on_the_schedule_or_its_own_dispatch(context):
+    assert not _gh(_accept()["jobs"][SCHEDULED_JOB]["if"], **context)
+
+
+def test_every_accepting_job_runs_only_when_the_decision_is_true():
+    jobs = _accept()["jobs"]
+    for job_id in ("quiesce", "smoke", "sandbox", *ACCEPT_JOBS):
+        assert "needs.target.outputs.accept == 'true'" in str(jobs[job_id]["if"]), job_id
+
+
+def test_a_push_whose_headline_reads_like_a_prod_dispatch_is_still_accepted():
+    context = _run_context("workflow_run", run_event="push", title="release prod notes for the runbook")
+    assert _gh(_accept()["jobs"]["target"]["if"], **context)
+
+
+@pytest.mark.parametrize("event", ["workflow_run", "workflow_dispatch"])
+def test_it_runs_only_on_main(event):
+    context = {**_run_context(event), "github.ref": "refs/heads/feature"}
+    assert not _gh(_accept()["jobs"]["target"]["if"], **context)
+    assert _gh(_accept()["jobs"]["target"]["if"], **_run_context(event))
+
+
+def test_it_names_no_environment_and_never_prod():
+    # The one environment allowed is `repo-secrets` (REPO-SECRETS-ENV, the owner
+    # 2026-10-23): it holds the sandbox token, main only, with no reviewers and
+    # no deployment record. It gates nothing; a deploy environment would.
+    for job_id, job in _accept()["jobs"].items():
+        # MUTATION: `environment: dev` (or a repo-secrets that creates a
+        # deployment) on any accept.yml job is red.
+        assert job.get("environment") in (None, {"name": "repo-secrets", "deployment": False}), (
+            f"accept.yml's {job_id} names an environment"
+        )
+    assert "prod" not in str(_accept().get("env")), "accept.yml is dev only"
+    assert _accept()["env"]["ENVIRONMENT"] == "dev"
+
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +278,77 @@ def test_release_order_deployed_prints_the_applied_record(world):  # noqa: F811 
     proc = _order(world, "deployed", "--environment", "dev")
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout == f"sha={sha}\nrun_id=42\nworkflow=release\n"
+
+
+# ---------------------------------------------------------------------------
+# accept.yml: warm, smoke and the suite
+# ---------------------------------------------------------------------------
+
+
+def test_the_scheduled_job_files_its_own_issue_not_the_acceptance_one():
+    jobs = _accept()["jobs"]
+    report = jobs[SCHEDULED_REPORT]
+    assert _needs(report) == [SCHEDULED_JOB]
+    condition = str(report["if"])
+    assert "!cancelled()" in condition and "always()" not in condition
+    assert "needs.live-browser.result != 'skipped'" in condition
+    assert report["permissions"].get("issues") == "write"
+    step = next(s for s in report["steps"] if "accept-report.sh" in _code(s.get("run", "")))
+    assert step["env"]["ACCEPT_KIND"] == "live-browser"
+    assert step["env"]["ACCEPT_SHA"] == "${{ needs.live-browser.outputs.sha }}"
+    assert step["env"]["ACCEPT_NEEDS"] == "${{ toJSON(needs) }}"
+
+
+@pytest.mark.parametrize("job_id", ACCEPT_JOBS)
+def test_acceptance_starts_only_after_smoke_and_the_sandbox_sync_succeeded(job_id):
+    job = _accept()["jobs"][job_id]
+    assert {"smoke", "sandbox"} <= set(_needs(job))
+    condition = str(job["if"])
+    assert "needs.smoke.result == 'success'" in condition
+    assert "needs.sandbox.result == 'success'" in condition
+    assert "needs.target.outputs.accept == 'true'" in condition
+
+
+def test_the_sandbox_is_synced_once_and_read_back_and_swept_after_both_waves():
+    jobs = _accept()["jobs"]
+    sync = [j for j, job in jobs.items() if any("sandbox-sync.sh" in _code(s.get("run", "")) for s in job["steps"])]
+    assert sync == ["sandbox"], f"the fixtures are written by {sync}; two writers race on one branch"
+    results = jobs["sandbox-results"]
+    assert set(ACCEPT_JOBS) <= set(_needs(results))
+    assert "!cancelled()" in str(results["if"]), "the sweep must run after a red group"
+    steps = results["steps"]
+    verify = next(i for i, s in enumerate(steps) if "github-verify.sh" in _code(s.get("run", "")))
+    sweep = next(i for i, s in enumerate(steps) if "github-cleanup.sh" in _code(s.get("run", "")))
+    assert verify < sweep
+    assert "!cancelled()" in str(steps[sweep].get("if", "")), "the sweep must run after a failed read-back"
+    for step in (steps[verify], steps[sweep]):
+        assert "secrets.SWARM_SANDBOX_GITHUB_TOKEN" in str(step.get("env", {}).get("SWARM_ACCEPTANCE_GITHUB_TOKEN", ""))
+    assert "needs.sandbox.outputs.since" in str(steps[verify].get("env", {}).get("SWARM_ACCEPTANCE_SINCE", ""))
+
+
+def test_the_sandbox_token_never_reaches_the_suite():
+    jobs = _accept()["jobs"]
+    for job_id in ("smoke", *ACCEPT_JOBS, SCHEDULED_JOB):
+        assert "SWARM_SANDBOX_GITHUB_TOKEN" not in json.dumps(jobs[job_id]), f"{job_id} is handed the sandbox token"
+
+
+def test_the_report_needs_every_job_and_files_an_issue_on_red():
+    jobs = _accept()["jobs"]
+    report = jobs["report"]
+    assert set(_needs(report)) == set(jobs) - {"report", SCHEDULED_JOB, SCHEDULED_REPORT}, (
+        "the report must see every job's result, and not the scheduled group's"
+    )
+    condition = str(report["if"])
+    assert "!cancelled()" in condition and "always()" not in condition
+    assert "needs.target.result == 'failure'" in condition, "an identity that cannot authenticate is a red acceptance too"
+    assert report["permissions"].get("issues") == "write"
+    assert report["permissions"].get("actions") == "read"
+    step = next(s for s in report["steps"] if "accept-report.sh" in _code(s.get("run", "")))
+    assert step["env"]["ACCEPT_SHA"] == "${{ needs.target.outputs.sha }}"
+    assert step["env"]["ACCEPT_NEEDS"] == "${{ toJSON(needs) }}"
+    writers = [j for j, job in jobs.items() if (job.get("permissions") or {}).get("issues") == "write"]
+    assert sorted(writers) == sorted(["report", SCHEDULED_REPORT]), writers
+
 
 
 # ---------------------------------------------------------------------------
@@ -468,6 +679,26 @@ def test_the_acceptance_scripts_are_shellcheck_clean():
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+# ---------------------------------------------------------------------------
+# accept.yml: a GitHub cancel does not stop Cloud Run
+# ---------------------------------------------------------------------------
+
+
+def _step_run(job_id: str, name_part: str) -> str:
+    step = next(s for s in _accept()["jobs"][job_id]["steps"] if name_part in str(s.get("name", "")))
+    return _code(step["run"])
+
+
+def test_the_pre_wave_job_also_cancels_the_other_accept_runs_and_gates_the_rest():
+    jobs = _accept()["jobs"]
+    run = _step_run("quiesce", "other in-progress accept runs")
+    assert "gh run cancel" in run and "accept.yml" in run
+    assert jobs["quiesce"]["permissions"].get("actions") == "write"
+    for job_id in ("smoke", "sandbox"):
+        assert "quiesce" in _needs(jobs[job_id]), f"{job_id} can start before the old executions are stopped"
+
 
 
 # ---------------------------------------------------------------------------

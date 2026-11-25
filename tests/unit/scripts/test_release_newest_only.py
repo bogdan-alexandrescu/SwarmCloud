@@ -35,6 +35,7 @@ import pytest
 
 from .ci_run_blocks import run_block
 from .test_ci_built_images import gating_job_names
+from .test_release_reuses_ci_images import _evaluate, _load_workflow, _render
 
 REPO_NAME = "owner/repo"
 SHA = "a" * 40
@@ -43,6 +44,52 @@ RUN_ID = 4242
 COMPARE = f"repos/{REPO_NAME}/compare/{SHA}...main"
 APP_RUNS = f"repos/{REPO_NAME}/actions/workflows/application.yml/runs?head_sha={SHA}&branch=main&event=push&per_page=1"
 APP_JOBS = f"repos/{REPO_NAME}/actions/runs/{RUN_ID}/jobs?per_page=100"
+
+
+def test_the_release_starts_on_every_push_to_main():
+    """A path filter lets a push cancel the previous commit's build and start
+    no release to ship it (2026-09-24). MUTATION: put `paths:` back."""
+    push = _load_workflow("release.yml")["on"]["push"]
+    assert push["branches"] == ["main"]
+    assert "paths" not in push and "paths-ignore" not in push, push
+
+
+def test_a_pending_release_is_superseded_and_a_running_one_is_never_cancelled():
+    """GitHub keeps one pending run per group and cancels the older pending
+    one when a newer one queues, so a group shared by every push to an
+    environment is what lets the newest pending release replace the others.
+    MUTATION: key the group by commit or run (nothing pending is ever
+    superseded), or set cancel-in-progress (a running deploy is cancelled)."""
+    concurrency = _load_workflow("release.yml")["concurrency"]
+    text = str(concurrency["group"])
+    for per_commit in ("github.sha", "github.run_id", "github.run_number", "github.event.after", "github.ref"):
+        assert per_commit not in text, f"release.yml's group reads {per_commit}: a newer release never replaces a pending one"
+    # Every push renders the one dev group; a prod dispatch has its own.
+    assert _render(text, **{"github.event.inputs.environment": ""}) == "release-dev"
+    assert _render(text, **{"github.event.inputs.environment": "prod"}) == "release-prod"
+    assert concurrency["cancel-in-progress"] is False, (
+        "a newer push cancels the release in progress, which may be past `approval` and promoting, applying or deploying"
+    )
+
+
+def _push_context(superseded: str) -> dict[str, str]:
+    return {
+        "github.event_name": "push",
+        "github.event.inputs.skip_build": "",
+        "needs.verify.result": "skipped",
+        "needs.build.result": "success",
+        "needs.build.outputs.superseded": superseded,
+    }
+
+
+@pytest.mark.parametrize("job_id", ["approval"])
+def test_a_superseded_release_approves_and_promotes_nothing(job_id):
+    """`approval` gates promote, the applies and the deploy (test_release_prod_gate.py).
+    The plugin tag is application.yml's now; test_plugin_tag.py holds that a
+    superseded commit tags nothing. MUTATION: drop the superseded clause."""
+    condition = _load_workflow("release.yml")["jobs"][job_id]["if"]
+    assert _evaluate(condition, **_push_context("false")) is True, f"{job_id} no longer runs for the newest commit"
+    assert _evaluate(condition, **_push_context("true")) is False, f"{job_id} runs for a release a newer commit superseded"
 
 
 # ---------------------------------------------------------------------------

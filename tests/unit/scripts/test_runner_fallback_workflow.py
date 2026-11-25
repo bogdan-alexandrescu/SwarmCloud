@@ -12,15 +12,25 @@ This file executes the judge's own script, read through `ci_run_blocks`, with
 fake GitHub answers: a stuck pool flips off, hosted saturation does not, a
 serving pool does not, the hysteresis holds a second flip, recovery needs 15
 minutes of probes, and each run is re-run once.
+
+The tests that read runner-fallback.yml itself hold CI security decisions the
+owner kept on 2026-11-25: what can start it, the token scopes it asks for, and
+that the probe and the judge hold no secret and no checkout. The docs' prose
+and the workflow's constants were deleted by issue 71.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
+import yaml
 
 from .ci_run_blocks import run_block
+
+REPO = Path(__file__).resolve().parents[3]
+WORKFLOW = REPO / ".github" / "workflows" / "runner-fallback.yml"
 
 NOW = datetime(2026, 10, 17, 5, 30, tzinfo=timezone.utc)
 POOL = ["self-hosted", "linux", "x64", "example-ci"]
@@ -33,6 +43,69 @@ def judge_script() -> dict:
     namespace: dict = {"__name__": "runner_fallback"}
     exec(compile(run_block("runner-fallback.yml", "judge", step), step, "exec"), namespace)
     return namespace
+
+
+def _load() -> dict:
+    assert WORKFLOW.is_file(), (
+        f"{WORKFLOW.relative_to(REPO)} is missing: the operator applies "
+        "workflow-lines.patch from the CI-FALLBACK pull request"
+    )
+    data = yaml.safe_load(WORKFLOW.read_text())
+    if True in data:  # YAML 1.1 reads a bare `on:` key as True
+        data["on"] = data.pop(True)
+    return data
+
+
+@pytest.fixture(scope="module")
+def workflow() -> dict:
+    return _load()
+
+
+# --- The workflow's own security wiring ---------------------------------------
+
+
+def test_only_the_probe_asks_for_the_pool_and_only_while_the_hatch_is_off(workflow):
+    on_pool = sorted(n for n, j in workflow["jobs"].items() if "SWARM_CI_RUNNER_LABEL" in str(j.get("runs-on")))
+    assert on_pool == ["probe"]
+    probe = workflow["jobs"]["probe"]
+    assert probe["if"] == "vars.SELF_HOSTED_CI == 'off'"
+    assert probe["permissions"] == {}
+    assert "secrets." not in yaml.safe_dump(probe)
+    assert not any("checkout" in str(s.get("uses", "")) for s in probe["steps"])
+
+
+def test_it_runs_every_ten_minutes_and_on_dispatch_and_nothing_a_fork_can_start(workflow):
+    assert workflow["on"]["schedule"] == [{"cron": "*/10 * * * *"}]
+    assert "workflow_dispatch" in workflow["on"]
+    assert set(workflow["on"]) == {"schedule", "workflow_dispatch"}
+
+
+def test_the_github_token_gets_actions_write_and_nothing_else(workflow):
+    assert workflow["permissions"] == {}
+    assert workflow["jobs"]["judge"]["permissions"] == {"actions": "write"}
+
+
+def test_the_judge_runs_on_github_hosted_never_on_the_pool(workflow):
+    judge = workflow["jobs"]["judge"]
+    assert judge["runs-on"] == "ubuntu-24.04"
+    assert "SWARM_CI_RUNNER_LABEL" not in str(judge["runs-on"])
+    assert "SELF_HOSTED_CI" not in str(judge["runs-on"]), "the judge must not follow the hatch it sets"
+
+
+def test_the_mint_never_asks_for_the_variables_key_github_does_not_have(workflow):
+    """archived issue 2220, 2026-10-27: the action turns permission-<name> into the API key <name>
+    (dashes as underscores). `permission-variables` asked for `variables`, which GitHub
+    refuses as "not granted" whatever the installation holds; the key is `actions_variables`."""
+    for step in workflow["jobs"]["judge"]["steps"]:
+        assert "permission-variables" not in (step.get("with") or {}), step.get("name")
+
+
+def test_the_variable_is_written_with_the_app_token_scoped_to_variables(workflow):
+    """GITHUB_TOKEN has no `variables` scope; the App token asks for only that."""
+    [mint] = [s for s in workflow["jobs"]["judge"]["steps"] if "create-github-app-token" in str(s.get("uses"))]
+    perms = {k: v for k, v in mint["with"].items() if k.startswith("permission-")}
+    assert perms == {"permission-actions-variables": "write"}
+
 
 
 # --- The decision, run from the workflow's own script ------------------------

@@ -34,11 +34,14 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 from .ci_run_blocks import run_block
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "iam-refusal-probe.sh"
+WORKFLOWS = REPO / ".github" / "workflows"
+PROBE_WORKFLOW = WORKFLOWS / "iam-refusal-probe.yml"
 CONDITIONS_TF = REPO / "terraform" / "bootstrap" / "deployer_conditions.tf"
 
 PROJECT = "swarm-probe-test"
@@ -61,6 +64,48 @@ def _probe_role() -> str:
 
 
 PROBE_ROLE = _probe_role()
+
+
+def _workflow(path: Path = PROBE_WORKFLOW) -> dict:
+    data = yaml.safe_load(path.read_text())
+    # PyYAML reads the bare key `on` as the boolean True.
+    if True in data:
+        data["on"] = data.pop(True)
+    return data
+
+
+def _only_job(workflow: dict) -> dict:
+    jobs = workflow.get("jobs") or {}
+    assert len(jobs) == 1, f"the probe is one job, found {sorted(jobs)}"
+    return next(iter(jobs.values()))
+
+
+def _step_index(steps: list[dict], predicate) -> int:
+    for index, step in enumerate(steps):
+        if predicate(step):
+            return index
+    return -1
+
+
+def _runs(step: dict, subcommand: str) -> bool:
+    return f"iam-refusal-probe.sh {subcommand}" in (step.get("run") or "")
+
+
+def test_the_probe_is_dispatched_by_hand_and_by_nothing_else():
+    """MUTATION: add `push:`, `pull_request:` or `schedule:` to its `on:`, or give
+    `workflow_dispatch` an input a dispatcher could aim at another role."""
+    on = _workflow()["on"]
+    triggers = {on} if isinstance(on, str) else set(on)
+    assert triggers == {"workflow_dispatch"}, (
+        f"iam-refusal-probe.yml triggers on {sorted(triggers)}. It writes to a shared "
+        "project's policy if the condition is wrong, so it runs when the owner "
+        "dispatches it and on nothing else."
+    )
+    dispatch = on["workflow_dispatch"] if isinstance(on, dict) else None
+    assert not (dispatch or {}).get("inputs"), (
+        "the probe takes no inputs: the role it asks for is fixed in the script, "
+        "so no dispatcher can point it at roles/owner"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +133,64 @@ def test_the_probe_refuses_every_ref_but_main_before_it_authenticates(ref, passe
     assert (proc.returncode == 0) is passes, (
         f"guard on {ref}: exit {proc.returncode}\n{proc.stdout}{proc.stderr}"
     )
+
+
+def test_the_probe_authenticates_exactly_as_the_release_and_the_plan_do():
+    """Same action, same variables. MUTATION: change a `with:` value in any one."""
+    def auth_steps(path: Path) -> list[dict]:
+        found = []
+        for job in (_workflow(path).get("jobs") or {}).values():
+            for step in job.get("steps") or []:
+                if str(step.get("uses", "")).startswith("google-github-actions/auth@"):
+                    found.append({"uses": step["uses"], "with": step.get("with")})
+        return found
+
+    probe = auth_steps(PROBE_WORKFLOW)
+    assert len(probe) == 1, probe
+    reference = auth_steps(WORKFLOWS / "release.yml") + auth_steps(WORKFLOWS / "terraform.yml")
+    assert reference, "read no auth step from release.yml or terraform.yml"
+    for other in reference:
+        assert probe[0] == other, f"the probe authenticates as {probe[0]}; the release/plan as {other}"
+    assert "token_format" not in (probe[0]["with"] or {}), "no access token output: nothing to print"
+
+
+def test_the_probe_holds_only_the_token_it_needs_and_names_no_environment():
+    """MUTATION: widen a permission, drop `permissions: {}`, or name an environment."""
+    workflow = _workflow()
+    assert workflow.get("permissions") == {}, "workflow-level permissions must be empty"
+    job = _only_job(workflow)
+    assert job.get("permissions") == {"contents": "read", "id-token": "write"}, job.get("permissions")
+    assert "environment" not in job, (
+        "the deployer's token depends on the ref, not an environment, and GitHub "
+        "creates any environment a workflow names with no protection"
+    )
+
+
+def test_the_revert_runs_on_every_path_after_a_write_could_have_happened():
+    """MUTATION: drop `always()` from the revert, gate it on the grant's own
+    output, or move it before the grant."""
+    steps = _only_job(_workflow())["steps"]
+    preflight = _step_index(steps, lambda s: _runs(s, "preflight"))
+    grant = _step_index(steps, lambda s: _runs(s, "grant"))
+    revert = _step_index(steps, lambda s: _runs(s, "revert"))
+    assert -1 not in (preflight, grant, revert), (preflight, grant, revert)
+    assert preflight < grant < revert
+
+    gate_id = steps[preflight].get("id")
+    assert gate_id, "preflight needs an id for its output to gate on"
+    gate = f"steps.{gate_id}.outputs.ready == 'true'"
+    grant_if = str(steps[grant].get("if") or "")
+    revert_if = str(steps[revert].get("if") or "")
+
+    assert gate in grant_if, f"the grant must be gated on preflight's output: `{grant_if}`"
+    assert "always()" in revert_if, (
+        f"the revert must run after a failed, timed-out or cancelled grant: `{revert_if}`"
+    )
+    # Its gate is an output written BEFORE any write, never one the grant step
+    # writes itself: a cancelled step's outputs are not something to stake the
+    # one step that must run on.
+    assert gate in revert_if, f"the revert must be gated on preflight's output: `{revert_if}`"
+    assert f"steps.{steps[grant].get('id')}.outputs" not in revert_if, revert_if
 
 
 # ---------------------------------------------------------------------------

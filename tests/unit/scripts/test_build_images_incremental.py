@@ -48,10 +48,12 @@ import time
 from pathlib import Path
 
 import pytest
+import yaml
 
 from .test_ci_built_images import IMAGES, REGISTRY
 
 REPO = Path(__file__).resolve().parents[3]
+WORKFLOW = REPO / ".github" / "workflows" / "application.yml"
 # agent-runtime-base-nocodex is the base's Dockerfile built with INSTALL_CODEX=0
 # (BROWSER-NO-CODEX): the base's inputs are its inputs.
 # agent-runtime-lightpanda (LIGHTPANDA-BUILD-SCRIPTS) is built FROM the base
@@ -543,3 +545,36 @@ def test_full_build_without_incremental_is_refused(box):
         env=box.env, capture_output=True, text=True, timeout=60, check=False,
     )
     assert proc.returncode != 0 and "--full-build" in proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# application.yml's wiring.
+# ---------------------------------------------------------------------------
+def _workflow() -> dict:
+    data = yaml.safe_load(WORKFLOW.read_text())
+    if True in data:
+        data["on"] = data.pop(True)
+    return data
+
+
+def test_application_builds_incrementally_and_can_be_told_to_build_everything():
+    workflow = _workflow()
+    build = workflow["jobs"]["build"]
+    assert build["permissions"].get("actions") == "read", "the build job cannot read its earlier runs"
+    checkout = next(s for s in build["steps"] if str(s.get("uses", "")).startswith("actions/checkout@"))
+    assert (checkout.get("with") or {}).get("fetch-depth") == 0, (
+        "a one-commit clone can neither diff from a previous build nor tell an ancestor"
+    )
+    assert any(str(s.get("uses", "")).startswith("astral-sh/setup-uv@") for s in build["steps"]), (
+        "without uv every uv.lock change rebuilds every Python image"
+    )
+    step = next(s for s in build["steps"] if "scripts/build-images.sh" in str(s.get("run", "")))
+    run = step["run"]
+    assert "ci-built-images.sh --previous" in run, run
+    assert "build-images.sh --incremental" in run, run
+    assert "--full-build" in run and "FULL_BUILD" in run, run
+    assert (step.get("env") or {}).get("GH_TOKEN"), "the previous record is read with gh, which needs a token"
+    dispatch = workflow["on"]["workflow_dispatch"]["inputs"]["full_build"]
+    assert dispatch["type"] == "boolean" and dispatch["default"] is False
+    summary = [s for s in build["steps"] if "GITHUB_STEP_SUMMARY" in str(s.get("run", ""))]
+    assert summary and "reused" in summary[0]["run"], "the job no longer says which images were rebuilt"

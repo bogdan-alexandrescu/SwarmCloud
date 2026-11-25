@@ -35,6 +35,7 @@ import pytest
 import yaml
 
 from .ci_run_blocks import run_block
+import re
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -132,6 +133,57 @@ fi
 echo "fake gh: unexpected call: $*" >&2
 exit 3
 """
+
+
+MERGEABLE_NOW_GUARD = '! mergeable_now "${state}"'
+
+
+RETIRED_WORKFLOW_NAMES = {"ci-gate"}
+
+
+def _squash_merges(run: str) -> list[str]:
+    """The merges made when the base requires no merge queue: squashed."""
+    return [m for m in _merge_commands(run) if "--squash" in m]
+
+
+def _requeue_head_sha(requeue_job: dict, event: dict) -> str:
+    """Resolve the requeue job's RUN_HEAD_SHA for an event the way the
+    runner does: `a || b` is the first non-empty one."""
+    expression = (requeue_job.get("env") or {}).get("RUN_HEAD_SHA") or ""
+    match = re.fullmatch(r"\$\{\{(.*)\}\}", expression.strip())
+    assert match, expression
+    for path in (p.strip() for p in match.group(1).split("||")):
+        assert path.startswith("github.event."), path
+        value: Any = event
+        for key in path.removeprefix("github.event.").split("."):
+            value = value.get(key) if isinstance(value, dict) else None
+        if value:
+            return str(value)
+    return ""
+
+
+def _queue_merges(run: str) -> list[str]:
+    """The merges made when it does: the queue's own method decides."""
+    return [m for m in _merge_commands(run) if "--squash" not in m]
+
+
+def _pull_request_workflow_names() -> set[str]:
+    """The `name:` of every workflow that runs on `pull_request`."""
+    names = set()
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        data = _workflow(path)
+        on = data.get("on") or {}
+        events = set(on) if isinstance(on, (dict, list)) else {on}
+        if "pull_request" in events:
+            names.add(data["name"])
+    return names
+
+
+def _merge_commands(run: str) -> list[str]:
+    """Every `gh pr merge` in `run`, one logical command each (continuation
+    lines joined)."""
+    joined = re.sub(r"\\\n\s*", " ", run)
+    return [line.strip() for line in joined.splitlines() if "gh pr merge" in line]
 
 
 def _outputs(path: Path) -> dict[str, str]:
@@ -603,10 +655,37 @@ def test_the_gate_excludes_its_own_still_running_check_run(run_gate):
     assert comments == "", comments
 
 
+def test_the_self_exclusion_name_matches_the_jobs_actual_name(job: dict):
+    """The literal the gate script excludes by must be this job's real `name:`,
+    not a copy that can drift when the job is renamed."""
+    script = _step(job, "gate")["run"]
+    assert f'!= "{job["name"]}"' in script, script
+
+
 def test_the_check_runs_are_read_for_the_exact_head_commit(run_gate):
     proc, calls, _comments = run_gate("A fact-style headline", PROTECTED, head_sha="cafef00d")
     assert proc.returncode == 0, _comments
     assert "api repos/example-org/example-repo/commits/cafef00d/check-runs" in calls, calls
+
+
+def test_the_disable_job_runs_on_a_push_or_reopen_but_never_on_the_labeling_itself(disable_job: dict):
+    """MUTATION: drop the `action != 'labeled'` guard -- the label-add event
+    would then immediately disable the auto-merge the other job just enabled."""
+    condition = str(disable_job.get("if") or "")
+    assert re.search(r"github\.event\.action\s*!=\s*'labeled'", condition), condition
+    assert re.search(
+        r"contains\(\s*github\.event\.pull_request\.labels\.\*\.name\s*,\s*'ready'\s*\)", condition
+    ), condition
+    assert "edited" in condition and "changes.base" in condition, condition
+
+
+def test_the_disable_job_never_runs_on_the_close(disable_job: dict):
+    """A merged pull request still carries `ready`; without this guard its
+    `closed` event would try to disable auto-merge and comment "this pull
+    request's head changed" on a merged pull request.
+    MUTATION: drop the `action != 'closed'` guard."""
+    condition = str(disable_job.get("if") or "")
+    assert re.search(r"github\.event\.action\s*!=\s*'closed'", condition), condition
 
 
 # ---------------------------------------------------------------------------
@@ -1190,6 +1269,55 @@ def test_the_merge_steps_required_set_matches_gate_3(run_gate, rules, branch, ga
         assert all(c.app_id is None for c in required)
 
 
+def test_the_close_job_runs_only_on_a_merge_into_the_default_branch(close_job: dict):
+    """MUTATION: drop `merged == true` (a pull request closed unmerged would
+    close its issues), or the base-branch comparison."""
+    condition = str(close_job.get("if") or "")
+    assert re.search(r"github\.event\.action\s*==\s*'closed'", condition), condition
+    assert re.search(r"github\.event\.pull_request\.merged\s*==\s*true", condition), condition
+    assert re.search(
+        r"github\.event\.pull_request\.base\.ref\s*==\s*github\.event\.repository\.default_branch",
+        condition,
+    ), condition
+
+
+def test_the_enable_job_never_runs_on_the_close(job: dict):
+    """`enable` keys on the label just added; a `closed` event carries none."""
+    condition = str(job.get("if") or "")
+    assert "github.event.label.name == 'ready'" in condition, condition
+
+
+def test_issues_write_is_granted_to_the_close_job_and_nowhere_else(workflow: dict, close_job: dict):
+    """Least privilege: closing an issue needs issues: write; reading the
+    closing references needs pull-requests: read; the checkout of the default
+    branch's scripts needs contents: read. Nothing else, and no App token.
+    MUTATION: grant issues: write at the workflow level or to another job, or
+    widen pull-requests to write."""
+    assert close_job.get("permissions") == {
+        "contents": "read",
+        "pull-requests": "read",
+        "issues": "write",
+    }, close_job.get("permissions")
+    for job_id, other in (workflow.get("jobs") or {}).items():
+        if job_id != "close-issues":
+            assert "issues" not in (other.get("permissions") or {}), (job_id, other.get("permissions"))
+    text = json.dumps(close_job)
+    assert "app-token" not in text and "MERGE_APP" not in text, "the close job needs no App token"
+
+
+def test_the_close_job_checks_out_the_default_branch_never_the_pull_request(close_job: dict):
+    """pull_request_target with a write token: the code it runs is main's,
+    which the merge has just made -- never the pull request's head or fork.
+    MUTATION: check out `github.event.pull_request.head.sha`."""
+    steps = close_job.get("steps") or []
+    checkouts = [step for step in steps if "checkout" in str(step.get("uses") or "")]
+    assert len(checkouts) == 1, checkouts
+    inputs = checkouts[0].get("with") or {}
+    assert inputs.get("ref") == "${{ github.event.repository.default_branch }}", inputs
+    assert inputs.get("persist-credentials") is False, inputs
+    assert "head" not in json.dumps(close_job), "the close job reads the pull request's head"
+
+
 # ---------------------------------------------------------------------------
 # A `ready` label that lands while checks still run is re-evaluated (archived pull request 697)
 # ---------------------------------------------------------------------------
@@ -1279,6 +1407,29 @@ def test_requeue_dispatches_nothing_when_no_ready_pull_request_is_at_the_head(ru
     assert proc.returncode == 0, proc.stderr
     assert "workflow run" not in calls, calls
     assert "dispatched 0" in proc.stdout, proc.stdout
+
+
+def test_a_body_edit_on_a_ready_pull_request_dispatches_a_re_evaluation(requeue_edited_job: dict):
+    """Adding or removing `depends on` changes the gate's answer, and nothing
+    looked again until the next label or finishing CI run. MUTATION: drop the
+    `changes.body` guard (every title edit would re-evaluate too), the
+    `ready` guard, or the MERGE_APP_ID guard."""
+    condition = " ".join(str(requeue_edited_job.get("if") or "").split())
+    assert "github.event_name == 'pull_request_target'" in condition, condition
+    assert "github.event.action == 'edited'" in condition, condition
+    assert "github.event.changes.body != null" in condition, condition
+    assert "github.event.pull_request.state == 'open'" in condition, condition
+    assert re.search(
+        r"contains\(\s*github\.event\.pull_request\.labels\.\*\.name\s*,\s*'ready'\s*\)", condition
+    ), condition
+    assert "vars.MERGE_APP_ID != ''" in condition, condition
+
+
+def test_the_disable_job_still_ignores_a_body_edit(disable_job: dict):
+    """The control: a body edit moves no head, so `ready` stays and the
+    re-evaluation above decides. MUTATION: let `edited` reach disable."""
+    condition = str(disable_job.get("if") or "")
+    assert "(github.event.action != 'edited' || github.event.changes.base.ref.from != null)" in condition
 
 
 # ---------------------------------------------------------------------------
@@ -1816,10 +1967,78 @@ def requeue_job(workflow: dict) -> dict:
     return jobs["requeue"]
 
 
+def test_the_workflow_has_exactly_the_enable_requeue_disable_and_close_issues_jobs(workflow: dict):
+    """`requeue-edited` is the body-edit re-evaluation (archived issue 888 box 97);
+    `ready-on-green` swaps that label for `ready` once green
+    (test_auto_merge_ready_on_green.py)."""
+    jobs = workflow.get("jobs") or {}
+    assert set(jobs) == {"enable", "requeue", "requeue-edited", "disable", "close-issues", "ready-on-green"}, sorted(jobs)
+
+
 def _step(job: dict, step_id: str) -> dict:
     matches = [step for step in job.get("steps") or [] if step.get("id") == step_id]
     assert len(matches) == 1, f"expected one step with id {step_id!r}, found {len(matches)}"
     return matches[0]
+
+
+def test_it_runs_on_labeling_and_on_events_that_can_invalidate_the_label(workflow: dict):
+    """MUTATION: add `pull_request` or `push`, or drop one of the five types --
+    each of `synchronize`/`reopened`/`edited` is what lets the `disable` job
+    catch a new head, and dropping one leaves that path unguarded; `closed`
+    is what lets `close-issues` see the merge (archived issue 621). `workflow_run` and
+    `workflow_dispatch` are the re-evaluation of a `ready` label that landed
+    while checks were still running (archived pull request 697), and `check_suite` its backstop for
+    a check no workflow run reports (archived issue 815), held below. `schedule` is the
+    `ready-on-green` job's backstop, and starts no other job
+    (test_auto_merge_ready_on_green.py)."""
+    on = workflow["on"]
+    assert set(on) == {"pull_request_target", "workflow_run", "workflow_dispatch", "check_suite", "schedule"}, on
+    assert set(on["pull_request_target"]["types"]) == {
+        "labeled",
+        "synchronize",
+        "reopened",
+        "edited",
+        "closed",
+    }, on["pull_request_target"]
+
+
+def test_the_job_is_gated_on_the_ready_label(job: dict):
+    condition = str(job.get("if") or "")
+    assert re.search(r"github\.event\.label\.name\s*==\s*'ready'", condition), condition
+    # The label path is only the label event itself; the other way in is the
+    # re-evaluation dispatch, whose `resolve` step requires `ready` on the PR.
+    assert re.search(r"github\.event\.action\s*==\s*'labeled'", condition), condition
+    assert re.search(r"github\.event_name\s*==\s*'workflow_dispatch'", condition), condition
+    assert "workflow_run" not in condition, "a workflow_run event carries no pull request; requeue dispatches"
+
+
+def test_it_never_checks_out_or_runs_the_pull_requests_code(workflow: dict, job: dict):
+    """MUTATION: add `- uses: actions/checkout@v5` with `ref: ${{ github.event.pull_request.head.sha }}`.
+
+    One checkout is allowed: the DEFAULT branch's scripts/, sparse and without
+    credentials, for scripts/check-closing-references.sh -- main's reviewed
+    code, never the pull request's (test_check_closing_references.py)."""
+    text = AUTO_MERGE.read_text()
+    steps = job.get("steps") or []
+    assert steps, "the job has no steps, so this checked nothing"
+    for step in steps:
+        uses = str(step.get("uses") or "")
+        if "checkout" not in uses:
+            continue
+        inputs = step.get("with") or {}
+        assert inputs.get("ref") == "${{ github.event.repository.default_branch }}", (
+            f"a pull_request_target job checks out something other than the default branch: {inputs}"
+        )
+        assert inputs.get("persist-credentials") is False, inputs
+        assert inputs.get("sparse-checkout") == "scripts", inputs
+        assert set(inputs) == {"ref", "persist-credentials", "sparse-checkout"}, inputs
+    # The head SHA is read (HEAD_SHA) to PIN the check-runs read and both merge
+    # calls to the reviewed commit -- fencing against a push after the label,
+    # not a way to find or run the fork's code. Reading it is safe only
+    # because there is no checkout step (asserted above) and nothing here
+    # reads where the fork's code actually lives.
+    assert "github.head_ref" not in text
+    assert "pull_request.head.repo" not in text
 
 
 def test_attacker_controlled_text_reaches_a_shell_only_through_env(job: dict):
@@ -1849,6 +2068,64 @@ def test_the_github_token_asks_for_the_least_it_needs(workflow: dict, job: dict)
     }, job.get("permissions")
 
 
+def test_the_merge_is_enabled_with_the_app_token_so_releases_still_fire(job: dict):
+    """MUTATION: set the merge step's GH_TOKEN to `${{ github.token }}` or
+    `${{ secrets.GITHUB_TOKEN }}` -- the merge then starts no push workflow."""
+    token_step = _step(job, "app-token")
+    assert str(token_step.get("uses", "")).startswith("actions/create-github-app-token@"), token_step
+    inputs = token_step.get("with") or {}
+    # Scoped to what enabling auto-merge needs, not the App's whole grant.
+    # workflows: write, so a pull request touching .github/workflows also
+    # auto-merges (owner decision, 2026-09-28) -- requesting it here grants
+    # nothing until the owner creates the App with that permission.
+    assert inputs.get("permission-contents") == "write", inputs
+    assert inputs.get("permission-pull-requests") == "write", inputs
+    assert inputs.get("permission-workflows") == "write", inputs
+    assert "secrets." in str(inputs.get("private-key")), inputs
+
+    merge = _step(job, "merge")
+    token = str((merge.get("env") or {}).get("GH_TOKEN"))
+    assert token == "${{ steps.app-token.outputs.token }}", token
+    assert "github.token" not in json.dumps(merge) and "GITHUB_TOKEN" not in json.dumps(merge)
+
+
+def test_the_merge_is_native_auto_merge_squashed_under_the_pr_title(job: dict):
+    """MUTATION: drop `--auto` (merges now, green or not), drop `--subject`
+    (a one-commit squash takes the commit message, archived pull request 238), or use `--merge`."""
+    run = _step(job, "merge")["run"]
+    merges = _squash_merges(run)
+    assert merges, run
+    # The first attempt is always native auto-merge. The only other merge is
+    # the already-green fallback, and it must say the same things.
+    assert "--auto" in merges[0], merges
+    assert len(merges) == 2, merges
+    for command in merges:
+        args = command.split("gh pr merge", 1)[1]
+        assert '"${PR_NUMBER}"' in args, args
+        assert "--squash" in args, args
+        assert "--merge " not in args and "--rebase" not in args, args
+        assert '--subject "${PR_TITLE} (#${PR_NUMBER})"' in args, args
+        assert "--admin" not in args, "--admin bypasses the required checks the auto-merge waits for"
+
+
+def test_both_merge_calls_pin_to_the_reviewed_head_commit(job: dict):
+    """A push after the `ready` label -- including the SwarmCloud worker's own
+    push, or a fork push in the seconds before this job starts -- must not let
+    either merge call squash a commit nobody reviewed.
+    MUTATION: drop `--match-head-commit` from either `gh pr merge` call, or
+    interpolate the sha through `${{ }}` instead of the `HEAD_SHA` env var."""
+    run = _step(job, "merge")["run"]
+    merges = _merge_commands(run)
+    # Two squash merges (auto, and the already-green fallback) and one queue
+    # entry (auto, on a base that requires a merge queue).
+    assert len(merges) == 3, merges
+    for command in merges:
+        assert '--match-head-commit "${HEAD_SHA}"' in command, command
+    # The queue's already-green fallback is GraphQL's enqueue, pinned the same way.
+    assert "enqueuePullRequest" in run
+    assert "expectedHeadOid" in run and 'head="${HEAD_SHA}"' in run, run
+
+
 def test_the_head_sha_reaches_the_merge_step_only_through_env(job: dict):
     """Through the `pr` step's output, which is the event's head on a label
     and the API's head on a re-evaluation."""
@@ -1859,6 +2136,52 @@ def test_the_head_sha_reaches_the_merge_step_only_through_env(job: dict):
         assert env.get("HEAD_SHA") == "${{ steps.pr.outputs.head_sha }}", (step_id, env)
     run = _step(job, "merge")["run"]
     assert "github.event" not in run
+
+
+def test_a_direct_merge_happens_only_when_github_says_the_pr_is_already_clean(job: dict):
+    """GitHub will not enable auto-merge on a pull request that is already
+    mergeable; anything else that stops `--auto` must fail the job, not fall
+    through to a merge. MUTATION: drop the guard, so any auto-merge error
+    merges at once."""
+    run = _step(job, "merge")["run"]
+    auto = run.index("--auto")
+    clean = run.index(MERGEABLE_NOW_GUARD)
+    direct = [m.start() for m in re.finditer(r"gh pr merge", run)]
+    assert len(direct) == 3, direct
+    assert auto < clean < direct[1], "the direct merge must sit behind the mergeable-now check"
+    assert "exit 1" in run[clean : direct[1]], "a failure that is not mergeable now must fail the job"
+    # The queue's branch: its enqueue sits behind its own guard.
+    queue_clean = run.index(MERGEABLE_NOW_GUARD, clean + 1)
+    enqueue = run.index("enqueuePullRequest")
+    assert direct[2] < queue_clean < enqueue, "the enqueue must sit behind the CLEAN check"
+    assert "exit 1" in run[queue_clean:enqueue], "a non-CLEAN failure must fail the job"
+
+
+def test_on_a_merge_queue_base_the_merge_is_auto_without_a_method_or_subject(job: dict):
+    """A base that requires a merge queue merges by the queue's method; a
+    `--squash` there is ignored with a warning and `--subject` means nothing.
+    MUTATION: send `--admin` (bypasses the queue) or drop `--auto`."""
+    (command,) = _queue_merges(_step(job, "merge")["run"])
+    args = command.split("gh pr merge", 1)[1]
+    assert '"${PR_NUMBER}"' in args and "--auto" in args, args
+    for flag in ("--admin", "--merge", "--rebase", "--squash", "--subject"):
+        assert flag not in args, (flag, args)
+
+
+def test_the_title_and_number_come_from_the_event(job: dict):
+    """On a label they are the event's; on a re-evaluation the number is the
+    dispatch input and the rest is read back from the API by the `pr` step."""
+    env = job.get("env") or {}
+    assert env.get("PR_NUMBER") == "${{ github.event.pull_request.number || inputs.pr }}", env
+    assert env.get("EVENT_NAME") == "${{ github.event_name }}", env
+    resolve_env = _step(job, "pr").get("env") or {}
+    assert resolve_env.get("EVENT_TITLE") == "${{ github.event.pull_request.title }}", resolve_env
+    assert resolve_env.get("EVENT_BASE_REF") == "${{ github.event.pull_request.base.ref }}", resolve_env
+    gate_env = _step(job, "gate").get("env") or {}
+    assert gate_env.get("PR_TITLE") == "${{ steps.pr.outputs.title }}", gate_env
+    assert gate_env.get("BASE_REF") == "${{ steps.pr.outputs.base_ref }}", gate_env
+    merge_env = _step(job, "merge").get("env") or {}
+    assert merge_env.get("PR_TITLE") == "${{ steps.pr.outputs.title }}", merge_env
 
 
 def test_the_merge_runs_only_after_the_gate(job: dict):
@@ -1906,6 +2229,76 @@ def test_the_close_job_runs_the_script_with_the_number_through_env(close_job: di
     assert env.get("GH_TOKEN") == "${{ github.token }}", env
 
 
+def test_it_re_evaluates_when_any_pull_request_workflow_completes(workflow: dict):
+    """A check whose completion can be the LAST one on a head must re-evaluate:
+    if it is left out, the pull request sits, which is archived pull request 697 again. Since archived issue 795
+    that is ci-gate and every pull-request workflow ci-gate does not wait for
+    -- ci-gate completes after application and terraform -- and the exact set
+    is held in test_auto_merge_base_merge.py.
+    MUTATION: drop `ci-gate` or `security` from `workflows:`, or listen to
+    `requested` instead of `completed`."""
+    names = _pull_request_workflow_names()
+    assert {"application", "terraform", "security"} <= names, names  # the control
+    workflow_run = workflow["on"]["workflow_run"]
+    assert workflow_run["types"] == ["completed"], workflow_run
+    # `ci-gate` is a job of application.yml since 2026-10-07, not a workflow:
+    # application's completion is ci-gate's. Anything listed that no workflow
+    # carries is a typo, or a name that never fires.
+    listened = set(workflow_run["workflows"])
+    assert {"application", "security"} <= listened, workflow_run
+    assert listened - names <= RETIRED_WORKFLOW_NAMES, workflow_run
+
+
+def test_check_suite_completed_is_a_backstop_beside_workflow_run(workflow: dict):
+    """archived issue 815: a check no application or security run reports -- code
+    scanning's `Trivy` -- finished on archived pull request 811 and nothing looked again.
+    `check_suite: completed` fires for a suite another App created; GitHub
+    does not run a workflow on it for a suite GitHub Actions created, so it
+    is a backstop BESIDE `workflow_run`, never instead of it.
+    MUTATION: drop `check_suite`, listen to `requested`, or drop
+    `workflow_run` in its favour."""
+    on = workflow["on"]
+    assert (on.get("check_suite") or {}).get("types") == ["completed"], on.get("check_suite")
+    assert on["workflow_run"]["types"] == ["completed"], on["workflow_run"]
+
+
+def test_the_dispatch_takes_one_required_pull_request_number(workflow: dict):
+    inputs = (workflow["on"]["workflow_dispatch"] or {}).get("inputs") or {}
+    assert set(inputs) == {"pr"}, inputs
+    assert inputs["pr"].get("required") is True, inputs
+
+
+def test_the_requeue_job_runs_only_on_a_pull_request_run_completing(requeue_job: dict):
+    """MUTATION: drop the `workflow_run.event == 'pull_request'` guard (every
+    push to main would list ready pull requests for nothing), or the
+    MERGE_APP_ID guard (with no App every completion would re-refuse)."""
+    condition = str(requeue_job.get("if") or "")
+    assert re.search(r"github\.event_name\s*==\s*'workflow_run'", condition), condition
+    assert re.search(r"github\.event\.workflow_run\.event\s*==\s*'pull_request'", condition), condition
+    assert "vars.MERGE_APP_ID != ''" in condition, condition
+    # archived issue 815: a check suite's completion re-evaluates too.
+    assert re.search(r"github\.event_name\s*==\s*'check_suite'", condition), condition
+
+
+def test_a_ready_pull_request_waiting_on_a_required_check_is_re_evaluated_when_its_suite_completes(
+    requeue_job: dict, run_requeue
+):
+    """archived issue 815: a check suite that completes at a queued `ready` pull request's
+    head dispatches that pull request's re-evaluation -- the same dispatch a
+    finishing workflow run sends. MUTATION: read only
+    `workflow_run.head_sha`, and a check_suite event dispatches nothing."""
+    head = "ef" * 20
+    event = {"action": "completed", "check_suite": {"head_sha": head, "status": "completed",
+                                                    "app": {"slug": "github-advanced-security"}}}
+    assert _requeue_head_sha(requeue_job, event) == head
+    assert _requeue_head_sha(requeue_job, {"workflow_run": {"head_sha": "ab" * 20}}) == "ab" * 20  # the control
+    proc, calls = run_requeue([{"number": 811, "headRefOid": head}, {"number": 812, "headRefOid": "cd" * 20}],
+                              _requeue_head_sha(requeue_job, event))
+    assert proc.returncode == 0, proc.stderr
+    dispatches = [line for line in calls.splitlines() if line.startswith("workflow run")]
+    assert dispatches == ["workflow run auto-merge.yml --ref main -f pr=811"], calls
+
+
 def test_the_requeue_job_holds_no_app_token_and_least_privilege(requeue_job: dict):
     """It merges nothing: it dispatches (actions: write, which the
     GITHUB_TOKEN may do -- a dispatch is one of the two events that token
@@ -1921,6 +2314,23 @@ def test_the_requeue_job_holds_no_app_token_and_least_privilege(requeue_job: dic
     for step in steps:
         assert "checkout" not in str(step.get("uses") or "")
         assert "github.event" not in str(step.get("run") or ""), step
+
+
+def test_the_enable_and_disable_jobs_never_run_on_a_workflow_run(workflow: dict, job: dict, disable_job: dict):
+    """A `workflow_run` event carries no pull request. MUTATION: drop the
+    disable job's event_name guard."""
+    disable = str(disable_job.get("if") or "")
+    assert re.search(r"github\.event_name\s*==\s*'pull_request_target'", disable), disable
+
+
+def test_a_re_evaluation_queues_separately_from_the_label_events(workflow: dict):
+    """A queued run in a concurrency group cancels the one queued before it.
+    Sharing the label events' group, a burst of re-evaluations could cancel a
+    queued `synchronize` run, and a stale auto-merge would stay armed.
+    MUTATION: drop the `requeue-` prefix."""
+    group = workflow["concurrency"]["group"]
+    assert "github.event_name == 'workflow_dispatch' && 'requeue-'" in group, group
+    assert "github.event.pull_request.number || inputs.pr" in group, group
 
 
 def test_the_body_edit_re_evaluation_holds_no_app_token_and_least_privilege(requeue_edited_job: dict):

@@ -31,11 +31,13 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from .ci_run_blocks import run_block
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "check-pr-dependencies.sh"
+AUTO_MERGE = REPO / ".github" / "workflows" / "auto-merge.yml"
 THIS_REPO = "example-org/example-repo"
 SELF = 4242
 REFUSED = 2
@@ -43,6 +45,15 @@ REFUSED = 2
 pytestmark = pytest.mark.skipif(
     shutil.which("bash") is None or shutil.which("jq") is None, reason="bash and jq are required"
 )
+
+
+@pytest.fixture(scope="module")
+def enable() -> dict:
+    return yaml.safe_load(AUTO_MERGE.read_text())["jobs"]["enable"]
+
+
+def _ids(job: dict) -> list:
+    return [step.get("id") for step in job.get("steps") or []]
 
 
 def _first_effective_line(text: str) -> str:
@@ -442,6 +453,33 @@ def test_a_pull_request_number_that_is_not_a_number_is_refused(run_check, pr: st
     assert calls == "" and looked_up == []
 
 
+def test_the_enable_job_runs_the_check_from_the_default_branch_before_the_gate(enable: dict):
+    """Main's script, never the pull request's: pull_request_target holds a
+    write token. MUTATION: move the check after the merge, or drop its `if:`."""
+    ids = _ids(enable)
+    assert "dependencies" in ids, ids
+    assert ids.index("main-scripts") < ids.index("dependencies") < ids.index("gate") < ids.index("merge"), ids
+    step = enable["steps"][ids.index("dependencies")]
+    assert "scripts/check-pr-dependencies.sh --pr \"${PR_NUMBER}\"" in step["run"]
+    assert step.get("if") == "steps.pr.outputs.evaluate == 'true'", step.get("if")
+    assert "github.event" not in step["run"]
+
+
+def test_a_failure_that_is_not_a_refusal_fails_the_step(enable: dict):
+    """Fail closed: only exit 0 passes and only exit 2 refuses.
+    MUTATION: `|| true` after the script."""
+    run = enable["steps"][_ids(enable).index("dependencies")]["run"]
+    assert '[[ "${rc}" -ne 2 || ! -s "${out}" ]]' in run
+    assert "exit 1" in run
+    assert "|| true" not in run
+
+
+def test_the_gate_reads_the_checks_finding(enable: dict):
+    gate = enable["steps"][_ids(enable).index("gate")]
+    assert (gate.get("env") or {}).get("DEPENDENCY_REFUSAL") == "${{ steps.dependencies.outputs.refusal }}"
+    assert 'refuse "${DEPENDENCY_REFUSAL}"' in gate["run"]
+
+
 # ---------------------------------------------------------------------------
 # auto-merge.yml's gate shell refuses on the check's finding
 # ---------------------------------------------------------------------------
@@ -524,4 +562,3 @@ def test_on_a_re_evaluation_a_refusal_drops_ready_and_disarms(run_check, run_gat
     assert f"pr edit {SELF} --remove-label ready" in calls, calls
     assert refusal in comments, comments
     assert "disarm=true" in output and "decision=merge" not in output, output
-

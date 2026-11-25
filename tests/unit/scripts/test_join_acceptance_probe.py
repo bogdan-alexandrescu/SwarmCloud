@@ -52,6 +52,8 @@ from pathlib import Path
 
 import pytest
 
+from .test_release_reuses_ci_images import _code, _workflow
+
 REPO = Path(__file__).resolve().parents[3]
 
 _PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
@@ -601,6 +603,26 @@ def test_provisioned_it_still_reaches_the_configuration_check(tmp_path):
 # ---------------------------------------------------------------------------
 # Where it runs
 # ---------------------------------------------------------------------------
+
+
+def test_accept_yml_runs_it_in_the_smoke_job_beside_the_roles_probe():
+    jobs = _workflow("accept.yml")["jobs"]
+    steps = jobs["smoke"]["steps"]
+    mine = [i for i, s in enumerate(steps) if TARGET in _code(s.get("run", ""))]
+    roles = [i for i, s in enumerate(steps) if "acceptance/groups/roles" in _code(s.get("run", ""))]
+    assert len(mine) == 1 and len(roles) == 1
+    assert mine[0] == roles[0] + 1, "the join probe runs right after the roles probe"
+    step = steps[mine[0]]
+    assert _code(step["run"]).strip() == f"./scripts/verify-remote.sh {TARGET}"
+    assert "!cancelled()" in str(step.get("if"))
+    for name in SETTINGS:
+        # An account or a person's address is a masked secret
+        # (docs/design/generic-repository.md, section 2.1); the rest are variables.
+        context = "secrets" if name.endswith(("_SA", "_PERSON")) else "vars"
+        assert step["env"][name] == f"${{{{ {context}.{name.removeprefix('SWARM_ACCEPTANCE_')} }}}}"
+    for job_id, job in jobs.items():
+        if job_id != "smoke":
+            assert TARGET not in json.dumps(job), job_id
 
 
 def test_verify_remote_carries_the_probes_settings_into_the_execution(tmp_path):

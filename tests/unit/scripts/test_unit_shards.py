@@ -35,11 +35,38 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
+
+from .test_fast_checks_on_lane_prs import LANE_SKIP
 
 REPO = Path(__file__).resolve().parents[3]
+APPLICATION = REPO / ".github" / "workflows" / "application.yml"
 DURATIONS = REPO / "tests" / "unit" / "scripts" / "unit_test_durations.json"
 UI_PACKAGE = REPO / "apps" / "swarm-ui" / "package.json"
 UNIT_SHARDS = REPO / "scripts" / "lib" / "unit_shards.py"
+
+
+#: Every check name application.yml reported on a pull request before the
+#: shards (read from main at 8892e96). Each must still be reported.
+NAMES_BEFORE = {
+    "shellcheck",
+    "release workflow wiring (actionlint)",
+    "format / unit tests",
+    "swarm-ui typecheck / component tests",
+    "integration tests (emulator)",
+    "kubernetes manifests",
+    "build changed images without pushing",
+    "build images",
+}
+
+
+def _jobs() -> dict:
+    return yaml.safe_load(APPLICATION.read_text())["jobs"]
+
+
+def _needs(job: dict) -> list[str]:
+    needs = job.get("needs")
+    return [needs] if isinstance(needs, str) else list(needs or [])
 
 
 def _test_files(root: Path = REPO) -> set[str]:
@@ -51,6 +78,48 @@ def _test_files(root: Path = REPO) -> set[str]:
         if path.name.startswith("test_") or path.name.endswith("_test.py"):
             found.add(str(path.relative_to(root)))
     return found
+
+
+# ---------------------------------------------------------------------------
+# The names.
+# ---------------------------------------------------------------------------
+def test_every_check_name_is_still_reported():
+    """MUTATION: rename `python` or `ui`, or drop the job carrying a name."""
+    names = {str(job.get("name") or job_id) for job_id, job in _jobs().items()}
+    assert NAMES_BEFORE <= names, NAMES_BEFORE - names
+    assert "ci-gate" in names
+    for name in ("format / unit tests", "swarm-ui typecheck / component tests", "ci-gate"):
+        assert sum(str(j.get("name")) == name for j in _jobs().values()) == 1, name
+
+
+@pytest.mark.parametrize(
+    "job_id, needs",
+    [("python", {"changes", "python-checks", "python-unit"}), ("ui", {"changes", "ui-build", "ui-tests"})],
+)
+def test_the_kept_names_stand_for_their_shards(job_id, needs):
+    """`always()`: a job skipped because a shard failed would report skipped,
+    which reads as passed. MUTATION: drop a shard job from `needs`."""
+    job = _jobs()[job_id]
+    assert set(_needs(job)) == needs, _needs(job)
+    # Plus the lane clause every job ends with (test_fast_checks_on_lane_prs.py).
+    assert job.get("if") == "always() && " + LANE_SKIP, job.get("if")
+
+
+def test_the_unit_tests_gate_the_release_not_the_build():
+    """main's image build starts with its run (owner pick on PR 3344, issue
+    3336); the unit shards and the lock / contract checks gate the release
+    instead, by the names CI_RELEASE_TEST_JOBS lists -- every job ci-gate
+    needs (test_ci_built_images.py holds the rest). MUTATION: rename
+    `python-unit`, or drop it from CI_RELEASE_TEST_JOBS."""
+    jobs = _jobs()
+    assert not _needs(jobs["build"]), _needs(jobs["build"])
+    common = (REPO / "scripts" / "lib" / "common.sh").read_text()
+    gate = re.search(r"^CI_RELEASE_TEST_JOBS=\(\n(.*?)^\)", common, re.M | re.S)
+    assert gate, "CI_RELEASE_TEST_JOBS is not in scripts/lib/common.sh"
+    listed = set(re.findall(r'"([^"]+)"', gate.group(1)))
+    assert str(jobs["python-unit"]["name"]).split(" (", 1)[0] in listed
+    for job_id in ("python-checks", "shell", "manifests"):
+        assert str(jobs[job_id].get("name") or job_id) in listed, job_id
 
 
 # ---------------------------------------------------------------------------

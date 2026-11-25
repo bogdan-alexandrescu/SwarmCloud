@@ -57,8 +57,10 @@ import yaml
 from .ci_run_blocks import run_block
 from .test_build_images_pr_check import _env, _sandbox
 from .test_ci_gate import judge
+from .test_fast_checks_on_lane_prs import without_lane_clause
 
 REPO = Path(__file__).resolve().parents[3]
+WORKFLOW = REPO / ".github" / "workflows" / "application.yml"
 TAG = "feed00c0ffee"
 JOB = "build-check"
 
@@ -389,6 +391,29 @@ def test_local_is_only_a_build_only_mode(tmp_path, args):
 # ---------------------------------------------------------------------------
 # The workflow job.
 # ---------------------------------------------------------------------------
+def _job() -> dict:
+    return yaml.safe_load(WORKFLOW.read_text())["jobs"][JOB]
+
+
+def test_the_job_builds_with_buildx_and_pushes_logs_in_and_authenticates_nowhere():
+    job = _job()
+    text = json.dumps(job)
+    # Pull requests only, and only those the `changes` job says reach an
+    # image (test_the_build_check_is_skipped_only_on_the_changes_jobs_no) and
+    # run the full suite (`full`, test_fast_checks_on_lane_prs.py).
+    # (Then the lane clause every job ends with, test_fast_checks_on_lane_prs.py.)
+    assert without_lane_clause(job.get("if")) == "needs.changes.outputs.full == 'true' && github.event_name == 'pull_request' && needs.changes.outputs.images == 'true'", job.get("if")
+    assert job.get("needs") == "changes", job.get("needs")
+    assert job.get("permissions") == {"contents": "read"}, job.get("permissions")
+    assert "build-images.sh --build-only --local" in text, "the job builds on the runner"
+    for banned in ("secrets.", "id-token", "google-github-actions/", "docker/login-action",
+                   "docker login", "--push", "push: true", "GCP_PR_BUILD", "vars.GCP_",
+                   "build-push-action", "CLOUDBUILD_"):
+        assert banned not in text, f"{JOB} uses {banned!r}"
+    checkouts = [s for s in job["steps"] if "actions/checkout" in str(s.get("uses", ""))]
+    assert checkouts and all(s.get("with", {}).get("persist-credentials") is False for s in checkouts), checkouts
+
+
 def _run_step(run: str, cwd: Path, tmp_path: Path, **env: str) -> tuple[subprocess.CompletedProcess, dict, str]:
     out = tmp_path / "github_output"
     summary = tmp_path / "summary.md"

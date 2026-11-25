@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import subprocess
 from pathlib import Path
@@ -26,6 +27,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[3]
 REPORT = ROOT / "scripts" / "coverage-report.sh"
 MARKER = "<!-- swarm-coverage: nightly line coverage is under a floor -->"
+PIN = re.compile(r"^([\w.-]+/[\w.-]+)@([0-9a-f]{40})$")
 
 
 # --- the report ------------------------------------------------------------------
@@ -176,6 +178,42 @@ def _load(path: Path) -> dict:
     return yaml.safe_load(path.read_text())
 
 
+def _on(doc: dict) -> dict:
+    # PyYAML reads the bare key `on` as the boolean True.
+    return doc.get("on", doc.get(True))
+
+
+def _uses(doc: dict) -> list[str]:
+    return [step["uses"] for job in doc["jobs"].values() for step in job.get("steps", []) if "uses" in step]
+
+
+def test_it_runs_on_a_schedule_and_by_hand_only():
+    """MUTATION: add pull_request, push, merge_group or workflow_run."""
+    triggers = _on(_load(WORKFLOW))
+    assert set(triggers) == {"schedule", "workflow_dispatch"}, sorted(triggers)
+    assert "pull_request" not in triggers and "pull_request_target" not in triggers
+    crons = [entry["cron"] for entry in triggers["schedule"]]
+    assert len(crons) == 1, crons
+    minute, hour, *rest = crons[0].split()
+    assert rest == ["*", "*", "*"], crons  # once a day
+    assert minute != "0", "the top of the hour is when GitHub's scheduler drops runs"
+
+
+def test_every_job_runs_on_main_only():
+    """A dispatch from another branch would close main's issue on its own
+    green. MUTATION: drop plan's `if:`, or a job that does not need plan."""
+    jobs = _load(WORKFLOW)["jobs"]
+    assert jobs["plan"]["if"] == "github.ref == 'refs/heads/main'", jobs["plan"].get("if")
+
+    def reaches_plan(name: str) -> bool:
+        needs = jobs[name].get("needs", [])
+        needs = [needs] if isinstance(needs, str) else needs
+        return "plan" in needs or any(reaches_plan(n) for n in needs)
+
+    for name in set(jobs) - {"plan"}:
+        assert reaches_plan(name), name
+
+
 def test_permissions_are_explicit_and_only_report_writes():
     """MUTATION: write-all, a missing top-level block, or issues: write on a
     job that runs the suites."""
@@ -187,3 +225,24 @@ def test_permissions_are_explicit_and_only_report_writes():
     assert doc["jobs"]["report"]["permissions"] == {"contents": "read", "actions": "read", "issues": "write"}
     for name, job in doc["jobs"].items():
         assert "id-token" not in (job.get("permissions") or {}), name
+
+
+def test_every_action_is_pinned_to_the_commit_the_other_workflows_pin():
+    """The SHAs application.yml pins; download-artifact, which application.yml
+    does not use, at publish-release.yml's. MUTATION: a tag, or a SHA other
+    than the one main already reviewed."""
+    main_pins: dict[str, set[str]] = {}
+    others = [p for p in sorted(WORKFLOW.parent.glob("*.yml")) if p != WORKFLOW]
+    for uses in (u for path in others for u in _uses(_load(path))):
+        match = PIN.match(uses.split("#")[0].strip())
+        if match:
+            main_pins.setdefault(match.group(1), set()).add(match.group(2))
+    ours = _uses(_load(WORKFLOW))
+    assert ours
+    for uses in ours:
+        match = PIN.match(uses.strip())
+        assert match, f"{uses} is not pinned to a commit SHA"
+        assert match.group(2) in main_pins.get(match.group(1), set()), (uses, main_pins.get(match.group(1)))
+    for line in WORKFLOW.read_text().splitlines():
+        if "uses:" in line:
+            assert re.search(r"@[0-9a-f]{40} # v\d", line), line

@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 from .ci_run_blocks import run_block
 
@@ -29,6 +30,18 @@ GH_REPO = "acme/widgets"
 
 sys.path.insert(0, str(REPO / "scripts/lib"))
 import ci_reuse  # noqa: E402
+
+
+WORKFLOW = REPO / ".github/workflows/application.yml"
+
+
+def _step(job: str, step_id: str) -> dict:
+    (step,) = [s for s in _jobs()[job]["steps"] if s.get("id") == step_id]
+    return step
+
+
+def _jobs() -> dict:
+    return yaml.safe_load(WORKFLOW.read_text())["jobs"]
 
 
 def _write(root: Path, rel: str, text: str) -> None:
@@ -248,6 +261,28 @@ def test_an_unreadable_api_runs_the_suite(tree: Path):
     assert got == {"reused": "[]", "reused_from": "", "train": ""}, got
 
 
+def test_main_s_push_looks_for_the_train_before_the_tree_record():
+    """MUTATION: run the train step on a pull request, after `reuse`, or with no read of checks."""
+    changes = _jobs()["changes"]
+    ids = [s.get("id") for s in changes["steps"]]
+    assert ids.index("train") < ids.index("reuse"), ids
+    step = _step("changes", "train")
+    assert step["if"] == "github.event_name == 'push' && github.ref == 'refs/heads/main'", step["if"]
+    assert "./scripts/ci-select.sh train-match" in step["run"], step["run"]
+    assert changes["permissions"].get("checks") == "read" and changes["permissions"].get("issues") == "read"
+    assert "id-token" not in changes["permissions"]
+
+
+def test_a_lane_pull_request_and_only_one_selects():
+    step = _step("changes", "lane")
+    assert step["if"] == ("github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && "
+                          "github.event.pull_request.head.repo.full_name == github.repository"), step["if"]
+    assert "./scripts/ci-select.sh lane" in step["run"], step["run"]
+    outputs = _jobs()["changes"]["outputs"]
+    for key in ("lane", "ui_tests", "integration_tests"):
+        assert outputs[key].replace(" ", "") == f"${{{{steps.lane.outputs.{key}}}}}", outputs[key]
+
+
 # --------------------------------------------------------------------------
 # application.yml's run blocks, executed from their published text
 # --------------------------------------------------------------------------
@@ -293,6 +328,17 @@ def test_integration_runs_whole_except_on_a_lane_that_reaches_none(tmp_path: Pat
     assert _run_step(pick, tmp_path, LANE="", INTEGRATION_TESTS="") == {"none": "false"}
     assert _run_step(pick, tmp_path, LANE="true", INTEGRATION_TESTS="") == {"none": "true"}
     assert _run_step(pick, tmp_path, LANE="true", INTEGRATION_TESTS="tests/integration/test_a.py") == {"none": "false"}
+
+
+def test_the_required_check_names_are_unchanged():
+    """The ruleset and the merge step read these names; a rename un-requires them."""
+    jobs = _jobs()
+    assert jobs["ci-gate"]["name"] == "ci-gate"
+    assert jobs["python"]["name"] == "format / unit tests"
+    assert jobs["ui"]["name"] == "swarm-ui typecheck / component tests"
+    assert jobs["integration"]["name"] == "integration tests (emulator)"
+    assert jobs["manifests"]["name"] == "kubernetes manifests"
+    assert jobs["shell"]["name"] == "shellcheck"
 
 
 def test_the_landed_sentence_is_the_one_the_train_writes():

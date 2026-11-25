@@ -211,3 +211,43 @@ def test_the_check_keeps_its_required_name_and_holds_no_credential():
     assert _step()["env"]["DEPLOYMENT_PATTERNS"] == "${{ secrets.DEPLOYMENT_PATTERNS }}"
     assert "deployment-values" not in (_jobs()["checks"].get("outputs") or {})
     assert not [s for s in _jobs()["checks"]["steps"] if "DEPLOYMENT_PATTERNS" in yaml.safe_dump(s)]
+
+
+def test_it_never_runs_the_change_s_code_while_holding_the_list():
+    """The independent review of 14 November: the guard, its library and its
+    allowlist come from the base commit (guard/); the change is checked out
+    into pr/ as data only, and nothing of it runs before or during the guard.
+    Every step before the guard is a credential-less checkout."""
+    steps = _job()["steps"]
+    at = steps.index(_step())
+    before = steps[:at]
+    assert before and all(str(s.get("uses", "")).startswith("actions/checkout@") for s in before)
+    assert all((s.get("with") or {}).get("persist-credentials") is False for s in before)
+    by_path = {(s.get("with") or {}).get("path"): s["with"] for s in before}
+    assert set(by_path) == {"guard", "pr"}
+    assert by_path["guard"]["ref"] == (
+        "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha "
+        "|| (github.event_name == 'workflow_dispatch' && 'main') || github.sha }}"
+    )
+    assert by_path["pr"]["fetch-depth"] == 0
+    assert _step()["working-directory"] == "pr"
+    assert '"${GITHUB_WORKSPACE}/guard/scripts/guards/deployment-values.sh"' in _script()
+    for line in _script().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#") or "GITHUB_WORKSPACE}/guard/" in stripped:
+            continue
+        assert "scripts/" not in stripped, f"the guard step runs the change's own script: {stripped}"
+    assert steps[at + 1:] == []
+
+
+def test_it_runs_on_every_pull_request_and_on_main():
+    on = yaml.safe_load(SECURITY.read_text(encoding="utf-8"))[True]
+    assert "pull_request" in on and "merge_group" in on
+    assert on["push"] == {"branches": ["main"]}
+    # Every pull request but a lane's: the owner's lane rule of 12 November
+    # (tests/unit/scripts/test_fast_checks_on_lane_prs.py) skips a lane's
+    # pull request and nothing else, so the only condition is that clause.
+    assert _job()["if"] == (
+        "${{ !cancelled() && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') "
+        "&& github.event.pull_request.head.repo.full_name == github.repository) }}"
+    )

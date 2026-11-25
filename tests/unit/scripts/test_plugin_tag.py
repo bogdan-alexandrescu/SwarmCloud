@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import textwrap
@@ -39,6 +40,7 @@ from pathlib import Path
 import pytest
 
 from .ci_run_blocks import run_block
+from .test_release_reuses_ci_images import _evaluate, _workflow
 
 VERSION = "9.9.9"
 TAG = f"sc-v{VERSION}"
@@ -61,6 +63,47 @@ CHECK_STEP = run_block(
     "shell",
     "the plugin's pinned bridge tag exists, or no tested push has tried to make it yet",
 )
+
+
+def _taggers(name: str) -> list[tuple[str, dict]]:
+    return [
+        (job_id, job)
+        for job_id, job in _workflow(name)["jobs"].items()
+        if any(re.search(r"\btag\s+-a\b", str(step.get("run", ""))) for step in job.get("steps") or [])
+    ]
+
+
+def _tag_job() -> tuple[str, dict]:
+    """The one application.yml job that creates a tag."""
+    found = _taggers("application.yml")
+    assert len(found) == 1, f"application.yml has {len(found)} jobs that create an annotated tag; expected one (plugin-tag)"
+    return found[0]
+
+
+def _newest_step() -> dict:
+    _, job = _tag_job()
+    steps = [s for s in job.get("steps") or [] if s.get("id") == "newest"]
+    assert len(steps) == 1, "the tag job has no single `newest` step deciding whether main moved past the commit"
+    return steps[0]
+
+
+def _tag_step() -> dict:
+    _, job = _tag_job()
+    steps = [s for s in job.get("steps") or [] if re.search(r"\btag\s+-a\b", str(s.get("run", "")))]
+    assert len(steps) == 1, f"the tag job has {len(steps)} steps creating a tag; expected one"
+    return steps[0]
+
+
+def _shell_job() -> dict:
+    return _workflow("application.yml")["jobs"]["shell"]
+
+
+def _check_step() -> dict:
+    steps = [s for s in _shell_job().get("steps") or [] if "pinned bridge tag" in str(s.get("name", ""))]
+    assert len(steps) == 1, (
+        f"application.yml's shell job has {len(steps)} steps checking the plugin's pinned bridge tag; expected one"
+    )
+    return steps[0]
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +323,71 @@ def test_a_version_that_is_not_x_y_z_is_refused(tmp_path, version):
     assert _git(calls, "tag") == [] and _git(calls, "push") == [], calls
 
 
+def test_only_the_tag_job_may_write_contents():
+    for name in ("application.yml", "release.yml"):
+        assert _workflow(name)["permissions"].get("contents") == "read", (name, _workflow(name)["permissions"])
+    job_id, job = _tag_job()
+    assert job_id == "plugin-tag", job_id
+    assert (job.get("permissions") or {}).get("contents") == "write", job.get("permissions")
+    for name in ("application.yml", "release.yml"):
+        writers = sorted(
+            j for j, other in _workflow(name)["jobs"].items() if (other.get("permissions") or {}).get("contents") == "write"
+        )
+        assert writers == ([job_id] if name == "application.yml" else []), f"jobs with contents: write in {name}: {writers}"
+
+
+def test_the_release_no_longer_tags():
+    """One job tags. MUTATION: put a tagging job back in release.yml."""
+    assert _taggers("release.yml") == [], "release.yml still creates an annotated tag; application.yml's plugin-tag does"
+
+
+def test_the_tag_waits_for_the_unit_tests_and_not_the_image_build():
+    """Owner decision 2026-11-04, "Tag once tests pass": on 2026-11-04 the tag
+    waited about an hour behind release.yml's `images and scan`, and every
+    plugin reload in that hour lost its bridge. MUTATION: make it need `build`,
+    drop `python`, or let it run past a `python` that did not pass."""
+    _, job = _tag_job()
+    jobs = _workflow("application.yml")["jobs"]
+    assert jobs["python"]["name"] == "format / unit tests", jobs["python"]["name"]
+    needs = job.get("needs")
+    needs = [needs] if isinstance(needs, str) else list(needs or [])
+    assert needs == ["python"], f"the tag job needs {needs}; the proof is `format / unit tests` alone"
+    job_if = str(job.get("if", ""))
+    # `!cancelled()`, not none: with no status function GitHub ANDs the
+    # implicit success(), false whenever a job up the chain was skipped, which
+    # skipped this job on every main build (2026-11-11). Not `always()`: a
+    # cancelled run tags nothing.
+    assert re.search(r"!\s*cancelled\(\s*\)", job_if), job_if
+    assert not re.search(r"\b(always|failure)\(\s*\)", job_if), job_if
+    push_main = {"github.event_name": "push", "github.ref": "refs/heads/main", "needs.python.result": "success"}
+    assert _evaluate(job_if, **push_main) is True, job_if
+    for result in ("failure", "cancelled", "skipped"):
+        assert _evaluate(job_if, **{**push_main, "needs.python.result": result}) is False, result
+
+
+@pytest.mark.parametrize(
+    "event, ref",
+    (
+        ("pull_request", "refs/pull/7/merge"),
+        ("merge_group", "refs/heads/gh-readonly-queue/main/pr-7"),
+        ("workflow_dispatch", "refs/heads/main"),
+        ("workflow_dispatch", "refs/heads/feature"),
+        ("push", "refs/heads/feature"),
+    ),
+)
+def test_the_tag_job_runs_on_a_push_to_main_only(event, ref):
+    """MUTATION: drop the event or the ref clause from the job's `if:`."""
+    _, job = _tag_job()
+    ctx = {"github.event_name": event, "github.ref": ref, "needs.python.result": "success"}
+    assert _evaluate(str(job.get("if", "")), **ctx) is False, (event, ref)
+
+
+def test_the_gate_waits_for_the_tag():
+    """A tag that failed on main shows on main's ci-gate."""
+    needs = _workflow("application.yml")["jobs"]["ci-gate"]["needs"]
+    assert "plugin-tag" in needs, needs
+
+
 def _outputs(tmp_path: Path) -> dict[str, str]:
     path = tmp_path / "github_output"
     text = path.read_text() if path.exists() else ""
@@ -435,3 +543,13 @@ def test_a_failed_gh_call_is_a_failure_not_no_runs(tmp_path):
 def test_a_remote_that_cannot_be_read_fails_the_check(tmp_path):
     result, _ = _run(CHECK_STEP, tmp_path, FAKE_REMOTE_TAG="error")
     assert result.returncode != 0, result.stdout
+
+
+def test_the_check_runs_on_main_with_what_it_needs():
+    step = _check_step()
+    assert "refs/heads/main" in str(step.get("if", "")), step.get("if")
+    assert "GH_TOKEN" in (step.get("env") or {}), step.get("env")
+    granted = _shell_job().get("permissions") or {}
+    assert granted.get("actions") == "read", granted
+    assert granted.get("contents") == "read", granted
+

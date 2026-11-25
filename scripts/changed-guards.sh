@@ -149,8 +149,10 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # the tests that hold CI security decisions, kept by the owner's decision of
 # 2026-11-25 (the hotfix lane's gates and the merge workflows' token-scope and
 # script-injection tests added that day on the security review's
-# recommendation), which may read CI YAML only; a listed file that is gone or
-# reads nothing is red too. The listed files:
+# recommendation, and every test the issue 71 pull request deleted that holds
+# a workflow's permissions, secrets, triggers, gates, redaction or supply
+# chain, restored under one rule), which may read CI YAML only; a listed
+# file that is gone or reads nothing is red too. The listed files:
 #   tests/unit/scripts/test_fork_prs_off_self_hosted.py
 #   tests/unit/scripts/test_release_prod_gate.py
 #   tests/unit/scripts/test_release_dev_iam_gate.py
@@ -170,6 +172,46 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 #   tests/unit/scripts/test_ci_gate.py
 #   tests/unit/scripts/test_deployment_values_workflow.py
 #   tests/unit/scripts/test_coverage_workflow.py
+#   tests/unit/install/test_addons.py
+#   tests/unit/scripts/test_acceptance_roles.py
+#   tests/unit/scripts/test_build_images_incremental.py
+#   tests/unit/scripts/test_build_images_local.py
+#   tests/unit/scripts/test_build_images_pr_check.py
+#   tests/unit/scripts/test_check_action_pins.py
+#   tests/unit/scripts/test_check_closing_references.py
+#   tests/unit/scripts/test_check_pr_dependencies.py
+#   tests/unit/scripts/test_ci_built_images.py
+#   tests/unit/scripts/test_ci_fix.py
+#   tests/unit/scripts/test_ci_fold.py
+#   tests/unit/scripts/test_ci_once_per_head.py
+#   tests/unit/scripts/test_ci_reuse.py
+#   tests/unit/scripts/test_ci_select.py
+#   tests/unit/scripts/test_ci_tfvars_workflow.py
+#   tests/unit/scripts/test_ci_tool_versions.py
+#   tests/unit/scripts/test_egress_rollout.py
+#   tests/unit/scripts/test_fast_checks_on_lane_prs.py
+#   tests/unit/scripts/test_flaky_quarantine.py
+#   tests/unit/scripts/test_hotfix_superseded.py
+#   tests/unit/scripts/test_iam_refusal_probe.py
+#   tests/unit/scripts/test_image_streaming.py
+#   tests/unit/scripts/test_install_trivy.py
+#   tests/unit/scripts/test_issue_forms.py
+#   tests/unit/scripts/test_join_acceptance_probe.py
+#   tests/unit/scripts/test_merge_app_permissions_doc.py
+#   tests/unit/scripts/test_merge_queue_workflows.py
+#   tests/unit/scripts/test_plan_text_never_public.py
+#   tests/unit/scripts/test_plugin_tag.py
+#   tests/unit/scripts/test_pr_image_scan.py
+#   tests/unit/scripts/test_private_tfvars.py
+#   tests/unit/scripts/test_refresh_weights_workflow.py
+#   tests/unit/scripts/test_release_acceptance_job.py
+#   tests/unit/scripts/test_release_held_plan_workflow.py
+#   tests/unit/scripts/test_release_newest_only.py
+#   tests/unit/scripts/test_release_size_record.py
+#   tests/unit/scripts/test_runner_fallback_workflow.py
+#   tests/unit/scripts/test_unit_shards.py
+#   tests/unit/scripts/test_warm_jobs.py
+#   tests/unit/scripts/test_workflow_needs_result_status.py
 # Then test_check_source_text (about 10 s, most of it one read and parse of
 # the test trees), which refuses a malformed source-text marker on a test that
 # reads .py/.ts source as text and a hit of a forbidden-pattern rule in

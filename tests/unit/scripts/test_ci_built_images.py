@@ -54,6 +54,7 @@ import time
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO = Path(__file__).resolve().parents[3]
 OWNER_REPO = "owner/swarm"
@@ -135,6 +136,17 @@ pytestmark = pytest.mark.skipif(
     shutil.which("jq") is None or shutil.which("bash") is None or shutil.which("git") is None,
     reason="these scripts need bash, jq and git",
 )
+
+
+# ---------------------------------------------------------------------------
+# application.yml, read from the file for the checks of its wiring below.
+# ---------------------------------------------------------------------------
+def _workflow(name: str) -> dict:
+    data = yaml.safe_load((REPO / ".github" / "workflows" / name).read_text())
+    # PyYAML reads the bare key `on` as the boolean True.
+    if True in data:
+        data["on"] = data.pop(True)
+    return data
 
 
 # What application.yml's build job runs under, builds for and uploads: the
@@ -1039,3 +1051,64 @@ def test_gating_tests_skipped_by_their_paths_pass_the_gate(tmp_path):
     proc, out, _ = lookup(tmp_path, world)
     assert proc.returncode == 0, proc.stderr[-3000:]
     assert json.loads(out.read_text()) == record_for()
+
+
+def test_the_release_is_gated_on_every_job_ci_gate_needs():
+    """`build images` starts with its run (owner pick on PR 3344), and the
+    release waits instead for the jobs CI_RELEASE_TEST_JOBS names. Those are
+    exactly the jobs application.yml's `ci-gate` needs, by the names they run
+    under, in the same order (audit, 2026-11-21: the list was three jobs by
+    hand, so a failed integration or UI test did not keep a release back).
+    A matrix job runs as `<name up to its matrix part> (k/N)`, and is listed
+    by that part. MUTATION: add a job to ci-gate's `needs:` and not to the
+    list, rename a job, or list one ci-gate does not need."""
+    jobs = _workflow("application.yml")["jobs"]
+    build = next(job for job in jobs.values() if job.get("name") == "build images")
+    assert not build.get("needs"), f"`build images` waits for {build.get('needs')} again"
+    needs = jobs["ci-gate"]["needs"]
+    needs = [needs] if isinstance(needs, str) else list(needs)
+    expected = []
+    for job_id in needs:
+        name = str(jobs[job_id].get("name") or job_id)
+        if "${{" in name:
+            assert "strategy" in jobs[job_id], f"{job_id}: an expression in the name of a job with no matrix"
+            stem, _, tail = name.partition(" (")
+            assert "${{" in tail and "${{" not in stem and tail.endswith(")"), \
+                f"{job_id}: {name!r} is not `<name> (<matrix part>)`, the shape the readers match"
+            name = stem
+        expected.append(name)
+    common = (REPO / "scripts" / "lib" / "common.sh").read_text()
+    listed = re.search(r"^CI_RELEASE_TEST_JOBS=\(\n(.*?)^\)", common, re.M | re.S)
+    assert listed, "common.sh no longer declares CI_RELEASE_TEST_JOBS=( ... )"
+    names = tuple(re.findall(r'^\s*"([^"]+)"', listed.group(1), re.M))
+    assert names == tuple(expected), (
+        f"CI_RELEASE_TEST_JOBS differs from ci-gate's needs: missing {sorted(set(expected) - set(names))}, "
+        f"extra {sorted(set(names) - set(expected))} (or the order)")
+    assert names == TEST_JOBS, names
+    assert {n for n in names if any("${{" in str(j.get("name", "")) and str(j["name"]).startswith(n + " (")
+                                     for j in jobs.values())} == set(MATRIX_TEST_JOBS)
+    # No entry also catches another job of the workflow by the matrix rule:
+    # `<entry> (...)` names only that entry's own legs.
+    for n in names:
+        for job_id, job in jobs.items():
+            other = str(job.get("name") or job_id)
+            assert not (other != n and other.startswith(n + " (") and "${{" not in other), (n, other)
+
+
+def test_main_builds_even_when_a_needed_check_was_skipped_by_its_paths():
+    """`build images` needed python, shell and manifests until the owner's pick
+    on PR 3344, and shell and manifests are skipped on a commit that touches no
+    shell or Kubernetes file. The guard stays so a need added back cannot
+    bring this back. Without
+    `!cancelled() && !failure()` GitHub skips a job whose needs were skipped, so
+    on 2026-10-14 main commit adc51c0f built nothing and every release after it
+    refused it ("CI never built adc51c0f ... its 'build images' job was
+    skipped"). A skipped check is not a failed one; a failed one must still stop
+    the build. MUTATION: drop either guard from the job's `if:`."""
+    jobs = _workflow("application.yml")["jobs"]
+    builds = [job for job in jobs.values() if job.get("name") == "build images"]
+    assert len(builds) == 1, [job.get("name") for job in jobs.values()]
+    condition = str(builds[0].get("if", ""))
+    assert "!cancelled()" in condition and "!failure()" in condition, condition
+    # Still never on a pull request: a PR builds without pushing in its own job.
+    assert "github.event_name != 'pull_request'" in condition, condition

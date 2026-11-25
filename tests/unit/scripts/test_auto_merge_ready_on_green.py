@@ -39,6 +39,7 @@ import pytest
 import yaml
 
 from .ci_run_blocks import run_block
+import re
 
 REPO = Path(__file__).resolve().parents[3]
 GH_REPO = "example-org/example-repo"
@@ -371,6 +372,72 @@ def _step(job: dict, step_id: str) -> dict:
     matches = [step for step in job.get("steps") or [] if step.get("id") == step_id]
     assert len(matches) == 1, f"expected one step with id {step_id!r}, found {len(matches)}"
     return matches[0]
+
+
+def test_the_workflow_runs_on_a_finishing_run_a_finishing_suite_and_every_15_minutes(workflow: dict):
+    """MUTATION: drop the schedule, change its cadence, or drop the
+    `workflow_run`/`check_suite` triggers `requeue` already uses."""
+    on = workflow["on"]
+    assert on["workflow_run"]["types"] == ["completed"], on["workflow_run"]
+    assert {"application", "security"} <= set(on["workflow_run"]["workflows"]), on["workflow_run"]
+    assert (on.get("check_suite") or {}).get("types") == ["completed"], on.get("check_suite")
+    assert on.get("schedule") == [{"cron": "*/15 * * * *"}], on.get("schedule")
+
+
+def test_the_job_runs_on_the_requeue_events_and_the_schedule_only_with_the_merge_app(workflow: dict, job: dict):
+    """The same events as `requeue`, plus the schedule, and nothing without
+    the App. MUTATION: drop the `workflow_run.event == 'pull_request'` guard
+    (every push to main would judge for nothing), the schedule clause, or the
+    MERGE_APP_ID guard."""
+    condition = re.sub(r"\s+", " ", str(job.get("if") or ""))
+    requeue = re.sub(r"\s+", " ", str(workflow["jobs"]["requeue"].get("if") or ""))
+    for clause in (
+        "github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request'",
+        "github.event_name == 'check_suite'",
+        "vars.MERGE_APP_ID != ''",
+    ):
+        assert clause in requeue, f"control: requeue's if no longer says {clause!r}: {requeue}"
+        assert clause in condition, condition
+    assert "github.event_name == 'schedule'" in condition, condition
+
+
+def test_only_this_job_runs_on_the_schedule(workflow: dict):
+    """Every other job names its own event, so the schedule starts nothing
+    else. MUTATION: give another job a condition the schedule satisfies."""
+    for name, other in (workflow.get("jobs") or {}).items():
+        if name == JOB:
+            continue
+        condition = str(other.get("if") or "")
+        assert condition, f"{name} has no `if`, so it would run on the schedule"
+        assert "schedule" not in condition, f"{name}: {condition}"
+        assert re.search(r"github\.event_name == '|github\.event\.action == '", condition), f"{name}: {condition}"
+
+
+def test_the_finished_runs_head_is_read_from_both_events(job: dict):
+    """MUTATION: read only `workflow_run.head_sha`, and a check suite judges
+    nothing."""
+    expression = str((job.get("env") or {}).get("RUN_HEAD_SHA") or "")
+    assert "github.event.workflow_run.head_sha" in expression, expression
+    assert "github.event.check_suite.head_sha" in expression, expression
+
+
+def test_the_label_is_added_with_the_merge_apps_token(job: dict):
+    """A `ready` the GITHUB_TOKEN adds raises no `labeled` event, so `enable`
+    would never run. MUTATION: label with `github.token`, or mint the App
+    token with more than pull requests, or from another App."""
+    mint = _step(job, "app-token")
+    assert mint.get("uses", "").startswith("actions/create-github-app-token@"), mint
+    inputs = mint.get("with") or {}
+    assert inputs.get("app-id") == "${{ vars.MERGE_APP_ID }}", inputs
+    assert inputs.get("private-key") == "${{ secrets.MERGE_APP_PRIVATE_KEY }}", inputs
+    permissions = {k: v for k, v in inputs.items() if k.startswith("permission-")}
+    assert permissions == {"permission-pull-requests": "write"}, permissions
+    label = _step(job, "label")
+    assert (label.get("env") or {}).get("APP_TOKEN") == "${{ steps.app-token.outputs.token }}", label.get("env")
+    run = label["run"]
+    for line in run.splitlines():
+        if "/labels" in line:
+            assert 'GH_TOKEN="${APP_TOKEN}"' in line, line
 
 
 def test_the_github_token_asks_for_the_least_it_needs(job: dict):

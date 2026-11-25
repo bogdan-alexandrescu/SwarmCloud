@@ -17,9 +17,11 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "lib" / "ci_reuse.py"
+APPLICATION = REPO / ".github" / "workflows" / "application.yml"
 
 _spec = importlib.util.spec_from_file_location("ci_reuse", SCRIPT)
 reuse = importlib.util.module_from_spec(_spec)
@@ -167,6 +169,62 @@ def test_a_lookup_that_cannot_read_the_api_reuses_nothing_and_fails_nothing(tmp_
     assert proc.returncode == 0, proc.stderr
     assert out.read_text().splitlines() == ["reused=[]", "reused_from="], out.read_text()
     assert "Nothing reused" in (tmp_path / "summary").read_text()
+
+
+# --------------------------------------------------------------------------
+# The workflow.
+# --------------------------------------------------------------------------
+# The CI-FOLD name-keepers of application.yml (ci_fold_layout.FOLDED, which the
+# branch no longer keeps): old job ids that carry their check's name.
+_FOLD_NAME_KEEPERS = {"workflows", "ruff", "manifests", "python-checks"}
+
+
+def _jobs() -> dict:
+    return yaml.safe_load(APPLICATION.read_text())["jobs"]
+
+
+def test_main_and_a_same_repository_pull_request_look_up_and_everyone_records():
+    """CI-TREE-REUSE (archived issue 1798). MUTATION: drop either half of the step's `if`,
+    or let a fork's pull request look a record up."""
+    jobs = _jobs()
+    (step,) = [s for s in jobs["changes"]["steps"] if s.get("id") == "reuse"]
+    # Not when the `train` step already matched a green merge train (the owner's
+    # pick, 2026-11-06; test_ci_select.py holds that step).
+    assert step["if"] == (
+        "steps.train.outputs.train == '' && ("
+        "github.event_name == 'push' && github.ref == 'refs/heads/main' || "
+        "github.event_name == 'pull_request' && "
+        "github.event.pull_request.head.repo.full_name == github.repository)"), (
+        f"{step['if']} -- application.yml lacks CI-TREE-REUSE's workflow-lines.patch (#1798)")
+    assert "ci_reuse.py find" in step["run"] and '--event "${EVENT}"' in step["run"], step["run"]
+    assert step["env"]["EVENT"] == "${{ github.event_name }}", step["env"]
+    assert jobs["changes"]["outputs"]["reused"].replace(" ", "") == (
+        "${{steps.train.outputs.train!=''&&steps.train.outputs.reused||steps.reuse.outputs.reused}}")
+    # MUTATION: drop the output ci-gate cites the reused run from.
+    assert jobs["changes"]["outputs"]["reused_from"].replace(" ", "") == (
+        "${{steps.train.outputs.train!=''&&steps.train.outputs.reused_from||steps.reuse.outputs.reused_from}}")
+    perms = jobs["changes"]["permissions"]
+    assert perms.get("actions") == "read" and "id-token" not in perms, perms
+    record = jobs["tested-tree"]
+    assert "github.ref != 'refs/heads/main'" in record["if"] and "always()" in record["if"], record["if"]
+    assert set(reuse.REUSABLE) | {"changes"} == set(record["needs"]), record["needs"]
+    upload = [s for s in record["steps"] if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
+    assert len(upload) == 1 and upload[0]["with"]["name"] == "tested-tree-${{ steps.record.outputs.tree }}", upload
+    # Before the merge, so main's lookup never races the upload.
+    assert "tested-tree" in jobs["ci-gate"]["needs"]
+
+
+def test_the_release_still_waits_for_what_was_not_reused():
+    """A reused job is skipped by its own if, which reads as passed. Since the
+    owner's pick on PR 3344 the build needs none of them and the release's
+    gate (CI_RELEASE_TEST_JOBS, scripts/lib/common.sh) waits instead, for
+    every job ci-gate needs (a matrix job by its name up to the matrix part);
+    test_ci_built_images.py holds the list."""
+    jobs = _jobs()
+    assert not jobs["build"].get("needs"), jobs["build"].get("needs")
+    common = (REPO / "scripts" / "lib" / "common.sh").read_text()
+    for job_id in ("python-checks", "python-unit", "shell", "manifests"):
+        assert f'"{jobs[job_id]["name"].split(" (${{", 1)[0]}"' in common, job_id
 
 
 def test_the_record_json_round_trips_through_find_s_reader(tmp_path):
@@ -449,6 +507,43 @@ def test_the_gate_refuses_a_reuse_it_cannot_vouch_for(needs, event, needle):
     """MUTATION: drop any of gate()'s refusals."""
     problems, _ = reuse.gate(needs, event)
     assert any(needle in p for p in problems), problems
+
+
+def test_every_reach_condition_is_the_job_s_own_if():
+    """gate() judges an unlisted skip by REACH, so REACH must be what each
+    job's `if:` says before its reuse clause. A CI-FOLD name-keeper
+    (test_ci_fold.py, ci_fold_layout.py) carries the same condition after `always() && `, so a
+    failed folded job never reads as its skip. MUTATION: change a job's `if:`
+    without REACH."""
+    from .ci_fold_layout import PATCH_NOTE
+    from .test_fast_checks_on_lane_prs import without_lane_clause
+
+    keepers = _FOLD_NAME_KEEPERS
+    jobs = _jobs()
+    assert set(reuse.REACH) == set(reuse.REUSABLE)
+    for key in reuse.REUSABLE:
+        clause = "!contains(fromJSON(needs.changes.outputs.reused || '[]'), '%s')" % key
+        always = "always() && " if key in keepers else ""
+        # Then the lane clause every job ends with (test_fast_checks_on_lane_prs.py).
+        own = without_lane_clause(jobs[key]["if"])
+        assert own == f"{always}{reuse.reach_if(key)} && {clause}", f"{key}: {jobs[key]['if']} {PATCH_NOTE}"
+
+
+def test_ci_gate_runs_the_reuse_verdict_after_its_own():
+    """MUTATION: drop the step, or run it before the first verdict."""
+    steps = _jobs()["ci-gate"]["steps"]
+    runs = [str(s.get("run", "")) for s in steps]
+    found = [i for i, r in enumerate(runs) if "ci_reuse.py gate" in r]
+    assert len(found) == 1, f"ci-gate runs `ci_reuse.py gate` {len(found)} times, not once -- " \
+        "application.yml lacks CI-TREE-REUSE's workflow-lines.patch (#1798)"
+    (idx,) = found
+    assert idx > 0 and "every job passed or was skipped" in runs[0], runs
+    step = steps[idx]
+    assert '--needs "${GATE_NEEDS}"' in step["run"] and '--event "${EVENT}"' in step["run"], step["run"]
+    assert step["env"]["GATE_NEEDS"] == "${{ toJSON(needs) }}", step["env"]
+    # The checkout it runs from must precede it on every event it runs on.
+    checkout = [i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith("actions/checkout@")]
+    assert checkout and checkout[0] < idx and steps[checkout[0]].get("if") == step.get("if"), steps
 
 
 # --- the merge step reads a reused green as green ----------------------------

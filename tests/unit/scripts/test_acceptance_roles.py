@@ -32,6 +32,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from .test_release_reuses_ci_images import _code
+from .test_release_reuses_ci_images import _workflow
 
 REPO = Path(__file__).resolve().parents[3]
 GROUP = REPO / "scripts" / "acceptance" / "groups" / "roles.sh"
@@ -281,6 +283,26 @@ def test_provisioned_it_still_reaches_the_configuration_check(tmp_path):
     assert proc.returncode == 1, proc.stderr
     assert "SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL is not set" in proc.stderr, proc.stderr
     assert "SKIP" not in proc.stderr
+
+
+def test_accept_yml_runs_it_in_the_existing_smoke_job():
+    jobs = _workflow("accept.yml")["jobs"]
+    steps = [s for s in jobs["smoke"]["steps"] if TARGET in _code(s.get("run", ""))]
+    assert len(steps) == 1
+    step = steps[0]
+    # Unquoted: the probe clones no fixture, so it is not one of the suites
+    # test_acceptance_target.py makes wait for the sandbox sync.
+    assert _code(step["run"]).strip() == f"./scripts/verify-remote.sh {TARGET}"
+    assert "!cancelled()" in str(step.get("if"))
+    for name in SETTINGS:
+        # An account or a person's address is a masked secret
+        # (docs/design/generic-repository.md, section 2.1); the rest are variables.
+        context = "secrets" if name.endswith(("_SA", "_PERSON")) else "vars"
+        assert step["env"][name] == f"${{{{ {context}.{name.removeprefix('SWARM_ACCEPTANCE_')} }}}}"
+    # Not a new matrix group, and not the tenant-isolation job.
+    for job_id, job in jobs.items():
+        if job_id != "smoke":
+            assert TARGET not in json.dumps(job), job_id
 
 
 # ---------------------------------------------------------------------------

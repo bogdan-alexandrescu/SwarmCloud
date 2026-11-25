@@ -67,6 +67,7 @@ import pytest
 import yaml
 
 from .ci_run_blocks import run_block
+from .test_fast_checks_on_lane_prs import without_lane_clause
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "ci-gate.sh"
@@ -574,6 +575,14 @@ JUDGES = {
 }
 
 
+def judge_step(job_id: str) -> dict:
+    job = _workflow(GATE_WORKFLOW)["jobs"][job_id]
+    steps = [s for s in job["steps"] if "NEEDS" in (s.get("env") or {})]
+    assert len(steps) == 1, f"{job_id} has no single step reading `needs`"
+    assert steps[0]["env"]["NEEDS"].replace(" ", "") == "${{toJSON(needs)}}", steps[0]["env"]
+    return steps[0]
+
+
 def judge(tmp_path: Path, job_id: str, results: dict[str, str]) -> subprocess.CompletedProcess:
     """Run `job_id`'s needs-reading step with `needs.<job>.result` = results
     (the step's env: NEEDS is `toJSON(needs)`)."""
@@ -620,6 +629,12 @@ def test_a_skip_under_a_changes_job_that_did_not_succeed_fails(tmp_path, job_id)
     proc = judge(tmp_path, job_id, needs)
     assert proc.returncode != 0, proc.stdout
     assert "changes" in proc.stdout
+
+
+def test_the_three_judgements_are_one_text():
+    """Three copies of one rule are kept identical, so one is never fixed alone."""
+    runs = {job_id: judge_step(job_id)["run"] for job_id in ("ci-gate", "python", "ui")}
+    assert len(set(runs.values())) == 1, runs
 
 
 def test_the_script_follows_the_house_rules():
@@ -675,6 +690,41 @@ def test_every_path_filtered_workflow_is_gated_and_security_is_not(tmp_path):
     assert "application.yml" not in gated
 
 
+# ---------------------------------------------------------------------------
+# The workflow's shape.
+# ---------------------------------------------------------------------------
+def test_the_gate_job_is_named_ci_gate_and_always_runs():
+    """The required context is the job's name, and the job must report on
+    every pull request, push to main and queue entry.
+    MUTATION: rename the job, give application.yml's pull_request trigger a
+    path filter again, put `if: always()` back, or leave ci-gate.yml beside it."""
+    wf = _workflow(GATE_WORKFLOW)
+    on = wf["on"]
+    # Every pull request, with no filter: a filtered gate is the problem it
+    # exists to solve.
+    assert "pull_request" in on and not (on["pull_request"] or {}), on
+    # main only: a lane head runs CI once, on its pull request (owner,
+    # 2026-11-02, test_ci_once_per_head.py).
+    assert on["push"] == {"branches": ["main"]}, on
+    job = gate_job()
+    assert job.get("name") == "ci-gate", job
+    # Skipped would read as passed; !cancelled() runs it when something it
+    # needs failed, so it can say so, and not in a run that was cancelled,
+    # where always() made it conclude `failure` over needs that only
+    # stopped (archived issue 2582).
+    assert job.get("if") == "${{ !cancelled() }}", job.get("if")
+    # Exactly one producer of the context, so two checks of one name never
+    # disagree. ci-gate.yml is gone.
+    assert not (WORKFLOWS / "ci-gate.yml").exists()
+    producers = [
+        (path.name, job_id)
+        for path in WORKFLOWS.glob("*.yml")
+        for job_id, other in (_workflow(path).get("jobs") or {}).items()
+        if str(other.get("name") or job_id) == "ci-gate"
+    ]
+    assert producers == [("application.yml", "ci-gate")], producers
+
+
 NAME_KEEPERS = {"python", "ui"}
 
 
@@ -687,6 +737,24 @@ def test_the_gate_needs_every_other_job_of_its_workflow():
     expected = set(jobs) - {"ci-gate"} - NAME_KEEPERS
     assert set(needs) == expected, expected ^ set(needs)
     assert len(needs) == len(set(needs)), needs
+
+
+@pytest.mark.parametrize("job_id", sorted(NAME_KEEPERS))
+def test_a_name_keeper_judges_nothing_the_gate_does_not(job_id):
+    """Leaving a name-keeper out of the gate's `needs` loses nothing only while
+    it runs no check of its own: every job it needs is one the gate needs, and
+    its one step is the gate's own judgement, word for word.
+    MUTATION: give `python` a step that tests something, make it need a job
+    the gate does not, or let its judgement drift from the gate's."""
+    job = _workflow(GATE_WORKFLOW)["jobs"][job_id]
+    needs = job["needs"]
+    needs = [needs] if isinstance(needs, str) else list(needs)
+    assert set(needs) <= set(gate_job()["needs"]), set(needs) - set(gate_job()["needs"])
+    assert without_lane_clause(job.get("if")) == "always()", job.get("if")
+    (step,) = job["steps"]
+    (judgement,) = [s for s in gate_job()["steps"] if s.get("env", {}).get("NEEDS")]
+    assert step["run"] == judgement["run"], job_id
+    assert step["env"] == judgement["env"], job_id
 
 
 def test_the_gate_holds_read_permissions_only():

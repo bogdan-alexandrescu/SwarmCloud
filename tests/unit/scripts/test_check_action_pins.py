@@ -11,8 +11,11 @@ import os
 import subprocess
 from pathlib import Path
 
+import yaml
+
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "check-action-pins.sh"
+APPLICATION = REPO / ".github" / "workflows" / "application.yml"
 SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
@@ -160,6 +163,18 @@ def test_it_reads_every_yaml_file_under_a_directory(tmp_path):
     proc = _run(tmp_path)
     assert proc.returncode == 1, proc.stdout + proc.stderr
     assert "action.yaml:6: " in proc.stdout, proc.stdout
+
+
+def test_quick_checks_runs_it_with_the_workflow_wiring_check():
+    """It is a `workflows-*` step of quick-checks, so the verdict step folds
+    its result into `release workflow wiring (actionlint)` and ci-gate.
+    MUTATION: drop the step, or give it another check's prefix."""
+    steps = yaml.safe_load(APPLICATION.read_text())["jobs"]["quick-checks"]["steps"]
+    (step,) = [s for s in steps if "check-action-pins.sh" in str(s.get("run", ""))]
+    assert step["id"].startswith("workflows-"), step["id"]
+    assert step["run"].strip() == "scripts/check-action-pins.sh", step["run"]
+    actionlint = next(s for s in steps if s.get("id") == "workflows-actionlint")
+    assert step["if"] == actionlint["if"], step["if"]
 
 
 def test_the_script_follows_the_repositorys_script_rules():

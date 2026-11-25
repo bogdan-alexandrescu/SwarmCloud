@@ -237,6 +237,34 @@ def test_a_parallelism_that_is_not_a_positive_integer_is_refused(world):
     assert _executed(world) == []
 
 
+def test_the_release_warms_after_verifying_the_digests_and_never_fails_on_it():
+    from .test_release_reuses_ci_images import _workflow
+
+    # Composite actions flattened into the steps they run (the verify step is
+    # .github/actions/release-verify).
+    workflow = _workflow("release.yml")
+    steps = workflow["jobs"]["deploy"]["steps"]
+    runs = [str(s.get("run", "")) for s in steps]
+    warm = [i for i, r in enumerate(runs) if "scripts/warm-jobs.sh" in r]
+    assert len(warm) == 1, "release.yml's deploy job must run scripts/warm-jobs.sh exactly once"
+    index = warm[0]
+    verify = next(i for i, s in enumerate(steps) if s.get("id") == "verify")
+    smoke = next(i for i, r in enumerate(runs) if "verify-remote.sh smoke-test" in r)
+    assert verify < index < smoke
+    step = steps[index]
+    assert step.get("continue-on-error") is True
+    assert "steps.verify.outcome == 'success'" in step["if"]
+    assert "!cancelled()" in step["if"]
+    # On dev the warm run is accept.yml's (owner decision 2026-10-08, cut A):
+    # here it is prod's alone, and accept.yml warms before it smokes and
+    # before any acceptance group (test_release_acceptance_job.py).
+    assert "github.event.inputs.environment == 'prod'" in step["if"]
+    accept = _workflow("accept.yml")["jobs"]
+    smoke = [str(s.get("run", "")) for s in accept["smoke"]["steps"]]
+    assert sum("scripts/warm-jobs.sh" in r for r in smoke) == 1
+    assert "smoke" in accept["acceptance"]["needs"] and "smoke" in accept["acceptance-2"]["needs"]
+
+
 # ---------------------------------------------------------------------------
 # Nothing to warm when the runner digests did not change (observer proposal H).
 # ---------------------------------------------------------------------------

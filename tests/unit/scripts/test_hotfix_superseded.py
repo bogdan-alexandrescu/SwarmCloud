@@ -39,11 +39,20 @@ from pathlib import Path
 
 import pytest
 
+from . import test_release_prod_gate as gate_model
 from .ci_run_blocks import REPO, run_block
 from .test_release_newest_only import APP_JOBS, APP_RUNS, COMPARE, FAKE_GH, REPO_NAME, RUN_ID, SHA, _cancelled_run
+from .test_release_prod_gate import _attempts
+from .test_release_reuses_ci_images import _workflow
 
 NEWER = "c" * 40
 MAIN_HEAD = f"repos/{REPO_NAME}/commits/main"
+PUSH = {
+    "github.event_name": "push",
+    "github.ref": "refs/heads/main",
+    "github.event.inputs.environment": None,
+    "github.event.inputs.skip_build": None,
+}
 
 def _run_after(tmp_path: Path, responses: dict, *, stage: str) -> tuple[subprocess.CompletedProcess, dict, str, list]:
     bin_dir = tmp_path / "bin"
@@ -75,6 +84,27 @@ def _run_after(tmp_path: Path, responses: dict, *, stage: str) -> tuple[subproce
 
 # ---------------------------------------------------------------------------
 # The step, run against a fake gh
+
+
+@pytest.fixture
+def gated(monkeypatch):
+    monkeypatch.setitem(gate_model.STEP_OUTPUTS, ("gate", "proceed"), ("true", "false", ""))
+    monkeypatch.setitem(gate_model.STEP_OUTPUTS, ("images", "superseded"), ("true", "false"))
+    return _workflow("hotfix.yml")["jobs"]
+
+
+def test_a_superseded_hotfix_promotes_applies_and_deploys_nothing(gated):
+    """MUTATION: drop `if: needs.images.outputs.superseded != 'true'` from
+    `promote`, or give `infrastructure` or `deploy` an `always()`."""
+    jobs = gated
+    tried = 0
+    for results, outs in _attempts(jobs, PUSH):
+        if outs["images"].get("superseded") != "true":
+            continue
+        tried += 1
+        for job_id in ("promote", "infrastructure", "deploy"):
+            assert results[job_id] == "skipped", f"a superseded hotfix ran {job_id}: {results}"
+    assert tried, "no attempt had images superseded: the model never asked"
 
 
 def test_a_successful_stage_ships_even_when_main_has_moved(tmp_path):

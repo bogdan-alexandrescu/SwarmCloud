@@ -32,6 +32,7 @@ import pytest
 
 from .test_live_netpol import FAKE_API_CIDR, FAKE_SUBNET, LEAKY, _relay_manifest, _service
 from .test_live_relay_rollout import FAKE_GCLOUD
+from .test_release_reuses_ci_images import _workflow
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -58,6 +59,12 @@ FOREIGN_REF = f"gke_{PROJECT}_{LOCATION}-a_{PEER_CLUSTER}"
 DIGEST = "sha256:" + "8" * 64
 STALE_DIGEST = "sha256:" + "0" * 64
 IMAGE = f"us-central1-docker.pkg.dev/{PROJECT}/swarm-images/swarm-egress@{DIGEST}"
+
+
+RELAY_STEP = "roll the live relay to this release's image"
+
+
+STEP = "roll swarm-egress to this release's image"
 
 
 def _egress_manifest() -> str:
@@ -335,3 +342,21 @@ def test_an_unknown_component_is_refused():
     assert proc.returncode != 0
     assert "--component" in proc.stderr, proc.stderr
 
+
+def test_the_release_rolls_swarm_egress_after_the_relay():
+    steps = _workflow("release.yml")["jobs"]["deploy"]["steps"]
+    names = [s.get("name") for s in steps]
+    assert STEP in names, f"the deploy job has no step named {STEP!r}"
+    at = names.index(STEP)
+    step = steps[at]
+    run = str(step.get("run", ""))
+    assert "./scripts/roll-egress.sh" in run, run
+    for flag in ("--confirm", "--get-credentials", "--tf-init"):
+        assert flag in run, f"the egress step does not pass {flag}"
+    # After the relay (apply.sh applies swarm-egress after it), before the smoke test.
+    assert at > max(i for i, n in enumerate(names) if n == RELAY_STEP)
+    assert at < names.index("smoke test (inside the VPC)")
+    when = str(step.get("if", ""))
+    assert "steps.verify.outcome == 'success'" in when and "!cancelled()" in when, when
+    assert not step.get("continue-on-error"), "a forwarder that did not roll would pass the release"
+    assert ".venv/bin/python" in str((step.get("env") or {}).get("PYTHON_BIN", ""))

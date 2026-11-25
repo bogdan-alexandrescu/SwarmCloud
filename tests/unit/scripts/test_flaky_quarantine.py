@@ -8,7 +8,9 @@ What is held here:
     test would leave its entry quarantining nothing while the real flake
     gates again;
   * the `flaky` marker is registered, and tests/unit/conftest.py puts it on
-    exactly the listed items.
+    exactly the listed items;
+  * the unit job deselects the marker from the gating run, which stays able to
+    fail the gate.
 """
 
 from __future__ import annotations
@@ -20,10 +22,12 @@ import tomllib
 from pathlib import Path
 
 import pytest
+import yaml
 
 import flaky_quarantine as fq
 
 REPO = Path(__file__).resolve().parents[3]
+APPLICATION = REPO / ".github" / "workflows" / "application.yml"
 CONFTEST = REPO / "tests" / "unit" / "conftest.py"
 
 HERE_ID = "tests/unit/scripts/test_flaky_quarantine.py"
@@ -188,3 +192,17 @@ def test_the_checked_in_list_parses():
     assert fq.LIST.is_file(), "tests/flaky.txt is gone: docs/ci.md and the unit job name it"
     fq.load()
 
+
+# ---------------------------------------------------------------------------
+# The unit job
+# ---------------------------------------------------------------------------
+def _unit_steps() -> list[dict]:
+    return yaml.safe_load(APPLICATION.read_text())["jobs"]["python-unit"]["steps"]
+
+
+def test_the_gating_run_deselects_the_quarantine():
+    """MUTATION: drop `-m "not flaky"` and a listed flake gates again."""
+    (gate,) = [s for s in _unit_steps() if "uv run pytest" in str(s.get("run", ""))
+               and "--junitxml" in str(s.get("run", ""))]
+    assert '-m "not flaky"' in gate["run"], gate["run"]
+    assert not gate.get("continue-on-error"), "the gating run must be able to fail"

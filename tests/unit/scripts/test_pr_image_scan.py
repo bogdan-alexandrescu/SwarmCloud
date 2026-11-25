@@ -19,20 +19,35 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 from .ci_run_blocks import run_block
 from .test_build_images_local import _builds, _local, _value
 from .test_build_mirror import _refresh
+from .test_ci_fold import check_steps
+from .test_fast_checks_on_lane_prs import without_lane_clause
 
 REPO = Path(__file__).resolve().parents[3]
+APPLICATION = REPO / ".github" / "workflows" / "application.yml"
+RELEASE = REPO / ".github" / "workflows" / "release.yml"
 SCAN = REPO / "scripts" / "scan-image-layout.sh"
 POLICY = REPO / "scripts" / "lib" / "image-scan.sh"
 TAG = "feed00c0ffee"
 
 
+def _jobs() -> dict:
+    return yaml.safe_load(APPLICATION.read_text())["jobs"]
+
+
 # --------------------------------------------------------------------------
 # The scan.
 # --------------------------------------------------------------------------
+def test_the_pull_request_scans_at_the_releases_trivy_pin():
+    """MUTATION: bump one pin and not the other."""
+    release_pin = yaml.safe_load(RELEASE.read_text())["env"]["TRIVY_VERSION"]
+    assert _jobs()["build-check"]["env"]["TRIVY_VERSION"] == release_pin
+
+
 def test_both_scans_read_the_shared_policy():
     assert SCAN.exists() and os.access(SCAN, os.X_OK)
     # One policy: both scans read lib/image-scan.sh, neither restates its flags.
@@ -226,8 +241,40 @@ def test_the_go_module_fetches_retry():
 
 
 # --------------------------------------------------------------------------
+# ruff.
+# --------------------------------------------------------------------------
+def test_ruff_check_is_a_gated_job():
+    jobs = _jobs()
+    job = jobs["ruff"]
+    assert job["name"] == "ruff check"
+    # The check runs as the `ruff check · ...` steps of `quick-checks` since
+    # CI-FOLD (archived issue 1799); `ruff` keeps the name (test_ci_fold.py).
+    runs = "\n".join(str(s.get("run", "")) for s in check_steps("application.yml", "ruff"))
+    assert "uv run --frozen --only-dev ruff check" in runs, runs
+    assert {"ruff", "quick-checks"} <= set(jobs["ci-gate"]["needs"])
+
+
+# --------------------------------------------------------------------------
 # Main fills the tool mirror (owner decision 2026-10-14, on PR 1298).
 # --------------------------------------------------------------------------
+def test_main_fills_the_tool_mirror_before_it_builds_and_a_pull_request_never_does():
+    """MUTATION: drop the step, move it after the build, or drop --tools-only."""
+    job = _jobs()["build"]
+    names = [s.get("name") for s in job["steps"]]
+    fill = names.index("fill the tool mirror with what this commit pins")
+    assert fill < names.index("build with Cloud Build"), names
+    assert job["steps"][fill]["run"].strip() == "./scripts/refresh-build-mirror.sh --tools-only"
+    # (Then the lane clause every job ends with, test_fast_checks_on_lane_prs.py.)
+    assert without_lane_clause(job["if"]) == ("${{ !cancelled() && !failure() && github.event_name != 'pull_request' && github.event_name != 'merge_group' "
+        # A lane push (`swarm/**`) runs the tests but never builds (LANE CI-EARLY, test_ci_early.py).
+        "&& github.ref == 'refs/heads/main' || !cancelled() && !failure() && github.event_name == 'workflow_dispatch' }}"), job["if"]
+    for other_id, other in _jobs().items():
+        if other_id != "build":
+            for st in other.get("steps", []):
+                for line in str(st.get("run", "")).splitlines():
+                    assert not line.strip().startswith(("./scripts/refresh-build-mirror.sh", "scripts/refresh-build-mirror.sh")), (other_id, line)
+
+
 def test_tools_only_uploads_checked_files_and_touches_no_image_and_deletes_nothing(tmp_path):
     """--tools-only: only `storage objects describe` and `storage cp` to the
     bucket, every upload matching its pinned sha256; no artifacts call, no

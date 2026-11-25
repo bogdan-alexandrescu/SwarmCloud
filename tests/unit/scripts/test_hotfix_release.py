@@ -28,8 +28,8 @@ images, an IAM plan fails it before anything is applied, and release.yml
 keeps its prod and dev-iam gates with both lanes running the same stages.
 They hold CI security decisions the owner kept on 2026-11-25, so this file
 is on scripts/check_test_reads.py's SECURITY_GUARDS list for those tests
-alone; the lane's operational pins (lock waits, tool pins, history depth,
-what it skips) stay deleted (issue 71).
+alone; the lane's operational pins (the state-lock wait, history depth,
+the dev-only ordering in the composites) stay deleted (issue 71).
 
 WHAT THIS CANNOT PROVE: that GitHub runs the workflows as read, that `gcloud
 storage cp --if-generation-match=0` is atomic (GCS documents it as a
@@ -76,6 +76,20 @@ from .test_release_reuses_ci_images import (
 REPO = Path(__file__).resolve().parents[3]
 GATE_SH = REPO / "scripts" / "lib" / "hotfix-gate.sh"
 ORDER_SH = REPO / "scripts" / "lib" / "release-order.sh"
+
+
+def test_every_lock_is_released_whatever_happened():
+    for workflow in ("release.yml", "hotfix.yml"):
+        for job_id, job in _workflow(workflow)["jobs"].items():
+            steps = job.get("steps") or []
+            locks = [s for s in steps if re.search(r"release-order\.sh lock\b", _code(s.get("run", "")))]
+            unlocks = [s for s in steps if re.search(r"release-order\.sh unlock\b", _code(s.get("run", "")))]
+            assert len(locks) == len(unlocks), f"{workflow}'s {job_id}: {len(locks)} locks, {len(unlocks)} unlocks"
+            for s in unlocks:
+                assert str(s["if"]).startswith("always()"), f"{workflow}'s {job_id} leaves the lock on a failure"
+                assert steps.index(s) == len(steps) - 1 or all(
+                    "release-order.sh lock" not in _code(t.get("run", "")) for t in steps[steps.index(s) :]
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -574,6 +588,28 @@ def test_it_obtains_ci_s_record_and_never_builds():
         assert _reuse_mode(builds[0][3], event) == "only"
 
 
+def test_it_skips_what_the_normal_release_of_the_same_push_still_runs():
+    """verify (CI's record implies it passed), warm, acceptance, the GKE proof
+    and the plugin tag -- all still run by release.yml (verify on a dispatch)
+    or by accept.yml after it."""
+    jobs = _jobs()
+    code = "\n".join(_code(s.get("run", "")) for job in jobs.values() for s in job.get("steps") or [])
+    for absent in ("pytest", "warm-jobs.sh", "acceptance/", "prove-gke-dispatch", "git push", "tag -a"):
+        assert absent not in code, f"hotfix.yml runs {absent!r}"
+    for present in ("push-images.sh", "plan-guard.sh", "--classify-iam", "deploy.sh --verify-only", "smoke-test"):
+        assert present in code, f"hotfix.yml never runs {present!r}"
+    # release.yml, and since 2026-10-08 accept.yml, which runs when the
+    # release of the same push completes (cut A of the release timing report).
+    rcode = "\n".join(
+        _code(s.get("run", ""))
+        for name in ("release.yml", "accept.yml")
+        for job in _workflow(name)["jobs"].values()
+        for s in job.get("steps") or []
+    )
+    for kept in ("pytest tests/unit", "warm-jobs.sh", "acceptance/", "prove-gke-dispatch"):
+        assert kept in rcode, f"neither release.yml nor accept.yml runs {kept!r}; the hotfix lane relies on it"
+
+
 def _infra_steps(workflow: str) -> list[dict]:
     return _workflow(workflow)["jobs"]["infrastructure"]["steps"]
 
@@ -651,6 +687,12 @@ def _composites(workflow: str) -> dict[str, set[str]]:
             if uses.startswith("./.github/actions/"):
                 used.setdefault(uses, set()).add(job_id)
     return used
+
+
+@pytest.mark.parametrize("name", ["TERRAFORM_VERSION", "PYTHON_VERSION", "TF_ROOT", "TRIVY_VERSION"])
+def test_the_two_lanes_pin_the_same_tools(name):
+    release, hotfix = _workflow("release.yml")["env"], _hotfix()["env"]
+    assert release[name] == hotfix[name], f"{name}: release.yml {release[name]!r}, hotfix.yml {hotfix[name]!r}"
 
 
 def test_both_lanes_run_the_same_stages():

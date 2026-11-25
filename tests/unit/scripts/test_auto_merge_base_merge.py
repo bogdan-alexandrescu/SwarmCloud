@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -231,6 +232,53 @@ def test_a_head_that_cannot_be_read_is_treated_as_any_other_push(tmp_path: Path,
     assert "::warning::" in proc.stdout, proc.stdout
 
 
+def _concurrency_group(workflow: dict, event_name: str, *, action: str | None = None, pr: int | None = None,
+                       inputs_pr: int | None = None, run_id: int) -> str:
+    """Evaluate the workflow's concurrency group the way GitHub does, for the
+    operators it uses: `&&` and `||` return an operand, '' and null are falsy."""
+    context = {
+        "github.event_name": event_name,
+        "github.event.action": action,
+        "github.event.pull_request.number": pr,
+        "inputs.pr": inputs_pr,
+        "github.run_id": run_id,
+    }
+
+    def evaluate(expression: str):
+        python = re.sub(r"\b[a-z_]+(?:\.[a-z_]+)+\b", lambda m: f"_ctx[{m.group(0)!r}]", expression)
+        python = python.replace("&&", " and ").replace("||", " or ")
+        unknown = set(re.findall(r"_ctx\['([^']+)'\]", python)) - set(context)
+        assert not unknown, f"the group reads {unknown}; teach this evaluator what they are"
+        value = eval(python, {"_ctx": context, "format": lambda f, *a: f.format(*a)})  # noqa: S307 -- the repo's own workflow
+        return "" if value is None else str(value)
+
+    template = workflow["concurrency"]["group"]
+    return re.sub(r"\$\{\{(.*?)\}\}", lambda m: evaluate(m.group(1)), template)
+
+
+def test_no_later_event_can_cancel_a_push_s_disable_run(workflow: dict):
+    """Review of archived issue 795: label L, push a foreign A, click Update branch (B =
+    main merged into A). B's classify sees before=A and says pure -- correctly,
+    about B. Only A's own run disarms and strips; in a shared group B's pending
+    run cancelled it, and auto-merge stayed armed with `ready` on an
+    unreviewed A. Every run but `labeled` is alone in its group, so none is
+    ever cancelled. MUTATION: drop the run-id suffix, or give it to
+    `labeled` (two labels in a row must still collapse)."""
+    assert workflow["concurrency"]["cancel-in-progress"] is False
+    group = lambda *a, **k: _concurrency_group(workflow, *a, **k)  # noqa: E731
+    labelled = group("pull_request_target", action="labeled", pr=7, run_id=1)
+    pushes = [group("pull_request_target", action=action, pr=7, run_id=run_id)
+              for run_id, action in enumerate(["synchronize", "synchronize", "reopened", "edited", "closed"], start=2)]
+    assert len(set(pushes)) == len(pushes), pushes
+    assert labelled not in pushes, (labelled, pushes)
+    assert group("pull_request_target", action="labeled", pr=7, run_id=9) == labelled
+    assert group("pull_request_target", action="labeled", pr=8, run_id=10) != labelled
+    requeue = group("workflow_dispatch", inputs_pr=7, run_id=11)
+    assert requeue not in pushes and requeue != labelled
+    assert requeue == group("workflow_dispatch", inputs_pr=7, run_id=12)
+    assert group("workflow_run", run_id=13) != group("workflow_run", run_id=14)
+
+
 def test_a_pure_merge_over_a_foreign_push_is_pure_only_about_its_own_step(tmp_path: Path, history: dict):
     """The chain L -> plain (foreign) -> stale_parent (main merged into plain):
     the last step alone IS a pure base merge, so keeping `ready` safe rests on
@@ -244,6 +292,29 @@ def test_a_pure_merge_over_a_foreign_push_is_pure_only_about_its_own_step(tmp_pa
     proc, outputs = _run_classify(tmp_path, history, after=history["stale_parent"])
     assert proc.returncode == 0, proc.stderr
     assert outputs.get("pure_base_merge") == "false", (outputs, proc.stdout, proc.stderr)
+
+
+def test_the_disable_job_acts_only_when_the_push_is_not_a_pure_base_merge(disable_job: dict):
+    """A pure base merge does nothing at all: no token, no disable, no strip.
+    Every other outcome -- including a classify step that failed -- does all
+    three, and the strip runs even after a failed disable, so a failure leaves
+    no stale `ready` behind it.
+    MUTATION: drop the classify condition from any of the three steps, or the
+    `!cancelled()` that keeps the strip after a failed disable."""
+    ids = [step.get("id") for step in disable_job["steps"]]
+    assert ids == ["classify", "one-event", "app-token", "disarm", "reevaluate", "strip"], ids
+    not_pure = "steps.classify.outputs.pure_base_merge != 'true'"
+    for step_id in ("app-token", "disarm", "strip"):
+        condition = str(_step(disable_job, step_id).get("if") or "")
+        assert not_pure in condition and "!cancelled()" in condition, (step_id, condition)
+    assert "vars.MERGE_APP_ID != ''" in str(_step(disable_job, "app-token").get("if"))
+    # The author's push and label, seconds apart, are one event (epic archived issue 1334; PR 1419,
+    # owner-approved 2026-10-16): only then is the head re-evaluated, and only a
+    # re-evaluation that was dispatched keeps `ready` from being stripped.
+    assert not_pure in str(_step(disable_job, "one-event").get("if")), _step(disable_job, "one-event").get("if")
+    reevaluate = str(_step(disable_job, "reevaluate").get("if") or "")
+    assert "steps.one-event.outputs.one_event == 'true'" in reevaluate and "steps.disarm.outcome == 'success'" in reevaluate, reevaluate
+    assert "steps.reevaluate.outcome != 'success'" in str(_step(disable_job, "strip").get("if")), _step(disable_job, "strip").get("if")
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +341,10 @@ esac
 echo "fake gh: unexpected call: $*" >&2
 exit 3
 """
+
+
+def _disarm_script(job: dict) -> str:
+    return _step(job, "disarm")["run"]
 
 
 @pytest.fixture(params=["enable", "disable"])
@@ -347,6 +422,21 @@ def test_nothing_armed_is_nothing_to_turn_off(run_disarm):
     assert not [c for c in calls if c.startswith("pr merge")], calls
 
 
+def test_the_two_disarm_steps_are_one_script(enable_job: dict, disable_job: dict):
+    """One rule in two places drifts (CLAUDE.md). MUTATION: edit one copy."""
+    assert _disarm_script(enable_job) == _disarm_script(disable_job)
+    for job in (enable_job, disable_job):
+        env = _step(job, "disarm").get("env") or {}
+        assert env.get("GH_TOKEN") == "${{ github.token }}", env
+        assert env.get("APP_TOKEN") == "${{ steps.app-token.outputs.token }}", env
+
+
+def test_no_disable_in_the_workflow_hides_its_failure():
+    text = AUTO_MERGE.read_text()
+    assert "--disable-auto" in text
+    assert not re.search(r"--disable-auto[^\n]*\|\|\s*true", text), "a disable failure is hidden again"
+
+
 FAKE_GH_STRIP = r"""#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "${FAKE_GH_LOG}"
@@ -387,6 +477,18 @@ def test_any_other_push_strips_ready_and_says_whether_auto_merge_is_off(tmp_path
     assert proc.returncode == 0, proc.stderr
     assert f"pr edit {PR} --remove-label ready" in log.read_text()
     assert said in comments.read_text(), comments.read_text()
+
+
+def test_a_re_evaluation_refusal_disarms_with_the_app_token(enable_job: dict):
+    """The gate's own `--disable-auto || true` failed the same way. It now
+    says `disarm`, and the App token is minted for that as well as the merge.
+    MUTATION: mint only on `merge`, or call the disable from the gate."""
+    assert "--disable-auto" not in _step(enable_job, "gate")["run"]
+    assert _step(enable_job, "disarm").get("if") == "steps.gate.outputs.disarm == 'true'"
+    mint = str(_step(enable_job, "app-token").get("if"))
+    assert "steps.gate.outputs.decision == 'merge'" in mint and "steps.gate.outputs.disarm == 'true'" in mint, mint
+    ids = [step.get("id") for step in enable_job["steps"]]
+    assert ids.index("app-token") < ids.index("disarm") < ids.index("merge"), ids
 
 
 # ---------------------------------------------------------------------------
@@ -495,6 +597,40 @@ def test_the_retry_happens_once(run_enable):
     assert len(merges) == 2, merges
 
 
+def test_the_classifier_is_one_function_in_both_jobs(enable_job: dict, disable_job: dict):
+    """MUTATION: edit one copy of is_pure_base_merge."""
+    pattern = re.compile(r"^is_pure_base_merge\(\) \{\n.*?^\}\n", re.S | re.M)
+    enable = pattern.search(_step(enable_job, "merge")["run"])
+    disable = pattern.search(_step(disable_job, "classify")["run"])
+    assert enable and disable, "is_pure_base_merge() is defined in both steps"
+    assert enable.group(0) == disable.group(0)
+    for step in (_step(enable_job, "merge"), _step(disable_job, "classify")):
+        env = step.get("env") or {}
+        assert env.get("REMOTE_URL") == "${{ github.server_url }}/${{ github.repository }}.git", env
+
+
+def test_completions_ci_gate_waits_for_do_not_start_a_run(workflow: dict):
+    """ci-gate is the last job of application.yml and waits for terraform.yml's
+    run at its head (CI_GATE_WORKFLOWS=terraform.yml), so terraform's own
+    completion can never be the last one: it started an auto-merge run for
+    nothing (294+ runs in one night, archived issue 795). What is left is application (whose
+    completion is ci-gate's) and every pull-request workflow ci-gate does not
+    gate. MUTATION: add `terraform` back, or drop `application` or `security`."""
+    pull_request_names: dict[str, str] = {}
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        data = _workflow(path)
+        on = data.get("on") or {}
+        if "pull_request" in (on if isinstance(on, (dict, list)) else {on}):
+            pull_request_names[path.name] = data["name"]
+    expected = {name for file, name in pull_request_names.items() if file != "terraform.yml"}
+    assert "application" in expected and "security" in expected, expected  # the control
+    listened = set(workflow["on"]["workflow_run"]["workflows"])
+    assert listened == expected, listened
+    assert workflow["on"]["workflow_run"]["types"] == ["completed"]
+    gate = next(job for job in _workflow(WORKFLOWS / "application.yml")["jobs"].values() if job.get("name") == "ci-gate")
+    assert "CI_GATE_WORKFLOWS" in str(gate) and "terraform.yml" in str(gate), gate  # what ci-gate waits for
+
+
 REPO = Path(__file__).resolve().parents[3]
 
 
@@ -515,6 +651,11 @@ def _workflow(path: Path) -> dict:
 @pytest.fixture(scope="module")
 def workflow() -> dict:
     return _workflow(AUTO_MERGE)
+
+
+@pytest.fixture(scope="module")
+def enable_job(workflow: dict) -> dict:
+    return workflow["jobs"]["enable"]
 
 
 @pytest.fixture(scope="module")
