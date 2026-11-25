@@ -8,6 +8,22 @@
 import type { Task as ApiTask } from './generated/api-types'
 import { currentZone, formatClock, formatDateTime, isToday } from './timezone'
 
+/**
+ * A schedule's own "Diagrams in plans" (`schedules.SchedulePatch.plan_diagrams`,
+ * docs/design/plans-pipeline.md §6.4). `inherit` follows the workspace, which
+ * follows the platform.
+ */
+export type PlanDiagrams = 'inherit' | 'on' | 'off'
+
+/**
+ * `plan_diagrams` on a schedule, as `GET /v1/schedules/{id}` serves it and its
+ * `PATCH` takes it. Absent on a stored schedule means `inherit`; absent from a
+ * PATCH means unchanged, so going back to the workspace's sends `inherit`.
+ */
+export interface SchedulePlanDiagrams {
+  plan_diagrams?: PlanDiagrams
+}
+
 /** `pool_to_api` in codec.py. */
 export interface Pool {
   name: string

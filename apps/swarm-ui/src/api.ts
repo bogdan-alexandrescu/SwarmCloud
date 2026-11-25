@@ -14495,6 +14495,19 @@ async function scheduleWrite(target: ApiRoute, method: 'POST' | 'PATCH', body: u
   return (await write(target, method, body)) as Result<{ schedule: Schedule }>
 }
 
+/**
+ * What a schedule's `inherit` resolves to now:
+ * `GET /v1/workspaces/{tenant_id}/plan-settings` `.effective.diagrams.value`
+ * (the workspace's choice over the platform's), or null when it was not read.
+ */
+export async function loadEffectivePlanDiagrams(tenantId: string): Promise<'on' | 'off' | null> {
+  if (USE_FIXTURES) return null
+  const r = await read<unknown>(route('/v1/workspaces/{tenant_id}/plan-settings', { tenant_id: tenantId }), () => false)
+  if (r.status !== 'ok' && r.status !== 'stale') return null
+  const value = (r.data as { effective?: { diagrams?: { value?: unknown } } } | null)?.effective?.diagrams?.value
+  return value === 'on' || value === 'off' ? value : null
+}
+
 /** `GET /v1/schedule-types`: the types this caller may create, with their gates. */
 export async function loadScheduleTypes(): Promise<Result<{ types: ScheduleTypeRow[] }>> {
   if (USE_FIXTURES) {
