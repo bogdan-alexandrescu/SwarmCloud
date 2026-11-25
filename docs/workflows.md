@@ -2120,8 +2120,21 @@ recorded shut, contract request 157): the review gate is decided in
 Either key may be left out: `min_lines` is 300, and without `risk_paths` the
 platform's list applies (credentials and the git token path, tenant
 isolation, redaction, IAM including `terraform/**/iam*` and
-`terraform/bootstrap/`, `.github/workflows/` and `.github/actions/`, and
-`apps/common/swarm_common/`). swarm-api refuses
+`terraform/bootstrap/`, `.github/workflows/` and `.github/actions/`,
+`apps/common/swarm_common/`, and the security checks' own switches: the
+files that switch a scan off or narrow it -- the image scan's accept list
+and configuration `.trivyignore*` and `trivy.y*ml`, the secret scan's
+`.gitleaks.toml`, `.gitleaksignore` and `.github/secret_scanning.yml`, and
+the code-scanning `.github/codeql/`, `.checkov.y*ml` and `.semgrepignore`).
+Those last are there because an accept or allowlist edit is small by nature:
+a 27-line edit of the image scan's accept list was skipped as a small change
+and its pull request labelled ready (2026-11-25, issue 430). Every one of
+them is anchored at the repository root, where the scanners read them by
+default, never written with a leading `**/`: an issue run reads a plan
+entry with no extension, or one starting with `.`, as a possible directory
+and counts it as a hit wherever the risk entry has `**`, so a
+`**/.trivyignore*` would give every plan naming any directory a security
+lens. swarm-api refuses
 any other key, a `min_lines` that is not a whole number, and a `risk_paths`
 that is not a list of repository-relative globs, with a 422
 (`invalid_review_gate`, a refusal switch that ships on; turned off, the block
@@ -2152,8 +2165,14 @@ gate off for that one step: its review always runs.
   `risk_paths` a step or a workspace names, the platform's risk paths stay
   in the list (`reviewgate._gate_from`): a list adds to them and never
   replaces them, so a one-line change to credentials, IAM, redaction,
-  tenant isolation, `.github/workflows/` or `apps/common/swarm_common/` is
-  never skipped on its line count.
+  tenant isolation, `.github/workflows/`, `apps/common/swarm_common/` or a
+  security check's own switch (`.trivyignore*`, `trivy.y*ml`,
+  `.gitleaks.toml`, `.gitleaksignore`, `.github/secret_scanning.yml`,
+  `.github/codeql/`, `.checkov.y*ml`, `.semgrepignore`) is never skipped on
+  its line count, and the gate writes no SKIPPED verdict for it. An edit
+  that accepts a scan finding or allowlists a secret is a few lines by
+  nature, so its size can never be what decides it (issue 430: a 27-line
+  edit of `.trivyignore.yaml` was skipped and labelled ready, 2026-11-25).
 
 When every parent has SUCCEEDED, what they changed is final. The scheduler
 does not promote a step carrying `review_gate`: it holds it PARKED under the
