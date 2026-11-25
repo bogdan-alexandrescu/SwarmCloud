@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import copy
 import io
+import sys
 import threading
 import time
 from typing import Any
@@ -87,6 +88,14 @@ def _record(worker: Any, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, Any
 
     worker._checkpoint = checkpoint  # type: ignore[method-assign]
 
+    real_pause = worker._park_for_pause
+
+    def park_for_pause(child: Any) -> Any:
+        pausing["on"] = True
+        return real_pause(child)
+
+    worker._park_for_pause = park_for_pause  # type: ignore[method-assign]
+
     real_park = worker.control.park
 
     def park(**kw: Any) -> Any:
@@ -98,7 +107,11 @@ def _record(worker: Any, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, Any
     real_sleep = time.sleep
 
     def sleep(seconds: float) -> None:
-        if pausing["on"] and threading.get_ident() == main:
+        # `subprocess.Popen.wait(timeout)` polls with sleeps of 1-50 ms while
+        # `terminate` gives the runner its bounded grace: reaping a child, not
+        # a wait. Every other sleep on the pause path is one.
+        caller = sys._getframe(1).f_globals.get("__name__")
+        if pausing["on"] and threading.get_ident() == main and caller != "subprocess":
             calls.append(("sleep", seconds))
         real_sleep(seconds)
 

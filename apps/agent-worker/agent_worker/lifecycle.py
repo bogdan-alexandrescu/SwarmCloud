@@ -3570,6 +3570,8 @@ class Worker(
         # A provider that is already exhausted must not be hit again.
         self.phases.enter("quota_preflight")
         preflight = self.control.poll(cfg.provider)
+        if self._paused_before_runner(preflight):
+            return functools.partial(self._park_for_pause, None)
         quota_signal = signal_from_control(preflight, cfg.provider)
         if quota_signal is not None:
             decision = decide(
@@ -4002,6 +4004,8 @@ class Worker(
             self._child_ended()
             return self._finish_cancelled()
 
+        if signals.pause_requested:  # after the fence and the cancel (`_park_for_pause`)
+            return self._park_for_pause(child)
         quota = signal_from_control(signals, cfg.provider)
         if quota is not None:
             decision = decide(
