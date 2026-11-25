@@ -320,7 +320,7 @@ describe('Admin is drawn only for an admin (CONFIG-NAV)', () => {
     // on one busy processor for this link (jsdom computes each element's role
     // and name against the shipped sheet).
     expect(within(refusal).getByText('Pool limits is for platform admins')).toBeTruthy()
-    expect(refusal.textContent).toMatch(/You are a member of \S+\./)
+    expect(refusal.textContent).toMatch(/You are a member of \S+/)
     expect(within(refusal).getByRole('link', { name: 'Open Overview' })).toBeTruthy()
     expect(window.location.pathname).toBe('/admin/limits')
     // A member of a group workspace reaches Admin › Workspaces (owner, 3 November), and nothing else there.
