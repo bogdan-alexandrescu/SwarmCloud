@@ -9,9 +9,12 @@ from typing import Any
 
 from swarm_install import tools
 
+import shutil
 from subprocess import run as _real_run  # bound before the walk patches subprocess.run
 
 from .world import World
+
+_real_which = shutil.which  # bound before the walk patches shutil.which
 
 
 def commands(world: World) -> None:
@@ -30,7 +33,16 @@ def commands(world: World) -> None:
         if program in ("terraform", "kubectl", "cosign", "gcrane"):
             continue
 
-        def version(argv: list[str], stdin: Any, env: Any, cwd: Any, said: str = said) -> tuple[int, str, str]:
+        def version(argv: list[str], stdin: Any, env: Any, cwd: Any, said: str = said,
+                    program: str = program) -> tuple[int, str, str]:
+            if program == "jq" and argv[1:] != ["--version"]:
+                # The plan guard runs the real rule: the machine's real jq, same arguments and stdin.
+                real = _real_which("jq")
+                if real is None:
+                    return 127, "", "jq: not found"
+                done = _real_run([real, *argv[1:]], input=stdin if isinstance(stdin, str) else
+                                 (stdin or b"").decode(), capture_output=True, text=True, timeout=60)
+                return done.returncode, done.stdout, done.stderr
             return 0, said, ""
 
         world.on_command(program)(version)

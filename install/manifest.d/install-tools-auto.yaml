@@ -82,8 +82,9 @@ entries:
   apply: preflight.tools fetches the pinned jq 1.8.2 from its GitHub release (SHA-256 from the release's
     sha256sum.txt, pinned in swarm_install/tools.py) when none is found
   verify: preflight.tools re-check is MET
-  explain: scripts/lib/plan-guard.sh and scripts/lib/destroy-guard.jq parse terraform plan JSON with it;
-    CLAUDE.md warns 'false // true is true' so comparisons must be explicit
+  explain: scripts/lib/plan-guard.sh and scripts/lib/destroy-guard.jq parse terraform plan JSON with it, and
+    the engine runs the shared scripts/lib/wrong-project.jq with it over every plan before any apply
+    (swarm_install/planguard.py); CLAUDE.md warns 'false // true is true' so comparisons must be explicit
   guards: null
   secret_entry: null
   depends_on: []
