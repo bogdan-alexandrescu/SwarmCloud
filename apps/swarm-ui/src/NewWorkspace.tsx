@@ -284,32 +284,37 @@ function Progress({ record, now }: { record: AdminWorkspaceView; now: number }) 
 /** What `first_admin` came to, after filing: granted, and whether the group holds them yet; or why not. */
 function FirstAdminOutcome({ answer, group }: { answer: FirstAdminAnswer; group: string | null }) {
   const who = <code>{answer.email}</code>
-  const inGroup = group !== null ? <code>{group}</code> : 'the group'
+  const inGroup = group ?? 'the group'
+  // Issue 439: what the outcome means is the line's (i), word for word; the line says only who and what.
   if (!answer.granted) {
+    const exists = answer.reason === 'workspace_exists'
     return (
       <p className="ur-small ob-issue" role="status" data-first-admin="refused" data-code={answer.reason ?? undefined}>
-        {who} was not made its admin
-        {answer.reason === 'workspace_exists' ? (
-          <>: this workspace already existed. Name its admins on People and roles.</>
-        ) : (
-          <>
-            {' '}
-            ({answer.reason ?? 'no reason given'}). Send the form again while it is being created, or name them on People and roles.
-          </>
-        )}
+        {who} was not made its admin{exists ? '' : ` (${answer.reason ?? 'no reason given'})`}{' '}
+        <InfoTip
+          about="why they were not made its admin"
+          tip={
+            exists
+              ? 'This workspace already existed. Name its admins on People and roles.'
+              : 'Send the form again while it is being created, or name them on People and roles.'
+          }
+        />
       </p>
     )
   }
   return (
     <p className="ur-small" role="status" data-first-admin={answer.member === true ? 'member' : 'pending'}>
-      {who} is its first admin.{' '}
-      {answer.member === true ? (
-        <>They are in {inGroup}, so the role applies now.</>
-      ) : answer.member === false ? (
-        <>They are not in {inGroup} yet: the role takes effect once they are, because membership stays the group’s.</>
-      ) : (
-        <>Whether they are in {inGroup} could not be checked; the role takes effect once they are in it.</>
-      )}
+      {who} is its first admin{answer.member === null || answer.member === undefined ? '; membership not checked' : '.'}{' '}
+      <InfoTip
+        about="when the role applies"
+        tip={
+          answer.member === true
+            ? `They are in ${inGroup}, so the role applies now.`
+            : answer.member === false
+              ? `They are not in ${inGroup} yet: the role takes effect once they are, because membership stays the group’s.`
+              : `Whether they are in ${inGroup} could not be checked; the role takes effect once they are in it.`
+        }
+      />
     </p>
   )
 }

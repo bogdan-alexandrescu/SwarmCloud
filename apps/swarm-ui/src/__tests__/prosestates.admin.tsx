@@ -5,7 +5,7 @@
 // dialogs, and Voice it's settings, stage pins and the voice components the
 // fixture build never draws (prosestates.admin.mounts.tsx).
 
-import { fireEvent } from '@testing-library/react'
+import { fireEvent, screen } from '@testing-library/react'
 
 import { settle } from './proseapp'
 import type { ProseState } from './prosestates'
@@ -71,14 +71,8 @@ const FOLDS: readonly { name: string; lines?: string[]; moved?: string[] }[] = [
 /** Fill the inline New workspace form's group, with `admin` as its first admin, and create it. */
 async function fileGroup(admin: string): Promise<void> {
   await press('.nw-inline', 'Group')
-  const field = (label: string): HTMLInputElement => {
-    const lbl = [...document.querySelectorAll<HTMLElement>('.nw-inline label')].find((l) => (l.textContent ?? '').startsWith(label))
-    const input = lbl?.querySelector<HTMLInputElement>('input')
-    if (input === null || input === undefined) throw new Error(`no field "${label}"`)
-    return input
-  }
-  fireEvent.change(field('Group address'), { target: { value: 'research@example.com' } })
-  if (admin !== '') fireEvent.change(field('First admin'), { target: { value: admin } })
+  fireEvent.change(screen.getByRole('textbox', { name: 'Group address' }), { target: { value: 'research@example.com' } })
+  if (admin !== '') fireEvent.change(screen.getByRole('textbox', { name: 'First admin’s email address (optional)' }), { target: { value: admin } })
   await settle()
   await press('.nw-inline', 'Create workspace')
 }
@@ -398,6 +392,8 @@ export const ADMIN: readonly ProseState[] = [
     group: 'admin',
     files: ['NewWorkspace.tsx'],
     shows: '[data-first-admin]',
+    lines: ['frank@example.com is its first admin.'],
+    moved: ['They are not in research@example.com yet: the role takes effect once they are, because membership stays the group’s.'],
     mount: mountNewWorkspaceMember(false),
     act: () => fileGroup('frank@example.com'),
   },
@@ -406,6 +402,8 @@ export const ADMIN: readonly ProseState[] = [
     group: 'admin',
     files: ['NewWorkspace.tsx'],
     shows: '[data-first-admin]',
+    lines: ['frank@example.com is its first admin.'],
+    moved: ['They are in research@example.com, so the role applies now.'],
     mount: mountNewWorkspaceMember(true),
     act: () => fileGroup('frank@example.com'),
   },
@@ -414,6 +412,8 @@ export const ADMIN: readonly ProseState[] = [
     group: 'admin',
     files: ['NewWorkspace.tsx'],
     shows: '[data-first-admin]',
+    lines: ['frank@example.com is its first admin; membership not checked'],
+    moved: ['Whether they are in research@example.com could not be checked; the role takes effect once they are in it.'],
     mount: mountNewWorkspaceMember(null),
     act: () => fileGroup('frank@example.com'),
   },
@@ -422,6 +422,8 @@ export const ADMIN: readonly ProseState[] = [
     group: 'admin',
     files: ['NewWorkspace.tsx'],
     shows: '[data-first-admin]',
+    lines: ['frank@example.com was not made its admin'],
+    moved: ['This workspace already existed.', 'Name its admins on People and roles.'],
     mount: mountNewWorkspaceNotGranted('workspace_exists'),
     act: () => fileGroup('frank@example.com'),
   },
@@ -430,6 +432,8 @@ export const ADMIN: readonly ProseState[] = [
     group: 'admin',
     files: ['NewWorkspace.tsx'],
     shows: '[data-first-admin]',
+    lines: ['frank@example.com was not made its admin (not_in_domain)'],
+    moved: ['Send the form again while it is being created, or name them on People and roles.'],
     mount: mountNewWorkspaceNotGranted('not_in_domain'),
     act: () => fileGroup('frank@example.com'),
   },
