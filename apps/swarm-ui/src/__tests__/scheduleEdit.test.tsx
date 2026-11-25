@@ -30,6 +30,7 @@
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
+import { helpIn } from './proseruns'
 import { Routed } from './screenroute'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
@@ -450,15 +451,15 @@ describe('the SD3 merge switch', () => {
     const { calls } = await gateTab((m, url) => (m === 'POST' && url === MODE ? { status: 200, body: { schedule: schedule({ revision: 3, gate: { merge: 'auto' } }) } } : null))
     fireEvent.click(await screen.findByRole('button', { name: 'Merge automatically…' }, WAIT))
     const dialog = await findModal()
-    // §4.4, said where the decision is made, behind Details (owner review
-    // 2026-10-11): workflow files are refused, and outside a platform
-    // repository the holds are a second member's.
+    // §4.4, said where the decision is made, behind the dialog's (i) since
+    // issue 439 (owner review 2026-10-11): workflow files are refused, and
+    // outside a platform repository the holds are a second member's.
     // MUTATION: say they "wait for the owner" and this fails.
-    const rules = dialog.querySelector('details')!
-    expect(visible(rules)).toContain('hard stops')
-    expect(visible(rules)).toMatch(/a plan naming workflow files is refused/)
-    expect(visible(rules)).toMatch(/held for a second member to approve \(for the owner, in a platform repository\)/)
-    expect(visible(rules)).toMatch(/frozen contract is held for the owner/)
+    const rules = helpIn(dialog)
+    expect(rules).toContain('hard stops')
+    expect(rules).toMatch(/a plan naming workflow files is refused/)
+    expect(rules).toMatch(/held for a second member to approve \(for the owner, in a platform repository\)/)
+    expect(rules).toMatch(/frozen contract is held for the owner/)
     expect(visible(dialog)).not.toMatch(/wait for the owner/)
     // AUT-4: the first step sends nothing; the second asks for the name typed.
     // MUTATION: send from the first step and a POST lands with no typed step.
