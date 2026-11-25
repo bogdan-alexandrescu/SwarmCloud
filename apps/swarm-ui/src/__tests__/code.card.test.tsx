@@ -108,7 +108,7 @@ describe('the card opens with one sentence, then the base pin, then the diff', (
     expect(first.nextElementSibling).toBe(pin)
     expect(pin.textContent).toBe('Base pinned to 9c4e0b2abc, from plan')
     // Then the way to the diff: the Changes tab, which replaced `Show the diff`.
-    expect(pin.nextElementSibling?.querySelector('a.dt-more')?.textContent).toBe('Changes ›')
+    expect(pin.nextElementSibling?.querySelector('a.dt-more')?.textContent).toBe('Changes')
   })
 
   it('links to the Changes tab, switches the split to it, and reads no patch here', () => {

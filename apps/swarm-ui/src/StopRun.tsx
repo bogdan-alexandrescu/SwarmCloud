@@ -5,6 +5,7 @@ import { cancelTask } from './api'
 import { Button } from './components'
 import { WarnGlyph } from './components/glyphs'
 import { useRoleGate } from './roleGate'
+import { InfoTip } from './InfoTip'
 import { errorHeading, type ApiError } from './fetch'
 import { trapTab } from './focus'
 import {
@@ -363,28 +364,28 @@ export function StopRun({
                 'finishes it. Until one of those happens the slot stays held.'
         }
       >
+        {/* ONE WORD ON THE SURFACE, THE REST BEHIND ITS (i) (issue 439):
+            `Stopped.` and `Stop requested.` stay different words; the
+            sentence after each is the tip, word for word. */}
         {outcome === 'released' ? (
-          earlier ? (
-            <>
-              <strong>Stopped.</strong> Nothing was running;{' '}
-              {task.latest_checkpoint
-                ? 'the earlier checkpoint is not resumed.'
-                : 'what earlier attempts did is not resumed.'}
-            </>
-          ) : (
-            <>
-              <strong>Stopped.</strong> It held no capacity, so nothing to harvest.
-            </>
-          )
-        ) : started ? (
           <>
-            <strong>Stop requested.</strong> Still running until the next
-            heartbeat.
+            <strong>Stopped.</strong>{' '}
+            <InfoTip
+              about="the stop"
+              tip={
+                earlier
+                  ? `Nothing was running; ${task.latest_checkpoint ? 'the earlier checkpoint is not resumed.' : 'what earlier attempts did is not resumed.'}`
+                  : 'It held no capacity, so nothing to harvest.'
+              }
+            />
           </>
         ) : (
           <>
-            <strong>Stop requested.</strong> No worker has started this attempt; the
-            reconciler finishes it if none does.
+            <strong>Stop requested.</strong>{' '}
+            <InfoTip
+              about="the stop"
+              tip={started ? 'Still running until the next heartbeat.' : 'No worker has started this attempt; the reconciler finishes it if none does.'}
+            />
           </>
         )}
       </p>

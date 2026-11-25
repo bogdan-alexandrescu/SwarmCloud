@@ -729,7 +729,7 @@ function DtMore({ href, onClick, children }: { href: string; onClick: (() => voi
             }
       }
     >
-      {children} ›
+      {children}
     </a>
   )
 }

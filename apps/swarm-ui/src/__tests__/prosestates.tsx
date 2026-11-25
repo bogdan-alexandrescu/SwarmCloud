@@ -105,26 +105,6 @@ export type ProseState = StateCommon &
  * register them. It only shrinks; the last step deletes it.
  */
 export const PENDING: readonly string[] = [
-  // agent (the agent page)
-  'AgentLogs.tsx',
-  'AgentSplit.tsx',
-  'ArtifactViewer.tsx',
-  'Artifacts.tsx',
-  'AttemptTimeline.tsx',
-  'BrowserUse.tsx',
-  'CheckpointBrowser.tsx',
-  'LiveBrowser.tsx',
-  'LiveToolMenu.tsx',
-  'Recordings.tsx',
-  'StopRun.tsx',
-  'Theater.tsx',
-  'TheaterTimeline.tsx',
-  'WaitPanel.tsx',
-  'agent-split/head.tsx',
-  'agent-split/tabs.tsx',
-  'diff/DiffView.tsx',
-  'trace/Notes.tsx',
-  'trace/Trace.tsx',
   // workflows (the workflow and run pages)
   'DiagramView.tsx',
   'QaRunGroup.tsx',
@@ -159,7 +139,6 @@ export const PENDING: readonly string[] = [
   'PlatformOverTime.tsx',
   'ScheduleDetail.tsx',
   'Schedules.tsx',
-  'UtilisationPanel.tsx',
   // config
   'ConfigSetup.tsx',
   'GitTokens.tsx',

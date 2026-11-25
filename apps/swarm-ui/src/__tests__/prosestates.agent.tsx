@@ -11,6 +11,7 @@ import { fireEvent } from '@testing-library/react'
 import type { ProseState } from './prosestates'
 import { settle } from './proseapp'
 import { screenLoaded } from './screenLoaded'
+import { mountDiff, mountDiffPhone, mountStop, mountTabs, mountToolMenu, mountWait, refuseStop, releaseStop } from './prosestates.agent.mounts'
 import { click } from './prosestates.shell'
 
 /** The ordinary running agent the QA capture opens (qa/routes.json). */
@@ -97,6 +98,8 @@ export const AGENT: readonly ProseState[] = [
     group: 'agent',
     files: ['AgentSplit.tsx'],
     shows: '.ag-split[role="dialog"]',
+    // The first row's agent's own prompt.
+    data: ['Show the queue depth per pool on the Capacity page.'],
     walk: { open: 'work/running', then: () => click('.cr-open') },
   },
   {
@@ -125,6 +128,7 @@ export const AGENT: readonly ProseState[] = [
     group: 'agent',
     files: ['LiveBrowser.tsx'],
     shows: 'details.live-strip-why[open]',
+    moved: ['The address Chromium reports for the page the agent is on.'],
     walk: { open: BROWSER, then: () => click('details.live-strip-why > summary') },
   },
   {
@@ -132,6 +136,8 @@ export const AGENT: readonly ProseState[] = [
     group: 'agent',
     files: ['Artifacts.tsx', 'ArtifactViewer.tsx'],
     shows: 'tr.is-open + tr',
+    lines: ['not redacted'],
+    moved: ['not redacted: the patch as stored, for you as its submitter'],
     walk: { open: `${DONE}/artifacts`, then: () => click('.art-open') },
   },
   {
@@ -139,6 +145,8 @@ export const AGENT: readonly ProseState[] = [
     group: 'agent',
     files: ['AgentDetail.tsx', 'Artifacts.tsx'],
     shows: 'details.dt-disc[open]',
+    // The agent's own prompt, as submitted.
+    data: ['Browser QA agent: open https://example.com'],
     walk: { open: 'work/task/task_f523c160', then: () => fold('.ag-split', 'Show prompt') },
   },
   {
@@ -177,24 +185,10 @@ export const AGENT: readonly ProseState[] = [
     walk: { open: `${RUNNING}/checkpoints`, then: () => clickText('.ag-split button.copy', 'files') },
   },
   {
-    key: 'agent/checkpoint-folder',
-    group: 'agent',
-    files: ['CheckpointBrowser.tsx'],
-    shows: '.ckb li[role="treeitem"][aria-expanded="true"]',
-    walk: {
-      open: `${RUNNING}/checkpoints`,
-      then: async () => {
-        clickText('.ag-split button.copy', 'files')
-        await drawn()
-        click('.ckb li[role="treeitem"][aria-expanded="false"] .ckb-open')
-      },
-    },
-  },
-  {
     key: 'agent/checkpoint-file',
     group: 'agent',
     files: ['CheckpointBrowser.tsx'],
-    shows: '.ckb .ckb-open[aria-expanded="true"]',
+    shows: '.ckb .art-viewer',
     walk: {
       open: `${RUNNING}/checkpoints`,
       then: async () => {
@@ -203,13 +197,6 @@ export const AGENT: readonly ProseState[] = [
         click('.ckb li[role="treeitem"]:not([aria-expanded]) .ckb-open')
       },
     },
-  },
-  {
-    key: 'agent/checkpoint-objects',
-    group: 'agent',
-    files: ['CheckpointsPane.tsx'],
-    shows: '.ag-split button.copy[aria-expanded="true"]',
-    walk: { open: `${RUNNING}/checkpoints`, then: () => clickText('.ag-split button.copy', '2 objects') },
   },
   {
     key: 'agent/device-menu',
@@ -221,50 +208,120 @@ export const AGENT: readonly ProseState[] = [
   {
     key: 'agent/theater',
     group: 'agent',
-    files: ['Theater.tsx'],
+    files: ['Theater.tsx', 'TheaterTimeline.tsx'],
+    moved: ['SwarmCloud is unreachable: the agent’s actions could not be read.'],
+    lines: ['Actions not read'],
     shows: '.th-root[role="dialog"]',
     walk: { open: `${BROWSER}/browser`, then: () => click('.th-open') },
   },
   {
-    key: 'agent/theater-protocol',
+    key: 'agent/stop-requested',
     group: 'agent',
-    files: ['TheaterTimeline.tsx'],
-    shows: 'details.th-proto[open]',
+    files: ['StopRun.tsx'],
+    shows: '.stop-note, .stop-pending',
+    lines: ['Stop requested.'],
+    moved: ['Still running until the next heartbeat.'],
     walk: {
-      open: `${BROWSER}/browser`,
+      open: RUNNING,
       then: async () => {
-        click('.th-open')
+        click('.ag-split .run-stop-btn')
         await drawn()
-        click('details.th-proto > summary')
+        click('.stop-confirm .stop-actions button')
       },
     },
   },
   {
+    key: 'agent/stop-refused',
+    group: 'agent',
+    files: ['StopRun.tsx'],
+    shows: '.stop-confirm .warn-text',
+    data: ['the store refused the write'],
+    lines: ['Nothing was stopped.'],
+    mount: () => {
+      refuseStop('the store refused the write')
+      return mountStop()
+    },
+    act: async () => {
+      click('.run-stop-btn')
+      await drawn()
+      click('.stop-confirm .stop-actions button')
+    },
+  },
+  {
+    key: 'agent/stop-released',
+    group: 'agent',
+    files: ['StopRun.tsx'],
+    shows: '.stop-note',
+    lines: ['Stopped.'],
+    mount: () => {
+      releaseStop()
+      return mountStop()
+    },
+    act: async () => {
+      click('.run-stop-btn')
+      await drawn()
+      click('.stop-confirm .stop-actions button')
+    },
+  },
+  {
+    key: 'agent/wait-history',
+    group: 'agent',
+    files: ['WaitPanel.tsx'],
+    shows: 'entry 1',
+    mount: mountWait,
+    act: () => click('.wp-history .dt-more'),
+  },
+  {
     key: 'agent/diff-files',
     group: 'agent',
-    files: ['diff/DiffView.tsx', 'ArtifactViewer.tsx'],
+    files: ['diff/DiffView.tsx'],
     shows: '.diff-sheet[role="dialog"]',
-    walk: {
-      open: `${DONE}/artifacts`,
-      then: async () => {
-        clickText('.art-open', 'diff.patch')
-        await drawn()
-        click('.diff-all')
-      },
-    },
+    mount: mountDiffPhone,
+    act: () => click('.diff-all'),
   },
   {
     key: 'agent/diff-file-fold',
     group: 'agent',
     files: ['diff/DiffView.tsx'],
-    shows: '.diff-row.is-file.is-collapsed',
-    walk: {
-      open: `${DONE}/artifacts`,
-      then: async () => {
-        clickText('.art-open', 'diff.patch')
-        await drawn()
-        click('.diff-row.is-file[aria-expanded="true"]')
-      },
-    },
+    shows: 'collapsed',
+    mount: mountDiff,
+    act: () => click('.diff-row.is-file[aria-expanded="true"]'),
+  },
+  {
+    key: 'agent/tool-menu',
+    group: 'agent',
+    files: ['LiveToolMenu.tsx'],
+    shows: '.live-more-menu',
+    mount: mountToolMenu,
+    act: () => click('.live-more-btn'),
+  },
+  {
+    key: 'agent/tabs-more',
+    group: 'agent',
+    files: ['agent-split/tabs.tsx', 'AgentSplit.tsx'],
+    shows: '.ag-tabs-menu',
+    mount: mountTabs,
+    act: () => click('.ag-tabs-more'),
+  },
+  {
+    key: 'agent/recording-parts',
+    group: 'agent',
+    files: ['Recordings.tsx'],
+    shows: 'details.rec-parts[open]',
+    walk: { open: `${BROWSER}/attempts`, then: () => click('details.rec-parts > summary') },
+  },
+  {
+    key: 'agent/take-control',
+    group: 'agent',
+    files: ['LiveBrowser.tsx'],
+    shows: '.live-ask[role="dialog"]',
+    walk: { open: `${BROWSER}/browser`, then: () => clickText('.live-control button', 'Take control') },
+  },
+  {
+    key: 'agent/open-to-members',
+    group: 'agent',
+    files: ['LiveBrowser.tsx'],
+    shows: '.live-ask.is-members',
+    walk: { open: `${BROWSER}/browser`, then: () => click('.live-open input[type="checkbox"]') },
   },
 ]

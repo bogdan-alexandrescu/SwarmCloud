@@ -33,6 +33,7 @@
 import { Fragment, useEffect, useState, type ReactNode } from 'react'
 
 import { errorHeading, read, route, type Result } from './fetch'
+import { InfoTip } from './InfoTip'
 
 /** One line of the timeline, as the API returns it: a line of
  *  `actions-<seq>.live.jsonl`, or an entry of the task's live audit (LB-V3). */
@@ -429,8 +430,9 @@ export function TheaterTimeline({ taskId, live }: { taskId: string; live: boolea
   if (res.status === 'loading') return <p className="th-note">Reading the agent’s actions…</p>
   if (res.status === 'error') {
     return (
+      // A could-not-check line, short; its sentence is the (i)'s tip (issue 439).
       <p className="th-note is-bad" role="status">
-        {`${errorHeading(res.error)}: the agent’s actions could not be read.`}
+        Actions not read <InfoTip about="the unread actions" tip={`${errorHeading(res.error)}: the agent’s actions could not be read.`} />
       </p>
     )
   }
