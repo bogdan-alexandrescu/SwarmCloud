@@ -49,7 +49,7 @@ import { longRuns, RUN_SENTENCES, RUN_WORDS } from './proseruns'
 import { chooseBase, ensureCommit, extractApp, type BaseTree, type ProseBase } from './prosebase'
 import { screenLoaded } from './screenLoaded'
 
-type Persona = 'platform-admin'
+export type Persona = 'platform-admin'
 
 export interface ProsePage {
   /** The page's name in a failure: the nav address, or a named state of a page. */
@@ -203,7 +203,7 @@ const CLOCK_MS = 700
  */
 const SETTLE_STEPS = 4
 
-async function settle(): Promise<void> {
+export async function settle(): Promise<void> {
   for (let i = 0; i < SETTLE_STEPS; i++) {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(CLOCK_MS)
@@ -211,7 +211,7 @@ async function settle(): Promise<void> {
   }
 }
 
-function openAt(open: string): void {
+export function openAt(open: string): void {
   if (open.startsWith('/')) {
     window.location.hash = ''
     window.history.replaceState(null, '', open)
@@ -223,9 +223,9 @@ function openAt(open: string): void {
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 /** The app directory: src/__tests__ is two below it. */
-const APP_DIR = join(HERE, '..', '..')
+export const APP_DIR = join(HERE, '..', '..')
 
-interface Tree {
+export interface Tree {
   src: string | null
   App: typeof App
   sections: typeof SECTIONS
@@ -239,7 +239,7 @@ interface Tree {
  * measured after another would otherwise differ between the base and the
  * head for no change of theirs.
  */
-async function load(src: string | null): Promise<Tree> {
+export async function load(src: string | null): Promise<Tree> {
   vi.resetModules()
   if (src === null) {
     const app = await import('../App')
@@ -280,6 +280,47 @@ async function renderPage(tree: Tree, page: ProsePage): Promise<Measure> {
   }
 }
 
+/**
+ * The base a slice compares with, set up once per describe: its commit chosen
+ * and its src copied out (prosebase.ts), the zone pinned to UTC, the persona's
+ * cookie set and the clock faked; all of it undone after. Shared by the page
+ * slices here and the states slices (prosestates.tsx).
+ */
+export function useBase(persona: Persona | undefined): () => { base: Tree; chosen: ProseBase } {
+  let base: Tree | undefined
+  let chosen: ProseBase | undefined
+  let tree: BaseTree | undefined
+  let zone: string | undefined
+  beforeAll(async () => {
+    chosen = chooseBase(APP_DIR)
+    ensureCommit(APP_DIR, chosen.sha)
+    tree = extractApp(APP_DIR, chosen.sha)
+    console.log(`PROSE BASE: ${chosen.sha} (${chosen.why})`)
+    // The zone, for the clock's reason: Settings › Profile names the
+    // browser's own zone, and "Asia/Calcutta" is one token where "UTC" is
+    // another sentence's worth. Node applies a TZ set at run time.
+    zone = process.env.TZ
+    process.env.TZ = 'UTC'
+    if (persona !== undefined) document.cookie = `swarm_qa_persona=${persona}; path=/`
+    base = await load(join(tree.app, 'src'))
+    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
+  }, 120_000)
+  afterAll(() => {
+    tree?.remove()
+    if (zone === undefined) delete process.env.TZ
+    else process.env.TZ = zone
+    vi.useRealTimers()
+    document.cookie = 'swarm_qa_persona=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/'
+    window.location.hash = ''
+    window.history.replaceState(null, '', '/')
+    localStorage.clear()
+  })
+  return () => {
+    if (base === undefined || chosen === undefined) throw new Error('the prose base was not set up')
+    return { base, chosen }
+  }
+}
+
 /** Register one slice: an `it` per page in `group`, each holding its page to what the base showed. */
 export function proseGroup(group: string): void {
   const pages = PAGES.filter((p) => p.group === group)
@@ -288,37 +329,11 @@ export function proseGroup(group: string): void {
   if (pages.some((p) => p.persona !== persona)) throw new Error(`group ${group} mixes personas`)
 
   describe(`the prose ratchet: ${group}`, () => {
-    let base: Tree
-    let chosen: ProseBase
-    let tree: BaseTree | undefined
-    let zone: string | undefined
-    beforeAll(async () => {
-      chosen = chooseBase(APP_DIR)
-      ensureCommit(APP_DIR, chosen.sha)
-      tree = extractApp(APP_DIR, chosen.sha)
-      console.log(`PROSE BASE: ${chosen.sha} (${chosen.why})`)
-      // The zone, for the clock's reason: Settings › Profile names the
-      // browser's own zone, and "Asia/Calcutta" is one token where "UTC" is
-      // another sentence's worth. Node applies a TZ set at run time.
-      zone = process.env.TZ
-      process.env.TZ = 'UTC'
-      if (persona !== undefined) document.cookie = `swarm_qa_persona=${persona}; path=/`
-      base = await load(join(tree.app, 'src'))
-      vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
-    }, 120_000)
-    afterAll(() => {
-      tree?.remove()
-      if (zone === undefined) delete process.env.TZ
-      else process.env.TZ = zone
-      vi.useRealTimers()
-      document.cookie = 'swarm_qa_persona=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/'
-      window.location.hash = ''
-      window.history.replaceState(null, '', '/')
-      localStorage.clear()
-    })
+    const on = useBase(persona)
 
     for (const page of pages) {
       it(`${page.key} shows no more words, arrow links or long runs than on the base`, async () => {
+        const { base, chosen } = on()
         const was = baseHas(page, base.sections) ? await renderPage(await load(base.src), page) : null
         const now = await renderPage(await load(null), page)
         console.log(
