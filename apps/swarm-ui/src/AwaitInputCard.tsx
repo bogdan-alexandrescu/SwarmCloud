@@ -126,6 +126,7 @@ function AnswerFiles({ taskId, files }: { taskId: string; files: AnswerRecord['f
 function Closed({ view, now }: { view: AwaitInputView; now: number }) {
   if (view.status === 'answered' && view.answer !== null) {
     const a = view.answer
+    const size = a.bytes !== null ? `, ${bytesWords(a.bytes)} with its files` : ''
     return (
       <div className="ai-closed" data-testid="ai-closed" data-status="answered">
         {/* WHO, WHEN AND HOW STAY; WHAT FOLLOWS IS EACH LINE'S (i) (issue 439). */}
@@ -139,7 +140,7 @@ function Closed({ view, now }: { view: AwaitInputView; now: number }) {
             Written as <span className="mono">{view.artifact}</span>{' '}
             <InfoTip
               about="the answer's file"
-              tip={`Written as ${view.artifact}${a.bytes !== null ? `, ${bytesWords(a.bytes)} with its files` : ''}, which the next step stages.`}
+              tip={`Written as ${view.artifact}${size}, which the next step stages.`}
             />
           </p>
         )}

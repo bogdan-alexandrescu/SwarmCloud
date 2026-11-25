@@ -21,7 +21,7 @@ function profile(over: Partial<RunnerProfile> = {}): RunnerProfile {
     pools: ['global', 'tenant:eng', 'resource:standard'],
     admission: { units: 1, headroom: 4, basis: 'measured', blockers: [], binding: [], counterfactual: [], complete: true, unread: [], uncapped: [] },
     ...over,
-  } as RunnerProfile
+  }
 }
 
 /** Three runners, two switched off: more than half held back, so the list folds them under "Other runners". */
@@ -91,14 +91,16 @@ function stepView(answered: boolean): Record<string, unknown> {
 /** An await-input step waiting on a verdict; once an answer is posted, the step reads back answered. */
 export async function mountAwaitInput(): Promise<ReactElement> {
   let answered = false
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input).split('?')[0]
-    const method = init?.method ?? 'GET'
-    if (method === 'POST') answered = true
-    const reply =
-      method === 'POST' ? { status: 200, body: { state: 'SUCCEEDED' } } : url === INPUT_ROUTE ? { status: 200, body: stepView(answered) } : { status: 404, body: { detail: 'Not Found' } }
-    return new Response(JSON.stringify(reply.body), { status: reply.status, headers: { 'content-type': 'application/json' } })
-  }) as typeof fetch
+  const reply = (status: number, body: unknown): Promise<Response> =>
+    Promise.resolve(new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } }))
+  globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = (input instanceof Request ? input.url : input.toString()).split('?')[0]
+    if ((init?.method ?? 'GET') === 'POST') {
+      answered = true
+      return reply(200, { state: 'SUCCEEDED' })
+    }
+    return url === INPUT_ROUTE ? reply(200, stepView(answered)) : reply(404, { detail: 'Not Found' })
+  }
   const { AwaitInputCard } = await import('../AwaitInputCard')
   return <AwaitInputCard workflowId="wf_r" stepId="review" />
 }

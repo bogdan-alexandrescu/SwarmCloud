@@ -140,8 +140,9 @@ const REVIEW_CLASS_SHORT: Readonly<Record<string, string>> = {
 export function ContractRefusalPanel({ refusal }: { refusal: ContractRefusal }) {
   const named = refusal.contractId === null ? 'This work contract' : <>Work contract <code>{refusal.contractId}</code></>
   const revision = refusal.revision === null ? '' : ` (revision ${refusal.revision})`
+  const whose = refusal.contractId === null ? 'This work contract' : 'Work contract ' + refusal.contractId
   const lead =
-    `${refusal.contractId === null ? 'This work contract' : `Work contract ${refusal.contractId}`}${revision} is strict, and Jev’s review found ` +
+    `${whose}${revision} is strict, and Jev’s review found ` +
     `${refusal.requirements.length === 1 ? 'a requirement' : 'requirements'} no worker could enforce:`
   return (
     <div className="cj-refusal" data-testid="cj-refusal">
