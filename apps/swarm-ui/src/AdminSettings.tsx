@@ -2675,7 +2675,7 @@ export function AdditionalRepositoryLimitsCard({ fold = false }: { fold?: boolea
           {values.map((v) => (
             <label key={v.key} htmlFor={`${id}-${v.key}`} className="ur-small">
               {v.label}
-              <input id={`${id}-${v.key}`} type="number" min={1} step={1} className="mono"
+              <input id={`${id}-${v.key}`} aria-label={v.label} type="number" min={1} step={1} className="mono"
                 value={typed[v.key]} disabled={busy} aria-invalid={v.n === null || undefined}
                 onChange={(e) => {
                   setSavedAt(null)
@@ -2995,13 +2995,13 @@ export function AgentBudgetCeilingCard({ fold = false }: { fold?: boolean } = {}
  * nothing either.
  */
 const PLAN_CAPS = [
-  { key: 'replans', label: 'Re-plans', high: 20, cents: false,
+  { key: 'replans', label: 'Re-plans', short: 'Re-plans', high: 20, cents: false,
     why: 'Planner re-plans one run may ask for. Default 5; 0 turns re-plans off.' },
-  { key: 'diagram_asks', label: 'Diagram asks', high: 100, cents: false,
+  { key: 'diagram_asks', label: 'Diagram asks', short: 'Asks', high: 100, cents: false,
     why: 'On-demand diagrams one run may ask for. Default 20; 0 turns them off.' },
-  { key: 'chat_turns', label: 'Chat turns', high: 200, cents: false,
+  { key: 'chat_turns', label: 'Chat turns', short: 'Turns', high: 200, cents: false,
     why: 'Review chat questions one run may ask. Default 40; 0 turns the chat off.' },
-  { key: 'review_usd', label: 'Review dollars', high: 500, cents: true,
+  { key: 'review_usd', label: 'Review dollars', short: 'Dollars', high: 500, cents: true,
     why: 'Dollars of review agents one run may spend, chat turns and on-demand diagrams. Default $25; 0 turns them off.' },
 ] as const
 type PlanCapKey = (typeof PLAN_CAPS)[number]['key']
@@ -3124,7 +3124,7 @@ export function PlanReviewSettingsCard({ admin, fold = false }: { admin: boolean
       <form className="as-fields" data-testid="adm-plan-review" onSubmit={(e) => void save(e)}>
         <div className="as-field">
           <span className="as-k">
-            {DIAGRAMS_LABEL}
+            Diagrams
             <InfoTip about={DIAGRAMS_LABEL} tip={DIAGRAM_EXAMPLES} />
           </span>
           <Segmented
@@ -3140,7 +3140,7 @@ export function PlanReviewSettingsCard({ admin, fold = false }: { admin: boolean
           />
         </div>
         <div className="as-field">
-          <span className="as-k">{MODEL_LABEL}</span>
+          <span className="as-k">Model</span>
           <Segmented
             className="as-seg"
             label={MODEL_LABEL}
@@ -3156,9 +3156,9 @@ export function PlanReviewSettingsCard({ admin, fold = false }: { admin: boolean
         <div className="as-field adm-plan-caps" title={caps.set_by === null ? undefined : `Set by ${caps.set_by}`}>
           {values.map((v) => (
             <span key={v.key} className="as-field">
-              <label htmlFor={`${id}-${v.key}`} className="as-k">{v.label}</label>
+              <label htmlFor={`${id}-${v.key}`} className="as-k">{v.short}</label>
               <InfoTip about={v.label} tip={`${capRange(v)}. ${v.why}`} />
-              <input id={`${id}-${v.key}`} type="number" min={0} max={v.high} step={v.cents ? 0.01 : 1} inputMode={v.cents ? 'decimal' : 'numeric'}
+              <input id={`${id}-${v.key}`} aria-label={v.label} type="number" min={0} max={v.high} step={v.cents ? 0.01 : 1} inputMode={v.cents ? 'decimal' : 'numeric'}
                 className="c-inp is-mono adm-plan-cap" value={typed[v.key]} disabled={busy} aria-invalid={v.n === null || undefined}
                 onChange={(e) => {
                   edited()
@@ -3173,8 +3173,8 @@ export function PlanReviewSettingsCard({ admin, fold = false }: { admin: boolean
           </p>
         )}
         <div className="as-field">
-          <Button type="submit" kind="primary" size="sm" busy={busy} disabled={bad.length > 0 || nothing}>
-            Save plan review
+          <Button type="submit" aria-label="Save plan review" kind="primary" size="sm" busy={busy} disabled={bad.length > 0 || nothing}>
+            Save
           </Button>
           {saved && nothing && (
             <span role="status" aria-label="Saved" title={data.updated_by === null ? undefined : `Saved by ${data.updated_by}`}>
