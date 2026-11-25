@@ -92,6 +92,8 @@ export const WORK: readonly ProseState[] = [
     group: 'work',
     files: ['TimelineLanes.tsx'],
     shows: '.tl-state:has(button)',
+    lines: ['No lane matches'],
+    moved: ['No lane matches state dead_lettered among the 31 attempts read.'],
     walk: {
       open: TIMELINE,
       then: async () => {
