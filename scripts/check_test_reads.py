@@ -224,6 +224,9 @@ SECURITY_GUARDS: dict[str, str] = {
     "tests/unit/scripts/test_merge_queue_workflows.py":
         "merge-group triggers: required contexts produced once and never skipped, and "
         "nothing that mints a cloud identity, releases or auto-merges runs there",
+    "tests/unit/scripts/test_live_relay_rollout.py":
+        "the step that rolls the live relay to the release's image runs only behind the "
+        "release's gate",
     "tests/unit/scripts/test_plan_text_never_public.py":
         "plan text is never printed beyond its summary line, teed, uploaded or left on "
         "stderr, and the summary masks addresses",

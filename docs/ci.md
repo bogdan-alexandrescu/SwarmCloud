@@ -5049,6 +5049,7 @@ tree, is red. A new entry is the owner's decision, not a lane's. The files:
 * `tests/unit/scripts/test_join_acceptance_probe.py`
 * `tests/unit/scripts/test_merge_app_permissions_doc.py`
 * `tests/unit/scripts/test_merge_queue_workflows.py`
+* `tests/unit/scripts/test_live_relay_rollout.py`
 * `tests/unit/scripts/test_plan_text_never_public.py`
 * `tests/unit/scripts/test_plugin_tag.py`
 * `tests/unit/scripts/test_pr_image_scan.py`

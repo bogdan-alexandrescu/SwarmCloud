@@ -34,6 +34,7 @@ from pathlib import Path
 import pytest
 
 from .test_live_netpol import FAKE_API_CIDR, FAKE_SUBNET, LEAKY, _relay_manifest, _service
+from .test_release_reuses_ci_images import _workflow
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -58,6 +59,9 @@ FOREIGN_REF = f"gke_{PROJECT}_{LOCATION}-a_{PEER_CLUSTER}"
 #: The digest _relay_manifest() renders, built rather than written out.
 DIGEST = "sha256:" + "7" * 64
 STALE_DIGEST = "sha256:" + "3" * 64
+
+STEP = "roll the live relay to this release's image"
+INVOCATION = "./scripts/roll-live-relay.sh"
 
 
 # --- the script, against a fake cluster ---------------------------------------
@@ -446,3 +450,37 @@ def test_the_default_wait_fits_the_release_steps_timeout():
     rollout = int(next(line.split("=")[1] for line in text.splitlines() if line.startswith("TIMEOUT=")))
     assert 0 < defer and defer + rollout < 20 * 60
 
+
+# --- the workflows ------------------------------------------------------------
+
+
+def _deploy_steps(workflow: str) -> list[dict[str, Any]]:
+    return _workflow(workflow)["jobs"]["deploy"]["steps"]
+
+
+def _index(steps: list[dict[str, Any]], name: str) -> int:
+    names = [s.get("name") for s in steps]
+    assert name in names, f"the deploy job has no step named {name!r}"
+    return names.index(name)
+
+
+@pytest.mark.parametrize("workflow", ["release.yml", "hotfix.yml"])
+def test_the_deploy_job_rolls_the_relay(workflow):
+    steps = _deploy_steps(workflow)
+    at = _index(steps, STEP)
+    step = steps[at]
+    run = str(step.get("run", ""))
+    assert INVOCATION in run, run
+    for flag in ("--confirm", "--get-credentials", "--tf-init"):
+        assert flag in run, f"{workflow}: the relay step does not pass {flag}"
+    # After the digests are proven, before anything dispatches.
+    assert at > _index(steps, "verify every service, job and worker image runs the pinned digests")
+    assert at > _index(steps, "apply the tenant network policies to every tenant namespace")
+    assert at < _index(steps, "smoke test (inside the VPC)")
+    when = str(step.get("if", ""))
+    # `_workflow` flattens release-verify, so `steps.verify.outputs.superseded`
+    # reads as the expression the action declares for it.
+    assert "steps.verify.outcome == 'success'" in when and "superseded == 'true') != 'true'" in when, when
+    assert "!cancelled()" in when, when
+    # A relay that did not roll fails the release: that is the defect this fixes.
+    assert not step.get("continue-on-error"), f"{workflow}: a relay that did not roll would pass the release"
