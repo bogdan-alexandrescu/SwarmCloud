@@ -90,7 +90,7 @@ release of either, and the same findings.
 | Tool | In the image | Default build | Why this version |
 |---|---|---|---|
 | `gh` | **2.105.0** | yes | newest; go1.27.4 fixes CVE-2026-97054 (2.103.3 was go1.27.3; 2026-11-20); go1.27.3 and x/net 0.60.0 had fixed CVE-2026-78667 and -78669 (2026-10-31) |
-| `gcloud` | **591.0.0** | yes | newest; its bundled Python 3.14 is removed (7 fixable HIGHs in its site-packages) and gcloud runs on the image's 3.11; its gcloud-crc32c is go1.27.2, its gke-gcloud-auth-plugin still go1.27.1 (accepted in `.trivyignore.yaml`, 2026-10-31); on 2026-11-18 the newest, 594.0.0, still carries the same builds (gcloud-crc32c 20261016, auth plugin 20261030), so the crypto/x509 acceptance (CVE-2026-111943) runs one more week, to 2026-11-25, and is re-checked then (see below the table); the pin stays 591.0.0; for CVE-2026-97054 (Go net/http MaxBytesReader, fixed in Go 1.26.11 / 1.27.4) 594.0.0 is still gcloud-crc32c go1.27.2 and auth plugin go1.27.3 (2026-11-20), so both are accepted to 2026-11-27 (see below the table) |
+| `gcloud` | **591.0.0** | yes | newest; its bundled Python 3.14 is removed (7 fixable HIGHs in its site-packages) and gcloud runs on the image's 3.11; its gcloud-crc32c is go1.27.2, its gke-gcloud-auth-plugin still go1.27.1 (accepted in `.trivyignore.yaml`, 2026-10-31); on 2026-11-18 the newest, 594.0.0, still carries the same builds (gcloud-crc32c 20261016, auth plugin 20261030), so the crypto/x509 acceptance (CVE-2026-111943) runs one more week, to 2026-11-25, and is re-checked then (see below the table); the pin stays 591.0.0; for CVE-2026-97054 (Go net/http MaxBytesReader, fixed in Go 1.26.11 / 1.27.4) 594.0.0 is still gcloud-crc32c go1.27.2 and auth plugin go1.27.3 (2026-11-20), and so is the newest, 594.0.1 (2026-11-25), so both are accepted to 2026-12-04 (see below the table) |
 | `kubectl` | **1.37.2** | yes | newest release and the only one that links x/net 0.57.0, which fixes CVE-2026-39821 (1.36.6, 1.35.10 and 1.34.13 link 0.56.0; refused from 2026-11-24); go1.26.10 (CVE-2026-56857, -78667 and -111943 fixed); x/net 0.57.0's CVE-2026-78669 and -78661, x/text 0.40.0's CVE-2026-56851 and go1.26.10's CVE-2026-97054 are in every kubectl release and accepted; needs a **1.36 or newer** control plane (one minor of skew); operators pin 1.36.3 |
 | `terraform` | **1.17.1** | yes | newest; go1.26.10, x/net 0.62.0 and go-jose 4.1.6 fix CVE-2026-78667, -78669 and -116587 (1.16.7 still has go-jose 4.1.4); operators and CI pin 1.16.2, whose Go 1.26.4 stdlib has 9 fixable HIGHs |
 | `checkov` | **3.3.17** | yes | matches CI; isolated `uv tool` env, resolution pinned to 2026-10-01 |
@@ -124,7 +124,7 @@ or later for `gcloud-crc32c`. So the acceptance was extended one more week, to
 no newer release fixes it. The owner's rule is the one below: take every fixed
 build as it ships, and extend only what upstream still leaves unfixed.
 
-**CVE-2026-97054, accepted for five binaries until 2026-11-27.** A Go
+**CVE-2026-97054, accepted for five binaries until 2026-12-04.** A Go
 standard library advisory (HIGH; an HTTP/1 server whose `MaxBytesReader`
 limit is exceeded; fixed in Go 1.26.11 and 1.27.4) made the release's scan
 refuse agent-runtime-base, -nocodex, -browser, -indexer, -lightpanda and
@@ -138,10 +138,27 @@ upstream release of the other five is built with a fixed Go yet (read with
 `gke-gcloud-auth-plugin` (594.0.0: go1.27.3), `kubectl` (1.36.6 and 1.37.2:
 go1.26.10; the pin moved to 1.37.2 on 2026-11-24 for CVE-2026-39821, still go1.26.10), `terraform` (1.17.2: go1.26.10) and `trivy` (0.76.2: go1.27.3). One
 `.trivyignore.yaml` entry accepts the id for exactly those five paths, because
-they are client tools that run no HTTP/1 server in our containers; it expires
-on **2026-11-27** and is re-checked before then. The owner's rule: take every
-fixed build as it ships (bump the pin, drop its path from the entry), and
-extend the rest one week only if upstream is still unfixed.
+they are client tools that run no HTTP/1 server in our containers. It was
+due to expire on 2026-11-27; on 2026-11-25 (the owner's practice from that day:
+handle such entries two days before they expire) every newest release was
+measured again the same way, checksum first: google-cloud-cli 594.0.1
+(`gcloud-crc32c` go1.27.2, `gke-gcloud-auth-plugin` go1.27.3, byte-identical
+to the pinned 592.0.0's), `kubectl` 1.37.2 (go1.26.10), `terraform` 1.17.2
+(go1.26.10) and `trivy` 0.76.2 (go1.27.3). None is fixed, so the entry now
+expires on **2026-12-04** and is re-checked on or before 2026-12-02. The
+owner's rule: take every fixed build as it ships (bump the pin, drop its path
+from the entry), and extend the rest one week only if upstream is still
+unfixed.
+
+**The other acceptances re-measured on 2026-11-25.** CVE-2026-78669 (x/net
+http2, `kubectl` 1.37.2's x/net v0.57.0) and CVE-2026-78661 (x/net/html,
+`kubectl` 1.37.2 and `gke-gcloud-auth-plugin` 592.0.0 / 594.0.1 at x/net
+v0.61.0) have no fixed vendor build, so both move one week, from 2026-11-28 to
+**2026-12-05**, and are re-checked on or before 2026-12-03. CVE-2026-56857
+(Go `os.Root`, Windows-only, fixed in Go 1.26.9 / 1.27.2) is no longer
+accepted: every binary it named is already fixed at its pin (`gcloud-crc32c`
+go1.27.2, `gke-gcloud-auth-plugin` go1.27.3, `kubectl` go1.26.10), and trivy
+0.76.2 reported it in none of them, so its entry was deleted.
 
 ---
 
