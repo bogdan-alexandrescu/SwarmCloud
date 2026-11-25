@@ -1,0 +1,38 @@
+{
+  "_generated": "GENERATED FILE -- DO NOT EDIT BY HAND. Regenerate: uv run python scripts/gen_api_types.py",
+  "buckets": [
+    "hour",
+    "day",
+    "week",
+    "month"
+  ],
+  "default_span": "14d",
+  "groups": [
+    "runner_profile",
+    "submitted_by",
+    "tenant_id",
+    "model",
+    "model_class"
+  ],
+  "kinds": [
+    "all",
+    "standalone",
+    "steps"
+  ],
+  "max_buckets": 2000,
+  "max_span_days": 400,
+  "month_min_days": 60,
+  "outcomes_cache_s": 60,
+  "row_outcomes": [
+    "failed",
+    "cancelled",
+    "succeeded"
+  ],
+  "spans": [
+    "24h",
+    "7d",
+    "14d",
+    "30d",
+    "90d"
+  ]
+}
