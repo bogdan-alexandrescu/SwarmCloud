@@ -21,293 +21,87 @@
 // NULL MEANS NOT KNOWN, NEVER ZERO. Every nullable field below is nullable in
 // the contract for that reason, and no helper here turns one into a 0.
 
+import type {
+  BucketState as ApiBucketState,
+  CancelCauseKey as ApiCancelCauseKey,
+  CancelSplit as ApiCancelSplit,
+  CostCell as ApiCostCell,
+  EndedRow as ApiEndedRow,
+  EndedRows as ApiEndedRows,
+  FailureClassKey as ApiFailureClassKey,
+  GroupBy as ApiGroupBy,
+  GroupRow as ApiGroupRow,
+  LatencyOutcome as ApiLatencyOutcome,
+  LatencyRow as ApiLatencyRow,
+  LedgerBucketSize as ApiLedgerBucketSize,
+  OutcomeBucket as ApiOutcomeBucket,
+  OutcomeTotals as ApiOutcomeTotals,
+  Outcomes as ApiOutcomes,
+  PlatformScope as ApiPlatformScope,
+  Rate as ApiRate,
+  RowOutcome as ApiRowOutcome,
+  Stat as ApiStat,
+  TenantScope as ApiTenantScope,
+  UnreadReason as ApiUnreadReason,
+  WorkflowFailedRow as ApiWorkflowFailedRow,
+} from './generated/api-types'
+import outcomesConstants from './generated/constants/outcomes.json'
+
 // ---------------------------------------------------------------------------
 // The response
 // ---------------------------------------------------------------------------
 
-export type LedgerBucketSize = 'hour' | 'day' | 'week' | 'month'
+// GENERATED SHAPES (part of #72). Every type of the response is the one
+// ./generated/api-types.ts declares, generated from `swarm_api/wire_types.py`,
+// whose test holds each model to what the route serves at every depth, and a
+// drift check fails when the generated file is stale. The unions the page
+// switches on (failure classes, cancel causes, bucket sizes, groups, unread
+// reasons) are generated from the route's own tuples. What stays here is the
+// console's narrowing: a failure-class record keyed by the generated union.
+
+export type LedgerBucketSize = ApiLedgerBucketSize
 
 /** k succeeded of n decided, with its Wilson 95 % interval. null when n = 0. */
-export interface Rate {
-  k: number
-  n: number
-  p: number
-  lo: number
-  hi: number
-}
+export type Rate = ApiRate
 
-export interface CancelSplit {
-  total: number
-  requested: number
-  after_failure: number
-  /**
-   * A cascade cancel that followed a cancel somebody asked for, at its parent
-   * or further up the chain -- not a failure (archived issue 185, decision 2). The scheduler
-   * writes the same words for both; the route splits them by the task's
-   * `end_cause`, or, for a task without one, by what each parent's own end
-   * sent down (a CANCELLED parent can be a failure's cascade itself).
-   */
-  after_cancel: number
-  workflow_sweep: number
-  /**
-   * Contract request 41: a child task cancelled because its parent was
-   * cancelled, ended, or out-waited its await. OPTIONAL: an API before
-   * DERIVE_VERSION 6 does not send it, and absent is not zero.
-   */
-  child_cascade?: number
-  other: number
-}
+export type CancelSplit = ApiCancelSplit
 
-export interface CostCell {
-  /** null when no attempt reported a cost: an absence, never $0.00. */
-  sum_usd: number | null
-  attempts: number
-  reporting: number
-}
+export type CostCell = ApiCostCell
 
-export type FailureClassKey =
-  | 'runner_error'
-  | 'timeout'
-  | 'lost_worker'
-  | 'could_not_start'
-  | 'inputs_unavailable'
-  | 'outputs_missing'
-  | 'dispatch_failed'
-  | 'spec_signature_invalid'
-  | 'verdict_refused'
-  | 'verdict_failed'
-  | 'merge_refused'
-  | 'merge_failed'
-  | 'publish_refused'
-  /** Contract request 118 (owner 2026-10-27): the worker stopped the agent on its budget. */
-  | 'budget_exceeded'
-  /** Contract request 126 (owner 2026-10-27): a fix loop's rounds ended without a MERGE. */
-  | 'fix_loop_exhausted'
-  | 'other'
-  | 'no_reason'
-  /** archived issue 631: the caller asked for this failure (the mock's `fail: true`). */
-  | 'intended'
+export type FailureClassKey = ApiFailureClassKey
 
-export type CancelCauseKey =
-  | 'requested'
-  | 'after_failure'
-  | 'after_cancel'
-  | 'workflow_sweep'
-  | 'child_cascade'
-  | 'other'
+export type CancelCauseKey = ApiCancelCauseKey
 
-export type BucketState = 'sealed' | 'open' | 'unread'
+export type BucketState = ApiBucketState
 
-export type UnreadReason = 'derive_budget' | 'read_failed' | 'too_large'
+export type UnreadReason = ApiUnreadReason
 
 /** One bucket. When `state` is unread, every count below is null. */
-export interface OutcomeBucket {
-  start: string
-  end: string
-  state: BucketState
-  /** end > generated_at: the current period, drawn as "so far". */
-  in_progress: boolean
-  unread_reason: UnreadReason | null
-  /** By created_at: the ONLY submission-time field on a bucket. */
-  submitted: number | null
-  ended: number | null
-  succeeded: number | null
-  failed: number | null
-  dead_lettered: number | null
-  cancelled: CancelSplit | null
-  rate: Rate | null
+export interface OutcomeBucket extends ApiOutcomeBucket {
   failure_classes: Record<FailureClassKey, number> | null
-  cost: CostCell | null
 }
 
-export interface Stat {
-  n: number
-  p50_s: number
-  p95_s: number
-  max_s: number
-  /** Only when n < 5: the values themselves, because a percentile of four is a guess. */
-  values_s: number[] | null
-}
+export type Stat = ApiStat
 
-export interface LatencyOutcome {
-  n: number
-  wait: Stat | null
-  run: Stat | null
-  total: Stat | null
-}
+export type LatencyOutcome = ApiLatencyOutcome
 
-export interface LatencyRow {
-  runner_profile: string
-  /** null when the row's tasks do not share one timeout_seconds. */
-  timeout_s: number | null
-  succeeded: LatencyOutcome
-  /** Includes dead-lettered. */
-  failed: LatencyOutcome
-}
+export type LatencyRow = ApiLatencyRow
 
-export type GroupBy = 'runner_profile' | 'submitted_by' | 'tenant_id' | 'model' | 'model_class'
+export type GroupBy = ApiGroupBy
 
-export interface GroupRow {
-  /** Grouped by person, `''` is the tasks with no submitter recorded: a row, but not a name. */
-  key: string
-  /** Null for the `model` group: arrivals are counted per task, before an
-   * attempt has run on any model, so no model can be credited with them. */
-  submitted: number | null
-  ended: number
-  succeeded: number
-  failed: number
-  dead_lettered: number
-  cancelled: CancelSplit
-  rate: Rate | null
-  cost: CostCell
-  declared_cost: boolean
-  /** Aligned 1:1 with buckets; a null entry is an unread bucket. The whole field is null past 120 buckets. */
-  series: Array<{ k: number; n: number } | null> | null
-}
+export type GroupRow = ApiGroupRow
 
-export interface WorkflowFailedRow {
-  workflow_id: string
-  tenant_id: string
-  /** `''` as well as null when no submitter was recorded: both are an absence, never a name. */
-  submitted_by: string | null
-  /** `step_id` is the task's own, which the route reads as it is and does not promise. */
-  first_failed: { step_id: string | null; task_id: string; failure_class: FailureClassKey; ended_at: string } | null
-  cascade_cancelled: number
-  last_ended_at: string
-  state: string
-  steps: {
-    total: number
-    succeeded: number
-    failed: number
-    dead_lettered: number
-    cancelled: number
-    open: number
-    unreadable: number
-  } | null
-}
+export type WorkflowFailedRow = ApiWorkflowFailedRow
 
-export interface OutcomeTotals {
-  complete: boolean
-  buckets: number
-  buckets_read: number
-  submitted: number
-  ended: number
-  succeeded: number
-  failed: number
-  dead_lettered: number
-  cancelled: CancelSplit
-  rate: Rate | null
+export interface OutcomeTotals extends ApiOutcomeTotals {
   failure_classes: Record<FailureClassKey, number>
-  cost: CostCell & {
-    by_outcome: Record<'succeeded' | 'failed' | 'dead_lettered' | 'cancelled', CostCell>
-    per_succeeded_task: {
-      n: number
-      of: number
-      p50_usd: number | null
-      p95_usd: number | null
-      max_usd: number | null
-      values_usd: number[] | null
-    }
-    retries: CostCell
-    declared: CostCell & { profiles: string[] }
-  }
 }
 
-export type OutcomeScope =
-  | { kind: 'tenant'; tenant_id: string }
-  | { kind: 'platform'; tenants: string[]; excluded: string[]; tenants_complete: boolean }
+export type OutcomeScope = ApiTenantScope | ApiPlatformScope
 
-export interface Outcomes {
-  scope: OutcomeScope
-  tz: string
-  requested: { span: string | null; since: string | null; until: string | null; bucket: string }
-  since: string
-  until: string
-  bucket: LedgerBucketSize
-  bucket_chosen_by: 'server' | 'caller'
-  /**
-   * WHICH TIMESTAMP EACH SERIES IS PLACED BY, as the route says it: every
-   * outcome by `outcomes`, the throughput lane's arrivals by `submitted`. The
-   * page prints these words from here and never restates them, so a label
-   * cannot name a basis the figures under it are not on.
-   */
-  basis: { outcomes: string; submitted: string }
-  filters: {
-    profile: string[]
-    submitted_by: string[]
-    kind: string
-    tenant: string[]
-    exclude_tenant: string[]
-    group: GroupBy
-  }
-  vocab: {
-    failure_classes: Array<{ key: FailureClassKey; label: string }>
-    cancel_causes: Array<{ key: CancelCauseKey; label: string }>
-    classifier_version: number
-  }
+export interface Outcomes extends ApiOutcomes {
   buckets: OutcomeBucket[]
   totals: OutcomeTotals
-  retries: {
-    tries: Array<{
-      attempts: string
-      tasks: number
-      succeeded: number
-      failed: number
-      dead_lettered: number
-      cancelled: number
-    }>
-    needed_retry: { k: number; of: number }
-    rescued: number
-    failed_after_retry: number
-    not_final: { attempts: number; by_exit: Array<{ exit_code: number | null; label: string; n: number }> }
-    admissions_without_attempt_doc: number
-  }
-  latency: {
-    percentile_method: string
-    by_profile: LatencyRow[]
-    /** The same number as `coverage.wait_excluded`, carried here so the latency card need not read `coverage` (the review of archived pull request 391). */
-    wait_excluded: number
-  }
-  groups: { by: GroupBy; rows_total: number; rows: GroupRow[] }
-  workflows_failed: {
-    applicable: boolean
-    /** null when `applicable` is false (kind=standalone): nothing was counted, so no count is a zero. */
-    with_ended_steps: number | null
-    with_failed_steps: number | null
-    rows_total: number | null
-    rows: WorkflowFailedRow[]
-    failing_steps: Array<{ step_id: string; n: number }>
-  }
-  coverage: {
-    /**
-     * TENANT-DAYS ON THE UTC CALENDAR, the rollup's own unit: one per tenant
-     * per UTC day the span touches. Not the viewer's days -- a 14-day span in
-     * Europe/Bucharest touches 15 UTC days -- and in platform scope each
-     * tenant counts every one of them. `dayDocWords` says which.
-     */
-    days: { total: number; sealed: number; live: number; unread: number }
-    unread: Array<{ tenant_id: string; day: string; reason: UnreadReason }>
-    derived_now: number
-    built_through: string | null
-    reopened: number
-    /** null when the count query failed: not read, never 0. */
-    terminal_without_completed_at: number | null
-    wait_excluded: number
-    seal_grace_s: number
-  }
-  previous: {
-    since: string
-    until: string
-    complete: boolean
-    succeeded: number
-    failed: number
-    dead_lettered: number
-    cancelled_total: number
-    rate: Rate | null
-  } | null
-  reads: number
-  cached: boolean
-  generated_at: string
 }
 
 /**
@@ -322,27 +116,16 @@ export type OutcomesHead = Omit<Outcomes, 'coverage' | 'previous'> & Partial<Pic
 // ---------------------------------------------------------------------------
 
 /**
- * WHAT A FIGURE'S ROWS MAY BE, `swarm_api.outcomes.ROW_OUTCOMES` (held there
- * by the outcomes-rows test). Failed is FAILED + DEAD_LETTERED, the one
- * definition the drawing and the Reliability table use.
+ * WHAT A FIGURE'S ROWS MAY BE, `swarm_api.outcomes.ROW_OUTCOMES` (the generated
+ * union; the list below must equal the generated constants' `row_outcomes`,
+ * or the page offers a figure the route refuses). Failed is FAILED +
+ * DEAD_LETTERED, the one definition the drawing and the Reliability table use.
  */
-export type RowOutcome = 'failed' | 'cancelled' | 'succeeded'
+export type RowOutcome = ApiRowOutcome
 export const ROW_OUTCOMES: readonly RowOutcome[] = ['failed', 'cancelled', 'succeeded']
 
 /** One ended task, as the ledger placed it: by `completed_at`, in the viewer's zone. */
-export interface EndedRow {
-  id: string
-  tenant_id: string
-  state: 'SUCCEEDED' | 'FAILED' | 'DEAD_LETTERED' | 'CANCELLED'
-  completed_at: string
-  runner_profile: string | null
-  /** Lower case; '' when the task recorded no submitter. */
-  submitted_by: string
-  workflow_id: string | null
-  step_id: string | null
-  failure_class: FailureClassKey | null
-  cancel_cause: CancelCauseKey | null
-}
+export type EndedRow = ApiEndedRow
 
 /**
  * THE ROWS BEHIND ONE FIGURE, from the fold the figure was counted from, so
@@ -350,17 +133,7 @@ export interface EndedRow {
  * most `rows_max`). `at`/`end` name the bucket, or are null for the span;
  * `key` is the group row under `group`, or null for every row.
  */
-export interface EndedRows {
-  outcome: RowOutcome
-  at: string | null
-  end: string | null
-  unread_reason: UnreadReason | null
-  group: GroupBy
-  key: string | null
-  total: number
-  rows_max: number
-  rows: EndedRow[]
-}
+export type EndedRows = ApiEndedRows
 
 // ---------------------------------------------------------------------------
 // The view: every filter, as the hash carries it
@@ -384,20 +157,21 @@ export type Kind = (typeof KINDS)[number]
 
 export const GROUPS: readonly GroupBy[] = ['runner_profile', 'submitted_by', 'tenant_id', 'model', 'model_class']
 
-// THE ROUTE'S LIMITS, RESTATED SO THE PAGE NEVER ASKS FOR WHAT IT REFUSES.
-// Each is `swarm_api.outcomes`'s constant of the same name, and
-// the outcomes UI field-contract test holds every one
-// equal to it (docs/mirrored-values.md), so a changed limit turns CI red
-// instead of turning a control into a 422.
+// THE ROUTE'S LIMITS, READ FROM THE GENERATED CONSTANTS SO THE PAGE NEVER ASKS
+// FOR WHAT IT REFUSES. Each is `swarm_api.outcomes`'s constant of the same
+// name, written to ./generated/constants/outcomes.json by
+// `scripts/gen_api_types.py` (part of #72), whose drift check turns CI red when
+// the file is stale. The literal lists above stay literal for their types and
+// must each equal the same file, or the page offers what the route refuses.
 
 /** At most this many buckets in one read: an hourly 90 days is 2,160, which the route refuses. */
-export const MAX_BUCKETS = 2000
+export const MAX_BUCKETS: number = outcomesConstants.max_buckets
 /** `bucket=month` needs a span at least this many days long. */
-export const MONTH_MIN_DAYS = 60
+export const MONTH_MIN_DAYS: number = outcomesConstants.month_min_days
 /** A span is at most this many days. */
-export const MAX_SPAN_DAYS = 400
+export const MAX_SPAN_DAYS: number = outcomesConstants.max_span_days
 /** A complete payload is reused for this many seconds, and only a complete one (`cacheable`). */
-export const OUTCOMES_CACHE_S = 60
+export const OUTCOMES_CACHE_S: number = outcomesConstants.outcomes_cache_s
 
 /**
  * THE ONE TENANT THE TOOLBAR NAMES, and only as a one-click exclusion (owner
