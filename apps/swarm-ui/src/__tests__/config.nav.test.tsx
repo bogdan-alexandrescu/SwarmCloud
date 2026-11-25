@@ -78,8 +78,23 @@ function serve(me: Json | null, mine: Json[] | null, extra: (url: string) => unk
   }) as unknown as typeof fetch
 }
 
+/** The worker's module cache (vitest 3.2's vite-node runner): one entry per module, with its load. */
+type ModuleEntry = { promise?: unknown; evaluated?: boolean }
+function moduleCache(): Map<string, ModuleEntry> {
+  const cache = (globalThis as { __vitest_worker__?: { moduleCache?: Map<string, ModuleEntry> } }).__vitest_worker__?.moduleCache
+  if (cache === undefined) throw new Error('the vitest worker exposes no module cache; the guard on module loads across cases cannot run')
+  return cache
+}
+
+/** The modules still loading: a load started and not yet finished. */
+const loading = (): string[] => [...moduleCache().entries()].filter(([, m]) => m.promise !== undefined && m.evaluated !== true).map(([id]) => id)
+
 async function app(path: string) {
   vi.stubEnv('VITE_LIVE', '1')
+  // NO MODULE LOAD CROSSES A RESET (issue 460): an earlier case's lazy screen
+  // still loading when this case resets the cache rebuilds it beside this
+  // case's App, and the two loads can wait on each other for ever.
+  expect(loading(), `${path}: modules of an earlier case still loading`).toEqual([])
   vi.resetModules()
   const mod = await import('../App')
   window.history.replaceState(null, '', path)
