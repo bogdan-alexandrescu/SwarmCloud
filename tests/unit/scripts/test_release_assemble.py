@@ -253,6 +253,8 @@ def test_two_wheels(bundle: Path) -> None:
         # The installed engine loads the release's manifest from the wheel.
         assert "swarm_install/_manifest/manifest.yaml" in zf.namelist()
         assert [n for n in zf.namelist() if n.startswith("swarm_install/_manifest/manifest.d/")]
+        # ...and the wrong-project rule its plan guard runs over every plan.
+        assert "swarm_install/_guard/wrong-project.jq" in zf.namelist()
     with zipfile.ZipFile(bundle / f"swarm_mcp-{VERSION}-py3-none-any.whl") as zf:
         assert "swarm_mcp/cli.py" in zf.namelist()
         assert not [n for n in zf.namelist() if n.startswith("swarm_install/")]
