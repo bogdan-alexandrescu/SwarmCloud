@@ -1,4 +1,3 @@
-# source-text: contract - the console's types.ts ParkReason union, PARK_NEEDS_A_PERSON and StatePill.tsx map must carry every Python ParkReason member
 """The live browser's frozen-contract changes, requests 68-71 (LB-A..LB-D, archived issue 1030).
 
 docs/design/live-browser.md section 8.4 asked for four changes to
@@ -15,11 +14,12 @@ Q2 answered as the FIELD, not a new task state. What this file holds:
     `claude-code-browser` and nowhere else, and refused at construction on a
     profile whose backend is not GKE_AUTOPILOT (AUTO included, because the
     `browser` class resolves AUTO to Cloud Run);
-  * the restatements check-contract-parity.sh reads still carry the new park
-    reason, so the parity script stays green.
+  * the four requests are on record as accepted.
 
-MUTATION: drop `HUMAN_REQUIRED` from types.ts and
-`test_the_ui_restatements_carry_the_new_park_reason` fails; delete the backend
+The console's restatements of the park reasons are held to the enum by its own
+`contract.constants.test.ts`, through the generated constants (part of #72).
+
+MUTATION: delete the backend
 check in `RunnerProfile.__post_init__` and the two refusal tests fail; set
 `live_browser=True` on `browser` and `test_live_browser_is_true_only_on_claude_code_browser`
 fails.
@@ -28,7 +28,6 @@ fails.
 from __future__ import annotations
 
 import dataclasses
-import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -47,8 +46,6 @@ from swarm_common.states import (
 )
 
 ROOT = Path(__file__).resolve().parents[3]
-TYPES_TS = ROOT / "apps" / "swarm-ui" / "src" / "types.ts"
-STATE_PILL = ROOT / "apps" / "swarm-ui" / "src" / "components" / "StatePill.tsx"
 REQUESTS = ROOT / "docs" / "contract-change-requests.md"
 NOW = datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc)
 
@@ -216,23 +213,8 @@ def test_live_browser_on_a_gke_profile_is_accepted():
 
 
 # --------------------------------------------------------------------------
-# The restatements check-contract-parity.sh holds to the frozen enum
+# The record
 # --------------------------------------------------------------------------
-
-
-def test_the_ui_restatements_carry_the_new_park_reason():
-    src = TYPES_TS.read_text(encoding="utf-8")
-    union = re.search(r"export type ParkReason\s*=([^\n]*(?:\n\s*\|[^\n]*)*)", src)
-    assert union is not None
-    assert sorted(re.findall(r"'([^']+)'", union.group(1))) == sorted(
-        r.value for r in ParkReason
-    )
-    people = re.search(r"export const PARK_NEEDS_A_PERSON\b.*?\]\)", src, re.S)
-    assert people is not None and "'HUMAN_REQUIRED'" in people.group(0), (
-        "only a person promotes a HUMAN_REQUIRED park; no sweep or timer does"
-    )
-    pill = STATE_PILL.read_text(encoding="utf-8")
-    assert re.search(r"^\s*HUMAN_REQUIRED:", pill, re.M)
 
 
 def test_the_requests_are_filed_as_accepted():
