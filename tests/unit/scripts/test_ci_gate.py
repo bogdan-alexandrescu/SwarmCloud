@@ -46,6 +46,12 @@ WHAT THIS CANNOT PROVE: that GitHub's API answers in the shape the fake serves
 (workflow runs filtered by head_sha and event, each carrying its workflow
 `path`; a run's jobs with `filter=latest`). Only a real pull request exercises
 the real API -- this pull request's own `ci-gate` run is the first.
+
+THE TESTS THAT READ .github/ hold CI security decisions the owner kept on
+2026-11-25: that ci-gate needs every other job of its workflow, holds read
+permissions only, and gates every path-filtered workflow. This file is on
+scripts/check_test_reads.py's SECURITY_GUARDS list for those tests alone
+(issue 71).
 """
 
 from __future__ import annotations
@@ -626,3 +632,66 @@ def test_the_script_follows_the_house_rules():
     assert text.startswith("#!/usr/bin/env bash\n")
     assert 'lib/common.sh"' in text
     assert os.access(SCRIPT, os.X_OK), "scripts/ci-gate.sh is not executable"
+
+
+WORKFLOWS = REPO / ".github" / "workflows"
+
+
+GATE_WORKFLOW = WORKFLOWS / "application.yml"
+
+
+def _workflow(path: Path) -> dict:
+    data = yaml.safe_load(path.read_text())
+    # PyYAML reads the bare key `on` as the boolean True.
+    if True in data:
+        data["on"] = data.pop(True)
+    return data
+
+
+def gate_job() -> dict:
+    """application.yml's `ci-gate` job."""
+    return _workflow(GATE_WORKFLOW)["jobs"]["ci-gate"]
+
+
+def test_every_path_filtered_workflow_is_gated_and_security_is_not(tmp_path):
+    """A new path-filtered workflow must come under the gate, or its failures
+    hold nothing. security.yml is required directly and is not gated, and
+    application.yml -- which carries the gate and runs on every pull request --
+    is judged by the gate job's `needs`, never waited on (it would wait for
+    itself). MUTATION: put application.yml back in CI_GATE_WORKFLOWS, or give
+    application.yml's pull_request trigger a path filter again."""
+    proc = gate(tmp_path, "workflows")
+    assert proc.returncode == 0, proc.stderr
+    gated = set(proc.stdout.split())
+    filtered = set()
+    for path in WORKFLOWS.glob("*.yml"):
+        trigger = _workflow(path)["on"]
+        if isinstance(trigger, dict) and isinstance(trigger.get("pull_request"), dict):
+            if "paths" in trigger["pull_request"] or "paths-ignore" in trigger["pull_request"]:
+                filtered.add(path.name)
+    assert filtered == {"terraform.yml"}, filtered  # the control
+    assert gated == filtered, gated
+    assert "security.yml" not in gated
+    assert "application.yml" not in gated
+
+
+NAME_KEEPERS = {"python", "ui"}
+
+
+def test_the_gate_needs_every_other_job_of_its_workflow():
+    """A job left out of `needs` is one the gate passes without waiting for.
+    MUTATION: drop any job from the gate's `needs`, e.g. `build-check`."""
+    jobs = _workflow(GATE_WORKFLOW)["jobs"]
+    needs = gate_job()["needs"]
+    assert isinstance(needs, list), needs
+    expected = set(jobs) - {"ci-gate"} - NAME_KEEPERS
+    assert set(needs) == expected, expected ^ set(needs)
+    assert len(needs) == len(set(needs)), needs
+
+
+def test_the_gate_holds_read_permissions_only():
+    job = gate_job()
+    scope = job.get("permissions")
+    assert isinstance(scope, dict), "the gate job must declare its permissions, not inherit the workflow's"
+    assert set(scope) <= {"actions", "checks", "contents"} and set(scope.values()) == {"read"}, scope
+    assert scope.get("actions") == "read", "the script lists terraform.yml's runs"

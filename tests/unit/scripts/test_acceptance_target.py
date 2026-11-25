@@ -22,6 +22,12 @@ What these hold, none of it needing a deployment, a credential or a network:
   as a directory group -- the only way X-Swarm-Tenant can select it -- and
   does NOT list swarm-verify under `service_accounts`, which would make it a
   continuation-scoped account that can submit nothing but a continuation.
+
+THE TESTS THAT READ .github/ hold CI security decisions the owner kept on
+2026-11-25: that accept.yml cannot write to or name the public repository
+and reads back and sweeps the sandbox with the sandbox token, never the
+GITHUB_TOKEN. This file is on scripts/check_test_reads.py's SECURITY_GUARDS
+list for those tests alone (issue 71).
 """
 
 from __future__ import annotations
@@ -703,3 +709,78 @@ echo REACHED
     assert result.returncode == 9
     assert "REACHED" not in result.stdout
     assert "rate limit" in result.stderr
+
+
+ACCEPT = ROOT / ".github" / "workflows" / "accept.yml"
+
+
+def _acceptance_job_text() -> str:
+    """accept.yml as written, comments included: every job in it drives the
+    suite, the sandbox or the report."""
+    return ACCEPT.read_text()
+
+
+def test_the_release_acceptance_job_does_not_name_the_public_repository():
+    job = _acceptance_job_text()
+    assert "verify-remote.sh" in job, "the slice is not the acceptance job"
+    assert not PUBLIC_RE.search(job)
+    # github.repository is the public repository in every run of this
+    # workflow; the job must not hand it to the suite or the sweep either.
+    assert "github.repository" not in job
+
+
+def _jobs() -> dict:
+    data = yaml.safe_load(ACCEPT.read_text())
+    return data["jobs"]
+
+
+def _steps_running(script: str) -> list[dict]:
+    return [s for job in _jobs().values() for s in job.get("steps") or [] if script in str(s.get("run", ""))]
+
+
+def test_the_release_sweeps_the_sandbox_with_the_sandbox_token_not_the_github_token():
+    (sweep,) = _steps_running("github-cleanup.sh")
+    env = sweep.get("env", {})
+    assert "secrets.SWARM_SANDBOX_GITHUB_TOKEN" in str(env.get("SWARM_ACCEPTANCE_GITHUB_TOKEN", ""))
+    assert "github.token" not in str(sweep), "the job's own token reaches only the public repository"
+
+
+def test_the_acceptance_job_cannot_write_to_the_public_repository():
+    for job_id, job in _jobs().items():
+        perms = job.get("permissions", {})
+        assert perms.get("contents") in (None, "read"), (job_id, perms)
+        assert perms.get("pull-requests") in (None, "read", "none"), (job_id, perms)
+    for job_id in ("acceptance", "acceptance-2"):
+        assert _jobs()[job_id]["permissions"].get("id-token") == "write", "the suite still runs through verify-remote.sh"
+    top = yaml.safe_load(ACCEPT.read_text())["permissions"]
+    assert top == {"contents": "read"}, top
+
+
+def test_the_release_reads_the_pull_requests_back_with_the_sandbox_token_before_the_sweep():
+    jobs = _jobs()
+    results = jobs["sandbox-results"]
+    steps = results["steps"]
+
+    def at(script: str) -> int:
+        return next(i for i, s in enumerate(steps) if script in str(s.get("run", "")))
+
+    verify, sweep = at("github-verify.sh"), at("github-cleanup.sh")
+    assert verify < sweep, "the read-back runs before anything is closed"
+    # After every group, whatever they concluded: a failed suite's pull
+    # requests are read back too.
+    assert {"acceptance", "acceptance-2"} <= set(results.get("needs") or [])
+    assert "!cancelled()" in str(results.get("if", ""))
+    step = steps[verify]
+    env = step.get("env", {})
+    assert "secrets.SWARM_SANDBOX_GITHUB_TOKEN" in str(env.get("SWARM_ACCEPTANCE_GITHUB_TOKEN", ""))
+    assert "github.token" not in str(step)
+    # It judges only what this run opened: SINCE comes from a step that ran
+    # before the fixtures were synced, and so before any group started.
+    sandbox = jobs["sandbox"]["steps"]
+    started = next(i for i, s in enumerate(sandbox) if s.get("id") == "started")
+    sync = next(i for i, s in enumerate(sandbox) if "sandbox-sync.sh" in str(s.get("run", "")))
+    assert started < sync
+    assert "needs.sandbox.outputs.since" in str(env.get("SWARM_ACCEPTANCE_SINCE", ""))
+    assert jobs["sandbox"]["outputs"]["since"] == "${{ steps.started.outputs.at }}"
+    # The sweep is not skipped when the read-back fails.
+    assert "!cancelled()" in str(steps[sweep].get("if", ""))

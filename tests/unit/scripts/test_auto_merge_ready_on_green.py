@@ -17,6 +17,12 @@ and this file runs its two shells:
 The shells come from scripts/generated/ci-run-blocks.json (issue 71: a test
 never reads .github/) and RUN against a fake `gh` on PATH, the judge against
 the real `scripts/merge-train.sh`. Nothing here touches the network.
+
+THE TESTS THAT READ .github/ hold CI security decisions the owner kept on
+2026-11-25: the ready-on-green job's least-privilege token and its checkout
+of the default branch's scripts without credentials. This file is on
+scripts/check_test_reads.py's SECURITY_GUARDS list for those tests alone
+(issue 71).
 """
 
 from __future__ import annotations
@@ -30,6 +36,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from .ci_run_blocks import run_block
 
@@ -335,3 +342,59 @@ def test_a_malformed_promote_line_fails_the_step(fake: Path):
     proc, calls, _, _ = run_label(fake, "1500 not-a-sha", {})
     assert proc.returncode != 0
     assert " -X " not in calls, calls
+
+
+AUTO_MERGE = REPO / ".github" / "workflows" / "auto-merge.yml"
+
+
+def _workflow() -> dict:
+    data = yaml.safe_load(AUTO_MERGE.read_text())
+    # PyYAML reads the bare key `on` as the boolean True.
+    if True in data:
+        data["on"] = data.pop(True)
+    return data
+
+
+@pytest.fixture(scope="module")
+def workflow() -> dict:
+    return _workflow()
+
+
+@pytest.fixture(scope="module")
+def job(workflow: dict) -> dict:
+    jobs = workflow.get("jobs") or {}
+    assert JOB in jobs, f"expected a job keyed {JOB!r} in auto-merge.yml, found {sorted(jobs)}"
+    return jobs[JOB]
+
+
+def _step(job: dict, step_id: str) -> dict:
+    matches = [step for step in job.get("steps") or [] if step.get("id") == step_id]
+    assert len(matches) == 1, f"expected one step with id {step_id!r}, found {len(matches)}"
+    return matches[0]
+
+
+def test_the_github_token_asks_for_the_least_it_needs(job: dict):
+    """Reads (branches, check runs, statuses, and the Actions runs at a head
+    whose check ran more than once: CHECK-RULE-2), and pull-requests: write
+    for the one comment. MUTATION: widen it, add actions/contents write, or
+    drop `actions: read` -> the event read 403s."""
+    assert job.get("permissions") == {
+        "contents": "read",
+        "checks": "read",
+        "statuses": "read",
+        "actions": "read",
+        "pull-requests": "write",
+    }, job.get("permissions")
+    assert (_step(job, "judge").get("env") or {}).get("GH_TOKEN") == "${{ github.token }}"
+
+
+def test_the_checkout_is_the_default_branchs_scripts_without_credentials(job: dict):
+    """The judge is main's merge-train.sh, never a pull request's code."""
+    checkouts = [s for s in job.get("steps") or [] if str(s.get("uses") or "").startswith("actions/checkout@")]
+    assert len(checkouts) == 1, checkouts
+    inputs = checkouts[0].get("with") or {}
+    assert inputs.get("ref") == "${{ github.event.repository.default_branch }}", inputs
+    assert inputs.get("persist-credentials") is False, inputs
+    assert inputs.get("sparse-checkout") == "scripts", inputs
+    for step in job.get("steps") or []:
+        assert "github.event" not in str(step.get("run") or ""), step

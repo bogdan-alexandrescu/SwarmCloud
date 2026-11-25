@@ -31,13 +31,15 @@ branch the fix step is about to write.
 
 What stays here: the merge step's per-event rule, and the trivy gate's base
 (the true merge base, never a recorded commit), run from the step's
-published shell (scripts/generated/ci-run-blocks.json). The workflow-structure
-pins (which events release, build, plan or fix) were deleted by issue 71.
+published shell (scripts/generated/ci-run-blocks.json).
 
-ONE TEST READS THE WORKFLOW: the gate step's environment (which event fields
-become EVENT, REF, PR_BASE_REF and QUEUE_BASE_SHA) is a scan-gate security
-decision the owner kept on 2026-11-25, so this file is on
-scripts/check_test_reads.py's SECURITY_GUARDS list for that test alone.
+FIVE TESTS READ THE WORKFLOWS: the gate step's environment (which event
+fields become EVENT, REF, PR_BASE_REF and QUEUE_BASE_SHA), and that a lane
+push never releases, never builds or pushes images, never plans (and says
+so), and never starts the CI fixer. They hold CI security decisions the
+owner kept on 2026-11-25 (no cloud identity and no release off a lane
+branch), so this file is on scripts/check_test_reads.py's SECURITY_GUARDS
+list for those tests alone.
 """
 
 from __future__ import annotations
@@ -171,3 +173,63 @@ def test_a_pull_request_with_no_base_branch_fails_rather_than_gating_on_nothing(
     proc, args = _gate(tmp_path, event="pull_request", ref="refs/pull/7/merge", pr_base_ref="")
     assert proc.returncode != 0, proc.stdout
     assert args == "", args
+
+
+WORKFLOWS = REPO / ".github" / "workflows"
+#: The clause every job's `if:` in the three files ends with (`&& LANE_SKIP`),
+#: as test_fast_checks_on_lane_prs.py defined it on origin/main (issue 71
+#: deleted it there; the lane-push tests below need it).
+LANE_SKIP = ("!(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') "
+             "&& github.event.pull_request.head.repo.full_name == github.repository)")
+
+
+def _workflow(name: str) -> dict:
+    return yaml.safe_load((WORKFLOWS / name).read_text())
+
+
+def _on(name: str) -> dict:
+    # PyYAML reads the bare key `on` as True.
+    data = _workflow(name)
+    return data.get("on", data.get(True))
+
+
+def test_a_lane_push_never_releases():
+    """MUTATION: add `swarm/**` to release.yml's push branches."""
+    assert (_on("release.yml").get("push") or {}).get("branches") == ["main"]
+
+
+def test_a_lane_push_never_builds_or_pushes_images():
+    """`build images` pushes to the registry with a cloud identity; it ran on
+    every event but pull_request and merge_group, which would now include a
+    lane push. MUTATION: keep the old `github.event_name != 'pull_request'` if."""
+    build = _workflow("application.yml")["jobs"]["build"]
+    # The lane clause (test_fast_checks_on_lane_prs.py) ends every job's `if:`.
+    assert build["if"] == (
+        "${{ (!cancelled() && !failure() && github.event_name != 'pull_request' && "
+        "github.event_name != 'merge_group' && github.ref == 'refs/heads/main' || "
+        "!cancelled() && !failure() && github.event_name == 'workflow_dispatch') && " + LANE_SKIP + " }}"
+    ), build["if"]
+
+
+def test_a_lane_push_never_plans_and_says_so():
+    """The plan authenticates to the dev project; on a lane push it is not
+    run, and `plan-not-run` says so in the run, as it does on a pull request.
+    MUTATION: keep the plan's `!= 'pull_request' && != 'merge_group'` if."""
+    jobs = _workflow("terraform.yml")["jobs"]
+    assert jobs["plan"]["if"] == (
+        "(github.event_name != 'pull_request' && github.event_name != 'merge_group' && "
+        "github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') && " + LANE_SKIP
+    ), jobs["plan"]["if"]
+    assert jobs["plan-not-run"]["if"] == (
+        "(github.event_name == 'pull_request' || github.event_name == 'merge_group' || "
+        "(github.event_name == 'push' && github.ref != 'refs/heads/main')) && " + LANE_SKIP
+    ), jobs["plan-not-run"]["if"]
+
+
+def test_the_ci_fixer_acts_only_on_a_pull_requests_run():
+    """A lane push and the pull request at the same head both run
+    application.yml; a red head would start two fixers. The fixer already
+    refuses a branch with no pull request (ci-fix.sh). MUTATION: drop the
+    event condition."""
+    condition = _workflow("ci-fix.yml")["jobs"]["fix"]["if"]
+    assert "github.event.workflow_run.event == 'pull_request'" in condition, condition

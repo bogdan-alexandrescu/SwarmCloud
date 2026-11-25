@@ -11,6 +11,13 @@ call, so the refusals are exercised rather than read. The shell is loaded
 from scripts/generated/ci-run-blocks.json (scripts/gen_ci_run_blocks.py)
 through `ci_run_blocks.run_block`, never from .github/ (issue 71). Nothing
 here touches the network.
+
+THE TESTS THAT READ .github/ hold CI security decisions the owner kept on
+2026-11-25: who may merge (the merge runs only after the gate, and the App
+token is minted only when it says merge), each job's least-privilege token,
+and that attacker-controlled text and the head sha reach a shell only
+through env. This file is on scripts/check_test_reads.py's SECURITY_GUARDS
+list for those tests alone (issue 71).
 """
 
 from __future__ import annotations
@@ -25,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from .ci_run_blocks import run_block
 
@@ -1753,3 +1761,179 @@ def test_on_a_merge_queue_a_blocked_unarmed_pull_request_still_fails(run_merge):
     assert not [c for c in run_merge.calls if "enqueuePullRequest" in c], run_merge.calls
 
 
+WORKFLOWS = REPO / ".github" / "workflows"
+
+
+AUTO_MERGE = WORKFLOWS / "auto-merge.yml"
+
+
+def _workflow(path: Path) -> dict:
+    data = yaml.safe_load(path.read_text())
+    # PyYAML reads the bare key `on` as the boolean True.
+    if True in data:
+        data["on"] = data.pop(True)
+    return data
+
+
+@pytest.fixture(scope="module")
+def workflow() -> dict:
+    assert AUTO_MERGE.is_file(), f"{AUTO_MERGE.relative_to(REPO)} does not exist"
+    return _workflow(AUTO_MERGE)
+
+
+@pytest.fixture(scope="module")
+def job(workflow: dict) -> dict:
+    jobs = workflow.get("jobs") or {}
+    assert "enable" in jobs, f"expected a job keyed 'enable', found {sorted(jobs)}"
+    return jobs["enable"]
+
+
+@pytest.fixture(scope="module")
+def disable_job(workflow: dict) -> dict:
+    jobs = workflow.get("jobs") or {}
+    assert "disable" in jobs, f"expected a job keyed 'disable', found {sorted(jobs)}"
+    return jobs["disable"]
+
+
+@pytest.fixture(scope="module")
+def close_job(workflow: dict) -> dict:
+    jobs = workflow.get("jobs") or {}
+    assert "close-issues" in jobs, f"expected a job keyed 'close-issues', found {sorted(jobs)}"
+    return jobs["close-issues"]
+
+
+@pytest.fixture(scope="module")
+def requeue_edited_job(workflow: dict) -> dict:
+    jobs = workflow.get("jobs") or {}
+    assert "requeue-edited" in jobs, f"expected a job keyed 'requeue-edited', found {sorted(jobs)}"
+    return jobs["requeue-edited"]
+
+
+@pytest.fixture(scope="module")
+def requeue_job(workflow: dict) -> dict:
+    jobs = workflow.get("jobs") or {}
+    assert "requeue" in jobs, f"expected a job keyed 'requeue', found {sorted(jobs)}"
+    return jobs["requeue"]
+
+
+def _step(job: dict, step_id: str) -> dict:
+    matches = [step for step in job.get("steps") or [] if step.get("id") == step_id]
+    assert len(matches) == 1, f"expected one step with id {step_id!r}, found {len(matches)}"
+    return matches[0]
+
+
+def test_attacker_controlled_text_reaches_a_shell_only_through_env(job: dict):
+    """A `${{ github.event.pull_request.title }}` inside `run:` is script injection.
+    MUTATION: write `--subject "${{ github.event.pull_request.title }} (#...)"`."""
+    visited = 0
+    for step in job.get("steps") or []:
+        run = step.get("run")
+        if run is None:
+            continue
+        visited += 1
+        assert "github.event" not in run, f"step {step.get('name')!r} expands event data inside run:"
+    assert visited >= 2, f"read only {visited} run: steps"
+
+
+def test_the_github_token_asks_for_the_least_it_needs(workflow: dict, job: dict):
+    """Read the base branch's protection, the head commit's check runs and the
+    Actions runs that made them (the event each check run is grouped by,
+    CHECK-RULE); comment on a refusal. Nothing else.
+    MUTATION: set `contents: write`, add `id-token: write`, or `permissions: write-all`."""
+    assert workflow.get("permissions") == {}, workflow.get("permissions")
+    assert job.get("permissions") == {
+        "contents": "read",
+        "checks": "read",
+        "actions": "read",
+        "pull-requests": "write",
+    }, job.get("permissions")
+
+
+def test_the_head_sha_reaches_the_merge_step_only_through_env(job: dict):
+    """Through the `pr` step's output, which is the event's head on a label
+    and the API's head on a re-evaluation."""
+    resolve_env = _step(job, "pr").get("env") or {}
+    assert resolve_env.get("EVENT_HEAD_SHA") == "${{ github.event.pull_request.head.sha }}", resolve_env
+    for step_id in ("gate", "merge"):
+        env = _step(job, step_id).get("env") or {}
+        assert env.get("HEAD_SHA") == "${{ steps.pr.outputs.head_sha }}", (step_id, env)
+    run = _step(job, "merge")["run"]
+    assert "github.event" not in run
+
+
+def test_the_merge_runs_only_after_the_gate(job: dict):
+    steps = job.get("steps") or []
+    ids = [step.get("id") for step in steps]
+    assert ids.index("pr") < ids.index("gate") < ids.index("app-token") < ids.index("merge"), ids
+    for step in steps[ids.index("gate") + 1 :]:
+        assert "always()" not in str(step.get("if") or ""), step
+
+
+def test_the_token_is_minted_and_the_merge_made_only_when_the_gate_says_merge(job: dict):
+    """A gate that WAITS exits 0, so "the gate step succeeded" is no longer
+    "the gate passed". MUTATION: drop either `if:`, and a pull request whose
+    checks are still running is merged (or auto-merge is armed on it) at once."""
+    assert _step(job, "gate").get("if") == "steps.pr.outputs.evaluate == 'true'"
+    assert _step(job, "merge").get("if") == "steps.gate.outputs.decision == 'merge'"
+    # Also minted to turn auto-merge off after a refusal on re-evaluation (archived issue 795).
+    assert _step(job, "app-token").get("if") == (
+        "steps.gate.outputs.decision == 'merge' || steps.gate.outputs.disarm == 'true'"
+    )
+
+
+def test_the_disable_job_never_checks_out_pr_code_and_uses_least_privilege(disable_job: dict):
+    """MUTATION: add a checkout step, or widen permissions past contents: read
+    (the base-merge classifier's fetch, archived issue 795), pull-requests: write, and
+    actions: write (the one-event re-evaluation, PR 1419, owner-approved 2026-10-16)."""
+    assert disable_job.get("permissions") == {"contents": "read", "pull-requests": "write", "actions": "write"}, disable_job.get(
+        "permissions"
+    )
+    steps = disable_job.get("steps") or []
+    assert steps, "the disable job has no steps, so this checked nothing"
+    for step in steps:
+        assert "checkout" not in str(step.get("uses") or "")
+
+
+def test_the_close_job_runs_the_script_with_the_number_through_env(close_job: dict):
+    steps = [step for step in close_job.get("steps") or [] if step.get("run")]
+    assert len(steps) == 1, steps
+    step = steps[0]
+    assert "github.event" not in step["run"], step["run"]
+    assert "scripts/close-merged-issues.sh" in step["run"], step["run"]
+    assert '--pr "${PR_NUMBER}"' in step["run"], step["run"]
+    env = {**(close_job.get("env") or {}), **(step.get("env") or {})}
+    assert env.get("PR_NUMBER") == "${{ github.event.pull_request.number }}", env
+    assert env.get("GH_TOKEN") == "${{ github.token }}", env
+
+
+def test_the_requeue_job_holds_no_app_token_and_least_privilege(requeue_job: dict):
+    """It merges nothing: it dispatches (actions: write, which the
+    GITHUB_TOKEN may do -- a dispatch is one of the two events that token
+    still starts) and lists pull requests (pull-requests: read).
+    MUTATION: mint the App token here, check out code, or widen permissions."""
+    assert requeue_job.get("permissions") == {"actions": "write", "pull-requests": "read"}, requeue_job.get(
+        "permissions"
+    )
+    text = json.dumps(requeue_job)
+    assert "app-token" not in text and "MERGE_APP_PRIVATE_KEY" not in text, text
+    steps = requeue_job.get("steps") or []
+    assert steps, "the requeue job has no steps, so this checked nothing"
+    for step in steps:
+        assert "checkout" not in str(step.get("uses") or "")
+        assert "github.event" not in str(step.get("run") or ""), step
+
+
+def test_the_body_edit_re_evaluation_holds_no_app_token_and_least_privilege(requeue_edited_job: dict):
+    """It merges nothing and reads nothing: it dispatches. The number is the
+    event's, through env; the body never reaches a shell."""
+    assert requeue_edited_job.get("permissions") == {"actions": "write"}, requeue_edited_job.get("permissions")
+    text = json.dumps(requeue_edited_job)
+    assert "app-token" not in text and "MERGE_APP_PRIVATE_KEY" not in text, text
+    assert "pull_request.body" not in text, text
+    env = requeue_edited_job.get("env") or {}
+    assert env.get("PR_NUMBER") == "${{ github.event.pull_request.number }}", env
+    steps = requeue_edited_job.get("steps") or []
+    assert len(steps) == 1, steps
+    for step in steps:
+        assert "checkout" not in str(step.get("uses") or "")
+        assert "${{" not in str(step.get("run") or ""), step

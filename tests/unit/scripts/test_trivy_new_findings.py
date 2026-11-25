@@ -9,12 +9,13 @@ in .github/workflows/security.yml gates on it, while still uploading SARIF.
 
 These tests run the comparison on Trivy JSON fixtures (no trivy, no network),
 and the job's DB-download step (its published run block, ci_run_blocks)
-against a fake trivy. FOUR TESTS READ security.yml: the scan job gating on new
+against a fake trivy. FIVE TESTS READ security.yml: the scan job gating on new
 findings and uploading its report, every checkout keeping no credential, the
-checkout holding the history the merge base needs, and the secret scan
-reading the branch a pull request targets. They hold CI security decisions
+checkout holding the history the merge base needs, the secret scan reading
+the branch a pull request targets, and the scans after the DB download using
+its DB while a finding still fails the job. They hold CI security decisions
 the owner kept on 2026-11-25, so this file is on scripts/check_test_reads.py's
-SECURITY_GUARDS list for those four alone.
+SECURITY_GUARDS list for those five alone.
 """
 
 from __future__ import annotations
@@ -745,3 +746,31 @@ def test_both_db_repositories_down_fails_the_job(tmp_path):
     assert result.returncode != 0, result.stdout + result.stderr
     assert len(calls) == 4 and UPSTREAM_DB in calls[3], calls
     assert "::error::" in result.stdout
+
+
+def _db_step() -> dict[str, Any]:
+    steps = _filesystem_steps()
+    found = [s for s in steps if "--download-db-only" in str(s.get("run", ""))]
+    assert len(found) == 1, "the filesystem job downloads the vulnerability DB in one step of its own"
+    return found[0]
+
+
+def test_the_scans_after_the_download_use_its_db_and_findings_still_fail_the_job():
+    steps = _filesystem_steps()
+    names = [s.get("name", s.get("uses", "")) for s in steps]
+    db = steps.index(_db_step())
+    scan = next(i for i, s in enumerate(steps) if "trivy fs --scanners" in str(s.get("run", "")))
+    gate = next(i for i, s in enumerate(steps) if "scripts/trivy-new-findings.sh gate" in str(s.get("run", "")))
+    assert db < scan < gate, names
+    # Neither scan downloads the DB again, so neither can meet the mirror's 404.
+    assert "--skip-db-update" in str(steps[scan]["run"]), steps[scan]
+    assert str((steps[gate].get("env") or {}).get("TRIVY_SKIP_DB_UPDATE")).lower() == "true", steps[gate]
+    # A finding still fails the job: no step is allowed to fail quietly, and
+    # the gate step is the script's exit status, unchanged.
+    assert all(not s.get("continue-on-error") for s in steps), names
+    tail = [line.strip() for line in str(steps[gate]["run"]).rstrip().splitlines()[-5:]]
+    assert tail == ['if [ -n "${against}" ]; then',
+                    'scripts/trivy-new-findings.sh gate --merge-base "${against}"',
+                    'else',
+                    'scripts/trivy-new-findings.sh gate --base ""',
+                    'fi'], tail

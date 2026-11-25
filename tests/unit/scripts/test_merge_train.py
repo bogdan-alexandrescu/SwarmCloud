@@ -26,6 +26,13 @@ What is held here, all offline (no network, no credentials, bash + jq + git):
   MERGE_TRAIN is `on` and is unchanged otherwise: both RUN from the published
   copy of their `run:` blocks (scripts/generated/ci-run-blocks.json, read
   through ci_run_blocks.run_block; issue 71), never from .github/.
+
+THE TESTS THAT READ .github/ hold CI security decisions the owner kept on
+2026-11-25: the train landing with the merge App's token and never a PAT,
+its least-privilege GITHUB_TOKEN, a wake with no pull_request trigger and no
+secret, and the finished run's branch reaching the tick only through env.
+This file is on scripts/check_test_reads.py's SECURITY_GUARDS list for those
+tests alone (issue 71).
 """
 
 from __future__ import annotations
@@ -42,6 +49,7 @@ import time
 from pathlib import Path
 
 import pytest
+import yaml
 
 from .ci_run_blocks import run_block
 from .test_auto_merge_workflow import FAKE_GH, PROTECTED, _outputs
@@ -2105,3 +2113,66 @@ def test_the_gather_defaults_are_8_or_5_minutes_up_to_40():
     assert 'MAX_PRS="${MERGE_TRAIN_MAX_PRS:-40}"' in code.splitlines()
     for knob, key in (("MERGE_TRAIN_MIN_PRS", "min_prs"), ("MERGE_TRAIN_MAX_WAIT_MINUTES", "max_wait_minutes")):
         assert f"${{{knob}:-$(gather_default {key})}}" in code, knob
+
+
+WORKFLOW = REPO / ".github" / "workflows" / "merge-train.yml"
+
+
+def _workflow(path: Path) -> dict:
+    data = yaml.safe_load(path.read_text())
+    # YAML 1.1 reads a bare `on:` key as the boolean True.
+    if True in data:
+        data["on"] = data.pop(True)
+    return data
+
+
+@pytest.fixture(scope="module")
+def train_workflow() -> dict:
+    return _workflow(WORKFLOW)
+
+
+def test_the_wake_adds_no_pull_request_trigger_and_names_no_secret(train_workflow):
+    assert not {"pull_request", "pull_request_target"} & set(train_workflow["on"])
+    wake = yaml.dump(train_workflow["jobs"]["wake"])
+    assert "secrets." not in wake and "MERGE_APP" not in wake
+
+
+def test_the_train_lands_with_the_merge_app_token_and_never_a_pat(train_workflow):
+    text = WORKFLOW.read_text()
+    assert set(re.findall(r"secrets\.([A-Z_]+)", text)) == {"MERGE_APP_PRIVATE_KEY"}
+    steps = train_workflow["jobs"]["tick"]["steps"]
+    mint = [s for s in steps if str(s.get("uses", "")).startswith("actions/create-github-app-token@")]
+    assert len(mint) == 1
+    assert mint[0]["with"]["app-id"] == "${{ vars.MERGE_APP_ID }}"
+    assert mint[0]["with"]["private-key"] == "${{ secrets.MERGE_APP_PRIVATE_KEY }}"
+    run = [s for s in steps if "merge-train.sh tick" in str(s.get("run", ""))]
+    assert len(run) == 1
+    assert run[0]["env"]["APP_TOKEN"] == f"${{{{ steps.{mint[0]['id']}.outputs.token }}}}"
+    assert run[0]["env"]["GH_TOKEN"] == "${{ github.token }}"
+
+
+def test_the_github_token_asks_only_for_what_the_train_does_with_it(train_workflow):
+    assert train_workflow["permissions"] == {}
+    # actions: write -- read: the Actions runs at a train's head, whose events
+    # the judge groups a check's runs by (CHECK-RULE-2); write: rule 1
+    # re-runs a red train's failed jobs with this token
+    # (MERGE_TRAIN_RERUN_BY=workflow, the owner's pick). MUTATION: set it to
+    # read -> GitHub refuses every re-run and a red train bisects at once.
+    permissions = dict(train_workflow["jobs"]["tick"]["permissions"])
+    assert permissions.pop("actions") == "write"
+    assert permissions == {
+        "contents": "read",
+        "checks": "read",
+        "statuses": "write",
+        "pull-requests": "write",
+    }
+
+
+def test_the_tick_learns_the_finished_run_s_branch_through_env(train_workflow):
+    """The script tells a train's own CI (judge only) from any other
+    `workflow_run` (start a train when none is open) by the finished run's head
+    branch -- a value a pull request's author picks, so it reaches the script
+    through env:, never interpolated into the shell line."""
+    (step,) = [s for s in train_workflow["jobs"]["tick"]["steps"] if s.get("name") == "one tick of the train"]
+    assert step["env"]["WORKFLOW_RUN_HEAD_BRANCH"] == "${{ github.event.workflow_run.head_branch }}"
+    assert "head_branch" not in step["run"]

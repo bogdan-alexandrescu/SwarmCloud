@@ -5,6 +5,11 @@ Held here: scripts/coverage-report.sh, driven against a stand-in `gh`: a red
 night opens ONE issue (found by its marker, never a second) naming the
 packages and the commits since the last green run; a green night comments and
 closes it; a night with no floors files nothing and prints the `fill` command.
+
+THE TESTS THAT READ .github/ hold CI security decisions the owner kept on
+2026-11-25: that coverage.yml's permissions are explicit and only its report
+job writes. This file is on scripts/check_test_reads.py's SECURITY_GUARDS
+list for those tests alone (issue 71).
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
 REPORT = ROOT / "scripts" / "coverage-report.sh"
@@ -161,3 +167,23 @@ def test_an_incomplete_measurement_files_and_closes_nothing(night):
     calls = night.log.read_text()
     assert "issue" not in calls, calls
     assert "Not a measurement" in proc.summary, proc.summary
+
+
+WORKFLOW = ROOT / ".github" / "workflows" / "coverage.yml"
+
+
+def _load(path: Path) -> dict:
+    return yaml.safe_load(path.read_text())
+
+
+def test_permissions_are_explicit_and_only_report_writes():
+    """MUTATION: write-all, a missing top-level block, or issues: write on a
+    job that runs the suites."""
+    doc = _load(WORKFLOW)
+    assert doc["permissions"] == {"contents": "read"}, doc.get("permissions")
+    writers = {name for name, job in doc["jobs"].items()
+               if any(v == "write" for v in (job.get("permissions") or {}).values())}
+    assert writers == {"report"}, writers
+    assert doc["jobs"]["report"]["permissions"] == {"contents": "read", "actions": "read", "issues": "write"}
+    for name, job in doc["jobs"].items():
+        assert "id-token" not in (job.get("permissions") or {}), name

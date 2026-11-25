@@ -374,8 +374,9 @@ def test_a_listed_guard_whose_helper_reads_prose_is_reported(tmp_path, capsys, m
 
 
 def test_the_list_is_the_owners_and_each_entry_says_what_it_holds():
-    # The owner's list of 2026-11-25, and the helper the release guards import
-    # that is a release gate itself. MUTATION: add a docs pin to the list.
+    # The owner's list of 2026-11-25, the helper the release guards import
+    # that is a release gate itself, and the hotfix and merge-workflow guards
+    # added that day on the security review's recommendation. MUTATION: add a docs pin to the list.
     assert set(ctr.SECURITY_GUARDS) == {
         "tests/unit/scripts/test_fork_prs_off_self_hosted.py",
         "tests/unit/scripts/test_release_prod_gate.py",
@@ -387,5 +388,14 @@ def test_the_list_is_the_owners_and_each_entry_says_what_it_holds():
         "tests/unit/scripts/test_ci_early.py",
         "tests/unit/scripts/test_release_reuses_ci_images.py",
         "tests/unit/scripts/test_workflow_id_token_scope.py",
+        "tests/unit/scripts/test_hotfix_release.py",
+        "tests/unit/scripts/test_auto_merge_workflow.py",
+        "tests/unit/scripts/test_auto_merge_ready_on_green.py",
+        "tests/unit/scripts/test_auto_merge_base_merge.py",
+        "tests/unit/scripts/test_merge_train.py",
+        "tests/unit/scripts/test_acceptance_target.py",
+        "tests/unit/scripts/test_ci_gate.py",
+        "tests/unit/scripts/test_deployment_values_workflow.py",
+        "tests/unit/scripts/test_coverage_workflow.py",
     }
     assert all(reason.strip() for reason in ctr.SECURITY_GUARDS.values())

@@ -99,6 +99,10 @@ from pathlib import Path, PurePosixPath
 # The named exceptions. THE OWNER'S DECISION OF 2026-11-25: the tests that
 # hold CI SECURITY decisions stay, as this list; every other docs or CI pin is
 # deleted (issue 71). One clause per file: the security decision it holds.
+# Added the same day on the security review's recommendation: the hotfix
+# lane's gates and the merge workflows' token-scope and script-injection
+# tests (who may merge or release, least-privilege tokens, attacker-controlled
+# text reaching a shell only through env).
 
 SECURITY_GUARDS: dict[str, str] = {
     "tests/unit/scripts/test_fork_prs_off_self_hosted.py":
@@ -117,13 +121,37 @@ SECURITY_GUARDS: dict[str, str] = {
         "the security scan gates on new findings, uploads its report, keeps no "
         "checkout credential, fetches the merge base's history and scans the branch a PR targets",
     "tests/unit/scripts/test_ci_early.py":
-        "the scan gate step's environment (its tests of exception 7 only)",
+        "the scan gate step's environment, and a lane push never releases, builds, plans "
+        "or starts the CI fixer",
     "tests/unit/scripts/test_release_reuses_ci_images.py":
         "the release ships only images CI built and scans them before the approval "
         "(the release guards' helper, a release gate itself)",
     "tests/unit/scripts/test_workflow_id_token_scope.py":
         "the Google identity token is held to the jobs that authenticate, and the "
         "deployer trusts exactly the workflows that authenticate as it",
+    "tests/unit/scripts/test_hotfix_release.py":
+        "the hotfix lane's gates: main only, the label gate first, dev only, CI's images "
+        "only, an IAM plan refused, and release.yml's prod and dev-iam gates kept",
+    "tests/unit/scripts/test_auto_merge_workflow.py":
+        "who may merge, least-privilege tokens, and attacker-controlled text reaching a "
+        "shell only through env",
+    "tests/unit/scripts/test_auto_merge_ready_on_green.py":
+        "the ready-on-green job's least-privilege token and credential-free checkout",
+    "tests/unit/scripts/test_auto_merge_base_merge.py":
+        "the disable job's App token scope, least privilege and event read through env",
+    "tests/unit/scripts/test_merge_train.py":
+        "the train merges with the App token, never a PAT, with least privilege and "
+        "event text through env",
+    "tests/unit/scripts/test_acceptance_target.py":
+        "the acceptance run cannot write to or name the public repository and uses the "
+        "sandbox token",
+    "tests/unit/scripts/test_ci_gate.py":
+        "ci-gate waits for every job, holds read permissions only and gates every "
+        "path-filtered workflow",
+    "tests/unit/scripts/test_deployment_values_workflow.py":
+        "the deployment-values check keeps its required name and holds no credential",
+    "tests/unit/scripts/test_coverage_workflow.py":
+        "coverage.yml's permissions are explicit and only its report job writes",
 }
 
 

@@ -24,6 +24,12 @@ Every shell here comes from scripts/generated/ci-run-blocks.json (issue 71: a
 test never reads .github/) and is RUN: the classifier against a real git history in a
 scratch `file://` repository, the `gh` calls against a fake that records them.
 Nothing touches the network.
+
+THE TESTS THAT READ .github/ hold CI security decisions the owner kept on
+2026-11-25: the disable job's App token without the workflows permission,
+its least-privilege, checkout-free job and the push read through env. This
+file is on scripts/check_test_reads.py's SECURITY_GUARDS list for those
+tests alone (issue 71).
 """
 
 from __future__ import annotations
@@ -36,6 +42,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from .ci_run_blocks import run_block
 
@@ -486,3 +493,67 @@ def test_the_retry_happens_once(run_enable):
     proc, merges, _summary = run_enable("pure", moves_again=True)
     assert proc.returncode != 0
     assert len(merges) == 2, merges
+
+
+REPO = Path(__file__).resolve().parents[3]
+
+
+WORKFLOWS = REPO / ".github" / "workflows"
+
+
+AUTO_MERGE = WORKFLOWS / "auto-merge.yml"
+
+
+def _workflow(path: Path) -> dict:
+    data = yaml.safe_load(path.read_text())
+    # PyYAML reads the bare key `on` as the boolean True.
+    if True in data:
+        data["on"] = data.pop(True)
+    return data
+
+
+@pytest.fixture(scope="module")
+def workflow() -> dict:
+    return _workflow(AUTO_MERGE)
+
+
+@pytest.fixture(scope="module")
+def disable_job(workflow: dict) -> dict:
+    return workflow["jobs"]["disable"]
+
+
+def _step(job: dict, step_id: str) -> dict:
+    matches = [step for step in job.get("steps") or [] if step.get("id") == step_id]
+    assert len(matches) == 1, f"expected one step with id {step_id!r}, found {len(matches)}"
+    return matches[0]
+
+
+def test_the_disable_job_reads_the_push_from_the_event_through_env(disable_job: dict):
+    env = _step(disable_job, "classify").get("env") or {}
+    assert env.get("ACTION") == "${{ github.event.action }}", env
+    assert env.get("BEFORE") == "${{ github.event.before }}", env
+    assert env.get("AFTER") == "${{ github.event.after }}", env
+    assert env.get("BASE_REF") == "${{ github.event.pull_request.base.ref }}", env
+    for step in disable_job["steps"]:
+        assert "${{" not in str(step.get("run") or ""), step.get("id")
+
+
+def test_the_disable_job_never_checks_out_and_holds_the_least_it_needs(disable_job: dict):
+    """contents: read is the classifier's fetch (commits and trees, never a
+    working tree); pull-requests: write the label and the comment; actions: write
+    the one-event step's read of this run's created_at and the re-evaluation it
+    dispatches (PR 1419, owner-approved 2026-10-16). The disable itself is the
+    App's (archived issue 795). MUTATION: add a checkout, or widen the token further."""
+    assert disable_job.get("permissions") == {"contents": "read", "pull-requests": "write", "actions": "write"}
+    for step in disable_job["steps"]:
+        assert "checkout" not in str(step.get("uses") or ""), step
+
+
+def test_the_disable_job_mints_the_app_token_without_the_workflows_permission(disable_job: dict):
+    """Turning auto-merge off writes no file, so it asks for no `workflows`."""
+    token = _step(disable_job, "app-token")
+    assert str(token.get("uses", "")).startswith("actions/create-github-app-token@"), token
+    inputs = token.get("with") or {}
+    assert inputs.get("permission-contents") == "write", inputs
+    assert inputs.get("permission-pull-requests") == "write", inputs
+    assert "permission-workflows" not in inputs, inputs

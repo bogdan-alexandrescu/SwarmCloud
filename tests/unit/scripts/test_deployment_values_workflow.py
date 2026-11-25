@@ -11,6 +11,11 @@ The step's script (its published run block) runs here for real, with the
 real guard, in a scratch git repository whose `scripts` is this checkout's,
 against a pattern list built at run time: a planted value turns the check
 red, and the list's value never reaches the output.
+
+THE TESTS THAT READ .github/ hold CI security decisions the owner kept on
+2026-11-25: that the deployment-values check keeps its required name and
+holds no credential. This file is on scripts/check_test_reads.py's
+SECURITY_GUARDS list for those tests alone (issue 71).
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 from .ci_run_blocks import run_block
 
@@ -172,3 +178,36 @@ def test_a_pull_requests_diff_is_against_the_branch_it_targets_now():
     the event is not read here: a test reads only its own tree, and this job
     is not on the owner's list of CI security guards (issue 71)."""
     assert '--diff "refs/remotes/origin/${PR_BASE_REF:?' in _script(), _script()
+
+
+SECURITY = REPO / ".github" / "workflows" / "security.yml"
+
+
+def _jobs() -> dict:
+    return yaml.safe_load(SECURITY.read_text(encoding="utf-8"))["jobs"]
+
+
+def _job() -> dict:
+    """The guard's own job: never folded into `checks`, whose steps run the
+    change's own scripts while this one holds the pattern list."""
+    return _jobs()["deployment-values"]
+
+
+def _step() -> dict:
+    # Found by its name, as on origin/main: STEP here is the step's id.
+    return next(s for s in _job()["steps"] if s.get("name") == "deployment-values · enforce")
+
+
+def test_the_check_keeps_its_required_name_and_holds_no_credential():
+    """The ruleset requires the check by name. The job can never ask for
+    cloud credentials (no id-token, no auth step), and --diff gets the full
+    history it reads."""
+    job = _job()
+    assert job["name"] == "deployment-values"
+    assert "needs" not in job
+    assert job["permissions"] == {"contents": "read"}
+    assert not [s for s in job["steps"] if "google-github-actions/auth" in str(s.get("uses", ""))]
+    assert _step()["id"] == "deployment-values-enforce"
+    assert _step()["env"]["DEPLOYMENT_PATTERNS"] == "${{ secrets.DEPLOYMENT_PATTERNS }}"
+    assert "deployment-values" not in (_jobs()["checks"].get("outputs") or {})
+    assert not [s for s in _jobs()["checks"]["steps"] if "DEPLOYMENT_PATTERNS" in yaml.safe_dump(s)]

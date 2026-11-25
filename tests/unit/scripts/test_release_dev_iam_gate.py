@@ -51,7 +51,7 @@ from .test_release_prod_gate import (
     _holders,
     _shell,
 )
-from .test_release_reuses_ci_images import REPO, _evaluate, _needs, _upstream, _workflow
+from .test_release_reuses_ci_images import _evaluate, _needs, _upstream, _workflow
 
 INFRA = "infrastructure"
 _STEP_OUTPUT = re.compile(r"^\$\{\{\s*steps\.([\w-]+)\.outputs\.([\w-]+)\s*\}\}$")
