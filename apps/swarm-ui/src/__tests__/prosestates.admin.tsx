@@ -32,6 +32,9 @@ const COUNTS = 'admin/counts'
 const SETUP = 'admin/setup'
 const VOICE = 'voice/settings'
 
+/** What a grant of admin gives (People.tsx's GRANT_GIVES), behind the grant dialogs' (i). */
+const GRANT_GIVES = 'An admin can approve workspaces, change every ceiling and pool limit, lend accounts and grant admin to others.'
+
 /** The fixture build's answer to a route it does not serve: the API's error message, shown as it came. */
 const NOT_SERVED = 'The fixture build does not serve this route'
 
@@ -82,6 +85,38 @@ export const ADMIN: readonly ProseState[] = [
     walk: { open: PEOPLE, persona: ADMIN_P, then: manage },
   },
   {
+    key: 'admin/people-sheet-ceiling',
+    group: 'admin',
+    files: ['People.tsx'],
+    shows: '.c-dlg, .pp-drawer p.ur-hint[role="status"], .pp-drawer [role="alert"]',
+    data: [NOT_SERVED],
+    walk: {
+      open: PEOPLE,
+      persona: ADMIN_P,
+      then: async () => {
+        await manage()
+        await clickDrawn('.pp-drawer button[aria-label="One more"]')
+        await press('.pp-drawer', 'Save')
+      },
+    },
+  },
+  {
+    key: 'admin/people-sheet-admin-switch',
+    group: 'admin',
+    files: ['People.tsx'],
+    shows: '.c-dlg',
+    lines: ['Full platform admin powers'],
+    moved: [GRANT_GIVES],
+    walk: {
+      open: PEOPLE,
+      persona: ADMIN_P,
+      then: async () => {
+        await manage()
+        await clickDrawn('.pp-drawer .pp-switch')
+      },
+    },
+  },
+  {
     key: 'admin/people-approve',
     group: 'admin',
     files: ['People.tsx'],
@@ -102,6 +137,24 @@ export const ADMIN: readonly ProseState[] = [
     files: ['People.tsx'],
     shows: '.c-dlg',
     walk: { open: PEOPLE, persona: ADMIN_P, then: () => press('main', 'Grant admin') },
+  },
+  {
+    key: 'admin/people-grant-admin-ask',
+    group: 'admin',
+    files: ['People.tsx'],
+    shows: '.c-dlg',
+    lines: ['Full platform admin powers'],
+    moved: [GRANT_GIVES],
+    data: ['dana@example.com'],
+    walk: {
+      open: PEOPLE,
+      persona: ADMIN_P,
+      then: async () => {
+        await press('main', 'Grant admin')
+        await typeInto('.c-dlg input', 'dana@example.com')
+        await press('.c-dlg', 'Grant admin')
+      },
+    },
   },
   {
     key: 'admin/people-remove-admin',

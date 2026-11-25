@@ -1846,11 +1846,7 @@ function AdminSwitch({ row, doc, reload }: { row: PersonRow; doc: PeopleDoc; rel
           }
         >
           <p>{on ? `Remove admin from ${row.email}?` : `Make ${row.email} a platform admin?`}</p>
-          {!on && (
-            <p className="ur-hint">
-              An admin can approve workspaces, change every ceiling and pool limit, lend accounts and grant admin to others.
-            </p>
-          )}
+          {!on && <GrantGives />}
         </Dialog>
       )}
       <SaidLine said={said} />
@@ -2003,6 +1999,15 @@ function AdminList({ admins, onRemove }: { admins: AdminHolder[]; onRemove: (ema
 /** What a grant gives, in both places Grant admin asks before it grants. */
 const GRANT_GIVES = 'An admin can approve workspaces, change every ceiling and pool limit, lend accounts and grant admin to others.'
 
+/** What a grant gives, as the grant dialogs say it: one line, the powers in its (i) (the owner's no-prose rule, issue 439). */
+function GrantGives() {
+  return (
+    <p className="ur-hint">
+      Full platform admin powers <InfoTip about="what an admin can do" tip={GRANT_GIVES} />
+    </p>
+  )
+}
+
 function granted(d: { email: string; changed: boolean }): string {
   return d.changed ? `${d.email} is now an admin.` : `${d.email} was already an admin.`
 }
@@ -2072,7 +2077,7 @@ function GrantDialog({ reload, onClose, onSaid }: { reload: () => void; onClose:
       ) : (
         <>
           <p>Make {asking} a platform admin?</p>
-          <p className="ur-hint">{GRANT_GIVES}</p>
+          <GrantGives />
         </>
       )}
     </Dialog>
@@ -2178,7 +2183,7 @@ function Admins({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
           }
         >
           <p>Make {granting} a platform admin?</p>
-          <p className="ur-hint">{GRANT_GIVES}</p>
+          <GrantGives />
         </Dialog>
       )}
       {target !== null && (
