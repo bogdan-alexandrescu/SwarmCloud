@@ -10,6 +10,7 @@
 import { useState } from 'react'
 
 import { Banner, Button, ButtonLink } from './components'
+import { InfoTip } from './InfoTip'
 import { accountChooserUrl, forgetSignOut, returnedAs, signOut } from './signoutState'
 
 /** A door with an arrow leaving it, in the spine's 24px stroke style. */
@@ -49,7 +50,7 @@ export function SignedBackIn({ email }: { email: string }) {
     <div className="sk-back">
       <Banner
         tone="info"
-        title={`You signed out, and Google signed you back in as ${email}.`}
+        title={`Google signed you back in as ${email}`}
         actions={
           <>
             <ButtonLink size="sm" href={accountChooserUrl(window.location.origin)}>
@@ -67,7 +68,11 @@ export function SignedBackIn({ email }: { email: string }) {
           </>
         }
       >
-        That is the only Google account signed in to this browser, so Google picked it without asking. Choose another account to add or pick one in Google&rsquo;s account chooser; you stay signed in to Google either way. If Google does not bring you back here, open this address again.
+        {/* ONE SHORT LINE, THE REST BEHIND THE (i) (issue 439), word for word. */}
+        <InfoTip
+          about="signing back in"
+          tip={`You signed out, and Google signed you back in as ${email}. That is the only Google account signed in to this browser, so Google picked it without asking. Choose another account to add or pick one in Google’s account chooser; you stay signed in to Google either way. If Google does not bring you back here, open this address again.`}
+        />
       </Banner>
     </div>
   )

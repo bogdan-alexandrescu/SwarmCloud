@@ -2567,8 +2567,11 @@ function SectionQuestion({ section, topic = null, title = `${section.label} answ
       ref={cardRef}
     >
       <strong id={`${cardId}-title`} className="ctl-q-title">{title}</strong>
-      <span className="ctl-q-body">{section.question}</span>
-      {topic !== null && <span className="ctl-q-body" data-topic={topic}>{HELP_TOPICS[topic].short}</span>}
+      {/* THE CARD IS THE `?`'S HELP COPY (issue 439), as an (i)'s tip is:
+          `data-help-description` says so to the prose guard, which counts
+          the surface, not what a mark opens. */}
+      <span className="ctl-q-body" data-help-description="">{section.question}</span>
+      {topic !== null && <span className="ctl-q-body" data-topic={topic} data-help-description="">{HELP_TOPICS[topic].short}</span>}
       {/* Inline, from tokens, like the topic cards' own link: styles.css is
           another lane's this pass, and an inline style reaches no other
           element. */}
@@ -2583,7 +2586,7 @@ function SectionQuestion({ section, topic = null, title = `${section.label} answ
         }}
         {...bridge.stop}
       >
-        Help &rarr;
+        Help
       </a>
     </span>
   )

@@ -22,7 +22,7 @@ export function click(selector: string): void {
 }
 
 /** A button that opens `children` (closed through the function it is handed): the click the state is reached by. */
-function Opener({ label, children }: { label: string; children: (close: () => void) => ReactNode }): ReactElement {
+function Opener({ label, children }: Readonly<{ label: string; children: (close: () => void) => ReactNode }>): ReactElement {
   const [open, setOpen] = useState(false)
   return (
     <>
@@ -53,6 +53,8 @@ interface Row {
 }
 
 const ADMIN = 'admin/limits'
+const SWITCH_NOTE =
+  'Kept for this tab’s session; a new tab opens in your default. Every request names it, and the API checks your membership each time; switching reloads this page’s reads.'
 
 export const SHELL: readonly ProseState[] = [
   {
@@ -67,6 +69,7 @@ export const SHELL: readonly ProseState[] = [
     group: 'shell',
     files: ['App.tsx'],
     shows: '.ctl-q-card',
+    moved: ['Is the platform healthy right now, and if not, what is the first thing to look at?'],
     walk: { open: 'overview/now', then: () => click('.ctl-q-glyph') },
   },
   {
@@ -74,6 +77,7 @@ export const SHELL: readonly ProseState[] = [
     group: 'shell',
     files: ['HelpCard.tsx'],
     shows: '[id$="-card"][role="dialog"]',
+    moved: ['A digit is a measurement, and a measured zero is a digit too.'],
     walk: { open: 'overview/now', then: () => click('.help-glyph') },
   },
   {
@@ -88,6 +92,8 @@ export const SHELL: readonly ProseState[] = [
     group: 'shell',
     files: ['Spine.tsx'],
     shows: '.sk-tpop',
+    lines: ['This tab only'],
+    moved: [SWITCH_NOTE],
     walk: { open: ADMIN, persona: 'platform-admin', then: () => click('.sk-panel .sk-tsw') },
   },
   {
@@ -95,6 +101,8 @@ export const SHELL: readonly ProseState[] = [
     group: 'shell',
     files: ['Spine.tsx'],
     shows: '.sk-tpop',
+    lines: ['This tab only'],
+    moved: [SWITCH_NOTE],
     walk: { open: ADMIN, persona: 'platform-admin', then: () => click('.sk-pbar .sk-tchip') },
   },
   {
@@ -102,6 +110,8 @@ export const SHELL: readonly ProseState[] = [
     group: 'shell',
     files: ['Spine.tsx'],
     shows: '.sk-tpop',
+    lines: ['This tab only'],
+    moved: [SWITCH_NOTE],
     walk: {
       open: ADMIN,
       persona: 'platform-admin',
@@ -136,6 +146,8 @@ export const SHELL: readonly ProseState[] = [
     group: 'shell',
     files: ['NotFound.tsx'],
     shows: '.nf-page',
+    lines: ['Nearest page: Overview'],
+    moved: ['This console has no page at that address, so nothing here is a reading of the platform.'],
     walk: {
       open: 'overview/now',
       then: () => {
@@ -150,6 +162,11 @@ export const SHELL: readonly ProseState[] = [
     files: ['ErrorBoundary.tsx'],
     shows: '.app-takeover',
     data: ['render failed at row 3'],
+    lines: ['Whatever is running is still running.'],
+    moved: [
+      'Something in this page threw an error and it could not finish rendering.',
+      'This is a bug in the UI, not a statement about the platform.',
+    ],
     mount: () => (
       <ErrorBoundary>
         <Boom />
@@ -161,6 +178,12 @@ export const SHELL: readonly ProseState[] = [
     group: 'shell',
     files: ['SignOut.tsx'],
     shows: '.sk-back',
+    lines: [`Google signed you back in as ${EMAIL}`],
+    moved: [
+      `You signed out, and Google signed you back in as ${EMAIL}.`,
+      'That is the only Google account signed in to this browser, so Google picked it without asking.',
+      'If Google does not bring you back here, open this address again.',
+    ],
     mount: () => <SignOutTrip />,
     act: () => click('.sk-out'),
   },
@@ -219,6 +242,8 @@ export const SHELL: readonly ProseState[] = [
     files: ['components/Overlay.tsx'],
     shows: '.c-dlg',
     data: ['wf_0123456789abcdef'],
+    lines: ['2 running steps stop · 3 unstarted steps cancelled · results kept'],
+    moved: ['2 running steps are asked to stop at their next heartbeat; 3 steps not yet started are cancelled. Steps that finished keep their results.'],
     mount: () => (
       <Opener label="Cancel">
         {(close) => <CancelWorkflowConfirm workflowId="wf_0123456789abcdef" running={2} notStarted={3} onConfirm={close} onClose={close} />}

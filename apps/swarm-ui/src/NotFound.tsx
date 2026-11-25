@@ -11,6 +11,7 @@
 import type { MouseEvent } from 'react'
 
 import { EmptyState } from './components'
+import { InfoTip } from './InfoTip'
 import { destinationOf } from './Notifications'
 import { FIXED, SECTION_ROOTS } from './paths'
 
@@ -109,8 +110,9 @@ export function NotFound({ path, go }: { path: string; go: (to: string) => void 
           at all, so a screen reader's heading list and the tab's title both
           fell back to the page it is not. */}
       <EmptyState kind="partial" heading={`No page at ${path}`} page>
-        This console has no page at that address, so nothing here is a reading of the platform. The nearest page that
-        exists is{' '}
+        {/* A SHORT LINE AND ITS ACTION (issue 439): the way out stays; the
+            sentence that explains the empty page is behind the (i). */}
+        Nearest page:{' '}
         {named === near ? (
           <a className="mono" href={near} onClick={follow(near)}>
             {near}
@@ -120,15 +122,15 @@ export function NotFound({ path, go }: { path: string; go: (to: string) => void 
             {named}
           </a>
         )}
-        {near === '/overview' ? '.' : (
+        {near === '/overview' ? null : (
           <>
-            ; or go to{' '}
+            {' · '}
             <a href="/overview" onClick={follow('/overview')}>
               Overview
             </a>
-            .
           </>
-        )}
+        )}{' '}
+        <InfoTip about="this address" tip="This console has no page at that address, so nothing here is a reading of the platform." />
       </EmptyState>
     </div>
   )

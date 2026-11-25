@@ -45,6 +45,7 @@ import { AGENT_TABS, type AgentTab } from './agentlist'
 import { USE_FIXTURES, WORKSPACE_RENAMED_EVENT, loadApprovals, loadCapacity, loadMe, loadMyTenants, loadOnboarding, loadStats, loadWorkflowsById, type NotificationFeed, type ResourceClasses, type TenantChoice } from './api'
 import { classifyEnvironment, envTreatment, servedEnvironment, SwarmMark } from './Brand'
 import { Banner, Button, ButtonLink, NamedMark, Toaster, acknowledge, routedClick } from './components'
+import { InfoTip } from './InfoTip'
 import { chooseTenant, chosenTenant, clearTenantSwitch, errorHeading, noteTenantSwitch, preferencesUnavailableSnapshot, probeSnapshot, read, route, subscribePreferencesUnavailable, subscribeProbes, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, type Result } from './fetch'
 import { HELP_GROUPS, HELP, TOPIC_IDS, helpAnchor } from './help'
 import { STATE_MARK, type MarkHue, type MarkName } from './marks'
@@ -3183,7 +3184,16 @@ function TenantPicker({
           {reach.map(row)}
         </div>
       )}
-      <span className="sk-tf">Kept for this tab&rsquo;s session; a new tab opens in your default. Every request names it, and the API checks your membership each time; switching reloads this page&rsquo;s reads.</span>
+      {/* A SHORT LINE AND ITS (i) (issue 439): how long the choice lasts,
+          and the sentences that explain it behind the mark, word for word. */}
+      <span className="sk-tf">
+        This tab only{' '}
+        <InfoTip
+          about="switching workspace"
+          end
+          tip="Kept for this tab’s session; a new tab opens in your default. Every request names it, and the API checks your membership each time; switching reloads this page’s reads."
+        />
+      </span>
     </div>
   )
   if (at !== 'sheet') return list

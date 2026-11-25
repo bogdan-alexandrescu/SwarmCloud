@@ -47,12 +47,12 @@ const LONG = 'This panel lists every read the page made and how long each one to
 const LINE8 = 'Writes to the live cluster in this workspace'
 const LINE9 = 'Writes to the live cluster in this workspace right now'
 
-function Shown({ children }: { children: ReactElement }): ReactElement {
+function Shown({ children }: Readonly<{ children: ReactElement }>): ReactElement {
   return <div className="ps-box">{children}</div>
 }
 
 /** A box that opens on its button's click, with `body` in it. */
-function Opens({ body }: { body: () => ReactElement }): ReactElement {
+function Opens({ body }: Readonly<{ body: () => ReactElement }>): ReactElement {
   const [open, setOpen] = useState(false)
   return (
     <>
@@ -147,12 +147,27 @@ const SOURCES: Readonly<Record<string, string>> = Object.fromEntries(
     // The glob also answers this directory's own files as `./x.tsx`: tests, not screens.
     .filter(([path]) => path.startsWith('../') && !path.startsWith('../__tests__/'))
     .map(([path, raw]) => [path.slice('../'.length), raw] as const)
-    .filter(([path]) => !/\.test\.tsx$/.test(path) && !/(^|\/)generated(\/|\.)/.test(path)),
+    .filter(([path]) => !/\.test\.tsx$/.test(path) && !/(^|\/)generated[/.]/.test(path)),
 )
+
+/** `line` cut at its `//` comment; a `//` after a colon or a quote (`https://`, `'//'`) is code. */
+function lineCode(line: string): string {
+  let at = line.indexOf('//')
+  while (at !== -1) {
+    const before = at === 0 ? ' ' : line.charAt(at - 1)
+    if (!`:'"\`\\`.includes(before)) return line.slice(0, at)
+    at = line.indexOf('//', at + 2)
+  }
+  return line
+}
 
 /** `src` with its block, JSX and line comments taken out: a comment that mentions `aria-expanded` draws nothing. */
 export function stripComments(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`\w\\])\/\/.*$/gm, '$1')
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .map(lineCode)
+    .join('\n')
 }
 
 /** The overlay components components/Overlay.tsx exports: what its module says, not a list kept here. */
@@ -176,7 +191,7 @@ export function uncovered(openers: readonly string[], states: readonly ProseStat
 describe('the cover: every screen file that draws an opener is visited', () => {
   const openers = Object.keys(SOURCES)
     .filter((f) => drawsOpener(SOURCES[f] ?? '', OVERLAYS))
-    .sort()
+    .sort((a, b) => a.localeCompare(b))
   const named = new Set(REGISTRY.flatMap((s) => s.files))
 
   it('reads the tree and finds the overlays', () => {

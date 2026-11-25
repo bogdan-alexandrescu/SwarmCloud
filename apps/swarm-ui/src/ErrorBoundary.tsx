@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { Button } from './components'
+import { InfoTip } from './InfoTip'
 
 /**
  * The last line of the same rule the rest of this app is built on.
@@ -40,9 +41,15 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
       <div className="app">
         <section className="app-takeover is-bad" role="alert" aria-labelledby="ui-crashed-h">
           <h1 id="ui-crashed-h">The interface crashed</h1>
-          <p>Something in this page threw an error and it could not finish rendering.</p>
+          {/* ONE MUST-STAY LINE (issue 439): the crash says nothing about the
+              platform. The two sentences that explain it are behind the (i),
+              word for word. */}
           <p className="app-takeover-inv">
-            This is a bug in the UI, not a statement about the platform. Whatever is running is still running.
+            Whatever is running is still running.{' '}
+            <InfoTip
+              about="the crash"
+              tip="Something in this page threw an error and it could not finish rendering. This is a bug in the UI, not a statement about the platform."
+            />
           </p>
           <Button kind="primary" onClick={() => window.location.reload()}>
             Reload

@@ -57,6 +57,7 @@ import {
 import { STATE_MARK } from '../marks'
 import { PARK_NEEDS_A_PERSON, PARK_REASONS, type TaskState } from '../types'
 import { expectNoFigures } from './setup'
+import { helpIn, shownIn } from './proseruns'
 
 afterEach(() => {
   forgetToasts()
@@ -873,7 +874,9 @@ describe('CancelWorkflowConfirm', () => {
     const yes = vi.fn()
     render(<CancelWorkflowConfirm workflowId="wf_2c81d0a9b7e4" running={2} notStarted={1} onConfirm={yes} onClose={() => {}} />)
     const dlg = screen.getByRole('dialog', { name: 'Cancel this workflow?' })
-    expect(dlg.textContent).toContain('2 running steps are asked to stop at their next heartbeat; 1 step not yet started is cancelled. Steps that finished keep their results.')
+    // The line on the surface; the sentence behind its (i) (issue 439).
+    expect(shownIn(dlg)).toContain('2 running steps stop · 1 unstarted step cancelled · results kept')
+    expect(helpIn(dlg)).toContain('2 running steps are asked to stop at their next heartbeat; 1 step not yet started is cancelled. Steps that finished keep their results.')
     const verb = screen.getByRole('button', { name: 'Cancel the workflow' })
     expect(verb).toHaveProperty('disabled', true)
     fireEvent.change(screen.getByLabelText(/to confirm/), { target: { value: 'wf_2c81d0a9b7e4' } })

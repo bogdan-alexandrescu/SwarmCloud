@@ -344,14 +344,15 @@ export function Dock() {
               grid of cells already looks like; the second is fused to the
               figure it qualifies, in `DataSources.tsx`'s own cell labels and
               in the foot below. What is left is the two destinations, which
-              were the only part of that paragraph anyone clicked. */}
+              were the only part of that paragraph anyone clicked. No arrow
+              on either (issue 439): an arrowed text link reads as prose. */}
           <div className="ctl-toolbar ctl-dock-tools">
             <span className="ctl-eyebrow">Routes called in this tab</span>
             <a className="is-end" href={`#${helpAnchor(HELP_TOPIC)}`}>
-              What these mean &rarr;
+              What these mean
             </a>
             {/* Capacity › API reads since NAV-FOOT (archived issue 1672); `#reference` is its old address. */}
-            <a href="#capacity/api-reads">Every read, in a table &rarr;</a>
+            <a href="#capacity/api-reads">Every read, in a table</a>
           </div>
           {/* The cells read the wall clock as they render, and they render on
               this component's shared tick, so their ages move with the line
@@ -362,9 +363,10 @@ export function Dock() {
               means something else -- the same class of defect as a count
               computed over a partial read. The paragraph that used to say so
               twice is in `#help/api-reads`. */}
+          {/* Three facts, each under a long run (issue 439): the sample
+              count is its own fact, not a clause of the basis. */}
           <p className="ctl-dock-foot">
-            newest successful payload · p95 over the{' '}
-            <strong>last attempt of each route</strong>, {s.routes} sample
+            newest successful payload · p95 over the <strong>last attempt of each route</strong> · {s.routes} sample
             {s.routes === 1 ? '' : 's'}
           </p>
         </div>

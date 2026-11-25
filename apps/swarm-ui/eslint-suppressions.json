@@ -7465,6 +7465,41 @@
       "count": 20
     }
   },
+  "src/__tests__/prose.states.admin.test.tsx": {
+    "sonarjs/no-empty-test-file": {
+      "count": 1
+    }
+  },
+  "src/__tests__/prose.states.agent.test.tsx": {
+    "sonarjs/no-empty-test-file": {
+      "count": 1
+    }
+  },
+  "src/__tests__/prose.states.config.test.tsx": {
+    "sonarjs/no-empty-test-file": {
+      "count": 1
+    }
+  },
+  "src/__tests__/prose.states.overview.test.tsx": {
+    "sonarjs/no-empty-test-file": {
+      "count": 1
+    }
+  },
+  "src/__tests__/prose.states.shell.test.tsx": {
+    "sonarjs/no-empty-test-file": {
+      "count": 1
+    }
+  },
+  "src/__tests__/prose.states.work.test.tsx": {
+    "sonarjs/no-empty-test-file": {
+      "count": 1
+    }
+  },
+  "src/__tests__/prose.states.workflows.test.tsx": {
+    "sonarjs/no-empty-test-file": {
+      "count": 1
+    }
+  },
   "src/__tests__/proseapp.tsx": {
     "sonarjs/no-nested-template-literals": {
       "count": 1
@@ -7478,6 +7513,11 @@
   },
   "src/__tests__/prosebase.ts": {
     "sonarjs/no-os-command-from-path": {
+      "count": 2
+    }
+  },
+  "src/__tests__/prosestates.shell.tsx": {
+    "testing-library/no-node-access": {
       "count": 2
     }
   },

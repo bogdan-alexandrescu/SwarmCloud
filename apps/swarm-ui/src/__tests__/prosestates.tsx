@@ -189,14 +189,18 @@ export const PENDING: readonly string[] = [
   'voice/WorkingCard.tsx',
 ]
 
+/** The first element `shows` selects, or null; null too when it is not a selector at all (it is text). */
+function asSelector(shows: string): HTMLElement | null {
+  try {
+    return document.querySelector<HTMLElement>(shows)
+  } catch {
+    return null
+  }
+}
+
 /** The first element matching `shows`, the body when it is text the body shows, or null. */
 export function found(shows: string): HTMLElement | null {
-  let el: HTMLElement | null = null
-  try {
-    el = document.querySelector<HTMLElement>(shows)
-  } catch {
-    el = null
-  }
+  const el = asSelector(shows)
   if (el !== null) return el
   const text = (document.body.textContent ?? '').replace(/\s+/g, ' ')
   return text.includes(shows) ? document.body : null
@@ -351,10 +355,8 @@ export function proseStateGroup(group: string, states: readonly ProseState[]): v
           const now = await visitWalk(null, state, theme, true)
           if (now === null) throw new Error(`${state.key} (${theme}): the click opened nothing`)
           const was = await visitWalk(base.src, state, theme, false)
-          console.log(
-            `PROSE STATE ${state.key} (${theme}) on ${chosen.sha.slice(0, 12)}: ` +
-              `${was === null ? 'new state' : `${was.words} words, ${was.arrows} arrows, ${was.runs.length} long runs`}`,
-          )
+          const then = was === null ? 'new state' : `${was.words} words, ${was.arrows} arrows, ${was.runs.length} long runs`
+          console.log(`PROSE STATE ${state.key} (${theme}) on ${chosen.sha.slice(0, 12)}: ${then}`)
           const up = proseDelta(`${state.key} (${theme})`, was, now)
           expect(up, up.join('\n')).toEqual([])
         }

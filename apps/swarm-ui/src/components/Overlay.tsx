@@ -22,6 +22,7 @@
 import { Fragment, useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Button } from './Button'
+import { InfoTip } from '../InfoTip'
 
 export const TOOLTIP_DELAY_MS = 120
 
@@ -368,9 +369,15 @@ export function CancelWorkflowConfirm({
       busy={busy === true ? 'Cancelling…' : busy}
       error={error}
     >
+      {/* THE DISCLOSURE STAYS, AS ONE SHORT LINE (issue 439: a write to a
+          live system): what stops, what is cancelled, what is kept, as facts.
+          The sentence that says it in full is behind the (i), word for word. */}
       <p>
-        {steps(running, 'running step is', 'running steps are')} asked to stop at their next heartbeat;{' '}
-        {steps(notStarted, 'step not yet started is', 'steps not yet started are')} cancelled. Steps that finished keep their results.
+        {steps(running, 'running step', 'running steps')} stop · {steps(notStarted, 'unstarted step', 'unstarted steps')} cancelled · results kept{' '}
+        <InfoTip
+          about="cancelling"
+          tip={`${steps(running, 'running step is', 'running steps are')} asked to stop at their next heartbeat; ${steps(notStarted, 'step not yet started is', 'steps not yet started are')} cancelled. Steps that finished keep their results.`}
+        />
       </p>
     </TypedConfirm>
   )
