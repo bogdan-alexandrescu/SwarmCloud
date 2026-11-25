@@ -6,6 +6,7 @@ import { artifactRawUrl, loadArtifactContent } from './api'
 import { DiffView } from './diff/DiffView'
 import { errorHeading, num, type ApiError, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
+import { InfoTip } from './InfoTip'
 import { useEscapeLayer } from './escape'
 import { segments } from './logLines'
 import { LogText } from './logMarks'
@@ -447,7 +448,11 @@ export function RawPatchDownload({ taskId, name }: { taskId: string; name: strin
       >
         Download raw patch
       </ButtonLink>
-      <span className="ctl-sub">not redacted: the patch as stored, for you as its submitter</span>
+      {/* THE DISCLOSURE STAYS ONE LINE (issue 439): `not redacted` is the
+          must-stay fact; the rest of the sentence is the (i)'s tip. */}
+      <span className="ctl-sub">
+        not redacted <InfoTip about="the raw patch" tip="not redacted: the patch as stored, for you as its submitter" />
+      </span>
     </span>
   )
 }

@@ -978,7 +978,10 @@ export function LiveBrowserPane({
             <summary title="About this address" aria-label="About this address">
               ⓘ
             </summary>
-            <span className="live-strip-say">{verdict.say}</span>
+            {/* The fold is the strip's (i): its sentence is help (issue 439). */}
+            <span className="live-strip-say" data-help-description="">
+              {verdict.say}
+            </span>
           </details>
         )}
         <BrowserBadges status={tools} qaIdentity={qaIdentityOf(task.input)} />
