@@ -23,4 +23,3 @@
 .as-type { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); overflow-wrap: anywhere; }
 .as-row > .as-seg { margin-left: auto; }
 .as-refusal { flex: 1 1 100%; min-width: 0; }
-.as-none { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
