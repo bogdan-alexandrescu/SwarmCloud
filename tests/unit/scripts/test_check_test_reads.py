@@ -346,6 +346,33 @@ def test_a_listed_file_that_reads_nothing_out_of_tree_fails(tmp_path, capsys, mo
     assert GUARD in out, out
 
 
+@pytest.mark.parametrize("read", [
+    '(ROOT / "docs" / "ci.md").read_text()',
+    '(ROOT / "CLAUDE.md").read_text()',
+    '(ROOT / "Makefile").read_text()',
+])
+def test_a_listed_guard_may_read_ci_yaml_only(tmp_path, capsys, monkeypatch, read):
+    # The exception is CI YAML: a listed file that also reads docs prose, a
+    # root *.md or the Makefile is reported at that read, and only there.
+    # MUTATION: skip every listed file whole again.
+    monkeypatch.setattr(ctr, "SECURITY_GUARDS", {GUARD: "holds a planted security decision"})
+    code, out = _scan(tmp_path, capsys, {GUARD: WORKFLOW_READ + f"\n\ndef test_y():\n    {read}\n"})
+    assert code == 1, out
+    assert f"{GUARD}:10:" in out, out
+    assert f"{GUARD}:6:" not in out, out
+
+
+def test_a_listed_guard_whose_helper_reads_prose_is_reported(tmp_path, capsys, monkeypatch):
+    # A function that reads CI YAML and docs prose is reported where it is called.
+    monkeypatch.setattr(ctr, "SECURITY_GUARDS", {GUARD: "holds a planted security decision"})
+    source = HEAD + ('def _both():\n    (ROOT / ".github" / "workflows" / "ci.yml").read_text()\n'
+                     '    return (ROOT / "docs" / "ci.md").read_text()\n\n'
+                     'def test_x():\n    assert _both()\n')
+    code, out = _scan(tmp_path, capsys, {GUARD: source})
+    assert code == 1, out
+    assert f"{GUARD}:7:" in out, out
+
+
 def test_the_list_is_the_owners_and_each_entry_says_what_it_holds():
     # The owner's list of 2026-11-25, and the helper the release guards import
     # that is a release gate itself. MUTATION: add a docs pin to the list.
