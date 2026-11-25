@@ -46,6 +46,10 @@ packages = ["swarm_install"]
 [tool.hatch.build.targets.wheel.force-include]
 "../../install/manifest.yaml" = "swarm_install/_manifest/manifest.yaml"
 "../../install/manifest.d" = "swarm_install/_manifest/manifest.d"
+# The wrong-project rule the operator scripts' plan guard includes
+# (scripts/lib/destroy-guard.jq), shipped so the installed engine runs the SAME
+# file over every plan it makes (swarm_install.planguard; issue 344).
+"../../scripts/lib/wrong-project.jq" = "swarm_install/_guard/wrong-project.jq"
 
 [tool.uv.sources]
 swarm-common = { path = "../common", editable = true }

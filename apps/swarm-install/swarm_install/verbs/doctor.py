@@ -4,6 +4,7 @@
     swarm doctor                         this machine's tier, then the deployment
     swarm doctor --project P [--env E]   the deployment of P, every manifest probe
     swarm doctor --project P --json      one JSON document
+    swarm doctor --project P --remains   what the project still holds, read-only
 
 The **client tier** is the bridge's own doctor (`swarm_mcp.cli.cmd_doctor`):
 which deployment this machine resolves and which auth tier it is on. It runs
@@ -19,6 +20,13 @@ worker account may read `platform/`; managed-plugins.md §15) with the bundle
 build's (`bundles_finding`: with the built-ins switch on, the builder account
 exists and may push to the plugin bundles repository and to no repository it
 reads; §1.4.2), which stage 14's `verify.plugins` runs too. It never writes.
+
+`--remains` runs neither tier: it lists, read-only, what the project still
+holds by kind and name (`swarm_install.inventory`), for the person confirming
+an uninstall left the project empty. It prints `Nothing remains in <project>.`
+only after a complete read that found nothing; a kind it could not read is
+listed as not read and the exit is 3. It never names a resource on the
+install's never-touch list, only counts them.
 
 Exit codes follow `sc`: 0 every probed entry is met; 3 something is unmet or
 could not be checked (never 0 when a probe did not run); 1 the doctor could
@@ -53,6 +61,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--manifest", type=Path, default=None,
                         help="the release's manifest.yaml (default: the one beside this package)")
     parser.add_argument("--json", action="store_true", help="the platform tier as one JSON document")
+    parser.add_argument("--remains", action="store_true",
+                        help="list, read-only, what the project still holds by kind and name (after swarm "
+                             "uninstall: says 'Nothing remains in <project>.' when it is empty)")
     parser.add_argument("--platform-only", action="store_true",
                         help="skip the client tier (this machine's auth)")
 
@@ -319,10 +330,48 @@ def bundles_finding(target: doctor.Target, gcp: doctor.Gcp) -> doctor.Finding:
     return doctor.Finding(BUNDLES_CHECK, MET, f"{email} exists and may push to {BUNDLES_REPOSITORY} only")
 
 
+def remains_gcp() -> Any:
+    """The read-only Google client the `--remains` listing reads through (a fake in tests)."""
+    from ..steps.preflight import Gcp
+
+    return Gcp()
+
+
+def run_remains(args: argparse.Namespace) -> int:
+    """`--remains`: what the project still holds, by kind and name (issue 344).
+
+    Read-only by construction: `inventory.read` makes list calls only. It needs
+    the install state (the bucket's, else the local copy `swarm uninstall`
+    keeps) for the never-touch list, whose names it never prints, and the
+    region. Exit 0 when every kind was read, 3 when any kind could not be read
+    (never 0 on an incomplete listing), 1 when no state is readable."""
+    from .. import inventory
+
+    project = args.project or default_project()
+    if not project:
+        print("swarm doctor --remains: no --project given and gcloud names no project", file=sys.stderr)
+        return ExitCode.USAGE
+    state, source = read_state(project)
+    if state is None:
+        print(f"swarm doctor --remains: {source}; without the install state the never-touch list is not known, "
+              "so nothing was listed", file=sys.stderr)
+        return ExitCode.FAIL
+    found = inventory.read(remains_gcp(), project, region=str(state.region or ""), deny_list=state.deny_list)
+    code = ExitCode.OK if found.complete else ExitCode.TROUBLE
+    if args.json:
+        print(json.dumps({**found.to_json(), "source": source, "exit_code": int(code)}, sort_keys=True))
+        return code
+    for line in inventory.render(found):
+        print(line)
+    return code
+
+
 # -- the verb ------------------------------------------------------------------
 
 
 def run(args: argparse.Namespace) -> int:
+    if getattr(args, "remains", False):
+        return run_remains(args)
     client_code = None if args.platform_only or args.json else client_tier()
     if client_code is not None:
         print()
