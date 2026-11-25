@@ -124,6 +124,7 @@ _PULL_NUMBER_RE = re.compile(r"^[1-9][0-9]{0,9}$")
 NAVIGATE_DESTINATIONS: tuple[str, ...] = (
     "overview/now", "work/running", "work/workflows", "work/timeline",
     "work/timeline/outcomes", "work/runs", "automate/schedules", "automate/approvals", "automate/pipeline",
+    "automate/settings",
     "capacity/pools", "capacity/profiles", "capacity/catalogue", "capacity/holders",
     "capacity/accounts", "capacity/llm-providers", "capacity/llm-providers/plans",
     "capacity/llm-providers/api-keys", "capacity/account-health", "capacity/quota",

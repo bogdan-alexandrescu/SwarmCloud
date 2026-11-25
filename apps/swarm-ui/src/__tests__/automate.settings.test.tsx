@@ -109,37 +109,44 @@ interface Opts {
   patch?: (id: string, body: Json) => Reply
 }
 
+/** The workspace's view after a PUT the server accepted: `inherit` clears a key. */
+function afterPut(settings: Json, body: Json): Json {
+  const plans = { ...(settings.plans as Json) }
+  for (const key of ['diagrams', 'chat_model_class'] as const) {
+    if (body[key] !== undefined) plans[key] = body[key] === 'inherit' ? null : body[key]
+  }
+  return { ...settings, plans }
+}
+
+/** A schedule's PATCH, answered with the next revision unless `opts.patch` refuses it. */
+function patchReply(opts: Opts, id: string, body: Json): Reply {
+  const refused = opts.patch?.(id, body) ?? null
+  if (refused !== null) return refused
+  const was = SCHEDULES.find((s) => s.schedule_id === id)!
+  return { status: 200, body: { schedule: { ...was, ...body, revision: (was.revision as number) + 1 } } }
+}
+
 async function open(opts: Opts = {}) {
   let settings = opts.settings ?? planSettings()
   const calls = serve((m, url, body) => {
     const path = url.split('?')[0]!
-    if (m === 'GET' && path === SETTINGS) return { status: 200, body: settings }
-    if (m === 'PUT' && path === SETTINGS) {
-      const r = opts.put?.(body as Json) ?? null
-      if (r !== null) return r
-      const b = body as Json
-      const plans = { ...(settings.plans as Json) }
-      if (b.diagrams !== undefined) plans.diagrams = b.diagrams === 'inherit' ? null : b.diagrams
-      if (b.chat_model_class !== undefined) plans.chat_model_class = b.chat_model_class === 'inherit' ? null : b.chat_model_class
-      settings = { ...settings, plans }
+    const key = `${m} ${path}`
+    if (key === `GET ${SETTINGS}`) return { status: 200, body: settings }
+    if (key === `PUT ${SETTINGS}`) {
+      const refused = opts.put?.(body as Json) ?? null
+      if (refused !== null) return refused
+      settings = afterPut(settings, body as Json)
       return { status: 200, body: settings }
     }
-    if (m === 'GET' && path === '/v1/schedules') return { status: 200, body: { schedules: SCHEDULES, tenant_id: 'eng' } }
-    if (m === 'GET' && path === '/v1/schedule-types') return { status: 200, body: { types: TYPES, tenant_id: 'eng' } }
+    if (key === 'GET /v1/schedules') return { status: 200, body: { schedules: SCHEDULES, tenant_id: 'eng' } }
+    if (key === 'GET /v1/schedule-types') return { status: 200, body: { types: TYPES, tenant_id: 'eng' } }
     const patched = m === 'PATCH' ? /^\/v1\/schedules\/([^/]+)$/.exec(path) : null
-    if (patched !== null) {
-      const id = patched[1]!
-      const r = opts.patch?.(id, body as Json) ?? null
-      if (r !== null) return r
-      const was = SCHEDULES.find((s) => s.schedule_id === id)!
-      return { status: 200, body: { schedule: { ...was, ...(body as Json), revision: (was.revision as number) + 1 } } }
-    }
-    return null
+    return patched === null ? null : patchReply(opts, patched[1]!, body as Json)
   })
   vi.stubEnv('VITE_LIVE', '1')
   vi.resetModules()
   const { AutomateSettingsScreen } = await import('../AutomateSettings')
-  const utils = render(<AutomateSettingsScreen go={vi.fn()} />)
+  const utils = render(<AutomateSettingsScreen />)
   await screen.findByTestId('plan-review', undefined, WAIT)
   return { calls, ...utils }
 }
@@ -212,7 +219,9 @@ describe('the Plan review card', () => {
     for (const can_edit of [true, false]) {
       const { unmount } = await open({ settings: planSettings({ can_edit }) })
       const caps = screen.getByTestId('plan-caps')
-      expect(caps.querySelectorAll('input, select, textarea, button, [contenteditable]')).toHaveLength(0)
+      for (const role of ['textbox', 'spinbutton', 'combobox', 'button', 'checkbox', 'radio', 'slider', 'switch'] as const) {
+        expect(within(caps).queryAllByRole(role)).toHaveLength(0)
+      }
       expect(visible(caps)).toContain('5')
       expect(visible(caps)).toContain('20')
       expect(visible(caps)).toContain('40')

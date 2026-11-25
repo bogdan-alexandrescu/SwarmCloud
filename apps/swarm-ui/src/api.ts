@@ -14504,8 +14504,128 @@ export async function loadEffectivePlanDiagrams(tenantId: string): Promise<'on' 
   if (USE_FIXTURES) return null
   const r = await read<unknown>(route('/v1/workspaces/{tenant_id}/plan-settings', { tenant_id: tenantId }), () => false)
   if (r.status !== 'ok' && r.status !== 'stale') return null
-  const value = (r.data as { effective?: { diagrams?: { value?: unknown } } } | null)?.effective?.diagrams?.value
-  return value === 'on' || value === 'off' ? value : null
+  return diagramsWord((r.data as { effective?: { diagrams?: { value?: unknown } } } | null)?.effective?.diagrams?.value)
+}
+
+/**
+ * `plansettings.resolve` serves the resolved switch as a boolean
+ * (`{"value": true, "from": "platform"}`); an older reader took `on`/`off`, so both read.
+ */
+function diagramsWord(value: unknown): 'on' | 'off' | null {
+  if (value === true || value === 'on') return 'on'
+  if (value === false || value === 'off') return 'off'
+  return null
+}
+
+/** Where a plan-review setting came from (`plansettings.PLATFORM`, `WORKSPACE`). */
+export type PlanSettingFrom = 'platform' | 'workspace' | 'schedule'
+
+/**
+ * `GET /v1/workspaces/{tenant_id}/plan-settings` (`plansettings.view`,
+ * docs/design/plans-pipeline.md §6.4, §7.8): the workspace's own choices
+ * (null where it follows the platform), what each resolves to for a run made
+ * by hand, the platform's caps read-only, and whether the caller may change it.
+ */
+export interface PlanSettings {
+  tenant_id: string
+  plans: { diagrams: 'on' | 'off' | null; chat_model_class: string | null }
+  effective: {
+    diagrams: { value: 'on' | 'off'; from: PlanSettingFrom }
+    chat_model_class: { value: string; from: PlanSettingFrom; fell_through: string | null }
+  }
+  caps: { replans: number; diagram_asks: number; chat_turns: number; review_usd: number; set_by: string | null; set_at: string | null }
+  /** The classes the plan chat may run at: the ones `claude-code` carries. */
+  chat_model_classes: string[]
+  updated_at: string | null
+  updated_by: string | null
+  /** The workspace's admin (a workspace admin, a personal workspace's owner, a platform admin). */
+  can_edit: boolean
+}
+
+/** `PUT .../plan-settings`: one or both keys; `inherit` clears the workspace's choice. */
+export interface PlanSettingsBody {
+  diagrams?: 'on' | 'off' | 'inherit'
+  chat_model_class?: string
+}
+
+/** The view as served, its switch read as a word; null for a body that is not one. */
+function planSettingsOf(raw: unknown): PlanSettings | null {
+  if (raw === null || typeof raw !== 'object') return null
+  const v = raw as Record<string, unknown> & { plans?: Record<string, unknown>; effective?: Record<string, Record<string, unknown> | undefined>; caps?: Record<string, unknown> }
+  const diagrams = diagramsWord(v.effective?.diagrams?.value)
+  const model = v.effective?.chat_model_class
+  if (diagrams === null || model === undefined || typeof model.value !== 'string' || v.caps === undefined) return null
+  const num = (x: unknown, fallback: number) => (typeof x === 'number' && Number.isFinite(x) ? x : fallback)
+  const str = (x: unknown) => (typeof x === 'string' && x !== '' ? x : null)
+  const from = (x: unknown): PlanSettingFrom => (x === 'workspace' || x === 'schedule' ? x : 'platform')
+  const stored = v.plans?.diagrams
+  return {
+    tenant_id: String(v.tenant_id ?? ''),
+    plans: { diagrams: stored === 'on' || stored === 'off' ? stored : null, chat_model_class: str(v.plans?.chat_model_class) },
+    effective: {
+      diagrams: { value: diagrams, from: from(v.effective?.diagrams?.from) },
+      chat_model_class: { value: model.value, from: from(model.from), fell_through: str(model.fell_through) },
+    },
+    // The figures `plansettings.CAPS_DEFAULT` names stand in only for a key the body left out.
+    caps: {
+      replans: num(v.caps.replans, 5),
+      diagram_asks: num(v.caps.diagram_asks, 20),
+      chat_turns: num(v.caps.chat_turns, 40),
+      review_usd: num(v.caps.review_usd, 25),
+      set_by: str(v.caps.set_by),
+      set_at: str(v.caps.set_at),
+    },
+    chat_model_classes: Array.isArray(v.chat_model_classes) ? v.chat_model_classes.filter((c): c is string => typeof c === 'string') : [],
+    updated_at: str(v.updated_at),
+    updated_by: str(v.updated_by),
+    can_edit: v.can_edit === true,
+  }
+}
+
+/** A read or write's answer with its view parsed; a body that is not one is an error naming the route. */
+function asPlanSettings(r: Result<unknown>, template: string): Result<PlanSettings> {
+  if (r.status !== 'ok' && r.status !== 'stale') return r as Result<PlanSettings>
+  const data = planSettingsOf(r.data)
+  if (data === null) {
+    return { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: 'The plan settings answer was not one this console reads.', template } }
+  }
+  return { ...r, data }
+}
+
+/** The fixture build's workspace: every setting the platform's, read by a workspace admin. */
+function fixturePlanSettings(tenantId: string): PlanSettings {
+  return {
+    tenant_id: tenantId,
+    plans: { diagrams: null, chat_model_class: null },
+    effective: { diagrams: { value: 'on', from: 'platform' }, chat_model_class: { value: 'sonnet', from: 'platform', fell_through: null } },
+    caps: { replans: 5, diagram_asks: 20, chat_turns: 40, review_usd: 25, set_by: null, set_at: null },
+    chat_model_classes: ['haiku', 'sonnet', 'opus'],
+    updated_at: null,
+    updated_by: null,
+    can_edit: true,
+  }
+}
+
+/** `GET /v1/workspaces/{tenant_id}/plan-settings`: any member reads it. */
+export async function loadPlanSettings(tenantId: string): Promise<Result<PlanSettings>> {
+  const target = route('/v1/workspaces/{tenant_id}/plan-settings', { tenant_id: tenantId })
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 90))
+    noteFixtureProbe(target, 90, true)
+    return { status: 'ok', fetchedAt: Date.now(), data: fixturePlanSettings(tenantId) }
+  }
+  return asPlanSettings(await read<unknown>(target, () => false), target.template)
+}
+
+/**
+ * `PUT /v1/workspaces/{tenant_id}/plan-settings`: the workspace's admin, audited
+ * (`workspace_plan_settings_set`). Anyone else is 403 `role_admin_required`, and
+ * a class the profile does not carry 422; the refusal is returned as served.
+ */
+export async function savePlanSettings(tenantId: string, body: PlanSettingsBody): Promise<Result<PlanSettings>> {
+  const target = route('/v1/workspaces/{tenant_id}/plan-settings', { tenant_id: tenantId })
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return asPlanSettings(await write(target, 'PUT', body), target.template)
 }
 
 /** `GET /v1/schedule-types`: the types this caller may create, with their gates. */
