@@ -105,17 +105,6 @@ export type ProseState = StateCommon &
  * register them. It only shrinks; the last step deletes it.
  */
 export const PENDING: readonly string[] = [
-  // config
-  'ConfigSetup.tsx',
-  'GitTokens.tsx',
-  'NewWorkspace.tsx',
-  'Onboarding.tsx',
-  'PluginDetail.tsx',
-  'PluginSheet.tsx',
-  'RepoGraphCache.tsx',
-  'WorkspacePage.tsx',
-  'WorkspaceSecrets.tsx',
-  'consolefinish/ChecklistFinish.tsx',
   // admin (Admin and Voice it)
   'AdminSchedules.tsx',
   'AdminSettings.tsx',

@@ -16,7 +16,7 @@ import { screenLoaded } from './screenLoaded'
 import { mountApproval, mountDeleteRefused, mountFailures, mountInterviewDesign, mountMergeSwitch, mountRunningMore } from './prosestates.overview.mounts'
 
 /** Wait for `selector` to be drawn by the page's later reads; throws when it never is. */
-async function drawn(selector: string): Promise<HTMLElement> {
+export async function drawn(selector: string): Promise<HTMLElement> {
   for (let i = 0; i < 20; i++) {
     const el = document.querySelector<HTMLElement>(selector)
     if (el !== null) return el
@@ -27,14 +27,14 @@ async function drawn(selector: string): Promise<HTMLElement> {
 }
 
 /** Click `selector` once drawn, then let what it opens draw. */
-async function clickDrawn(selector: string): Promise<void> {
+export async function clickDrawn(selector: string): Promise<void> {
   fireEvent.click(await drawn(selector))
   await screenLoaded()
   await settle()
 }
 
 /** Click the button under `scope` whose whole text starts with `text`. */
-async function press(scope: string, text: string): Promise<void> {
+export async function press(scope: string, text: string): Promise<void> {
   await drawn(scope)
   const b = [...document.querySelectorAll<HTMLElement>(`${scope} button, ${scope} a`)].find((x) => (x.textContent ?? '').trim().startsWith(text))
   if (b === undefined) throw new Error(`no button "${text}" under ${scope}`)
@@ -44,7 +44,7 @@ async function press(scope: string, text: string): Promise<void> {
 }
 
 /** Open a fold under `scope` once drawn. */
-async function foldDrawn(scope: string, text: string): Promise<void> {
+export async function foldDrawn(scope: string, text: string): Promise<void> {
   await drawn(scope)
   fold(scope, text)
   await settle()
@@ -63,7 +63,7 @@ async function typeIn(text: string): Promise<void> {
 }
 
 /** Hover and focus the first tip host under `scope`. */
-async function hover(scope: string): Promise<void> {
+export async function hover(scope: string): Promise<void> {
   const host = await drawn(`${scope} .c-tip-host`)
   fireEvent.mouseEnter(host)
   fireEvent.focus(host)
