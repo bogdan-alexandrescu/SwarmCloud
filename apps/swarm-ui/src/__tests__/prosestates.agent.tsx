@@ -315,6 +315,11 @@ export const AGENT: readonly ProseState[] = [
     group: 'agent',
     files: ['LiveBrowser.tsx'],
     shows: '.live-ask[role="dialog"]',
+    lines: ['Every member watching sees the page'],
+    moved: [
+      'The agent waits while you are in control, and every member watching sees the page; password fields are painted over.',
+      'Where the page wants an account, use one made for this agent where you can, not your own.',
+    ],
     walk: { open: `${BROWSER}/browser`, then: () => clickText('.live-control button', 'Take control') },
   },
   {
@@ -322,6 +327,12 @@ export const AGENT: readonly ProseState[] = [
     group: 'agent',
     files: ['LiveBrowser.tsx'],
     shows: '.live-ask.is-members',
+    lines: ['Stays on for later attempts'],
+    moved: [
+      'While the agent asks for help, any member of this workspace can take control of its browser, not only you.',
+      "This stays on for this agent's later attempts too, until you turn it off here.",
+      'Every take is in the audit, and you can still take control from them.',
+    ],
     walk: { open: `${BROWSER}/browser`, then: () => click('.live-open input[type="checkbox"]') },
   },
 ]

@@ -17,6 +17,7 @@ import {
 } from 'react'
 
 import { AgentLogs } from './AgentLogs'
+import { InfoTip } from './InfoTip'
 import {
   closeLiveToMembers,
   loadLiveSession,
@@ -740,9 +741,13 @@ export function LiveControl({
             </p>
           )}
           <h4>Take control of the agent’s browser?</h4>
+          {/* One must-stay line; the sentences are its (i)'s tip, word for word (issue 439). */}
           <p>
-            The agent waits while you are in control, and every member watching sees the page; password fields are
-            painted over. Where the page wants an account, use one made for this agent where you can, not your own.
+            Every member watching sees the page{' '}
+            <InfoTip
+              about="taking control"
+              tip="The agent waits while you are in control, and every member watching sees the page; password fields are painted over. Where the page wants an account, use one made for this agent where you can, not your own."
+            />
           </p>
           {verdict.tone === 'warn' && <p className="live-ask-warn">{verdict.say}</p>}
           <span className="live-ask-actions">
@@ -1548,10 +1553,13 @@ function MemberControl({ taskId, session, reload }: { taskId: string; session: L
       {asking && (
         <div ref={dialog.ref} className="live-ask is-members" role="dialog" aria-modal="true" aria-label="Let any member take control">
           <h4>Let any member take control?</h4>
+          {/* One must-stay line; the sentences are its (i)'s tip, word for word (issue 439). */}
           <p>
-            While the agent asks for help, any member of this workspace can take control of its browser, not only you.
-            This stays on for this agent&apos;s later attempts too, until you turn it off here. Every take is in the
-            audit, and you can still take control from them.
+            Stays on for later attempts{' '}
+            <InfoTip
+              about="letting any member take control"
+              tip="While the agent asks for help, any member of this workspace can take control of its browser, not only you. This stays on for this agent's later attempts too, until you turn it off here. Every take is in the audit, and you can still take control from them."
+            />
           </p>
           <span className="live-ask-actions">
             <Button kind="primary" onClick={() => send(true)}>
