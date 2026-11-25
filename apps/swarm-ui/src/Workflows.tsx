@@ -7253,12 +7253,17 @@ function WorkflowOverview({
       </dl>
       <details className="wfp-details">
         <summary>Policy</summary>
+        {/* ONE SHORT LINE (issue 439): the policy in full is behind the (i), word for word. */}
         <p>
-          A step runs once every step it depends on is done.{' '}
-          {keepGoing
-            ? 'A failed step does not stop the others; the steps that depend on it wait on it.'
-            : 'A failed step stops the workflow: no step after it starts.'}{' '}
-          This is what the workflow was submitted with: configuration, not an outcome.
+          Configuration, not an outcome{' '}
+          <InfoTip
+            about="the policy"
+            tip={`A step runs once every step it depends on is done. ${
+              keepGoing
+                ? 'A failed step does not stop the others; the steps that depend on it wait on it.'
+                : 'A failed step stops the workflow: no step after it starts.'
+            } This is what the workflow was submitted with: configuration, not an outcome.`}
+          />
         </p>
       </details>
       <details className="wfp-details">

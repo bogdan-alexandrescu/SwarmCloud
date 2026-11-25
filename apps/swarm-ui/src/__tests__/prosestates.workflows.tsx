@@ -28,6 +28,8 @@ import { screenLoaded } from './screenLoaded'
 
 /** The fixture workflow of five checks and a synthesis, one failed. */
 const CHECKS = '/workflows/wf_5e5ad3b6f7da4299a839'
+/** The running audit workflow: a step runs, one is parked. */
+const AUDIT = '/workflows/wf_audit_01'
 /** The finished workflow with a question nobody answered. */
 const QUIET = '/workflows/wf_quiet_q_01'
 /** The planned issue run waiting on a decision. */
@@ -53,6 +55,11 @@ function openDetails(selector: string): void {
   if (d === null) throw new Error(`no fold ${selector}`)
   d.open = true
   fireEvent(d, new Event('toggle'))
+}
+
+/** Pick the board's step drawn in `state` (its chip's `is-<state>` class). */
+function pickStep(state: string): void {
+  click(`button[data-step].is-${state}`)
 }
 
 export const WORKFLOWS: readonly ProseState[] = [
@@ -154,6 +161,103 @@ export const WORKFLOWS: readonly ProseState[] = [
     shows: '.rn-decided',
     moved: ['The run is Running now, with its workflow created.'],
     walk: { open: PLANNED, then: () => clickText('.rn-actions button', 'Approve and run') },
+  },
+  {
+    key: 'workflow/step-picked',
+    group: 'workflows',
+    files: ['StepCard.tsx', 'Workflows.tsx', 'WorkflowViews.tsx'],
+    shows: '.sc-card',
+    walk: { open: AUDIT, then: () => pickStep('running') },
+  },
+  {
+    key: 'workflow/step-failed',
+    group: 'workflows',
+    files: ['StepCard.tsx', 'Workflows.tsx'],
+    shows: '.sc-card',
+    walk: { open: CHECKS, then: () => pickStep('failed') },
+  },
+  {
+    key: 'workflow/step-retry',
+    group: 'workflows',
+    // The confirm is work/NeedsYou.tsx's StepRetryButton, cleared here; that file's own states are the work step's (PENDING).
+    files: ['StepCard.tsx', 'Workflows.tsx'],
+    shows: '.sc-card [role="group"][aria-label^="Re-run step"]',
+    moved: ['Re-run step checkpoints inside its workflow, with the steps its failure stopped?'],
+    walk: {
+      open: CHECKS,
+      then: async () => {
+        pickStep('failed')
+        await drawn()
+        clickText('.sc-card button', 'Retry')
+      },
+    },
+  },
+  {
+    key: 'workflow/step-stop',
+    group: 'workflows',
+    files: ['StepCard.tsx', 'Workflows.tsx'],
+    shows: '.stop-confirm',
+    walk: {
+      open: AUDIT,
+      then: async () => {
+        pickStep('running')
+        await drawn()
+        clickText('.sc-card button', 'Stop')
+      },
+    },
+  },
+  {
+    key: 'workflow/overview',
+    group: 'workflows',
+    files: ['Workflows.tsx', 'work/Inspector.tsx'],
+    shows: '.wi-dock',
+    lines: ['Configuration, not an outcome'],
+    moved: ['A step runs once every step it depends on is done. A failed step stops the workflow: no step after it starts. This is what the workflow was submitted with: configuration, not an outcome.'],
+    walk: { open: AUDIT, then: () => click('.wi-unfold') },
+  },
+  {
+    key: 'workflow/policy',
+    group: 'workflows',
+    files: ['Workflows.tsx'],
+    shows: 'details.wfp-details[open]',
+    lines: ['Configuration, not an outcome'],
+    moved: ['A step runs once every step it depends on is done. A failed step stops the workflow: no step after it starts. This is what the workflow was submitted with: configuration, not an outcome.'],
+    walk: {
+      open: AUDIT,
+      then: async () => {
+        click('.wi-unfold')
+        await drawn()
+        fold('.wi-dock', 'Policy')
+      },
+    },
+  },
+  {
+    key: 'workflow/id-and-reads',
+    group: 'workflows',
+    files: ['Workflows.tsx'],
+    shows: 'details.wfp-details[open]',
+    walk: {
+      open: AUDIT,
+      then: async () => {
+        click('.wi-unfold')
+        await drawn()
+        fold('.wi-dock', 'Workflow id and reads')
+      },
+    },
+  },
+  {
+    key: 'workflow/stop-running',
+    group: 'workflows',
+    files: ['Workflows.tsx'],
+    shows: '[role="dialog"][aria-modal="true"]:not(.wi-dock)',
+    walk: {
+      open: AUDIT,
+      then: async () => {
+        click('.wi-unfold')
+        await drawn()
+        clickText('.wfp-actions button', 'Stop workflow')
+      },
+    },
   },
   // ------------------------------------------------------------ mounted
   {

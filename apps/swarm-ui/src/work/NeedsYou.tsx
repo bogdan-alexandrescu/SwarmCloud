@@ -80,6 +80,7 @@ import {
 import { Button, buttonClass } from '../components'
 import { errorHeading, type ApiError } from '../fetch'
 import { handoffOf, humanReady, ownerQuestionsHold, timeLeft, type HeldQuestion } from '../Handoff'
+import { InfoTip } from '../InfoTip'
 import { interviewAddress } from '../interviewPaths'
 import { addressToPath } from '../paths'
 import { useRoleGate } from '../roleGate'
@@ -747,7 +748,10 @@ export function StepRetryButton({
   if (asking) {
     return (
       <span role="group" aria-label={`Re-run step ${stepId}?`}>
-        <span>Re-run step {stepId} inside its workflow, with the steps its failure stopped?</span>
+        {/* THE QUESTION IS SHORT (issue 439): what a re-run takes with it is behind the (i), word for word. */}
+        <span>
+          Re-run {stepId}? <InfoTip about="re-running" tip={`Re-run step ${stepId} inside its workflow, with the steps its failure stopped?`} />
+        </span>
         <Button size="sm" kind="primary" busy={busy} aria-label={`Re-run ${stepId}`} onClick={() => void send()}>
           Re-run
         </Button>
