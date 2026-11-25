@@ -1,3 +1,4 @@
+# source-text: forbidden-pattern - asserts the wrong-project predicate is not restated in destroy-guard.jq or planguard.py
 """The install engine refuses a plan that names another project (issue 344, gap 1).
 
 The rule is the operator scripts' own: `scripts/lib/wrong-project.jq`, which
