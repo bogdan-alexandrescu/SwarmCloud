@@ -94,6 +94,33 @@ Approve button when a poll brings a newer one.
 An edit goes through the same validator (`PlanSpec`) as the planner's own
 `plan.json`. An extra key is refused naming it, not dropped.
 
+## Diagrams in a plan are text, checked where they are stored
+
+With the diagram setting on (the platform's, the workspace's or the schedule's:
+the narrowest that is set), a plan carries `diagrams` or a one-line
+`no_diagram`, never both and never neither; off, it carries neither, and the
+planner's prompt says nothing of them. A run records the setting it planned
+under (`plan_settings`) and keeps it, so a later change does not make an
+earlier plan invalid. Both fields are inside the plan's digest: an approved
+plan's pictures are the ones approved.
+
+A diagram is Mermaid **text** the console later draws, so it is untrusted.
+`issueruns.check_diagram_source` refuses directives, clicks, links, HTML,
+scripts, includes and styling, naming the line, on every path that stores one:
+the planner's plan, a re-plan's, an edit, an on-demand answer and
+`plan:add-diagram`. It is not a Mermaid parser; the console parses and
+sanitises again when it draws.
+
+`POST /v1/runs/{id}/plan:diagram` asks one review agent, in the run's tenant
+and as the asker, to draw a part of the plan. Its answer fills a thread entry
+and never touches the plan. `POST /v1/runs/{id}/plan:add-diagram` puts a drawn
+one in the plan, and is an edit: the digest it replaces, revision N+1, no agent.
+The design is [plans-pipeline.md](design/plans-pipeline.md) §6. Its new
+refusals (`diagrams_off`, `diagram_cap`, `diagram_running`, `diagrams_cap`)
+ship switched off, as every new refusal does, until the decision page offers
+what they name; the source check, the cap of four, the role floor and the
+digest are not switched.
+
 ## The plan is data (invariant 10)
 
 The issue text, the plan, the open-work snapshot and the CI excerpt are all
