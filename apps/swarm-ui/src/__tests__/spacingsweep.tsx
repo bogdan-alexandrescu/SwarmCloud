@@ -592,7 +592,7 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
   // page's tab since the admin routes lane, part of archived issue 2688). Workspace setup
   // (Work › Setup until then) is a part of Workspace Settings with no tab of
   // its own, so no slice reaches it.
-  { name: 'setup', routes: ['config/github', 'config/repositories', 'automate/schedules', 'automate/approvals', 'automate/pipeline'], floor: 90 },
+  { name: 'setup', routes: ['config/github', 'config/repositories', 'automate/schedules', 'automate/approvals', 'automate/pipeline', 'automate/settings'], floor: 90 },
   // THE SECRETS PAGE'S (i)s (no-prose rule, 5 November 2026; part of archived issue 2688).
   // Config › Secrets moved its explanations behind Profile's `AboutTip`, a
   // `.ctl-q-glyph` 20px disc in the card heads' action row and beside the
