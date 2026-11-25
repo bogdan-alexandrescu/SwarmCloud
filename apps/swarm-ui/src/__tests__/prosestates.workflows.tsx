@@ -260,6 +260,24 @@ export const WORKFLOWS: readonly ProseState[] = [
       },
     },
   },
+  {
+    key: 'workflow/changes-step',
+    group: 'workflows',
+    files: ['WorkflowChanges.tsx'],
+    shows: '.chg-mx:has(.chg-mx-chip.mono[aria-pressed="true"])',
+    lines: ['Only the files of scan-terraform'],
+    moved: ['Only the files of scan-terraform, one column of this page; All steps shows every column. A step’s whole patch, to read or download, is its agent’s own Changes tab: Agent’s changes ›.'],
+    walk: { open: `${AUDIT}/changes`, then: () => clickText('.chg-mx-chip.mono', 'scan-terraform') },
+  },
+  {
+    key: 'workflow/changes-unstarted',
+    group: 'workflows',
+    files: ['WorkflowChanges.tsx'],
+    shows: '.chg-mx:has(.chg-mx-chip.mono[aria-pressed="true"])',
+    lines: ['Only the files of publish'],
+    moved: ['Only the files of publish, one column of this page; All steps shows every column. A step’s whole patch, to read or download, is its agent’s own Changes tab: Agent’s changes ›.'],
+    walk: { open: `${AUDIT}/changes`, then: () => clickText('.chg-mx-chip.mono', 'publish') },
+  },
   // ------------------------------------------------------------ mounted
   {
     key: 'step/details',

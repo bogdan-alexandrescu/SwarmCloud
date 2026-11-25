@@ -28,6 +28,7 @@ import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
 import type { CascadeEnv } from './cssgate'
 import { build, painted } from './marks'
 import { attempt } from './runfixture'
+import { helpIn } from './proseruns'
 import { ownFromBoard } from './workflowsById'
 
 const api = vi.hoisted(() => ({
@@ -338,9 +339,11 @@ describe('WG-7: each Changes scope says what it covers', () => {
     changes(null)
     const note = await screen.findByRole('note', { name: 'What this page shows' })
     // MUTATION: drop the scope note from `ChangesMatrix`.
-    expect(note.textContent).toMatch(/every step’s files, side by side/i)
-    expect(note.textContent).toMatch(/Agent’s changes ›/)
-    expect(note.textContent).toMatch(/whole patch/)
+    // Behind the note's (i), word for word (issue 439); the note keeps its scope as a label.
+    expect(helpIn(note)).toMatch(/every step’s files, side by side/i)
+    expect(helpIn(note)).toMatch(/Agent’s changes ›/)
+    expect(helpIn(note)).toMatch(/whole patch/)
+    expect(note.textContent).toMatch(/^Every step’s files/)
   })
 
   it('says a filtered page shows one step, and how to see them all', async () => {

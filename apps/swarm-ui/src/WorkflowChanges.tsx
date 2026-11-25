@@ -29,6 +29,7 @@ import {
 import { stateWord } from './words'
 import { SEVERITY_LABEL, placeFinding, reviewFindings, withVerdictTriage, type Placement, type ReviewFinding, type ShownPatch } from './wfreview'
 import { TriageChip, useVerdictTriages } from './DecisionCard'
+import { InfoTip } from './InfoTip'
 import './styles/changes.css'
 
 /**
@@ -1136,10 +1137,16 @@ export function ChangesMatrix({
           scopes with one word between them. */}
       {cols.length > 0 && (
         <p className="chg-scope" role="note" aria-label="What this page shows">
-          {filterAt === -1
-            ? 'Every step’s files, side by side: a column per step, its +/− on each file. '
-            : `Only the files of ${cols[filterAt]!.label}, one column of this page; All steps shows every column. `}
-          A step’s whole patch, to read or download, is its agent’s own Changes tab: Agent’s changes ›.
+          {/* A SHORT LABEL (issue 439): the scope in full is behind the (i), word for word. */}
+          {filterAt === -1 ? 'Every step’s files' : `Only the files of ${cols[filterAt]!.label}`}{' '}
+          <InfoTip
+            about="what this page shows"
+            tip={`${
+              filterAt === -1
+                ? 'Every step’s files, side by side: a column per step, its +/− on each file. '
+                : `Only the files of ${cols[filterAt]!.label}, one column of this page; All steps shows every column. `
+            }A step’s whole patch, to read or download, is its agent’s own Changes tab: Agent’s changes ›.`}
+          />
         </p>
       )}
       {findings.length > 0 && (
@@ -1171,7 +1178,8 @@ export function ChangesMatrix({
                         dimmed ones included. */}
                     {c.taskId !== null && facts[i]!.kind !== 'not-started' && (
                       <a className="ctl-link chg-mx-agent" href={agentChangesHref(c.taskId, c.task ?? undefined)} title={`${c.label}'s own Changes tab, on its agent`}>
-                        Agent’s changes ›
+                        {/* NO ARROW (issue 439): an arrowed text link reads as an action; the link's name says where it goes. */}
+                        Agent’s changes
                       </a>
                     )}
                   </th>
