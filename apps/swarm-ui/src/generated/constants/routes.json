@@ -1207,11 +1207,19 @@
     },
     {
       "method": "POST",
+      "path": "/v1/runs/{run_id}/plan:add-diagram"
+    },
+    {
+      "method": "POST",
       "path": "/v1/runs/{run_id}/plan:approve"
     },
     {
       "method": "POST",
       "path": "/v1/runs/{run_id}/plan:comment"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/runs/{run_id}/plan:diagram"
     },
     {
       "method": "POST",
