@@ -1,4 +1,3 @@
-# source-text: contract - api.ts, types.ts, Accounts.tsx and Overview.tsx must read the served skipped-account verdict, a TypeScript shape the Python suite cannot run
 """The account listing must not describe a pool that is not there.
 
 THE COMPLAINT THIS ANSWERS: "account quotas are not even accurate in the UI."
@@ -30,16 +29,18 @@ confident percentages computed over the wrong set of accounts.
      through it.
 
 Nothing here needs a credential, a network or an emulator: the store runs
-against the fake Firestore, the broker routes run under TestClient, and the
-browser's half is read as text the way `test_blocker_ui_surface.py` and
-`test_runtimes_screen.py` read theirs -- a mock of the UI would agree with
-whatever the UI happens to do.
+against the fake Firestore, the broker routes run under TestClient.
+
+THE BROWSER'S HALF (part of #72) is no longer read here as text: the listing's
+shape is generated (`wire_types.AccountsPage`, held to what this route serves
+by `test_wire_types.py`), `unreadableFor` asking the verdict is a behaviour
+test in the console's `contract.shapes.test.ts`, and the screen and fixture
+checks are in its `screens.source.test.ts`.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -51,8 +52,6 @@ from quota_broker.main import account_to_api, create_app
 ENG = "eng"
 RESEARCH = "research"
 
-ROOT = Path(__file__).resolve().parents[3]
-UI = ROOT / "apps/swarm-ui/src"
 
 
 class _Identity:
@@ -377,64 +376,3 @@ def test_an_older_broker_that_serves_only_the_ids_is_not_read_as_healthy(api_con
     body = client.get("/v1/accounts", headers=auth_header("alice")).json()
 
     assert body["unreadable_document_count"] == 2
-
-
-# --------------------------------------------------------------------------
-# 4. The browser reads both, and reads the verdict rather than the record
-# --------------------------------------------------------------------------
-
-pytestmark_ui = pytest.mark.skipif(
-    not UI.is_dir(), reason="apps/swarm-ui is not checked out"
-)
-
-
-def src(name: str) -> str:
-    return (UI / name).read_text()
-
-
-@pytestmark_ui
-def test_the_shared_rule_asks_the_verdict_and_not_the_record():
-    """One definition, in `types.ts`, and it reads `unreadable_now`.
-
-    A helper that reached for `unreadable_by` would be the TypeScript
-    restatement trap the repository keeps paying for: the browser cannot apply
-    a thirty-minute rule to a list with no timestamps in it, so it would mark a
-    working account as broken for as long as the record survives.
-    """
-    text = src("types.ts")
-    start = text.index("export function unreadableFor(")
-    body = text[start : text.index("\n}\n", start)]
-
-    assert "unreadable_now" in body
-    assert "unreadable_by" not in body
-
-
-@pytestmark_ui
-def test_the_accounts_screen_marks_a_row_the_pool_is_skipping():
-    text = src("Accounts.tsx")
-    assert "unreadableFor(" in text, "the row must ask whether the pool is skipping it"
-    assert "neverAssigned(" in text, "never assigned is not recently assigned"
-    assert "unreadable_document_count" in text, "the shortfall has to reach the reader"
-
-
-@pytestmark_ui
-def test_the_overview_headroom_excludes_an_account_the_pool_is_skipping():
-    """The tile answers "can anything run?". An account this tenant cannot read
-    has all the headroom in the world and cannot run anything, and it is
-    usually the emptiest one precisely because nothing is spending it."""
-    text = src("Overview.tsx")
-    start = text.index("function accountHeadroom(")
-    body = text[start : text.index("\n}\n", start)]
-
-    assert "unreadableFor(" in body
-
-
-@pytestmark_ui
-def test_the_dev_fixture_carries_what_the_route_serves():
-    """A fixture that omits a field is development done against a shape the API
-    never sends -- the same demand `test_runtimes_screen.py` makes of its own.
-    """
-    text = src("api.ts")
-    assert "unreadable_now:" in text
-    assert "unreadable_document_count:" in text
-    assert "last_assigned_at:" in text

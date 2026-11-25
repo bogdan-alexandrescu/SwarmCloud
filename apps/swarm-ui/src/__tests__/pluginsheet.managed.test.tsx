@@ -14,14 +14,13 @@
 // override in `plugins`; send an override for a secret; name a field the
 // server's step schema does not declare.
 
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 import type { Result } from '../fetch'
 import type { Capacity, ManagedPluginInstall, PluginConfigView, PluginFormField } from '../types'
+import server from '../generated/constants/server.json'
 
 const mocks = vi.hoisted(() => ({
   loadCapacity: vi.fn(),
@@ -101,15 +100,9 @@ function form(installId: string): PluginConfigView {
   }
 }
 
-/** The field names a Pydantic class in swarm_api/schemas.py declares, read from its source. */
-function serverFields(cls: string): string[] {
-  const src = readFileSync(resolve(__dirname, '../../../swarm-api/swarm_api/schemas.py'), 'utf8')
-  const start = src.indexOf(`class ${cls}(`)
-  if (start === -1) throw new Error(`schemas.py declares no ${cls}`)
-  const rest = src.slice(start).split('\n').slice(1)
-  const end = rest.findIndex((line) => /^\S/.test(line))
-  const body = rest.slice(0, end === -1 ? undefined : end)
-  return body.map((line) => /^ {4}([a-z_][a-z0-9_]*)\s*:/.exec(line)?.[1]).filter((n): n is string => n !== undefined)
+/** The field names a Pydantic class in swarm_api/schemas.py declares (`model_fields`), from the generated server.json. */
+function serverFields(cls: keyof typeof server.schema_fields): string[] {
+  return server.schema_fields[cls]
 }
 
 describe("the step's managed plugins as merge_step_plugins reads them", () => {
