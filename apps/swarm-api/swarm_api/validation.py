@@ -2598,7 +2598,17 @@ class DispatchOptions:
             block[FIX_LOOP_FIELD] = json.loads(json.dumps(self.fix_loop))
         # Absent on every task but a fix loop's round (FL-DRIVE).
         if self.fix_loop_round is not None:
-            block[FIX_LOOP_ROUND_FIELD] = json.loads(json.dumps(self.fix_loop_round))
+            record = json.loads(json.dumps(self.fix_loop_round))
+            block[FIX_LOOP_ROUND_FIELD] = record
+            # The worker's rendered-review gate reads the lane's paths at the
+            # top of the block (`agent_worker.verdict.ui_paths_in_dispatch`),
+            # not inside the record: signed in the record alone, the gate
+            # bound no re-review (issue 393). A value that is not a list is
+            # the worker's "could not be told", which it gates.
+            if record.get(RENDERED_REVIEW_UNKNOWN_KEY):
+                block[RENDERED_REVIEW_PATHS_KEY] = None
+            elif RENDERED_REVIEW_PATHS_KEY in record:
+                block[RENDERED_REVIEW_PATHS_KEY] = record[RENDERED_REVIEW_PATHS_KEY]
         # Absent unless the spec named a pull request (archived issue 2183), so every other
         # dispatch stores exactly the block it stored before. The worker
         # spells the key `agent_worker.publishpr.FIELD`.
@@ -5284,6 +5294,11 @@ FIX_LOOP_FIELD = "fix_loop"
 #: A fix loop round's signed record in its `metadata.dispatch` (FL-DRIVE, §4.3),
 #: and the unsigned copy beside it in `metadata` that `cifix.ROUND_KINDS` reads.
 FIX_LOOP_ROUND_FIELD = "fix_loop_round"
+#: In a re-review's record: the lane's changed paths, which the worker's
+#: rendered-review gate reads (`agent_worker.verdict.RENDERED_REVIEW_PATHS_KEY`),
+#: and the mark of a list that cannot say, which is gated naming no path.
+RENDERED_REVIEW_PATHS_KEY = "rendered_review_paths"
+RENDERED_REVIEW_UNKNOWN_KEY = "rendered_review_unknown"
 #: `fix_loop.max_rounds`: the fix agents the loop's workflow may run in all,
 #: the declared `fix` counted as round 1. 1-5 and 3 when absent (the owner Q5 (a)):
 #: the same range and default as `MERGE_FIX_ROUNDS_MAX` and an issue run's

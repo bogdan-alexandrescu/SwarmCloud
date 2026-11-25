@@ -331,7 +331,9 @@ def test_under_integrate_the_first_action_is_re_review_1_at_the_fixs_head(
     # The §10 measurement: a collect step at the full 40-hex head is accepted.
     assert review["repository_ref"] == FIX_HEAD
     assert review["metadata"]["dispatch"]["strategy"] == "collect"
-    assert review["runner_profile"] == "mock"
+    # The lane changed a UI path, so the re-review runs where it can render
+    # (issue 393), whatever profile the first review ran on.
+    assert review["runner_profile"] == "claude-code-browser"
     assert review["submitted_by"] == "alice@example.com"
     signed = review["metadata"]["dispatch"]["fix_loop_round"]
     assert signed["loop_task"] == loop.loop and signed["round"] == 1
