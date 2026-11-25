@@ -55,7 +55,8 @@ function run(extra: Record<string, unknown> = {}) {
 /** What the page POSTed: each write's path and body. */
 type Sent = { url: string; body: Record<string, unknown> }
 
-async function mount(served: unknown, sent: Sent[] = [], ready = '.rn-steps') {
+// A PLANNED run's plan is a summary (owner's pick on PR 464): ready once it draws.
+async function mount(served: unknown, sent: Sent[] = [], ready = '[data-testid="rn-plan-summary"]') {
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     if (init?.method === 'POST') {
@@ -79,7 +80,7 @@ afterEach(() => {
 })
 
 describe("a held run's plan lint findings", () => {
-  it('lists each finding, code and sentence, in the plan above the steps', async () => {
+  it('lists each finding, code and sentence, in the plan above its summary', async () => {
     const page = await mount(run({ plan_lint: lint() }))
     const block = page.querySelector('.rn-plan .rn-lint')
     expect(block).not.toBeNull()
@@ -88,8 +89,8 @@ describe("a held run's plan lint findings", () => {
       'step_tests_missing Step api names no tests that prove it.',
       'requirement_uncovered No step delivers requirement 2.',
     ])
-    const steps = page.querySelector('.rn-steps')!
-    expect(block!.compareDocumentPosition(steps) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    const summary = page.querySelector('[data-testid="rn-plan-summary"]')!
+    expect(block!.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('adds no visible explanatory sentence: the hold is explained behind a tooltip', async () => {

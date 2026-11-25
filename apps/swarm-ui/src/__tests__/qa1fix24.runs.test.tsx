@@ -2,10 +2,10 @@
 // owner, 2026-10-28). One case per finding this lane changed, each red on main
 // before the change:
 //
-//   runs-submit-03  a decision shows its outcome where it was taken, and a
-//                   later read that still serves the run as Planned does not
-//                   draw the undecided run back; a refusal is drawn beside the
-//                   buttons pressed;
+//   runs-submit-03  a decision shows its outcome where it was taken (a held
+//                   run with no plan, the one run this page still decides:
+//                   a PLANNED run with a plan is a summary linking to its
+//                   decision page, owner's pick on PR 464);
 //   runs-submit-06  Progress says when the record stops short of the state;
 //   runs-submit-08  the reject form and the plan editor take the focus, and
 //                   Escape closes the form and gives the focus back to Reject;
@@ -19,7 +19,7 @@
 //   chrome-C14      the issue's state says it was read at submission.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { FULL_PLAN, digest, issueRun } from './runfixture'
 
 const WAIT = { timeout: 4000 }
@@ -48,16 +48,24 @@ async function mount(view: string | null) {
   return render(<RunsScreen view={view} go={vi.fn()} />)
 }
 
-async function advance(ms: number): Promise<void> {
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(ms)
-  })
-}
-
 afterEach(() => {
   vi.unstubAllEnvs()
   vi.useRealTimers()
 })
+
+/**
+ * A RUN HELD WITH NO PLAN: the one PLANNED run this page still offers Edit and
+ * Reject for (a run with a plan is decided on its decision page).
+ */
+const PLANLESS = {
+  plan: null, plan_digest: null,
+  plan_lint: { replans: 1, held: true, replan_error: null, planner_task_ids: ['task_planner0001'],
+    findings: [{ code: 'plan_invalid', step: null, requirement: null, message: 'plan.json is not JSON.' }],
+    replan_findings: [] },
+}
+const planless = () => run(PLANLESS)
+/** A run past PLANNED and never approved draws the whole plan, unfolded. */
+const WHOLE = { state: 'REJECTED', terminal: true, rejected_by: 'operator@example.com' }
 
 const RUNNING = {
   state: 'RUNNING', workflow_id: 'wf_new', approved_by: 'operator@example.com', approved_at: '2026-10-02T14:20:00Z',
@@ -65,41 +73,20 @@ const RUNNING = {
 }
 
 describe('runs-submit-03: a decision shows its outcome where it was taken', () => {
-  it('after Approve and run the page says Approved, offers no buttons, and a later read of the run as Planned does not undo it', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
-    let reads = 0
-    serve((m, url) => {
-      if (url === '/v1/runs/run_4c1e09d2' && m === 'GET') {
-        reads += 1
-        return { status: 200, body: { run: run() } }
-      }
-      if (url.endsWith('plan:approve')) return { status: 200, body: { run: run(RUNNING) } }
-      return null
-    })
+  it('a PLANNED run with a plan offers no decision here: its summary links to the decision page', async () => {
+    serve((m, url) => (url === '/v1/runs/run_4c1e09d2' && m === 'GET' ? { status: 200, body: { run: run() } } : null))
     const { container } = await mount('run=run_4c1e09d2')
-    const { RUN_POLL_MS } = await import('../Runs')
-    await advance(0)
-    fireEvent.click(screen.getAllByRole('button', { name: 'Approve and run' })[0]!)
-    await advance(0)
-    // MUTATION: drop `answer('top')` and nothing beside the decision says what it did.
-    expect(visible(container.querySelector('.rn-decided'))).toContain('Approved.')
-    expect(visible(container.querySelector('.rn-decided'))).toContain('Running')
-    // The poll serves the run still Planned on the plan just approved: an
-    // answer older than the decision.
-    await advance(RUN_POLL_MS)
-    expect(reads).toBe(2)
-    // MUTATION: drop the `decidedRef` check in the served effect and the
-    // page reads "Planned · Waiting for a person" with the buttons again.
-    expect(visible(container.querySelector('.rn-state'))).toContain('Running')
-    expect(screen.queryAllByRole('button', { name: 'Approve and run' })).toHaveLength(0)
-    expect(container.querySelector('.rn-decided')).not.toBeNull()
+    await waitFor(() => expect(container.querySelector('[data-testid="rn-plan-summary"]')).not.toBeNull(), WAIT)
+    expect(container.querySelector('.rn-step')).toBeNull()
+    for (const name of ['Approve and run', 'Edit plan', 'Reject']) expect(screen.queryByRole('button', { name })).toBeNull()
+    expect(screen.getAllByTestId('rn-decide').length).toBeGreaterThan(0)
   })
 
   it('after Reject this plan the page says Rejected where the form was', async () => {
     serve((m, url) => {
-      if (url === '/v1/runs/run_4c1e09d2' && m === 'GET') return { status: 200, body: { run: run() } }
+      if (url === '/v1/runs/run_4c1e09d2' && m === 'GET') return { status: 200, body: { run: planless() } }
       if (url.endsWith('plan:reject')) {
-        return { status: 200, body: { run: run({ state: 'REJECTED', terminal: true, rejected_by: 'operator@example.com' }) } }
+        return { status: 200, body: { run: run({ ...PLANLESS, state: 'REJECTED', terminal: true, rejected_by: 'operator@example.com' }) } }
       }
       return null
     })
@@ -109,18 +96,6 @@ describe('runs-submit-03: a decision shows its outcome where it was taken', () =
     // MUTATION: drop `{!canAct && answer('top')}` and the decision says nothing where it was taken.
     await waitFor(() => expect(visible(container.querySelector('.rn-decided'))).toContain('Rejected.'), WAIT)
     expect(screen.queryAllByRole('button', { name: 'Reject' })).toHaveLength(0)
-  })
-
-  it('a refused approval is drawn beside the buttons pressed, not under the risks', async () => {
-    serve((m, url) => {
-      if (url === '/v1/runs/run_4c1e09d2' && m === 'GET') return { status: 200, body: { run: run() } }
-      if (url.endsWith('plan:approve')) return { status: 500, body: { code: 'internal', message: 'the store refused it' } }
-      return null
-    })
-    const { container } = await mount('run=run_4c1e09d2')
-    fireEvent.click((await screen.findAllByRole('button', { name: 'Approve and run' }, WAIT))[0]!)
-    // MUTATION: draw the FailedPanel at the foot of the page again and `.rn-wait` holds no refusal.
-    await waitFor(() => expect(visible(container.querySelector('.rn-wait .state.failed'))).toContain('the store refused it'), WAIT)
   })
 })
 
@@ -141,7 +116,7 @@ describe('runs-submit-06: Progress says when the record stops short of the state
 
 describe('runs-submit-08: the forms take the focus they open', () => {
   it('Reject focuses Why; Escape closes the form and gives the focus back to Reject', async () => {
-    serve((m, url) => (url === '/v1/runs/run_4c1e09d2' && m === 'GET' ? { status: 200, body: { run: run() } } : null))
+    serve((m, url) => (url === '/v1/runs/run_4c1e09d2' && m === 'GET' ? { status: 200, body: { run: planless() } } : null))
     const { container } = await mount('run=run_4c1e09d2')
     fireEvent.click((await screen.findAllByRole('button', { name: 'Reject' }, WAIT))[0]!)
     const why = container.querySelector<HTMLTextAreaElement>('.rn-reject textarea')!
@@ -151,11 +126,12 @@ describe('runs-submit-08: the forms take the focus they open', () => {
     // MUTATION: drop the form's onKeyDown and Escape leaves it open.
     expect(container.querySelector('.rn-reject')).toBeNull()
     // MUTATION: drop the refocus in `keep` and the focus falls to <body>.
-    await waitFor(() => expect(document.activeElement?.getAttribute('data-act')).toBe('reject-top'), WAIT)
+    // A held run with no plan has its actions at the plan's foot only.
+    await waitFor(() => expect(document.activeElement?.getAttribute('data-act')).toBe('reject-foot'), WAIT)
   })
 
   it('Edit plan focuses the Summary', async () => {
-    serve((m, url) => (url === '/v1/runs/run_4c1e09d2' && m === 'GET' ? { status: 200, body: { run: run() } } : null))
+    serve((m, url) => (url === '/v1/runs/run_4c1e09d2' && m === 'GET' ? { status: 200, body: { run: planless() } } : null))
     const { container } = await mount('run=run_4c1e09d2')
     fireEvent.click((await screen.findAllByRole('button', { name: 'Edit plan' }, WAIT))[0]!)
     // MUTATION: drop the editor's `first.current?.focus()` and the focus stays on <body>.
@@ -165,13 +141,17 @@ describe('runs-submit-08: the forms take the focus they open', () => {
 
 describe('runs-submit-09: a disabled Save names what blocks it', () => {
   it('the blank fields are marked and described, and Save says which', async () => {
-    serve((m, url) => (url === '/v1/runs/run_4c1e09d2' && m === 'GET' ? { status: 200, body: { run: run() } } : null))
+    serve((m, url) => (url === '/v1/runs/run_4c1e09d2' && m === 'GET' ? { status: 200, body: { run: planless() } } : null))
     const { container } = await mount('run=run_4c1e09d2')
     fireEvent.click((await screen.findAllByRole('button', { name: 'Edit plan' }, WAIT))[0]!)
+    // The editor opens on one empty step: type, then blank, the summary and the title.
     const summary = container.querySelector<HTMLTextAreaElement>('.rn-edit textarea')!
+    fireEvent.change(summary, { target: { value: 'x' } })
     fireEvent.change(summary, { target: { value: '' } })
     const title = container.querySelectorAll<HTMLInputElement>('.rn-field-set input')[0]!
     fireEvent.change(title, { target: { value: ' ' } })
+    // Its prompt is filled, so only the summary and the title block Save.
+    fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'Do it.' } })
     const save = screen.getByRole('button', { name: 'Save the plan' })
     expect(save).toHaveProperty('disabled', true)
     // MUTATION: go back to `disabled={busy || blank}` with no reason and Save is described by nothing.
@@ -189,7 +169,7 @@ describe('runs-submit-09: a disabled Save names what blocks it', () => {
 
 describe('runs-submit-28: the role once, and a sentence that reads', () => {
   it("a step titled with its id has no second id line, and the requirements sentence quotes 'part of #N'", async () => {
-    serve((m, url) => (url === '/v1/runs/run_4c1e09d2' && m === 'GET' ? { status: 200, body: { run: run() } } : null))
+    serve((m, url) => (url === '/v1/runs/run_4c1e09d2' && m === 'GET' ? { status: 200, body: { run: run(WHOLE) } } : null))
     const { container } = await mount('run=run_4c1e09d2')
     await waitFor(() => expect(container.querySelectorAll('.rn-step')).toHaveLength(2), WAIT)
     // MUTATION: draw `.rn-step-id` with the mono id again under "api: …".
@@ -200,7 +180,7 @@ describe('runs-submit-28: the role once, and a sentence that reads', () => {
 
   it('a step whose title does not name it keeps its id line', async () => {
     serve((m, url) => (url === '/v1/runs/run_4c1e09d2' && m === 'GET'
-      ? { status: 200, body: { run: run({ plan: { ...FULL_PLAN, steps: [{ step_id: 'ui', title: 'Draw the column', prompt: 'p' }] } }) } }
+      ? { status: 200, body: { run: run({ ...WHOLE, plan: { ...FULL_PLAN, steps: [{ step_id: 'ui', title: 'Draw the column', prompt: 'p' }] } }) } }
       : null))
     const { container } = await mount('run=run_4c1e09d2')
     await waitFor(() => expect(visible(container.querySelector('.rn-step .rn-step-id'))).toBe('ui'), WAIT)
@@ -209,7 +189,7 @@ describe('runs-submit-28: the role once, and a sentence that reads', () => {
 
 describe('runs-submit-29: the foot reject form opens in flow', () => {
   it('Reject in the sticky bar opens its form outside the bar', async () => {
-    serve((m, url) => (url === '/v1/runs/run_4c1e09d2' && m === 'GET' ? { status: 200, body: { run: run() } } : null))
+    serve((m, url) => (url === '/v1/runs/run_4c1e09d2' && m === 'GET' ? { status: 200, body: { run: planless() } } : null))
     const { container } = await mount('run=run_4c1e09d2')
     await waitFor(() => expect(container.querySelector('[data-act="reject-foot"]')).not.toBeNull(), WAIT)
     fireEvent.click(container.querySelector('[data-act="reject-foot"]')!)

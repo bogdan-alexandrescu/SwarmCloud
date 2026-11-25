@@ -32,6 +32,7 @@ import { InfoTip } from './InfoTip'
 import { PersonName } from './PersonName'
 import { FROZEN_AREA, Legend, PlanChangeMap, base, dir, type ChangeKind, type MapChange, type MapEdge, type MapNode } from './PlanChangeMap'
 import { useRoleGate } from './roleGate'
+import { usePlanEditorOpener } from './PlanEditor'
 import { PlanBar, PlanDocument, newerThan, shownRevision, useNewerRevision, type NewerRevision, type ShownRevision } from './PlanDocument'
 import { HeldButton, untilWords } from './Schedules'
 import { InApp } from './InApp'
@@ -989,7 +990,7 @@ function ContractStepBar({ d, go }: { d: Decision; go: (to: string) => void }) {
  * in place. Reject asks for its reason only once pressed (the cards mock-up):
  * the reason field, Reject and Cancel take the verbs' place.
  */
-function Decide({ d, onDecided, edit = null, digest, onReload }: { d: Decision; onDecided: (word: string) => void; edit?: { to: string; go: (to: string) => void } | null; digest?: string | null; onReload?: () => void }) {
+function Decide({ d, onDecided, edit = null, digest, onReload }: { d: Decision; onDecided: (word: string) => void; edit?: (() => void) | null; digest?: string | null; onReload?: () => void }) {
   const a = d.approval
   const now = useNow()
   const md = a.may_decide ?? null
@@ -1044,11 +1045,12 @@ function Decide({ d, onDecided, edit = null, digest, onReload }: { d: Decision; 
   const confirmOk = confirm === null || confirm.typed.trim() === confirm.expected
   // A merge names its head on the button: that head is what is approved.
   const head = a.kind === 'merge' ? mergeDigest(d).head : null
-  const approveWord = a.kind !== 'merge' ? 'Approve' : head === null ? 'Approve merge' : `Approve merge at ${short(head)}`
+  let approveWord = 'Approve'
+  if (a.kind === 'merge') approveWord = head === null ? 'Approve merge' : `Approve merge at ${short(head)}`
   const tip = [
     APPROVE_DOES[a.kind] ?? 'Approving lets this go ahead.',
     a.kind === 'merge' && head !== null ? `It merges ${short(head)} only: a new commit asks again.` : a.digest ? 'A plan or a firing changed since you read it is refused, never approved unread.' : '',
-    edit !== null ? 'Edit opens the run to change its plan.' : '',
+    edit !== null ? 'Edit opens the plan editor here, over the revision shown.' : '',
     offerReject ? 'Rejecting ends it, with the reason.' : '',
     md !== null && !md.approve && md.why ? md.why : '',
     expiryLine(a, now),
@@ -1093,10 +1095,9 @@ function Decide({ d, onDecided, edit = null, digest, onReload }: { d: Decision; 
             </Button>
           )}
           {edit !== null && (
-            // Edit opens the run's page, where its plan editor is (Runs.tsx's PlanEditor).
-            <InApp go={edit.go} to={edit.to} className="c-btn">
-              Edit
-            </InApp>
+            // Edit opens the plan editor in place, in the document above (PlanEditor.tsx's
+            // PlanEditorMount; owner's pick on PR 464), not the run's page.
+            <Button onClick={edit}>Edit</Button>
           )}
           <span className="apd-grow" />
           {head !== null && <span className="apd-dim apd-mono">head {short(head)}</span>}
@@ -1371,7 +1372,8 @@ function BriefHead({ d, b, kind, go, onDecided, shown, newer, onReload }: { d: D
   const tone = a.state === 'pending' ? 'is-warn' : a.state === 'approved' ? 'is-ok' : a.state === 'rejected' ? 'is-bad' : 'is-done'
   const issue = text(a.subject.issue)
   const issueUrl = issue === null ? null : refUrl(issue, 'issue')
-  const runId = text(a.subject.run_id) ?? text(d.run?.id)
+  // Edit opens the editor in the document below, over the revision the bar names; none when it offers none.
+  const edit = usePlanEditorOpener(shown.digest)
   const touches = b.frozen.length > 0 || (r?.level === 'high' && r.invariants.length > 0)
   return (
     <section className="ab-head" data-risk={r?.level ?? 'none'} aria-label="The plan in brief" data-testid="ab-head">
@@ -1458,7 +1460,7 @@ function BriefHead({ d, b, kind, go, onDecided, shown, newer, onReload }: { d: D
       {a.state === 'pending' ? (
         // The bar names the revision and digest Approve sends (plans-pipeline §2.3 D:P2a, D:P2c).
         <PlanBar shown={shown} newer={newer} onRead={onReload}>
-          <Decide d={d} onDecided={onDecided} edit={runId === null ? null : { to: runAddress(runId), go }} digest={shown.digest} onReload={onReload} />
+          <Decide d={d} onDecided={onDecided} edit={edit} digest={shown.digest} onReload={onReload} />
         </PlanBar>
       ) : (
         <Outcome d={d} kind={kind} go={go} />
