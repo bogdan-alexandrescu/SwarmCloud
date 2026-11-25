@@ -228,9 +228,11 @@ The optional step above runs after the fix, so a NOT_YET from it fed no fix
 step: twice in one week a person had to send a second fixer by hand. So an
 issue run whose approved plan names a file on a risk path -- the review
 gate's own list, `reviewgate.DEFAULT_RISK_PATHS`: the frozen contract,
-redaction, credentials, tenant isolation, access rights, the workflow files
--- compiles one review round that covers both lenses
-(`issueruns._with_security_lens`):
+redaction, credentials, tenant isolation, access rights, the workflow files,
+and the security checks' own switches (`.trivyignore*`, `trivy.y*ml`,
+`.gitleaks.toml`, `.gitleaksignore`, `.github/secret_scanning.yml`,
+`.github/codeql/`, `.checkov.y*ml`, `.semgrepignore`) -- compiles one review
+round that covers both lenses (`issueruns._with_security_lens`):
 
 * `security-lens` depends on the same build steps as `review` and runs
   beside it, on `claude-code` at the profile's default class (no class is
@@ -255,6 +257,18 @@ worker reads every staged verdict the gate names; the scheduler's shut-gate
 prediction and swarm-api's control-plane publish decide only a one-review
 gate and leave one with further reviews to the worker. A plan on no risk
 path compiles exactly as before.
+
+The security checks' switches joined the list after issue 430 (2026-11-25):
+a 27-line edit of `.trivyignore.yaml`, the image scan's accept list, was
+skipped by the review gate as a small change and labelled ready, though a
+file that switches a scan off or narrows it is exactly what a security
+reviewer must read, and such an edit is small by nature. Since then an issue
+run whose plan names one of these files compiles the security lens, and the
+merge backstop (`issueci._lacks_security_review`) holds a pull request whose
+real diff touches one with no lens and no security review step until a
+`merge` approval. The entries are anchored at the repository root, never
+`**/`: a plan entry with no extension or starting with `.` is read as a
+possible directory, and a `**` entry would make every such plan a hit.
 
 Cost: one extra agent step on a risk-path run (the lens), which replaces the
 second fixer a person had to send; a run on no risk path gets none.
