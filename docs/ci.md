@@ -4983,13 +4983,38 @@ identity token are held to the jobs that need them (and, in every workflow, the
 deployer trusts exactly the workflows that authenticate as it), that the repository's
 secrets sit behind their environment, that the tenant-isolation acceptance
 job runs, that the security scan gates on new findings, keeps no checkout
-credential and compares with the right base -- has no other place a pull
+credential and compares with the right base, that a lane push never releases,
+builds or plans; and, added the same day on the security review's
+recommendation, the hotfix lane's gates and the merge workflows' tests of who
+may merge or release, of least-privilege tokens and of attacker-controlled
+text reaching a shell only through `env` -- has no other place a pull
 request would see it broken. They are a short **named** list,
 `SECURITY_GUARDS` in `scripts/check_test_reads.py`, one clause per file saying
-which decision it holds; every other test is refused exactly as before. The
-list cannot rot: a listed path that no longer exists, or that no longer reads
-anything out of its tree, is red. A new entry is the owner's decision, not a
-lane's.
+which decision it holds; every other test is refused exactly as before. A
+listed file is excepted for CI YAML only: its read of docs prose, a root
+`*.md` or the `Makefile` is reported like any other. The list cannot rot: a
+listed path that no longer exists, or that no longer reads anything out of its
+tree, is red. A new entry is the owner's decision, not a lane's. The files:
+
+* `tests/unit/scripts/test_fork_prs_off_self_hosted.py`
+* `tests/unit/scripts/test_release_prod_gate.py`
+* `tests/unit/scripts/test_release_dev_iam_gate.py`
+* `tests/unit/scripts/test_release_id_token_scope.py`
+* `tests/unit/scripts/test_repo_secrets_environment.py`
+* `tests/unit/scripts/test_accept_tenant_isolation_job.py`
+* `tests/unit/scripts/test_trivy_new_findings.py`
+* `tests/unit/scripts/test_ci_early.py`
+* `tests/unit/scripts/test_release_reuses_ci_images.py`
+* `tests/unit/scripts/test_workflow_id_token_scope.py`
+* `tests/unit/scripts/test_hotfix_release.py`
+* `tests/unit/scripts/test_auto_merge_workflow.py`
+* `tests/unit/scripts/test_auto_merge_ready_on_green.py`
+* `tests/unit/scripts/test_auto_merge_base_merge.py`
+* `tests/unit/scripts/test_merge_train.py`
+* `tests/unit/scripts/test_acceptance_target.py`
+* `tests/unit/scripts/test_ci_gate.py`
+* `tests/unit/scripts/test_deployment_values_workflow.py`
+* `tests/unit/scripts/test_coverage_workflow.py`
 
 **A value that really crosses trees is published by its owner as generated
 JSON.** The one such value here is the shell of the workflow steps that are

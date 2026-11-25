@@ -147,9 +147,31 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # names, so only a whole-tree run reaches it (part of issue 71). The scanner
 # has ONE named exception list, SECURITY_GUARDS in scripts/check_test_reads.py:
 # the tests that hold CI security decisions, kept by the owner's decision of
-# 2026-11-25; a listed file that is gone or reads nothing is red too. Then
-# test_check_source_text (about 10 s, most of it one read and parse of the
-# test trees), which refuses a malformed source-text marker on a test that
+# 2026-11-25 (the hotfix lane's gates and the merge workflows' token-scope and
+# script-injection tests added that day on the security review's
+# recommendation), which may read CI YAML only; a listed file that is gone or
+# reads nothing is red too. The listed files:
+#   tests/unit/scripts/test_fork_prs_off_self_hosted.py
+#   tests/unit/scripts/test_release_prod_gate.py
+#   tests/unit/scripts/test_release_dev_iam_gate.py
+#   tests/unit/scripts/test_release_id_token_scope.py
+#   tests/unit/scripts/test_repo_secrets_environment.py
+#   tests/unit/scripts/test_accept_tenant_isolation_job.py
+#   tests/unit/scripts/test_trivy_new_findings.py
+#   tests/unit/scripts/test_ci_early.py
+#   tests/unit/scripts/test_release_reuses_ci_images.py
+#   tests/unit/scripts/test_workflow_id_token_scope.py
+#   tests/unit/scripts/test_hotfix_release.py
+#   tests/unit/scripts/test_auto_merge_workflow.py
+#   tests/unit/scripts/test_auto_merge_ready_on_green.py
+#   tests/unit/scripts/test_auto_merge_base_merge.py
+#   tests/unit/scripts/test_merge_train.py
+#   tests/unit/scripts/test_acceptance_target.py
+#   tests/unit/scripts/test_ci_gate.py
+#   tests/unit/scripts/test_deployment_values_workflow.py
+#   tests/unit/scripts/test_coverage_workflow.py
+# Then test_check_source_text (about 10 s, most of it one read and parse of
+# the test trees), which refuses a malformed source-text marker on a test that
 # reads .py/.ts source as text and a hit of a forbidden-pattern rule in
 # scripts/source_text_rules/ -- either can sit in any file, so no diff
 # selects it (part of issue 73). Then the inventory
