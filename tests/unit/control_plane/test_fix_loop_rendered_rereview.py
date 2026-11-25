@@ -37,7 +37,7 @@ from swarm_common.states import ParkReason
 
 from .conftest import auth_header
 from .test_fix_loop_drive import (  # noqa: F401 -- fixtures, used by name
-    FIX_HEAD, IMPL_HEAD, MERGE, NOT_YET, SIGNER, Loop, _members_hold_grants, clock, direct_spec,
+    FIX_HEAD, IMPL_HEAD, MERGE, NOT_YET, NUMBER, SIGNER, Loop, _members_hold_grants, clock, direct_spec,
     finish, github, integrate_spec, loop_client, loop_enabled, park_running, push, pushed,
     round_task,
 )
@@ -139,7 +139,9 @@ def test_the_rendered_re_reviews_merge_ends_the_loop_merge(loop_client, db, obje
     assert len(summary["rounds"]) == 1
 
 
-def test_the_rendered_re_reviews_real_findings_go_on_as_any_round(loop_client, db, objects):
+def test_the_rendered_re_reviews_real_findings_go_on_as_any_round(
+        loop_client, db, objects, github):
+    github.open_pull(NUMBER, IMPL_HEAD, ref="swarm/x")  # nobody pushed since the build
     loop = integrate(loop_client, db, objects)
     end_round(loop_client, db, objects, loop, "re-review:1", NOT_YET)
 
