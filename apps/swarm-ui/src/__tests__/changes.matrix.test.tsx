@@ -524,7 +524,7 @@ describe("WG-7: a step column's link names its scope, and a filtered page carrie
     for (const key of ['implement', 'review', 'fix']) {
       // MUTATION: label the column link 'Changes ›' again -- the tab's own
       // name, for a link that leaves the tab for the agent's -- and this is red.
-      expect(within(head(key)).queryByRole('link', { name: 'Changes ›' }), key).toBeNull()
+      expect(within(head(key)).queryByRole('link', { name: 'Changes' }), key).toBeNull()
       expect(within(head(key)).getByRole('link', { name: 'Agent’s changes ›' }), key).toBeTruthy()
     }
   })

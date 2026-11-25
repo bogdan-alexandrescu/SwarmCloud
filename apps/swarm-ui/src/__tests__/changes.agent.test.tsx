@@ -244,7 +244,7 @@ describe('the patch, at full height, with the open file in the address', () => {
     )
     const onGo = vi.fn()
     render(<Routed start="detail" onGo={onGo} />)
-    fireEvent.click(await screen.findByRole('link', { name: 'Changes ›' }))
+    fireEvent.click(await screen.findByRole('link', { name: 'Changes' }))
     expect(onGo).toHaveBeenLastCalledWith(`work/task/${ID}/changes`)
     await waitFor(() => expect(tab('Changes').getAttribute('aria-selected')).toBe('true'))
   })
