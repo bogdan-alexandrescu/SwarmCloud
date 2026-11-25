@@ -33,6 +33,7 @@ import pytest
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend
 
 from .conftest import auth_header
+from .openapi_reads import has_path, operation
 
 ROUTE = "/v1/runtimes"
 
@@ -40,9 +41,8 @@ ROUTE = "/v1/runtimes"
 def test_the_route_the_console_calls_is_served_and_documented(client):
     """The API half of the seam: the console's loader calls `/v1/runtimes`
     (contract.shapes.test.ts), and this API serves it with its documented shape."""
-    document = client.app.openapi()
-    assert ROUTE in document["paths"], f"{ROUTE} is not in the OpenAPI document"
-    content = document["paths"][ROUTE]["get"]["responses"]["200"]["content"]
+    assert has_path(client, ROUTE), f"{ROUTE} is not in the OpenAPI document"
+    content = operation(client, ROUTE)["responses"]["200"]["content"]
     assert content["application/json"]["schema"]["$ref"] == "#/components/schemas/RuntimesPage"
     response = client.get(ROUTE, headers=auth_header("alice"))
     assert response.status_code == 200, response.text

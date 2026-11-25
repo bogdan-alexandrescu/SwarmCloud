@@ -68,6 +68,7 @@ from swarm_common.models import Attempt, Lease, ProviderState, QuotaState
 from swarm_common.states import EventType, TaskState
 
 from .conftest import auth_header, seed_pool, seed_task, seed_tenant
+from .openapi_reads import component_schemas, operation
 
 NOW = datetime(2026, 9, 22, 11, 0, tzinfo=timezone.utc)
 FIELDS = set(Task.model_fields)
@@ -460,8 +461,7 @@ def test_each_documented_route_documents_its_model_and_validates_nothing(client)
     key the model lacks. Each route is documented in the served OpenAPI
     document, and none has a model as its response model (a `-> dict`
     annotation is a plain dict, which keeps every key)."""
-    document = client.app.openapi()
-    schemas = document["components"]["schemas"]
+    schemas = component_schemas(client)
     problems = []
     for (module, method, path), model in DOCUMENTED.items():
         matches = [r for r in module.router.routes
@@ -470,7 +470,7 @@ def test_each_documented_route_documents_its_model_and_validates_nothing(client)
         response_model = matches[0].response_model
         if isinstance(response_model, type) and issubclass(response_model, BaseModel):
             problems.append(f"{method} {path} has response_model={response_model.__name__}")
-        content = document["paths"][path][method.lower()]["responses"]["200"]["content"]
+        content = operation(client, path, method)["responses"]["200"]["content"]
         ref = content["application/json"]["schema"].get("$ref", "")
         if ref != f"#/components/schemas/{model.__name__}":
             problems.append(f"{method} {path} documents {ref or 'nothing'}, not {model.__name__}")
@@ -700,8 +700,7 @@ def test_the_outcomes_route_declares_every_parameter_the_timeline_sends(client):
     """The query `outcomesQuery` builds (contract.shapes.test.ts asserts the
     console sends exactly these) is one the route declares, in the OpenAPI
     document, with `tz` among them and no default the page relies on."""
-    document = client.app.openapi()
-    parameters = {p["name"]: p for p in document["paths"]["/v1/outcomes"]["get"]["parameters"]
+    parameters = {p["name"]: p for p in operation(client, "/v1/outcomes")["parameters"]
                   if p["in"] == "query"}
     sent = {"tz", "span", "since", "until", "bucket", "scope", "tenant", "exclude_tenant",
             "profile", "submitted_by", "kind", "group", "compare", "section"}

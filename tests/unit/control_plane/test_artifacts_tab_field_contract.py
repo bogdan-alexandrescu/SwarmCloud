@@ -49,6 +49,7 @@ from swarm_api import wire_types
 from swarm_api.inspect import parse_tail_header
 
 from .conftest import PROJECT, auth_header, seed_task, seed_tenant
+from .openapi_reads import component_schemas, operation
 from .test_wire_types import nested_models, walk
 
 BUCKET = f"swarm-artifacts-{PROJECT}"
@@ -266,7 +267,6 @@ def test_the_tab_routes_are_documented_with_their_models(client):
     """The models reach the console only through the OpenAPI document, so each
     route documents its own: a route that served the shape undocumented would
     leave the generated type unused."""
-    document = client.app.openapi()
     for path, model in (
         ("/v1/tasks/{task_id}/artifacts", "ArtifactListing"),
         ("/v1/tasks/{task_id}/artifacts/content", "ArtifactContent"),
@@ -275,7 +275,7 @@ def test_the_tab_routes_are_documented_with_their_models(client):
         ("/v1/tasks/{task_id}/answer", "TaskAnswer"),
         ("/v1/tasks/{task_id}/input", "TaskInputCopy"),
     ):
-        schema = document["paths"][path]["get"]["responses"]["200"]["content"][
+        schema = operation(client, path)["responses"]["200"]["content"][
             "application/json"]["schema"]
         assert schema.get("$ref") == f"#/components/schemas/{model}", (path, schema)
 
@@ -285,4 +285,4 @@ def test_the_interim_usage_shape_is_gone_with_its_route(client):
     fields replaced. Neither the models nor the OpenAPI document (so neither
     the generated console type) carries it."""
     assert not hasattr(wire_types, "AttemptUsage")
-    assert "AttemptUsage" not in client.app.openapi()["components"]["schemas"]
+    assert "AttemptUsage" not in component_schemas(client)

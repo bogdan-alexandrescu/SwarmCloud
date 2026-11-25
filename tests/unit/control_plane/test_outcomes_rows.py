@@ -33,6 +33,7 @@ from swarm_api.groups import StaticGroups
 from swarm_api.main import create_app
 
 from . import test_outcomes_route as route_tests
+from .openapi_reads import operation
 
 WEEK = route_tests.WEEK
 SEP22 = "2026-09-22T00:00:00+00:00"
@@ -212,7 +213,6 @@ def test_the_row_outcomes_are_the_routes():
 def test_every_parameter_the_rows_read_sends_is_one_the_route_declares(client):
     """`rowsQuery` sends `rows`, `rows_at` and `rows_key` beside the ledger's
     query (contract.shapes.test.ts); the route declares all three."""
-    document = client.app.openapi()
-    declared = {p["name"] for p in document["paths"]["/v1/outcomes"]["get"]["parameters"]
+    declared = {p["name"] for p in operation(client, "/v1/outcomes")["parameters"]
                 if p["in"] == "query"}
     assert {"rows", "rows_at", "rows_key"} <= declared, sorted(declared)
