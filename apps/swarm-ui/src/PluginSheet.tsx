@@ -86,6 +86,14 @@ const SKILLS_TIP = 'What each skill does is not served yet; the catalogue names 
 
 const modeWord = (m: string) => MODE_WORDS[m] ?? m
 
+/** A mode's meaning behind its (i), or, when it does not run, a short line with the refusal behind the (i) (issue 439). */
+function ModeNote({ mode, available, refusal }: Readonly<{ mode: string; available: boolean; refusal: string }>) {
+  const about = `${modeWord(mode)} mode`
+  if (!available) return <span className="psh-dim psh-small">Not yet <InfoTip about={about} tip={refusal} /></span>
+  const means = MODE_MEANS[mode]
+  return means === undefined ? <span className="psh-dim psh-small">what it means: <Dash why="The console has no words for this mode" /></span> : <InfoTip about={about} tip={means} />
+}
+
 /** The served modes in the platform's order, then any the console has no word for. */
 function modesOf(entry: PluginCatalogueEntry): string[] {
   const served = Object.keys(entry.modes)
@@ -896,7 +904,6 @@ export function PluginSheet({ stepId, profile, pick, ctx, onUse, onClose }: {
       ) : (
         <>
           <section className="psh-part" aria-labelledby={`psh-${uid}-p1`}>
-            {/* ISSUE 439: each part's note sits behind its heading's (i), word for word. */}
             <h3 id={`psh-${uid}-p1`}><span className="psh-n">1</span>Plugin <InfoTip about="which plugins" tip={ALLOWED_TIP} /></h3>
             {view.catalogue.length === 0 ? (
               <p className="psh-dim">The platform's catalogue lists no plugin.</p>
@@ -940,11 +947,7 @@ export function PluginSheet({ stepId, profile, pick, ctx, onUse, onClose }: {
                         <input type="radio" name={`psh-${uid}-mode`} checked={m === mode} disabled={!o.available}
                           onChange={() => { setMode(m); setTicked([]) }} />
                         <span><b>{modeWord(m)}</b>{' '}
-                          {o.available
-                            ? (MODE_MEANS[m] !== undefined
-                              ? <InfoTip about={`${modeWord(m)} mode`} tip={MODE_MEANS[m]} />
-                              : <span className="psh-dim psh-small">what it means: <Dash why="The console has no words for this mode" /></span>)
-                            : <span className="psh-dim psh-small">Not yet <InfoTip about={`${modeWord(m)} mode`} tip={`Not yet: ${refusalWords.mode(entry.name, m, o.reason ?? 'does not run yet')}.`} /></span>}
+                          <ModeNote mode={m} available={o.available} refusal={`Not yet: ${refusalWords.mode(entry.name, m, o.reason ?? 'does not run yet')}.`} />
                         </span>
                       </label>
                     </li>

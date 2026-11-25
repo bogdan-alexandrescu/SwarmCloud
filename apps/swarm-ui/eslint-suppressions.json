@@ -12423,7 +12423,7 @@
       "count": 2
     },
     "testing-library/no-node-access": {
-      "count": 8
+      "count": 11
     }
   },
   "src/__tests__/tenants.test.tsx": {

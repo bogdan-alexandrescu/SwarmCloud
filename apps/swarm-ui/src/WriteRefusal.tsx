@@ -8,7 +8,7 @@ const NOT_SERVED = 'Not served yet'
  * one short line, writeFailure's sentence its (i), word for word; any other
  * refusal is the API's own message, shown as it came.
  */
-export function WriteRefusal({ text }: { text: string }) {
+export function WriteRefusal({ text }: Readonly<{ text: string }>) {
   if (!text.startsWith(`${NOT_SERVED}:`)) return <>{text}</>
   return (
     <>

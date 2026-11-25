@@ -9,7 +9,8 @@ import type { ReactElement } from 'react'
 import { vi } from 'vitest'
 
 import type { Result } from '../fetch'
-import type { ManagedPluginInstall, ManagedPluginsRead, PluginConfigView, PluginsView } from '../types'
+import type { ManagedPluginsRead, PluginsView } from '../PluginSheet'
+import type { ManagedPluginInstall, PluginConfigView } from '../types'
 import { serve } from './repofixture'
 
 type Json = Record<string, unknown>
@@ -159,12 +160,12 @@ export async function mountSetupStrip(): Promise<ReactElement> {
     },
   }
   globalThis.fetch = vi.fn((input: RequestInfo | URL) => {
-    const url = String(input)
+    const url = input instanceof Request ? input.url : input.toString()
     if (url.includes('/v1/tenants/mine')) return Promise.resolve(json(mine))
     if (url.includes('/v1/tenants/me')) return Promise.resolve(json(me))
     if (url.includes('/v1/onboarding')) return Promise.resolve(json(doc))
     return Promise.resolve(json({ detail: 'Not Found' }, 404))
-  }) as unknown as typeof fetch
+  })
   window.location.hash = ''
   window.history.replaceState(null, '', '/config/github')
   const { App } = await import('../App')
