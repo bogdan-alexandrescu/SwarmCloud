@@ -259,7 +259,8 @@ def test_the_run_serves_every_revision_newest_first_without_its_plan(client, db,
     assert served["plan_history_complete"] is True
     assert revisions[0]["replaces"] == revisions[1]["digest"]
     assert set(revisions[0]) == {"revision", "digest", "replaces", "author", "made_by",
-                                 "answers", "changed", "cost", "at", "verified"}
+                                 "answers", "changed", "cost", "at", "verified",
+                                 "plan_settings"}
 
 
 def test_one_revision_is_served_whole(client, db, objects):
