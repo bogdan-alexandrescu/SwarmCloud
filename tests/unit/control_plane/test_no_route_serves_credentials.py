@@ -39,9 +39,11 @@ are POSTs, and that is a reason to name them rather than to rely on the sweep
 missing them. So the last
 tests below find every mounted route that can read a workspace secret's value
 (it depends on `attempts_secrets.secret_reader`, the one place a reader is
-made) and every module that reads any Secret Manager payload, and require each
-set to be exactly what is named here. A second credential-serving route fails
-them until someone names it, with the owner's decision to point to.
+made), and require that set to be exactly what is named here; the modules
+that read any Secret Manager payload are held to a named list by the
+source-text rule `secret-payload-read-only-by-named-modules`
+(scripts/source_text_rules/control_plane_nz.py). A second credential-serving
+route fails them until someone names it, with the owner's decision to point to.
 
 Offline: FakeFirestore, an in-memory credential store and an in-memory object
 reader. No credentials, no emulator, no network.
@@ -433,42 +435,6 @@ CREDENTIAL_SERVING_ROUTES = {
     ("POST", "/v1/attempts/{attempt_id}/mcp:attach"),
 }
 
-#: Every module that reads a Secret Manager PAYLOAD, and what it does with it.
-#: The release serves one, and so does the QA target issue below, to its
-#: fenced attempt only; the others use the value inside swarm-api.
-SECRET_PAYLOAD_READERS = {
-    # The release: the carve-out above, and the only reader that answers with it.
-    "routes/attempts_secrets.py",
-    # The platform's search key, sent to the provider and scrubbed from every answer.
-    "search.py",
-    # The forge App's private key, used to mint installation tokens.
-    "forgeapp.py",
-    # A tenant's forge token, sent to GitHub for issue previews and writes.
-    "forge.py",
-    # A QA target's test credential (docs/design/visual-qa-any-app.md §2.1,
-    # §2.2): read to merge a new one in or drop a deleted target's, and served
-    # only to the worker of a proven, fenced attempt whose run names the target,
-    # at qatargets.ISSUE_ROUTE, which main.UNCAPTURED_ROUTES keeps out of capture.
-    "qatargets.py",
-    # The Desktop OAuth client's secret, read once at start and served in the
-    # unauthenticated discovery document ONLY when DISCOVERY_SERVE_CLIENT_SECRET
-    # is true: the owner's Q1 decision (docs/design/day-one-plan.md §6.3; Google
-    # classifies a Desktop client's secret as non-confidential). A separate
-    # app, swarm-discovery, never mounted on swarm-api's routes.
-    "discovery.py",
-    # A workspace's TypeSafe key, read only when the workspace chose the
-    # TypeSafe Jev backend and opted in to the contract review at submission
-    # (jev-contract.md section 4), and sent only as the bearer of that one
-    # call; the client's sanitizer drops it from the state, and no answer,
-    # record or log carries it.
-    "contractreview.py",
-    # gittools.py read the `-git-wf` slot until archived issue 2029 (WF-APP-TOKEN) removed
-    # it: a workflow-touching push now uses an App installation token minted
-    # per push, never a stored secret. MUTATION: keep the slot reader and
-    # gittools.py is a reader again, outside this set.
-}
-
-
 def _api_routes(routes: Any, prefix: str = "") -> list[tuple[str, Any]]:
     """Every APIRoute the app serves, with its full path: through included
     routers too, which newer FastAPI keeps as wrappers around the original."""
@@ -524,30 +490,6 @@ def test_only_the_named_routes_can_read_a_workspace_secrets_value():
         "release (owner decision Q2 of #1347) and the MCP attach (Q9 of #1433) may; "
         "another needs its own decision, named here."
     )
-
-
-def test_only_the_named_modules_read_a_secret_payload():
-    """A route that builds its own reader would be outside the walk above, so
-    the payload read itself is found in the source."""
-    from pathlib import Path
-
-    import swarm_api
-
-    root = Path(swarm_api.__file__).parent
-    readers = {
-        str(path.relative_to(root)) for path in root.rglob("*.py")
-        if "access_secret_version" in path.read_text(encoding="utf-8")
-    }
-    assert readers == SECRET_PAYLOAD_READERS, (
-        f"modules reading a Secret Manager payload: {sorted(readers)}; name each in "
-        "SECRET_PAYLOAD_READERS with what it does with the value, and never serve one "
-        "outside CREDENTIAL_SERVING_ROUTES"
-    )
-    makers = {
-        str(path.relative_to(root)) for path in root.rglob("*.py")
-        if "SecretManagerReader(" in path.read_text(encoding="utf-8")
-    }
-    assert makers == {"routes/attempts_secrets.py"}
 
 
 # --------------------------------------------------------------------------

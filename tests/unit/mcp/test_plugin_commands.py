@@ -1,3 +1,4 @@
+# source-text: contract - server.py's swarm_dispatch branch must hand back follow_with swarm_follow; commands in the plugin markdown must exist in the cli and sc parsers
 """The SHELL half of the plugin surface, which nothing checked.
 
 `test_plugin_skills.py` checks every MCP TOOL a skill names against
@@ -150,7 +151,7 @@ def test_nothing_the_bridge_hands_back_tells_a_model_to_run_a_bare_swarm():
     or `server` the way those used to, bypassing `invocation.terminal_command`,
     and this goes red, because every producer is checked.
     """
-    from swarm_mcp import follow, server, workflows
+    from swarm_mcp import follow
 
     command = follow.follow_command(["task_a", "task_b"])
     assert command == "uv run swarm tail task_a task_b"
@@ -161,18 +162,9 @@ def test_nothing_the_bridge_hands_back_tells_a_model_to_run_a_bare_swarm():
     assert follow.follow_command([None, ""]) == ""
 
     # Every module that builds one of these strings goes through that function.
-    # Checked by source inspection because the alternative is a live client.
-    for module in (server, workflows):
-        source = Path(module.__file__).read_text()
-        offenders = [
-            line.strip()
-            for line in source.split("\n")
-            if '"swarm tail' in line or "'swarm tail" in line
-        ]
-        assert not offenders, (
-            f"{module.__name__} builds a tail command itself instead of calling "
-            f"follow.follow_command: {offenders}"
-        )
+    # Checked by source inspection because the alternative is a live client:
+    # the rule mcp-tail-command-only-through-follow in
+    # scripts/source_text_rules/services.py reads server.py and workflows.py.
 
 
 def test_the_dispatch_reply_points_at_the_tool_before_the_terminal():
@@ -207,6 +199,8 @@ _WRITING_SUBCOMMANDS = frozenset(
         "cancel",          # stops running work
         "workflow",        # spends the shared pool, N steps at a time
         "workflow-cancel",
+        "workflow-pause",  # parks a workflow's steps
+        "workflow-resume",
         "init",            # writes .env
     }
 )

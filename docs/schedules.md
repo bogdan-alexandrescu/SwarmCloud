@@ -876,7 +876,9 @@ every tenant's data within one approval's reach.
     <code>)` until the issue is edited or commented on: the same plan would
     be refused again.
   - The planner decides readiness. Lane SWEEP's `NOT_READY` verdict ends the
-    run with no workflow and a comment that says what is missing.
+    run with no workflow and a comment that says what is missing. (Changed
+    2026-11-24 by the owner: a readiness pre-pass on the cheaper class answers
+    before the planner, [issue-runs.md](issue-runs.md#why-the-planner-decides-readiness).)
   - The **territory guard** holds an approved plan whose `files` overlap a live
     run's plan until that run ends. It is lane SWEEP's guard, kept as written.
     [lane-queue.md §4](lane-queue.md) designs the general lock this guard

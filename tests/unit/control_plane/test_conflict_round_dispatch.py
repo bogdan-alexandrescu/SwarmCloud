@@ -14,7 +14,6 @@ No credentials, no network, no emulator.
 
 from __future__ import annotations
 
-import inspect
 from datetime import timedelta
 
 import pytest
@@ -98,9 +97,15 @@ def test_the_field_is_absent_unless_set():
     assert DispatchOptions(conflict_round=True).to_metadata()[CONFLICT_ROUND_FIELD] is True
 
 
-def test_mergewake_submits_the_round_under_the_key_submission_reads():
-    source = inspect.getsource(mergewake._on_conflict)
-    assert "metadata={CONFLICT_ROUND_METADATA_KEY: {" in source, source
+def test_mergewake_submits_the_round_under_the_key_submission_reads(db, wake_client, github):
+    conflicting_merge(db, github)
+    _tick(wake_client)
+    (workflow,) = _conflict_workflows(db)
+    (step,) = workflow["steps"]
+    metadata = db.docs[f"tasks/{step['task_id']}"]["metadata"]
+    assert metadata[CONFLICT_ROUND_METADATA_KEY]["head_sha"] == HEAD
+    # Submission read it there: the round is marked inside the dispatch block.
+    assert metadata["dispatch"][CONFLICT_ROUND_FIELD] is True
 
 
 # ONE WRITER PER MERGE STEP'S PULL REQUEST (archived issue 2577). Measured: conflict-fix:1

@@ -1,3 +1,4 @@
+# source-text: contract - LEDGER_SECTIONS and LEDGER_LATE_SECTIONS in Activity.tsx must be the sections the outcomes route serves fast and late
 """The Outcomes headline never waits on `coverage` or `previous` (archived issue 2422).
 
 VQ-021 (archived issue 2391) measured `GET /v1/outcomes`, the read behind Work › Timeline ›

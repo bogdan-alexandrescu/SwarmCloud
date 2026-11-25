@@ -1,3 +1,4 @@
+# source-text: contract - the UI shard planner must pick exactly what vitest.config.ts's include globs select; the config is also copied into a scratch tree
 """The swarm-ui component tests run in shards sized and split by measured weight.
 
 OWNER REQUEST, 2026-11-03 (part of archived issue 2688). Eight pull request runs of

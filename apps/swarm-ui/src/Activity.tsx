@@ -73,6 +73,7 @@ import {
   type Span,
 } from './outcomes'
 import { Button, NamedMark, Segmented, StateMark, WarnMark } from './components'
+import { InfoTip } from './InfoTip'
 import { NewWorkspaceDialog, WorkspaceTimeline } from './NewWorkspace'
 import { QaIdentityGrants } from './QaIdentityGrants'
 import { WORKSPACE_POLL_MS } from './OnboardingWorkspace'
@@ -2440,8 +2441,14 @@ export function TenantsScreen() {
                 {/* A SENTENCE, IN THE BODY FONT (visual QA pass 1, admin-shell-18,
                     part of archived issue 2596): the mono `no budget column · no budget can
                     be set` read as debug output. */}
-                Tenants have no budget column: no budget can be set here.{' '}
-                <a href={helpHref(TENANT_HELP)}>Why &rarr;</a>
+                {/* ONE SHORT LINE, THE WHY BEHIND ITS (i) (issue 81): the
+                    sentence and an arrowed `Why` link read as a paragraph
+                    and a text-link action. */}
+                No budget can be set here.{' '}
+                <InfoTip
+                  about="the budget column"
+                  tip="Tenants have no budget column: no budget can be set here. The only route that could set a budget refuses it, so none is set for any tenant, and the column is left out rather than drawn empty."
+                />
               </p>
               {/* THE HELP LINK AH-12 DECIDED FOR THE ENFORCED COLUMN: the footer
                   index every migrated panel carries (HelpCard.tsx, route 3 of 4),

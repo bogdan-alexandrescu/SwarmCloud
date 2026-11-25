@@ -1,3 +1,4 @@
+# source-text: contract - every metadata key agent_worker's modules read must be in specsign.SIGNED_METADATA_KEYS or the named exemptions
 """The rule that keeps the signed field list honest (contract request 34).
 
 "A metadata key the worker starts reading is added to SIGNED_METADATA_KEYS in

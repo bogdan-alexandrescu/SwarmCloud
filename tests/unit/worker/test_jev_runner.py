@@ -1,3 +1,4 @@
+# source-text: contract - lifecycle.py must call jevkey_mod.prepare with the workspace's private directory
 """JEV-RUNNER (owner decision 2026-10-14; part of archived issue 1030).
 
 A live-browser task gets jev-browser's MCP tools beside Playwright MCP and

@@ -8,7 +8,8 @@ archived issue 2158). These hold:
 * the reader calls `get_secret` and `list_secret_versions` and NOTHING else --
   never `access_secret_version` -- driven through the shipped
   `SecretManagerMetadata` over a client that records every attribute asked of
-  it, and checked in the module's syntax tree too;
+  it, and checked in the module's syntax tree too (the source-text rule
+  `platform-secrets-names-no-value-read` in scripts/source_text_rules/control_plane_nz.py);
 * no name outside `swarm-` reaches Secret Manager: not from the catalogue, and
   not from a broker account document whose recorded secret names the other
   team's (example-project is shared, CLAUDE.md rule 2);
@@ -21,8 +22,6 @@ Offline: the real route over FakeFirestore, a fake Secret Manager client.
 
 from __future__ import annotations
 
-import ast
-import inspect
 import secrets
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -32,7 +31,6 @@ import pytest
 from fastapi.testclient import TestClient
 from google.api_core import exceptions as gexc
 
-from swarm_api import platform_secrets
 from swarm_api.main import create_app
 from swarm_api.platform_secrets import (
     PLATFORM_SECRETS,
@@ -179,16 +177,6 @@ def test_the_reader_never_calls_versions_access(api_context, db):
     called = {method for method, _ in recorder.calls}
     assert called == ALLOWED_CALLS
     assert "access_secret_version" not in called
-
-
-def test_the_module_names_no_value_read():
-    """The syntax tree, not the text: the docstring may say what it never does."""
-    tree = ast.parse(inspect.getsource(platform_secrets))
-    attributes = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
-    names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
-    for forbidden in ("access_secret_version", "access", "payload", "add_secret_version",
-                      "create_secret", "delete_secret", "set_iam_policy", "list_secrets"):
-        assert forbidden not in attributes | names, forbidden
 
 
 # -- the swarm- prefix: nothing else is named ---------------------------------

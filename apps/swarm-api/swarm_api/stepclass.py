@@ -76,6 +76,9 @@ ROLE_FIX = "fix"
 ROLE_REREVIEW = "re-review"
 ROLE_CI_FIX = "CI fix"
 ROLE_CONFLICT_FIX = "conflict fix"
+#: The issue run's readiness pre-pass (owner, 2026-11-24): a short task before
+#: the full planner, on the cheaper class (`issueruns.readiness_task`).
+ROLE_READINESS = "readiness pre-pass"
 
 #: Role -> class, applied only when the caller named no class. A fix loop's
 #: re-review rounds are `ROLE_REREVIEW`, its fix rounds `ROLE_FIX`.
@@ -91,6 +94,7 @@ ROLE_CLASSES: Mapping[str, str] = MappingProxyType({
     ROLE_REREVIEW: "sonnet",
     ROLE_CI_FIX: "sonnet",
     ROLE_CONFLICT_FIX: "sonnet",
+    ROLE_READINESS: "sonnet",
 })
 
 #: The size ceiling (the owner's decision, 2026-11-23): a first review moves

@@ -1,3 +1,4 @@
+# source-text: fixture - globs this directory's test_*.py only for the module names a fresh interpreter then imports and times
 """Importing a test module here is collection, and collection must stay cheap.
 
 `pytest tests/unit/scripts -k <expr>` imports every module in this directory

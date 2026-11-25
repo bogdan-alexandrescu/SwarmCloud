@@ -1,3 +1,4 @@
+# source-text: fixture - copies repo_graph_shards.py alone into a scratch directory to run its self-test without its history module
 """Layers H (history) and R (rules) of the repository graph (lane CTXQ-H).
 
 docs/design/context-quality.md §4.2 adds two retrieval layers to the graph,

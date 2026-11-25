@@ -429,8 +429,18 @@ def base_url(target: Mapping[str, Any]) -> str:
         port = parts.port
     except ValueError:
         raise _invalid("base_url's port is not a port") from None
-    origin = f"https://{host.lower()}" + (f":{port}" if port else "")
+    # https's own port written out is dropped (epic 21): a browser never
+    # writes `:443`, so an origin stored with it never matched the gate.
+    origin = f"https://{host.lower()}" + (f":{port}" if port and port != 443 else "")
     return (origin + parts.path).rstrip("/")
+
+
+def bare_origin(origin: str) -> str:
+    """`origin`, lower case, with https's own port (`:443`) dropped: the one
+    form `base_url` stores, and the form an origin stored before it did is
+    compared in (`_leg_origins`, `qatargets._same_origin`, `QaTargets.patch`)."""
+    origin = origin.lower()
+    return origin[:-len(":443")] if origin.startswith("https://") and origin.endswith(":443") else origin
 
 
 #: A leg's `entry_query` (QA-ENTRY-QUERY): the plain `key=value` pairs every
@@ -717,8 +727,7 @@ def _leg_origins(entry: Mapping[str, Any]) -> set[str]:
     for raw in (*(entry.get("approved_origins") or []), entry.get("origin"), entry.get("base_url"),
                 (entry.get("sign_in") or {}).get("extra_origin"), *(entry.get("extra_origins") or [])):
         if isinstance(raw, str) and raw.lower().startswith("https://"):
-            origin = _origin(raw).lower()
-            origins.add(origin[:-len(":443")] if origin.endswith(":443") else origin)
+            origins.add(bare_origin(_origin(raw)))
     return origins
 
 

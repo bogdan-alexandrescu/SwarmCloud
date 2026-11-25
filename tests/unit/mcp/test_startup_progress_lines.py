@@ -1,3 +1,4 @@
+# source-text: contract - cli.cmd_tail must print each event through event_label, not the bare event type
 """`swarm follow` and `swarm tail` print one line per start-up step, naming it (STARTUP-API).
 
 `startup_progress` (contract request 74) is one event type for seven steps,

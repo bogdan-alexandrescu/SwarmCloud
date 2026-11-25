@@ -48,18 +48,37 @@ read fails its members' requests. The engine records a group in
 `frontend_iap_members`) only after the probe for that group is `met`; a failed
 probe registers nothing.
 
-**The Directory scopes when stage 0 has none** (audit N14). Google may refuse
-the Directory scopes to gcloud's own client at stage 0, which then records
-`directory_scopes` false and goes on. The first step here that calls the
-Directory API then signs the person in through the deployment's own Desktop
-client (stage 2 made it; its id is `desktop_client_id` and its secret is in the
-new context's swarm credential store, `verify_context`): `open_page` opens the
-consent page for the two Directory scopes, a listener on 127.0.0.1 takes the
-redirect, and the access token goes into an in-memory session used for the
-Directory calls only (`IdentityGcp.use_directory`). No refresh token is asked
-for, and the token is never written to the state, a file, an event or a log.
-A check never signs in: until an apply has, it reads swarm-api's own probe.
-A refused sign-in is a refusal like any other: the Admin console's page opens.
+**The Directory scopes when stage 0 has none** (audit N14, issue 368). Google
+may refuse the Directory scopes to gcloud's own client at stage 0, which then
+records `directory_scopes` false and goes on with Cloud Platform alone. The
+deployment's own Desktop client, the one sign-in that could ask for them
+again, is made by a person in the console's Admin › Setup, Sign-in client
+step, which stage 13 waits for (`edge.desktop-client` records its id,
+`desktop_client_id`). So on a first install it does not exist at stage 8, and
+stage 8 does its Directory work without it:
+
+- `identity.groups` needs the Directory API only for the customer id:
+  `groups.create` takes Cloud Platform. It reads the customer id the
+  project's organisation names instead (Cloud Resource Manager's
+  `directoryCustomerId`, `organisation_customer_id`) and creates the groups
+  with stage 0's own sign-in. An organisation that names none is a refusal
+  like any other: the Admin console's groups page opens.
+- `identity.groups-reader-role`: `roleAssignments.insert` has no Cloud
+  Platform path. After the typed approval it tries no sign-in and opens the
+  Admin console's roles page once, saying plainly that the Desktop client is
+  made later, in the Sign-in client step stage 13 waits for, so the
+  assignment is made there by hand; its check passes on swarm-api's own read.
+
+Only where a Desktop client is recorded (a later run, after stage 13) does the
+first step here that calls the Directory API sign the person in through it
+(its secret is in the new context's swarm credential store, `verify_context`):
+`open_page` opens the consent page for the two Directory scopes, a listener on
+127.0.0.1 takes the redirect, and the access token goes into an in-memory
+session used for the Directory calls only (`IdentityGcp.use_directory`). No
+refresh token is asked for, and the token is never written to the state, a
+file, an event or a log. A check never signs in: until an apply has, it reads
+swarm-api's own probe. A refused sign-in is a refusal like any other: the
+Admin console's page opens.
 
 **B04, lesson 20:** an `unauthorized_client` answer is the Admin console (the
 delegation or the admin role was never granted there), never IAM; only a
@@ -204,8 +223,15 @@ class IdentityGcp(Gcp):
         if self._session is None:
             from google.auth.transport.requests import AuthorizedSession  # lazy, as application_default
 
-            # No carried quota project: `_billed` names the install's own.
-            self._session = AuthorizedSession(api_client.application_default(WORKSPACE_SCOPES))
+            from google.auth.credentials import with_scopes_if_required
+
+            # No carried quota project: `_billed` names the install's own. A
+            # person's credentials load unscoped, so their refresh asks for what
+            # stage 0 was granted: asking for WORKSPACE_SCOPES after a sign-in
+            # Google refused the Directory scopes is invalid_scope (issue 368,
+            # as preflight.adc_scopes). Only credentials that must be scoped are.
+            credentials = with_scopes_if_required(api_client.application_default(), list(WORKSPACE_SCOPES))
+            self._session = AuthorizedSession(credentials)
         return self._session
 
     def _billed(self, project: str, method: str, url: str, *, body: Any = None, params: Any = None,
@@ -392,7 +418,8 @@ def desktop_directory_session(ctx: Any, *, client_id: str, client_secret: str,
 
 def _stored_desktop_secret(ctx: Any) -> str:
     """The Desktop client's secret from the new deployment's context in the
-    swarm credential store (stage 2 put it there, `verify_context`), else ""."""
+    swarm credential store (`verify_context`; the console's Sign-in client step
+    saved it, stage 13 took it), else ""."""
     context = str(ctx.outputs.get("verify_context") or "")
     if not context:
         return ""
@@ -417,6 +444,27 @@ def directory_sign_in(ctx: Any, *, step_id: str = "identity.directory-sign-in") 
         ctx, step_id=step_id, what="the Desktop client's secret",
         prompt="The Desktop client's secret, for the Directory sign-in", use=lambda value: value.decode())
     return desktop_directory_session(ctx, client_id=client_id, client_secret=client_secret)
+
+
+def desktop_client_recorded(ctx: Any) -> bool:
+    """The deployment's Desktop client exists: `edge.desktop-client` (stage
+    13) recorded its id once the console's Sign-in client step made it. On a
+    first install it is not, at stage 8."""
+    return bool(str(ctx.outputs.get("desktop_client_id") or ""))
+
+
+def organisation_customer_id(gcp: Gcp, project: str) -> str:
+    """The Workspace or Cloud Identity customer id (`C0...`) the project's
+    organisation names: Cloud Resource Manager's `directoryCustomerId`, read
+    with Cloud Platform alone, where the Directory API needs its own scopes.
+    LookupError when the project sits under no organisation or it names none."""
+    org = next((a for a in reversed(gcp.ancestry(project)) if a.startswith("organizations/")), "")
+    if not org:
+        raise LookupError(f"{project} sits under no organisation, so no customer id is named")
+    customer = str((gcp.organization(org) or {}).get("directoryCustomerId") or "")
+    if not customer:
+        raise LookupError(f"{org} names no customer id (directoryCustomerId)")
+    return customer
 
 
 def swarm_api_email(project: str) -> str:
@@ -536,9 +584,15 @@ class _Workspace(_Base):
         session is held yet: a Directory call would be refused."""
         return directory_declined(ctx) and not getattr(self.gcp, "directory_ready", False)
 
+    def _desktop_later(self, ctx: Any) -> bool:
+        """The Directory scopes are pending and no Desktop client is recorded:
+        the Sign-in client step makes it later (stage 13 waits for it), so no
+        sign-in through it is tried here."""
+        return self._directory_pending(ctx) and not desktop_client_recorded(ctx)
+
     def _directory_access(self, ctx: Any) -> None:
-        """Before an apply's Directory calls: sign in through the Desktop
-        client when `_directory_pending`. Raises DirectorySignInFailed."""
+        """Before an apply's Directory calls: sign in through the recorded
+        Desktop client when `_directory_pending`. Raises DirectorySignInFailed."""
         if self._directory_pending(ctx):
             sign_in = self._directory or (lambda c: directory_sign_in(c, step_id=self.id))
             self.gcp.use_directory(sign_in(ctx))
@@ -596,8 +650,12 @@ class GroupsStep(_Workspace):
             why = "You chose to create the groups yourself"
         else:
             try:
-                self._directory_access(ctx)
-                parent = f"customers/{self.gcp.customer_id()}"
+                if self._desktop_later(ctx):
+                    # groups.create takes Cloud Platform: stage 0's own sign-in will do.
+                    parent = f"customers/{organisation_customer_id(self.gcp, ctx.project)}"
+                else:
+                    self._directory_access(ctx)
+                    parent = f"customers/{self.gcp.customer_id()}"
                 for role, email in groups.items():
                     if email in missing:
                         label = "SwarmCloud platform admins" if role == "admin" else "SwarmCloud first team"
@@ -656,7 +714,9 @@ class GroupsReaderRoleStep(_Workspace):
         if not unique_id:
             return Observation(UNMET, f"{account} does not exist yet (bootstrap pass 1 creates it)")
         assigned: bool | None = None
-        if self._directory_pending(ctx):
+        if self._desktop_later(ctx):
+            unlisted = "are not listed to a sign-in without the Directory scopes"
+        elif self._directory_pending(ctx):
             # A check never signs in: the apply asks for the Directory scopes.
             unlisted = "are not listed until stage 8 signs in with the Directory scopes"
         else:
@@ -697,6 +757,14 @@ class GroupsReaderRoleStep(_Workspace):
             "for the fallback"), APPROVE, also=("delegation",), nothing="nothing was assigned")
         if typed == "delegation":
             remember(ctx, outputs={"groups_auth": DELEGATION})
+            return
+        if self._desktop_later(ctx):
+            open_page(ADMIN_ROLES_PAGE, why=(
+                "This sign-in carries no Directory scopes (stage 0 went on without them), and the deployment's "
+                "own Desktop client, which could ask for them, is made later, in Admin › Setup's Sign-in client "
+                "step that stage 13 waits for. So on a first install the assignment is made here, in the Admin "
+                f"console's admin roles page: {GROUPS_READER} > Admins > Assign service accounts > {account}. "
+                "The install continues by itself once swarm-api reads the group with the role."))
             return
         try:
             unique_id = self._client_id(ctx)

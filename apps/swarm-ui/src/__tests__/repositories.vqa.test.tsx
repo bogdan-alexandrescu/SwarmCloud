@@ -14,6 +14,7 @@
 // Properties, not markup shape: the class or attribute the finding turns on,
 // the rendered words, and the declaration the cascade picks.
 
+import { helpIn } from './proseruns'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { render, waitFor } from '@testing-library/react'
 import { repo, serve, sha, visible } from './repofixture'
@@ -129,7 +130,8 @@ describe('QA-062: a "not served" notice opens its sentence with a capital', () =
     // Code intelligence card and its Jev backend line.
     render(<UrNotServed route="GET /v1/settings/judgment" what="the Jev backend" />)
     render(<UrNotServed route="GET /v1/settings/code-intelligence" what="the Code intelligence setting" />)
-    const said = [...document.querySelectorAll('[data-notserved]')].map((n) => visible(n))
+    // Issue 81: the sentence is behind the notice's (i), word for word.
+    const said = [...document.querySelectorAll('[data-notserved]')].map((n) => helpIn(n))
     // MUTATION: render `{what}` as it came -- "the Jev backend is not served by this API yet."
     expect(said[0]).toContain('The Jev backend is not served by this API yet.')
     expect(said[1]).toContain('The Code intelligence setting is not served by this API yet.')

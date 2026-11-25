@@ -1,3 +1,4 @@
+# source-text: contract - locals.tf's fix-loop entry and profiles_without_a_job must mirror RUNNER_PROFILES, and the scheduler's _parked_window reasons and loop.py's _park_control_plane must keep the FIX_ROUNDS_RUNNING park
 """Contract requests 124-126: the fix loop's frozen contract (FL-CONTRACT, part of archived issue 2509).
 
 docs/design/fix-loop.md §7 requests A and B, accepted by the owner on 2026-10-27
@@ -155,14 +156,10 @@ def test_no_scheduler_sweep_promotes_fix_rounds_running():
     assert {"SCHEDULED_RETRY", "DEPENDENCY_INCOMPLETE", "CI_PENDING"} <= named, named
     assert "FIX_ROUNDS_RUNNING" not in named
     # FL-SCHED parks a READY fix loop on it (docs/design/fix-loop.md §4.7), so
-    # the scheduler names it once: the park `_park_control_plane` writes. No
-    # other use, by member or by value, so no sweep, promotion or expiry reads it.
-    mentions = {
-        path.name: len(re.findall(r"ParkReason\.FIX_ROUNDS_RUNNING|[\"']FIX_ROUNDS_RUNNING[\"']",
-                                  path.read_text(encoding="utf-8")))
-        for path in sorted(SCHEDULER.glob("*.py"))
-    }
-    assert {name: n for name, n in mentions.items() if n} == {"loop.py": 1}, mentions
+    # the scheduler names it once: the park `_park_control_plane` writes. That
+    # no other module names it, by member or by value, and loop.py only once, is
+    # the rule fix-rounds-running-only-in-the-control-plane-park
+    # (scripts/source_text_rules/services.py); this holds where the one is.
     loop = (SCHEDULER / "loop.py").read_text(encoding="utf-8")
     park = loop[loop.index("def _park_control_plane"):]
     park = park[:park.index("\n    def ")]

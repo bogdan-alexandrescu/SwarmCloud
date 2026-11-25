@@ -1,3 +1,4 @@
+# source-text: contract - the Jev browser image's selftest.py must prove the attach probe, the refused launch and the tool list
 """JEV-IMAGE (owner decision 2026-10-14; part of archived issue 1030).
 
 agent-runtime-browser carries jev-browser (TypeSafe "Jev", npm `jev-browser`)

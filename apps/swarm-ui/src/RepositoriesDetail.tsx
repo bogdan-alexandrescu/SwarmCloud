@@ -1,3 +1,4 @@
+import { InfoTip } from './InfoTip'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   loadRepository, loadRepositoryIndex, loadRepositoryLanguages, loadResolvedToken, patchRepositoryContext, patchRepositoryFileIssues, patchRepositoryKeepVersions, patchRepositoryTrigger,
@@ -8,7 +9,7 @@ import { Banner, Button, Card, Chip, Dash, EmptyState, NamedMark, StatePill, Ton
 import { addressToPath } from './paths'
 import {
   coverageWords, freshness, HEAD_UNREAD, intervalWords, kindWords, pct, repoName, shortSha, notServed, expiryWords,
-  thousands, TRIGGER_OPTIONS, WEBHOOK_NOTE, KEEP_VERSIONS_RANGE, WORKFLOW_FILES_WHY, workflowsNotGranted,
+  thousands, TRIGGER_OPTIONS, WEBHOOK_NOTE, KEEP_VERSIONS_RANGE, WORKFLOW_FILES_LINE, WORKFLOW_FILES_WHY, workflowsNotGranted,
   type ChangeTrigger, type IndexDoc, type IndexRetention, type IndexRun, type LanguageRow, type RepoDetail, type RepoRecord, type ResolvedToken, type UsedBy,
 } from './RepositoriesData'
 import type { Result } from './fetch'
@@ -1301,7 +1302,9 @@ function WorkflowFilesCard({ on, repoId, onWrite }: { on: boolean; repoId: strin
           write={(next) => patchRepositoryWorkflowFiles(repoId, next)}
           onWrite={onWrite}
         />
-        <p className="ur-hint">{WORKFLOW_FILES_WHY}</p>
+        <p className="ur-hint">
+          Workflow files {WORKFLOW_FILES_LINE} <InfoTip about="workflow files" tip={WORKFLOW_FILES_WHY} />
+        </p>
         {/* The GitHub read is made only where the switch is on: off, there is nothing to say. */}
         {on && <WorkflowsGrantRead repoId={repoId} />}
       </div>

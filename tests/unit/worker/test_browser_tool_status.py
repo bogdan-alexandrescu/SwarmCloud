@@ -1,3 +1,4 @@
+# source-text: contract - claude_code.py must read the payload key `browser_tool` under the name the input declares
 """The browser tool a live-browser task names, what the runner registers for it,
 and how the gate sees and reports it (BSTATUS-API; part of archived issue 1030).
 

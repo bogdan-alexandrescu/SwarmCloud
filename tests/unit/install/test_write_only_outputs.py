@@ -1,3 +1,4 @@
+# source-text: contract - every state.outputs key a swarm_install step writes must be read by another swarm_install module
 """No installer step keeps an output nobody reads.
 
 `state.outputs` is the install state's memory between steps and runs: a key

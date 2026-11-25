@@ -1,3 +1,4 @@
+# source-text: contract - the flow cap is stated once: swarm_qa.py names no MAX_FLOWS and the design doc's flows row restates qaspec's bounds
 """A target's flows run in batches, several flows a live-browser step (QA-FLOWS-CAP, part of archived issue 2136).
 
 the owner, 2026-10-26: a QA target may hold many more flows -- a peer application's

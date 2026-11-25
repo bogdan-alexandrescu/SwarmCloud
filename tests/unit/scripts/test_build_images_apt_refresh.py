@@ -1,3 +1,4 @@
+# source-text: fixture - reads only the JSON build records the release script writes in a scratch repo; the checker selects it through a variable name that elsewhere in the file holds a .py path (a commit made from an App.tsx edit)
 """Every release rebuilds each image that upgrades OS packages (owner decision
 2026-10-14: "force a fresh apt layer", on every release). Main's own build
 reuses such a digest while its inputs are unchanged (the owner, 2026-11-06): the

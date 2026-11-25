@@ -1,3 +1,4 @@
+# source-text: contract - four descriptions of the checkpoint archive must each name both CLI transcripts and the owner's 2026-09-27 decision
 """Every description of the checkpoint archive says it carries the prompt.
 
 Owner decision 2026-09-27: the CLI session transcripts stay in

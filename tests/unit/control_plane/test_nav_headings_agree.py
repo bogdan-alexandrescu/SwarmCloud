@@ -1,3 +1,4 @@
+# source-text: contract - each screen's heading in its .tsx must equal the nav tab label App.tsx's SECTIONS gives the route that opens it
 """The heading you land on must be the label of the tab you clicked.
 
 THE DEFECT. Seven of the console's sixteen routes headed their screen with a

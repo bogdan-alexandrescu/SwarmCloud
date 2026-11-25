@@ -452,27 +452,11 @@ def test_a_workflow_stuck_in_queued_after_every_step_succeeded_is_caught(tmp_pat
     assert run.mentions("nothing in the platform advances a workflow"), run.transcript
 
 
-def test_nothing_in_the_repository_advances_a_workflow_state(tmp_path):
-    """The claim above, checked against the code rather than against the fake.
-
-    If a component ever starts advancing workflow state, this test is what says
-    so -- and the suite's check turns from a standing failure into a passing
-    one. Written as a source-level search because there is no component to run:
-    the absence is the finding.
-    """
-    store = (REPO / "apps" / "swarm-api" / "swarm_api" / "store.py").read_text()
-    assert 'def create_workflow' in store
-    writers = [
-        line.strip()
-        for line in store.splitlines()
-        if "WORKFLOWS" in line and (".update(" in line or ".set(" in line)
-    ]
-    assert not any('"state"' in line for line in writers), (
-        "something now writes a workflow's state; scripts/e2e-test.sh's "
-        "workflow check should start passing, and this test should be updated "
-        "to assert the new behaviour rather than its absence:\n  "
-        + "\n  ".join(writers)
-    )
+# That nothing in the repository advances a workflow's state -- the claim this
+# check stands on -- is held against store.py's source by the lint rule
+# `no-workflow-state-writer` (scripts/source_text_rules/scripts_tree.py, run by
+# scripts/check_source_text.py): when something starts writing it, that rule
+# fails and the check above should be turned to assert the new behaviour.
 
 
 # ---------------------------------------------------------------------------

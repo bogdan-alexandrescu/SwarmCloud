@@ -1,3 +1,4 @@
+# source-text: contract - auto-merge.yml's squash subject must match agent_worker/merge.py's commit_title and merge_method
 """The `ready` label queues a pull request for GitHub's native auto-merge (archived issue 262).
 
 `.github/workflows/auto-merge.yml` runs on `pull_request_target` [labeled]:

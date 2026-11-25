@@ -73,7 +73,10 @@ _ALLOWED: dict[TaskState, frozenset[TaskState]] = {
     ),
     # PARKED -> SUCCEEDED: a step the control plane finishes without a worker
     # (#748, contract request 52). It held no lease, so there is nothing to
-    # release; only swarm-api writes it, guarded on its own claim.
+    # release. Written by swarm-api, guarded on its own claim, and by the
+    # scheduler for a re-review whose verdict gate the platform's own record
+    # shows shut, in the same guarded write that would otherwise promote it
+    # (contract request 157).
     # READY -> FAILED and PARKED -> FAILED: the same ending in the two states
     # admission and the credential sweep actually hold a task in (contract
     # request 99, accepted by the owner 2026-10-18). Only the scheduler writes
@@ -258,6 +261,13 @@ class ParkReason(str, Enum):
     #: the scheduler once `next_eligible_at` passes. Holds no capacity
     #: (invariant 1). Contract request 123, accepted by the owner 2026-10-28.
     PLATFORM_REFUSED = "PLATFORM_REFUSED"
+    #: A step of a paused workflow (docs/design/workflow-pause.md). Written by
+    #: the scheduler at admission (READY -> PARKED) and by the step's worker at
+    #: its control poll (RUNNING -> PARKED, checkpointed, lease released).
+    #: Promoted ONLY by the scheduler's workflow-pause sweep once the
+    #: workflow's `paused` is false; never by `_promote_manual_pauses`. Holds
+    #: no capacity (invariant 1). Contract request 160.
+    WORKFLOW_PAUSED = "WORKFLOW_PAUSED"
 
 
 class BlockedReason(str, Enum):
@@ -355,3 +365,10 @@ class EventType(str, Enum):
     #: the warning was written as RUNNING with `detail.cause:
     #: "budget_warning"`, which readers accept for one release.
     BUDGET_WARNING = "budget_warning"
+    #: A person asked the step's workflow to pause. The step's state is
+    #: unchanged by this event; the PARKED that follows is written by whoever
+    #: parks it (the scheduler, the worker). Contract request 160.
+    PAUSE_REQUESTED = "pause_requested"
+    #: A person resumed the step's workflow; the scheduler's READY follows for
+    #: a parked step. Contract request 160.
+    RESUME_REQUESTED = "resume_requested"

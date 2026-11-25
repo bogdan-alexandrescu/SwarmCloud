@@ -1,3 +1,4 @@
+# source-text: contract - the five acceptance comments in swarm_common's profiles.py and states.py must name the owner by role, which only their text shows
 """The frozen contract's acceptance comments name the owner by role (contract request 154).
 
 The repository moves to a fresh public repository holding one commit of main's

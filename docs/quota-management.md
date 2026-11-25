@@ -337,7 +337,7 @@ or `no_accounts_registered`. A spent or paused account is not one of them. That
 is the pool's own wait. The worker parks on it as `PROVIDER_QUOTA_EXHAUSTED`,
 with `next_eligible_at` set to the broker's reset time, or to a fallback when
 the broker has none: 300 seconds for an account nobody has read lately, 900 for
-a paused one (`lifecycle._park_no_account`).
+a paused one (`parking._park_no_account`).
 
 **An account is withheld as a duplicate only on the provider's own identity**
 . Two pool accounts are one subscription only when both have a recorded

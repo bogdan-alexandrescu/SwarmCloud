@@ -1,3 +1,4 @@
+# source-text: contract - each google.cloud client an app imports, lazily included, must be a distribution its pyproject.toml declares
 """Every google-cloud client a service imports must be declared by that service.
 
 WHY THIS TEST EXISTS

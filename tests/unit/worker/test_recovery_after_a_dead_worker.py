@@ -1,3 +1,4 @@
+# source-text: contract - ReconcilerConfig's retention comment must state the pass interval terraform's reconciler_schedule sets
 """A worker dies mid-attempt. What happens next, end to end, and how long it takes.
 
 MEASURED, on 2026-09-22: a task read DISPATCHED for about twenty minutes against

@@ -1,3 +1,4 @@
+# source-text: fixture - reads only the JSON build records the release script writes in a scratch repo; the checker selects it through a variable name that elsewhere in the file holds a .py path
 """A release builds every image whose inputs changed since the digest it would
 promote (lane REL-SKIP, part of archived issue 1194; owner-approved 2026-10-12).
 

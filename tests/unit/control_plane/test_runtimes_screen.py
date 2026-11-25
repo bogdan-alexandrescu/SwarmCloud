@@ -1,3 +1,4 @@
+# source-text: contract - api.ts's /v1/runtimes loader, the screen importing it and App.tsx's route must be wired; the screen's no `?? 0` sweep stays here because its file is resolved from api.ts across files
 """`GET /v1/runtimes` existed and nothing rendered it.
 
 THE DEFECT CLASS, in its other direction. This repository keeps producing seams

@@ -1,3 +1,4 @@
+# source-text: contract - the console's types.ts ParkReason union, PARK_NEEDS_A_PERSON and StatePill.tsx map must carry every Python ParkReason member
 """The live browser's frozen-contract changes, requests 68-71 (LB-A..LB-D, archived issue 1030).
 
 docs/design/live-browser.md section 8.4 asked for four changes to

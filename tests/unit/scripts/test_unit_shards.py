@@ -1,3 +1,4 @@
+# source-text: contract - the unit shard plan must cover every test file pytest collects under tests/unit, sized by unit_shards.py's SHARD_TARGET_SECONDS and MAX_SHARDS
 """The Python unit suite runs in weighted shards, and npm keeps vitest apart.
 
 OWNER REQUEST, 2026-10-07. With strict up-to-date merging, one pull request

@@ -1,3 +1,4 @@
+# source-text: contract - the render recipe's `git_fetch` call must use the tool name and `ref` argument gittools.py defines
 """`swarm-handoff compare` and `serve` work on a step with no live browser (part of archived issue 2442).
 
 The owner's 2026-11-12 comment on archived issue 2442: a non-browser step (claude-code,

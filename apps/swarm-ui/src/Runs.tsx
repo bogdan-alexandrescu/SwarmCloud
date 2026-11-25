@@ -885,7 +885,7 @@ export function runStateLine(run: IssueRun, merge: MergeCard | null = null): str
     case 'PLANNING':
       return 'A planner agent is reading the issue and the repository. It changes nothing.'
     case 'PLANNED':
-      return run.plan_approval === 'auto'
+      return run.plan_approval === 'auto' && run.plan_lint?.held !== true
         ? 'Holds no capacity. Approval is automatic: the next read approves this plan.'
         : 'Holds no capacity. Waiting for a person.'
     case 'APPROVED':
@@ -1136,7 +1136,8 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
         <StepsCard run={run} read={read} go={go} now={now} />
         {run.state === 'NOT_READY' && (
           <section className="rn-card rn-not-ready" aria-label="Not ready">
-            <h3>Not ready{run.not_ready?.kind ? ` · ${run.not_ready.kind.replace(/_/g, ' ')}` : ''}</h3>
+            <h3>Not ready{run.not_ready?.kind ? ` · ${run.not_ready.kind.replace(/_/g, ' ')}` : ''}
+              {run.readiness?.outcome === 'not_ready' && <> <Chip title={run.readiness.reason ?? undefined}>pre-pass</Chip></>}</h3>
             <p>{run.not_ready?.reason ?? 'The planner gave no reason.'}</p>
             {(run.not_ready?.needs ?? []).length > 0 && (
               <ul>{(run.not_ready?.needs ?? []).map((need, i) => <li key={i}>{need}</li>)}</ul>
@@ -1162,7 +1163,7 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
         {canAct && (
           <div className="rn-wait">
             <p className="rn-wait-t">
-              {run.plan_approval === 'required' ? (
+              {run.plan_approval === 'required' || run.plan_lint?.held === true ? (
                 <><b>Waiting for a person.</b> Anyone in <WorkspaceNamed id={run.tenant_id} phrase /> may approve, edit or reject.</>
               ) : (
                 <><b>Approval is automatic:</b> the next read approves this plan. Anyone in <WorkspaceNamed id={run.tenant_id} phrase /> may act on it first.</>
@@ -1930,13 +1931,22 @@ function overlapRead(o: unknown): PlanOverlap {
  * and sentence; what the hold means sits behind the chip's tooltip, so the page
  * gains no sentence of its own.
  */
+/** `issueruns.COST_HOLD_CODE`: the finding of an auto plan held for its expected cost. */
+const COST_HOLD_CODE = 'EXPECTED_COST_OVER_THRESHOLD'
+
 function PlanLintFindings({ lint }: { lint: PlanLintRecord | null }) {
   if (lint === null || !lint.held || lint.findings.length === 0) return null
+  // The cost hold (owner, 2026-11-24) holds with one finding of its own.
+  const costHold = lint.findings.every((f) => f.code === COST_HOLD_CODE)
   return (
     <div className="rn-lint" aria-label="Plan lint findings">
-      <Chip tone="park" title="The plan failed the plan lint, and so did its one re-plan: edit it, approve it or reject it.">
-        lint · {pluralise(lint.findings.length, 'finding')}
-      </Chip>
+      {costHold ? (
+        <Chip tone="park" title={lint.findings[0]?.message ?? undefined}>cost hold</Chip>
+      ) : (
+        <Chip tone="park" title="The plan failed the plan lint, and so did its one re-plan: edit it, approve it or reject it.">
+          lint · {pluralise(lint.findings.length, 'finding')}
+        </Chip>
+      )}
       <ul>
         {lint.findings.map((f, i) => (
           <li key={i}>

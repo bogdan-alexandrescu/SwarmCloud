@@ -1,3 +1,4 @@
+# source-text: contract - every `path::Symbol` that docs/jev-data-flow.md cites must resolve to a definition in that source file
 """The §5.4 data-flow rules each have a test that fails on their removal (archived issue 1336).
 
 The rules are what the security pass (archived issue 476) signs off before Jev

@@ -1,3 +1,4 @@
+# source-text: contract - grant_attest.py must compare with hmac.compare_digest; the timing it buys cannot be observed by a call
 """Workspace-secret grant attestation (SEC-GRANT-ATTEST, part of archived issue 1347).
 
 Design: docs/design/workspace-secrets.md, "What SEC-GRANT-ATTEST built";
@@ -17,7 +18,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import secrets
 from datetime import datetime, timezone
 from pathlib import Path
@@ -169,26 +169,14 @@ def test_a_malformed_attestation_is_invalid_never_missing(keys, presented):
 
 def test_the_comparison_is_constant_time():
     source = (REPO / "apps/swarm-api/swarm_api/grant_attest.py").read_text()
+    # And no `_mac(...) ==`: the lint rule `grant-mac-compared-in-constant-time`.
     assert "hmac.compare_digest" in source
-    assert not re.search(r"_mac\([^)]*\)\s*==|==\s*_mac\(", source)
 
 
-def test_the_canonical_form_is_stated_once():
-    """No other module builds the grant's MAC input: no other file names the
-    grant key's setting, makes an HMAC over a grant, or spells the form."""
-    root = REPO / "apps/swarm-api/swarm_api"
-    offenders = []
-    for path in sorted(root.rglob("*.py")):
-        if path.name == "grant_attest.py":
-            continue
-        text = path.read_text()
-        if re.search(r"workspace_grant_key|FORM_VERSION|canonical(_of)?\([^)]*consumer"
-                     r"|\[\s*[\"']v1[\"']\s*,[^\]]*secret_id", text):
-            offenders.append(str(path.relative_to(REPO)))
-    # settings.py declares the key's fields; it builds nothing from them.
-    assert offenders == ["apps/swarm-api/swarm_api/settings.py"], offenders
-    settings_text = (root / "settings.py").read_text()
-    assert "hmac" not in settings_text and "canonical" not in settings_text
+# THE CANONICAL FORM IS STATED ONCE: no other module builds the grant's MAC
+# input, and settings.py only declares the key's fields. Held by the lint rules
+# `grant-form-stated-once` and `grant-key-settings-build-nothing`
+# (scripts/source_text_rules/control_plane_am.py).
 
 
 # --------------------------------------------------------------------------

@@ -160,6 +160,46 @@ const FLOWS_INPUT: CSSProperties = { width: '4.5rem' }
  *  pages takes minutes, so this is a few reads a discovery, not a poll storm. */
 const DISCOVERY_POLL_MS = 20_000
 
+/** What the page is for, behind its title's (i). */
+const QA_INTRO =
+  'Web applications this workspace’s visual-QA runs test, each filing its findings in one of the workspace’s registered repositories. A new or changed host waits for a platform admin’s approval before any run.'
+
+/** A refusal as a form draws it: the API's own words if any, one short line, and the sentence in full behind its (i). */
+class Refusal {
+  constructor(
+    readonly line: string,
+    readonly tip: string | null = null,
+    readonly why: string | null = null,
+  ) {}
+}
+
+function RefusalLine({ refusal }: { readonly refusal: Refusal }) {
+  return (
+    <p className="ur-small ur-bad" role="alert">
+      {refusal.why !== null && (
+        <>
+          <span>{refusal.why}</span>{' '}
+        </>
+      )}
+      <span>{refusal.line}</span>
+      {refusal.tip !== null && (
+        <>
+          {' '}
+          <InfoTip about="this refusal" tip={refusal.tip} />
+        </>
+      )}
+    </p>
+  )
+}
+
+/** `cannotRunBecause`'s reason in a few words, or null when the reason itself is short enough to draw. */
+function shortWhy(leg: QaEnvironment): string | null {
+  if (leg.host_state === 'pending') return 'its host is not approved yet'
+  if (leg.host_state === 'revoked') return 'its host approval was revoked'
+  if (leg.host_state === 'approved' && leg.sign_in.kind === 'own_login' && !leg.credential.set) return 'no test credential is set'
+  return null
+}
+
 /** Drop `t` from the address bar, keeping everything else. Idempotent. */
 function stripLinkToken(): void {
   const url = new URL(window.location.href)
@@ -212,7 +252,7 @@ export function QaTargetsScreen({
     if (opened.current) stripLinkToken()
   }, [])
   const [editing, setEditing] = useState<'new' | QaTarget | null>(null)
-  const [said, setSaid] = useState<{ tone: 'info' | 'bad'; title: string; text: string } | null>(null)
+  const [said, setSaid] = useState<{ tone: 'info' | 'bad'; title: string; text: string; tip?: string } | null>(null)
   const targets = list.state.status === 'ok' || list.state.status === 'stale' ? list.state.data : []
   const nameOf = (id: string) => targets.find((t) => t.id === id)?.name ?? id
   // While a discovery runs, read the list again until it ends: the card's
@@ -238,7 +278,7 @@ export function QaTargetsScreen({
 
   return (
     <div className="ur-page ur-list qa-page">
-      <PageHead title="QA targets">
+      <PageHead title="QA targets" info={<InfoTip about="QA targets" tip={QA_INTRO} />}>
         <span className="ur-acts">
           <UrRefresh reads={[list]} />
           {adminGate === null && (
@@ -249,18 +289,16 @@ export function QaTargetsScreen({
         </span>
       </PageHead>
       {tabs}
-      <p className="ur-small">
-        Web applications this workspace&rsquo;s visual-QA runs test, each filing its findings in one of the workspace&rsquo;s
-        registered repositories. A new or changed host waits for a platform admin&rsquo;s approval before any run.
-      </p>
       {adminGate !== null && (
         <p className="ur-small" data-role-gate="admin">
-          {adminGate}
+          Set by a workspace admin. <InfoTip about="who sets QA targets" tip={adminGate} />
         </p>
       )}
       {only !== null && (
         <p className="ur-small" data-qa-filter="">
-          Showing the QA targets that file in <b>{only}</b>.{' '}
+          <span>
+            Showing the QA targets that file in <b>{only}</b>.
+          </span>{' '}
           <UrLink to={EVERY_TARGET} go={go}>
             Show every QA target
           </UrLink>
@@ -270,6 +308,12 @@ export function QaTargetsScreen({
       {said !== null && (
         <Banner tone={said.tone} title={said.title}>
           {said.text}
+          {said.tip !== undefined && (
+            <>
+              {' '}
+              <InfoTip about={said.title} tip={said.tip} />
+            </>
+          )}
         </Banner>
       )}
       {cred !== null && (
@@ -283,7 +327,8 @@ export function QaTargetsScreen({
             setSaid({
               tone: 'info',
               title: cred.field === 'challenge_bypass' ? 'Challenge bypass value saved' : 'Credential saved',
-              text: `The ${what} for ${where} is set. No page, route or log can show it again.`,
+              text: 'Never shown again.',
+              tip: `The ${what} for ${where} is set. No page, route or log can show it again.`,
             })
             setCred(null)
             list.reload()
@@ -302,7 +347,8 @@ export function QaTargetsScreen({
             setSaid({
               tone: 'info',
               title: created ? `Registered ${name}` : `Changed ${name}`,
-              text: pending ? `Its host ${doc?.host ?? ''} waits for a platform admin's approval before any run.` : 'Saved.',
+              text: pending ? 'Its host waits for a platform admin’s approval.' : 'Saved.',
+              ...(pending ? { tip: `Its host ${doc?.host ?? ''} waits for a platform admin's approval before any run.` } : {}),
             })
             list.reload()
           }}
@@ -316,8 +362,11 @@ export function QaTargetsScreen({
         onRetry={list.reload}
         empty={
           <EmptyState kind="empty" heading="No QA targets registered">
-            A workspace admin registers a web application here: its address, the repository its findings are filed in, and
-            the screens to capture.
+            A workspace admin registers one here.{' '}
+            <InfoTip
+              about="registering a QA target"
+              tip="A workspace admin registers a web application here: its address, the repository its findings are filed in, and the screens to capture."
+            />
           </EmptyState>
         }
       >
@@ -326,8 +375,15 @@ export function QaTargetsScreen({
           if (rows.length === 0) {
             return (
               <EmptyState kind="empty" heading={`No QA target files in ${only ?? 'this repository'}`}>
-                {all.length === 1 ? 'The workspace’s one QA target files' : `The workspace’s ${all.length} QA targets file`} in other
-                repositories.
+                {all.length === 1 ? 'It files in another repository.' : 'They file in other repositories.'}{' '}
+                <InfoTip
+                  about="where its QA targets file"
+                  tip={
+                    all.length === 1
+                      ? 'The workspace’s one QA target files in other repositories.'
+                      : `The workspace’s ${all.length} QA targets file in other repositories.`
+                  }
+                />
               </EmptyState>
             )
           }
@@ -436,6 +492,10 @@ export interface QaNeed {
   leg: QaEnvironment
   title: string
   body: string
+  /** The reason in full, behind the lead's (i); null when `body` already says it. */
+  tip: string | null
+  /** The target's other legs that run now, or ''. */
+  rest: string
   /** Its next action is a workspace admin's Set credential. */
   credential: boolean
 }
@@ -454,15 +514,21 @@ export function needsOf(targets: QaTarget[]): QaNeed[] {
       if (why === null) continue
       const who = legLabel(t, leg)
       const others = legs.filter((l) => l !== leg && cannotRunBecause(t, l) === null).map((l) => l.name ?? t.name)
-      const rest = others.length === 0 ? '' : ` ${others.join(', ').replace(/^./, (c) => c.toUpperCase())} ${others.length === 1 ? 'runs' : 'run'} now.`
+      const rest = others.length === 0 ? '' : `${others.join(', ').replace(/^./, (c) => c.toUpperCase())} ${others.length === 1 ? 'runs' : 'run'} now.`
       const credential = cannotBrowseBecause(t, leg) !== null && leg.host_state === 'approved' && leg.sign_in.kind === 'own_login' && !leg.credential.set
       const title =
         credential ? `${who} has no test credential`
-        : leg.host_state === 'pending' ? `${who} waits for a platform admin to approve its host`
         : leg.host_state === 'revoked' ? `${who}’s host approval was revoked`
         : `${who} cannot run`
-      const body = credential ? `Its leg cannot run until a workspace admin sets it.${rest}` : `${why}${rest}`
-      out.push({ t, leg, title, body, credential })
+      const body =
+        credential ? 'Cannot run until a workspace admin sets it.'
+        : leg.host_state === 'pending' ? 'Its host waits for a platform admin’s approval.'
+        : leg.host_state === 'revoked' ? 'A platform admin approves it again.'
+        : why
+      let tip = why === body ? null : why
+      if (leg.host_state === 'pending') tip = `${who} waits for a platform admin to approve its host. ${why}`
+      if (credential) tip = 'Its leg cannot run until a workspace admin sets it.'
+      out.push({ t, leg, title, body, tip, rest, credential })
     }
   }
   return out
@@ -480,7 +546,10 @@ function QaLead({ targets, admin, onCredential }: { targets: QaTarget[]; admin: 
         <div className="qa-lead-t">
           <span className="qa-lead-k">QA targets · nothing missing</span>
           <b>{n === 1 ? 'The one environment can run' : `Every environment can run: ${n}`}</b>
-          <span className="qa-lead-s">Tick the environments on a target and press Run.</span>
+          <span className="qa-lead-s">
+            Tick environments on a target, press Run.{' '}
+            <InfoTip about="running a QA target" tip="Tick the environments on a target and press Run." />
+          </span>
         </div>
       </section>
     )
@@ -491,7 +560,16 @@ function QaLead({ targets, admin, onCredential }: { targets: QaTarget[]; admin: 
       <div className="qa-lead-t">
         <span className="qa-lead-k">{`QA targets · ${needs.length} missing`}</span>
         <b>{first.title}</b>
-        <span className="qa-lead-s">{first.body}</span>
+        <span className="qa-lead-s">
+          {first.body}
+          {first.tip !== null && (
+            <>
+              {' '}
+              <InfoTip about="why it cannot run" tip={first.tip} />
+            </>
+          )}
+        </span>
+        {first.rest !== '' && <span className="qa-lead-s">{first.rest}</span>}
       </div>
       {first.credential && admin && (
         <div className="qa-lead-a">
@@ -698,7 +776,13 @@ function TargetCard({
                     {leg.name !== null && <small>{kindWords(leg)}</small>}
                     {legWhy !== null && (
                       <small className="ur-bad" data-cannot-run="">
-                        Cannot run: {legWhy}
+                        Cannot run: {shortWhy(leg) ?? legWhy}
+                        {shortWhy(leg) !== null && (
+                          <>
+                            {' '}
+                            <InfoTip about={`why ${label} cannot run`} tip={legWhy} />
+                          </>
+                        )}
                       </small>
                     )}
                     {clicks !== null && <small data-start-clicks="">{clicks}</small>}
@@ -774,7 +858,7 @@ function TargetCard({
           only, file no issues
         </label>
         <label className="ur-small">
-          Flows with{' '}
+          <span>Flows with</span>{' '}
           <select
             data-run-browser=""
             value={runTool ?? ''}
@@ -827,7 +911,10 @@ function TargetCard({
       )}
       {confirmDelete && (
         <div className="ur-cacts" role="group" aria-label={`Delete ${t.name}`}>
-          <span className="ur-small">{`Delete ${t.name}? Its test credential is deleted with it.`}</span>
+          <span className="ur-small">
+            Its test credential is deleted with it.{' '}
+            <InfoTip about={`deleting ${t.name}`} tip={`Delete ${t.name}? Its test credential is deleted with it.`} />
+          </span>
           <Button size="sm" kind="danger-filled" busy={busy} onClick={() => void remove()}>
             Delete {t.name}
           </Button>
@@ -963,7 +1050,7 @@ function ApproveHostForm({
   const [tokenPath, setTokenPath] = useState(leg.approved_idp_token_path ?? '')
   const [ticked, setTicked] = useState<string[]>(() => leg.extra_origins.filter((o) => leg.approved_origins.includes(o)))
   const [busy, setBusy] = useState(false)
-  const [failed, setFailed] = useState<string | null>(null)
+  const [failed, setFailed] = useState<Refusal | null>(null)
   const fid = useId()
   const matches = host !== '' && typedHost(typed) === host && (origin === null || typedOrigin.trim() === origin)
 
@@ -977,18 +1064,23 @@ function ApproveHostForm({
     const r = await approveQaTargetHost(t.id, host, origin, path === '' ? null : path, leg.name, named)
     setBusy(false)
     if (r.status === 'error') {
-      setFailed(writeFailure(r.error))
+      setFailed(new Refusal(writeFailure(r.error)))
       return
     }
     if (r.status === 'ok' && r.data !== null) onApproved(r.data)
-    else setFailed('The approval was answered without the target; refresh to read its host.')
+    else setFailed(new Refusal('Approved; refresh to read its host.', 'The approval was answered without the target; refresh to read its host.'))
   }
 
   return (
     <form className="qa-approve" data-target-id={t.id} data-environment-approve={leg.name ?? undefined} onSubmit={(e) => void submit(e)} autoComplete="off">
       <p className="ur-small">
-        {`Approving ${host} lets this workspace's visual-QA runs open it. The approval is recorded under your name.`}
-        {origin !== null && ` The login also signs in through ${origin}, approved with it.`}
+        {`Approving lets QA runs open ${host}.`}{' '}
+        <InfoTip
+          about={`approving ${host}`}
+          tip={`Approving ${host} lets this workspace's visual-QA runs open it. The approval is recorded under your name.${
+            origin === null ? '' : ` The login also signs in through ${origin}, approved with it.`
+          }`}
+        />
       </p>
       <div className="ur-fgrid">
         <label className="ur-fl" htmlFor={`${fid}-host`}>
@@ -1032,7 +1124,11 @@ function ApproveHostForm({
                 spellCheck={false}
               />
               <p className="ur-small">
-                {`The gate lets exactly a POST to ${origin} at this path through, after its own sign-in, so the app can refresh its token. Every other write there stays refused.`}
+                The gate lets exactly this POST through.{' '}
+                <InfoTip
+                  about="the IdP token path"
+                  tip={`The gate lets exactly a POST to ${origin} at this path through, after its own sign-in, so the app can refresh its token. Every other write there stays refused.`}
+                />
               </p>
             </div>
           </>
@@ -1056,6 +1152,16 @@ function ApproveHostForm({
                   {o}
                 </label>
               ))}
+              {leg.environment === 'non_production' && (
+                // Epic 21: a mutating flow's writes are not confined to the base host.
+                <p className="ur-small" data-writes-notice="">
+                  Flows here may write to each ticked host.{' '}
+                  <InfoTip
+                    about="where flows write"
+                    tip={`Flows on this environment may write, and their writes reach each ticked host as well as ${host}, a shared API among them.`}
+                  />
+                </p>
+              )}
             </div>
           </>
         )}
@@ -1068,11 +1174,7 @@ function ApproveHostForm({
           Cancel
         </Button>
       </div>
-      {failed !== null && (
-        <p className="ur-small ur-bad" role="alert">
-          {failed}
-        </p>
-      )}
+      {failed !== null && <RefusalLine refusal={failed} />}
     </form>
   )
 }
@@ -1113,7 +1215,7 @@ function CredentialForm({
   const bypass = useRef<HTMLInputElement>(null)
   const fid = useId()
   const [busy, setBusy] = useState(false)
-  const [failed, setFailed] = useState<string | null>(null)
+  const [failed, setFailed] = useState<Refusal | null>(null)
   const isBypass = link.field === 'challenge_bypass'
   // The entry is one unbroken run: at 390 the title broke at the name's own
   // hyphen ("peer-app-prod · prod-" / "reviewer"). An entry is at most 20
@@ -1134,11 +1236,20 @@ function CredentialForm({
     const value = bypass.current?.value ?? ''
     for (const field of [user, pass, bypass]) if (field.current !== null) field.current.value = ''
     if (link.token === null) {
-      setFailed(`This form needs a one-time link, and its link was already used or never came. Ask for a new one${isBypass ? '' : ' with Set credential'}.`)
+      setFailed(
+        new Refusal(
+          'This form needs a fresh one-time link.',
+          `This form needs a one-time link, and its link was already used or never came. Ask for a new one${isBypass ? '' : ' with Set credential'}.`,
+        ),
+      )
       return
     }
     if (isBypass ? value === '' : username === '' || password === '') {
-      setFailed(isBypass ? 'Type the value; nothing was sent.' : 'Type both the username and the password; nothing was sent.')
+      setFailed(
+        isBypass
+          ? new Refusal('Type the value; nothing was sent.')
+          : new Refusal('Type both; nothing was sent.', 'Type both the username and the password; nothing was sent.'),
+      )
       return
     }
     setBusy(true)
@@ -1159,12 +1270,11 @@ function CredentialForm({
       // saved"). `qa_credential_link_invalid`'s message already ends "ask for
       // a new one", so that refusal is not told to ask twice.
       const why = asSentence(writeFailure(r.error))
+      const again = r.error.code === QA_LINK_INVALID ? null : 'The link is used; ask for a new one to try again.'
       setFailed(
-        !linkSpent(r)
-          ? `${why} Nothing was saved; the link still works, fix the field and save again.`
-          : r.error.code === QA_LINK_INVALID
-            ? `${why} The link is used.`
-            : `${why} The link is used; ask for a new one to try again.`,
+        linkSpent(r)
+          ? new Refusal('The link is used.', again, why)
+          : new Refusal('Nothing was saved; the link still works.', 'Nothing was saved; the link still works, fix the field and save again.', why),
       )
       return
     }
@@ -1182,15 +1292,19 @@ function CredentialForm({
     >
       {isBypass ? (
         <p className="ur-small">
-          Type the value of the challenge bypass the app&rsquo;s owner made for these runs. It goes from this page to the
-          workspace&rsquo;s secret store and nowhere else, and the live browser adds it on the target&rsquo;s approved origins
-          alone. The link works once.
+          Type the value; the link works once.{' '}
+          <InfoTip
+            about="the challenge bypass value"
+            tip="Type the value of the challenge bypass the app’s owner made for these runs. It goes from this page to the workspace’s secret store and nowhere else, and the live browser adds it on the target’s approved origins alone. The link works once."
+          />
         </p>
       ) : (
         <p className="ur-small">
-          Type the test account&rsquo;s username and password. They go from this page to the workspace&rsquo;s secret store and
-          nowhere else: Claude, the plugin and this page&rsquo;s address never see them, and the live browser types them into
-          the app&rsquo;s login without the agent holding them. Use a test account with no MFA or CAPTCHA. The link works once.
+          Use a test account; the link works once.{' '}
+          <InfoTip
+            about="the test credential"
+            tip="Type the test account’s username and password. They go from this page to the workspace’s secret store and nowhere else: Claude, the plugin and this page’s address never see them, and the live browser types them into the app’s login without the agent holding them. Use a test account with no MFA or CAPTCHA. The link works once."
+          />
         </p>
       )}
       <form
@@ -1236,23 +1350,21 @@ function CredentialForm({
           </Button>
         </div>
       </form>
-      {failed !== null && (
-        <p className="ur-small ur-bad" role="alert">
-          {failed}
-        </p>
-      )}
+      {failed !== null && <RefusalLine refusal={failed} />}
     </Card>
   )
 }
 
 /** `id path` a line, as the form's screens box spells them. */
-function parseScreens(text: string): QaScreen[] | string {
+function parseScreens(text: string): QaScreen[] | Refusal {
   const out: QaScreen[] = []
   for (const raw of text.split('\n')) {
     const line = raw.trim()
     if (line === '') continue
     const parts = line.split(/\s+/)
-    if (parts.length !== 2 || !parts[1]!.startsWith('/')) return `"${line}" is not "<id> <path>", the path starting with /`
+    if (parts.length !== 2 || !parts[1]!.startsWith('/')) {
+      return new Refusal(`"${line}" is not "<id> /<path>"`, `"${line}" is not "<id> <path>", the path starting with /`)
+    }
     out.push({ id: parts[0]!, path: parts[1]! })
   }
   return out
@@ -1405,26 +1517,31 @@ function queryOf(text: string): string {
 }
 
 /** The More settings box: an object of `MORE_FIELDS` only, or the refusal in words. */
-function parseMore(text: string): Record<string, unknown> | string {
+function parseMore(text: string): Record<string, unknown> | Refusal {
   if (text.trim() === '') return {}
   let value: unknown
   try {
     value = JSON.parse(text)
   } catch {
-    return 'More settings is not JSON: write one object, for example {"widths": ["desktop"]}.'
+    return new Refusal('More settings is not JSON.', 'More settings is not JSON: write one object, for example {"widths": ["desktop"]}.')
   }
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return 'More settings must be one JSON object.'
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return new Refusal('More settings must be one JSON object.')
   const unknown = Object.keys(value).filter((k) => !(MORE_FIELDS as readonly string[]).includes(k))
-  if (unknown.length > 0) return `More settings takes only ${MORE_FIELDS.join(', ')}; not ${unknown.join(', ')}. Nothing was sent.`
+  if (unknown.length > 0) {
+    return new Refusal(
+      `More settings does not take ${unknown.join(', ')}.`,
+      `More settings takes only ${MORE_FIELDS.join(', ')}; not ${unknown.join(', ')}. Nothing was sent.`,
+    )
+  }
   return value as Record<string, unknown>
 }
 
 /** The body a draft sends: every field for a registration, the changed ones for an edit. */
-function bodyOf(d: Draft, was: Draft | null): QaTargetSend | string {
+function bodyOf(d: Draft, was: Draft | null): QaTargetSend | Refusal {
   const screens = parseScreens(d.screens)
-  if (typeof screens === 'string') return screens
+  if (screens instanceof Refusal) return screens
   const more = parseMore(d.more)
-  if (typeof more === 'string') return more
+  if (more instanceof Refusal) return more
   const full: QaTargetSend = {
     name: d.name.trim(),
     base_url: d.base_url.trim(),
@@ -1573,10 +1690,10 @@ function SignInFields({
           )}
           <div className="ur-fl">
             Start clicks
-            <small>
-              What the gate clicks, in order, before the form (a chooser, or a &ldquo;Sign in&rdquo; button before the identity provider).
-              Text is the control&rsquo;s exact visible text; CSS, optional, narrows the candidates (for example button).
-            </small>
+            <InfoTip
+              about="start clicks"
+              tip="What the gate clicks, in order, before the form (a chooser, or a “Sign in” button before the identity provider). Text is the control’s exact visible text; CSS, optional, narrows the candidates (for example button)."
+            />
           </div>
           <div>
             {s.start_clicks.map((c, i) => (
@@ -1677,7 +1794,7 @@ function TargetForm({
   const repos = useUrRead(loadRepositories, 'qa-target-repos')
   const [d, setD] = useState<Draft>(() => draftOf(target))
   const [busy, setBusy] = useState(false)
-  const [failed, setFailed] = useState<string | null>(null)
+  const [failed, setFailed] = useState<Refusal | null>(null)
   // The bypass's value: UNCONTROLLED, in the DOM input alone until a save reads and empties it.
   const bypassValue = useRef<HTMLInputElement>(null)
   // Each label cell names its control by id (`ur-fl` beside it, not around it).
@@ -1691,7 +1808,7 @@ function TargetForm({
     const value = d.bypass_kind === 'none' ? '' : (bypassValue.current?.value ?? '')
     if (bypassValue.current !== null) bypassValue.current.value = ''
     const body = bodyOf(d, target === null ? null : draftOf(target))
-    if (typeof body === 'string') {
+    if (body instanceof Refusal) {
       setFailed(body)
       return
     }
@@ -1706,7 +1823,7 @@ function TargetForm({
       const r = target === null ? await createQaTarget(body) : await patchQaTarget(target.id, body)
       if (r.status === 'error') {
         setBusy(false)
-        setFailed(writeFailure(r.error))
+        setFailed(new Refusal(writeFailure(r.error)))
         return
       }
       doc = r.status === 'ok' ? normQaTarget((r.data as { qa_target?: unknown } | null)?.qa_target) : null
@@ -1717,7 +1834,13 @@ function TargetForm({
       const v = await putQaChallengeBypass(id, value)
       if (v.status === 'error') {
         setBusy(false)
-        setFailed(`The target is saved; its challenge bypass value is not: ${writeFailure(v.error)} Type it again to retry.`)
+        setFailed(
+          new Refusal(
+            'Saved, but not its challenge bypass value.',
+            `The target is saved; its challenge bypass value is not: ${writeFailure(v.error)} Type it again to retry.`,
+            writeFailure(v.error),
+          ),
+        )
         return
       }
     }
@@ -1741,7 +1864,10 @@ function TargetForm({
           <div>
             <input id={`${fid}-base_url`} name="base_url" value={d.base_url} onChange={set('base_url')} placeholder="https://app.example.com/" />
             {target !== null && target.host !== null && (
-              <p className="ur-hint">{`Changing the address's host sets ${target.host}'s approval back to pending.`}</p>
+              <p className="ur-hint">
+                A new host sets approval back to pending.{' '}
+                <InfoTip about="changing the host" tip={`Changing the address's host sets ${target.host}'s approval back to pending.`} />
+              </p>
             )}
           </div>
           {d.legs.length === 0 ? (
@@ -1759,9 +1885,11 @@ function TargetForm({
                   maxLength={257}
                 />
                 <p className="ur-hint">
-                  Plain key=value pairs, joined by &amp;, added to every address the run opens, sign-in included: for an app
-                  that picks its environment from the address. Never a token or a password. Changing it keeps the host&apos;s
-                  approval.
+                  Plain key=value pairs; never a token or password.{' '}
+                  <InfoTip
+                    about="the entry query"
+                    tip="Plain key=value pairs, joined by &, added to every address the run opens, sign-in included: for an app that picks its environment from the address. Never a token or a password. Changing it keeps the host's approval."
+                  />
                 </p>
               </div>
             </>
@@ -1786,8 +1914,11 @@ function TargetForm({
                   />
                   {i === d.legs.length - 1 && (
                     <p className="ur-hint">
-                      Plain key=value pairs, joined by &amp;, added to every address that environment&apos;s runs open, sign-in
-                      included. Never a token or a password. Changing one keeps its host&apos;s approval.
+                      Plain key=value pairs; never a token or password.{' '}
+                      <InfoTip
+                        about="the entry queries"
+                        tip="Plain key=value pairs, joined by &, added to every address that environment's runs open, sign-in included. Never a token or a password. Changing one keeps its host's approval."
+                      />
                     </p>
                   )}
                 </div>
@@ -1887,8 +2018,11 @@ function TargetForm({
             </select>
             {d.bypass_kind !== 'none' && (
               <p className="ur-hint">
-                Only for an app your workspace owns: the header or cookie its CAPTCHA test keys or WAF skip rule accept. The live
-                browser adds it on this target&rsquo;s approved origins and nowhere else, and the agent never sees its value.
+                Only for an app your workspace owns.{' '}
+                <InfoTip
+                  about="the challenge bypass"
+                  tip="Only for an app your workspace owns: the header or cookie its CAPTCHA test keys or WAF skip rule accept. The live browser adds it on this target’s approved origins and nowhere else, and the agent never sees its value."
+                />
               </p>
             )}
           </div>
@@ -1929,13 +2063,13 @@ function TargetForm({
           </div>
           <label className="ur-fl" htmlFor={`${fid}-more`}>
             More settings
-            <small>
-              JSON: {MORE_FIELDS.join(', ')}. <code>file.label_rules</code>, e.g.{' '}
-              <code>{'[{"paths": ["/agents/"], "labels": ["agent-page-rework"]}]'}</code>, adds a rule&rsquo;s labels to the
-              findings on routes starting with one of its paths
-            </small>
+            <small>JSON</small>
           </label>
           <div>
+            <InfoTip
+              about="More settings"
+              tip={`JSON: ${MORE_FIELDS.join(', ')}. file.label_rules, e.g. [{"paths": ["/agents/"], "labels": ["agent-page-rework"]}], adds a rule’s labels to the findings on routes starting with one of its paths`}
+            />
             <textarea id={`${fid}-more`} name="more" value={d.more} onChange={set('more')} rows={6} placeholder={'{"widths": ["desktop", "phone-390"]}'} />
           </div>
         </div>
@@ -1948,11 +2082,7 @@ function TargetForm({
           </Button>
         </div>
       </form>
-      {failed !== null && (
-        <p className="ur-small ur-bad" role="alert">
-          {failed}
-        </p>
-      )}
+      {failed !== null && <RefusalLine refusal={failed} />}
     </Card>
   )
 }

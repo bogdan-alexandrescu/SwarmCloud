@@ -21,8 +21,9 @@
 // The bodies are routes/repositories.py's and forgeperms.py's shapes.
 // Placeholders only; nothing is token-shaped.
 
+import { helpIn, shownIn } from './proseruns'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { repo, serve, sha, visible } from './repofixture'
 
 const WAIT = { timeout: 4000 }
@@ -163,6 +164,9 @@ describe('Repositories: the card says workflow files on or off, and has no switc
     const notes = [...document.querySelectorAll<HTMLElement>('p.ur-hint')].filter((p) => visible(p).includes(WHY))
     expect(notes).toHaveLength(1)
     expect(notes[0]!.closest('.ur-card')).toBeNull()
+    // Issue 81: the two sentences are behind the note's (i), word for word; one short line stays.
+    expect(helpIn(notes[0])).toBe(WHY)
+    expect(shownIn(notes[0])).toBe('Workflow files run with secrets before any merge.')
     // The role and the GitHub permissions have been read before the absences are.
     await waitFor(() => expect(calls.some((c) => c.url.split('?')[0] === '/v1/tenants/me')).toBe(true), WAIT)
     await waitFor(() => expect(calls.some((c) => c.url.split('?')[0] === '/v1/forge/permissions')).toBe(true), WAIT)
@@ -297,6 +301,7 @@ describe("the repository's page: workflow files", () => {
     expect(el()!.getAttribute('data-workflow-files')).toBe('false')
     expect(visible(el())).toContain('Workflow files off')
     expect(visible(el())).toContain(WHY)
+    expect(helpIn(el())).toBe(WHY)
     // MUTATION: draw no control on the page (the switch stayed on the card) and this times out.
     await waitFor(() => expect(el()!.querySelector('button')).not.toBeNull(), WAIT)
     expect(visible(el()!.querySelector('button'))).toBe('Turn on')
@@ -320,7 +325,8 @@ describe("the repository's page: workflow files", () => {
     const { calls, el } = await mountDetail(role, { workflow_files: false }, true)
     // MUTATION: drop the admin gate and this gets a button.
     await waitFor(() => expect(el()!.querySelector('[data-role-gate="admin"]')).not.toBeNull(), WAIT)
-    expect(el()!.querySelector('button')).toBeNull()
+    // An (i) (`About workflow files`, issue 81) only opens its tip; no other button is drawn.
+    expect(within(el()!).queryAllByRole('button').filter((b) => b.getAttribute('aria-label') !== 'About workflow files')).toEqual([])
     // MUTATION: hide the state below admin and this loses it.
     expect(visible(el())).toContain('Workflow files off')
     expect(visible(el()!.querySelector('[data-role-gate="admin"]'))).toBe('set by a workspace admin')

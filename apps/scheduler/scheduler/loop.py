@@ -104,9 +104,28 @@ from .dispatch import PLATFORM_REFUSAL_CODES, BackendRouter, DispatchError, live
 from .fairness import AgingConfig, round_robin_order
 from .metrics import SchedulerMetrics
 from .settings import SchedulerSettings
-from .store import GuardedWrite, ParentEnd, SchedulerStore, platform_refusal_backoff
+from .store import (
+    GuardedWrite,
+    ParentEnd,
+    SchedulerStore,
+    WorkflowPause,
+    platform_refusal_backoff,
+)
 
 log = logging.getLogger(__name__)
+
+#: The raw step field the pause routes write (docs/design/workflow-pause.md
+#: section 2.1): a signal for the step's worker, never the authority, and
+#: outside the frozen `Task`, as `cancel_requested_at` is.
+PAUSE_REQUESTED_AT = "pause_requested_at"
+
+
+def _clear_pause_mirror(stored: dict[str, Any]) -> dict[str, Any]:
+    """The promotion's extra field: clear a pause mirror its workflow's resume
+    left behind. Called only for a workflow read as not paused."""
+    if stored.get(PAUSE_REQUESTED_AT) is None:
+        return {}
+    return {PAUSE_REQUESTED_AT: None}
 
 #: Who switched a tenant off (WAIT-PAUSER, part of archived issue 1782): swarm-api's
 #: `PUT /v1/admin/tenants/{id}/limits` appends one `admin_audit` row per change
@@ -887,6 +906,9 @@ class DrainReport:
     promoted_scheduled_retries: int = 0
     #: MANUAL_PAUSE parks returned to READY once what paused them cleared.
     promoted_manual_pauses: int = 0
+    #: WORKFLOW_PAUSED parks returned to READY once their workflow was resumed
+    #: (contract request 160, docs/design/workflow-pause.md section 4.2).
+    promoted_workflow_pauses: int = 0
     #: Failed dispatches the platform refused, parked PLATFORM_REFUSED with no
     #: attempt spent (contract request 123), and steps admission parked the
     #: same way before their lease (a missing plugin bundle, which also
@@ -897,6 +919,9 @@ class DrainReport:
     #: SCHEDULED_RETRY parks on a task that had used its last attempt, ended
     #: DEAD_LETTERED instead of retried (`_promote_scheduled_retries`).
     dead_lettered: int = 0
+    #: Re-reviews whose verdict gate was recorded shut, ended PARKED ->
+    #: SUCCEEDED here with no lease and no pod (contract request 157).
+    ended_shut_gates: int = 0
     #: CHILDREN_INCOMPLETE parks returned to READY: every child terminal with
     #: its outputs staged, or the await deadline passed (child tasks, §3.3).
     promoted_child_awaits: int = 0
@@ -1010,6 +1035,9 @@ class Scheduler:
         # the next drain, so a sibling admitted in between starts, holds
         # capacity and runs to completion (docs/workflows.md says so).
         self._workflow_verdicts: dict[tuple[str, str], FailedWorkflow | None] = {}
+        # Per drain too, keyed the same way: each workflow's pause, read at most
+        # once per drain (`_workflow_pause`, docs/design/workflow-pause.md 4.1).
+        self._workflow_pauses: dict[tuple[str, str], WorkflowPause | None] = {}
         # Where each paged park sweep resumes (`_parked_window`), keyed by
         # (sweep, reason): two sweeps reading one reason would hand each only
         # every other page through one cursor. Kept across drains on purpose:
@@ -1066,6 +1094,7 @@ class Scheduler:
         self._paused_by_cache: dict[str, dict[str, str]] = {}
         self._topup_tenant_ids: list[str] | None = None
         self._workflow_verdicts = {}
+        self._workflow_pauses = {}
         self._swept_workflows = set()
         self._ended = []
         # Each refused pool's ceiling and inputs, read once per run (archived issue 3047).
@@ -1097,6 +1126,7 @@ class Scheduler:
         report.promoted_scheduled_retries = self._promote_scheduled_retries(report)
         report.promoted_platform_refusals = self._promote_platform_refusals(report)
         report.promoted_manual_pauses = self._promote_manual_pauses(report)
+        report.promoted_workflow_pauses = self._promote_workflow_pauses(report)
         report.promoted_ci_waits = self._promote_ci_waits(report)
         report.dead_lettered += self._expire_human_waits(report)
         self._sweep_awaiting_input(report)
@@ -1572,12 +1602,15 @@ class Scheduler:
     def _release_ended(self, report: DrainReport) -> None:
         """Resolve the dependants of what this run ended itself. Never fails the run.
 
-        A task the scheduler ends is FAILED, DEAD_LETTERED or CANCELLED, never
-        SUCCEEDED, so the rule CANCELS its dependants and promotes none: this
-        writes no READY and takes no lease, and creates no demand (invariant
-        1). The scheduler does not publish a `task_finished` wake to itself
-        instead: it is the wake's receiver, and that message would queue
-        behind the drain lock this run holds.
+        A task the scheduler ends is FAILED, DEAD_LETTERED or CANCELLED, so the
+        rule CANCELS its dependants -- except a re-review whose verdict gate was
+        recorded shut, ended SUCCEEDED (contract request 157), whose dependants
+        (the merge step) the rule promotes READY exactly as a worker's finish
+        wake would. Either way this takes no lease itself: only `_admit_one`
+        does, so nothing here creates demand (invariant 1). The scheduler does
+        not publish a `task_finished` wake to itself instead: it is the
+        wake's receiver, and that message would queue behind the drain lock
+        this run holds.
 
         A failure here is logged and the run goes on: resolving now is a
         latency win, and the next drain's `_promote_dependencies` resolves the
@@ -1707,6 +1740,13 @@ class Scheduler:
         # check would ever stop it. It sees failures as of this drain's verdict
         # (see `_stop_for_failed_workflow` for the window that leaves).
         if self._stop_for_failed_workflow(task, report):
+            return None
+
+        # THE ADMISSION GATE for a paused workflow (contract request 160,
+        # docs/design/workflow-pause.md section 4.1): before dependencies,
+        # credentials or capacity, so a paused workflow admits nothing and
+        # reserves nothing (invariants 1 to 3).
+        if self._park_for_workflow_pause(task, report):
             return None
 
         # A fix round whose pull request already ended buys nothing (archived issue 2524).
@@ -2351,7 +2391,14 @@ class Scheduler:
         (docs/design/human-steps.md §4.4 step 1). It passes through READY for
         that one write and holds nothing during it. It is not returned as
         released, so the finish event's admission pass is never handed it.
+
+        A re-review whose verdict gate is recorded shut is ENDED instead of
+        promoted (contract request 157, `_end_shut_gate_rereview`): False, as
+        it is not READY, and its own dependants are resolved in this run.
         """
+        ended = self._end_shut_gate_rereview(task, report)
+        if ended is not None:
+            return False
         patch_from, event_detail = self._runtime_resolution(task)
         if not self._promote(task, kind="dependency", detail={"reason": reason}, report=report,
                              patch_from=patch_from, event_detail=event_detail):
@@ -2378,6 +2425,50 @@ class Scheduler:
             self._note_ended(task.id)
         else:
             self._count_stale(outcome, report)
+
+    def _end_shut_gate_rereview(self, task: Task, report: DrainReport) -> bool | None:
+        """End a re-review whose agent will not run, PARKED -> SUCCEEDED (contract request 157).
+
+        Accepted by the owner 2026-11-24. Its worker would read the gate, run
+        no agent, re-publish the review's verdict and end SUCCEEDED; for that
+        copy it was admitted in every pool, leased, dispatched and started.
+        The scheduler reads the same gate from the platform's own record
+        (`runtime.shut_gate_ending`, built on `runtime.republishes`) and ends
+        the step in the guarded write that would otherwise promote it
+        (`SchedulerStore.end_shut_gate_rereview`), which re-reads the task,
+        the integrator's record and the review's manifest in one transaction.
+
+        None: not this path -- the step is promoted exactly as today. That is
+        every step but an unresolved `browser_if_ui` re-review whose gate the
+        read finds certainly shut and whose review has the verdict file to
+        point at, and every step while the frozen contract does not allow
+        PARKED -> SUCCEEDED. True: ended; its dependants are resolved in this
+        run (`_note_ended`, `_release_chain`), as a worker's finish wake would
+        resolve them. False: the guarded write refused -- the task moved, its
+        generation moved, or the gate re-read is no longer certainly shut --
+        and the step is left alone for the next drain to decide afresh.
+        """
+        if not can_transition(TaskState.PARKED, TaskState.SUCCEEDED):
+            return None
+        if runtime_mod.policy_of(task.metadata) is None:
+            return None
+        seen = {"metadata": task.metadata, "depends_on": list(task.depends_on),
+                "tenant_id": task.tenant_id}
+        if runtime_mod.shut_gate_ending(
+            seen, lambda task_id: self._store.task_document(task_id, tenant_id=task.tenant_id)
+        ) is None:
+            return None
+        outcome = self._store.end_shut_gate_rereview(task, runtime_mod.shut_gate_ending)
+        if not outcome.applied:
+            self._count_stale(outcome, report)
+            return False
+        report.ended_shut_gates += 1
+        self._note_ended(task.id)
+        log.info(
+            "re-review ended without a worker: its verdict gate is recorded shut",
+            extra={"task_id": task.id, "tenant_id": task.tenant_id},
+        )
+        return True
 
     def _runtime_resolution(self, task: Task) -> tuple[
         Callable[[dict[str, Any]], dict[str, Any]] | None, Callable[[], dict[str, Any]] | None
@@ -2488,6 +2579,90 @@ class Scheduler:
             return False
         self._sweep_failed_workflow(failed, report)
         return True
+
+    # -- workflow pause (contract request 160) -------------------------------
+
+    def _workflow_pause(self, task: Task) -> WorkflowPause | None:
+        """The step's workflow's pause (`SchedulerStore.workflow_pause`), read at
+        most once per drain and tenant-checked there. None for a step that is
+        not a workflow's."""
+        workflow_id = task.workflow_id
+        if not workflow_id:
+            return None
+        key = (task.tenant_id, workflow_id)
+        if key not in self._workflow_pauses:
+            self._workflow_pauses[key] = self._store.workflow_pause(workflow_id, task.tenant_id)
+        return self._workflow_pauses[key]
+
+    def _park_for_workflow_pause(self, task: Task, report: DrainReport) -> bool:
+        """Park a READY step of a paused workflow WORKFLOW_PAUSED; True when the
+        caller must leave it alone (docs/design/workflow-pause.md section 4.1).
+
+        Before any lease: nothing is reserved, so nothing is released, and the
+        park holds no capacity (invariant 1). The park is guarded on the READY
+        state this drain read (`SchedulerStore.park`), and admission's lease
+        transaction takes READY tasks only. So a pause landing while a step is
+        admitted cannot leave it both parked and leased: whichever write
+        commits second sees the state moved and writes nothing. A step leased
+        first in that window carries the pause mirror the route wrote, and its
+        worker parks at its first poll (design section 8.1).
+
+        A pause read as lifted is cached for the drain, so the gap a pause can
+        fall into is the rest of the drain that read it (section 8.1).
+        """
+        pause = self._workflow_pause(task)
+        if pause is None:
+            return False
+        self._park(
+            task,
+            ParkReason.WORKFLOW_PAUSED,
+            report,
+            detail={
+                "workflow_id": task.workflow_id,
+                "paused_by": pause.paused_by,
+                "paused_at": pause.paused_at.isoformat() if pause.paused_at else None,
+            },
+        )
+        return True
+
+    def _promote_workflow_pauses(self, report: DrainReport) -> int:
+        """Return WORKFLOW_PAUSED parks to READY once their workflow is resumed.
+
+        The one writer of PARKED(WORKFLOW_PAUSED) -> READY (docs/design/
+        workflow-pause.md section 4.2; `_promote_manual_pauses` never reads
+        this reason, which is why it has its own). Reads `_parked_window`, an
+        equality query on state and park reason paged by document id. A step
+        of a failed `fail_workflow` workflow is cancelled, not promoted. While
+        the workflow stays paused the park is left alone: no write, so a long
+        pause costs one cached point read per workflow per drain.
+
+        Promotion only returns the step to READY; admission then asks every
+        other question again (tenant, pools, credentials, dependencies). The
+        same guarded write clears a `pause_requested_at` mirror the resume
+        route did not reach (its stage 2 died or stayed contended), so a stale
+        mirror costs a step at most one worker park, never a loop (section
+        3.2). It writes the task alone (invariant 1).
+        """
+        parked = self._parked_window(ParkReason.WORKFLOW_PAUSED)
+        promoted = 0
+        for task in parked:
+            if self._stop_for_failed_workflow(task, report):
+                continue
+            if self._workflow_pause(task) is not None:
+                continue
+            if self._promote(
+                task,
+                kind="workflow_pause",
+                detail={
+                    "reason": "workflow_resumed",
+                    "park_reason": ParkReason.WORKFLOW_PAUSED.value,
+                    "workflow_id": task.workflow_id,
+                },
+                report=report,
+                patch_from=_clear_pause_mirror,
+            ):
+                promoted += 1
+        return promoted
 
     def _workflow_failure(self, task: Task) -> FailedWorkflow | None:
         """The workflow's failure verdict (`read_workflow_failure`), read at most once per drain."""

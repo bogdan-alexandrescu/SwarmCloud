@@ -1,3 +1,4 @@
+# source-text: contract - the environment variable terraform sets for each ApiSettings field must be the one swarm_api's settings read it from
 """The identity that runs the verification gate holds the two grants it needs.
 
 Owner decisions, 2026-09-24 (recorded in

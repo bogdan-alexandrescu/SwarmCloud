@@ -117,6 +117,16 @@ def plan_lint_on(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _cost_hold_and_readiness_prepass_off(monkeypatch):
+    """The plan cost hold and the readiness pre-pass (owner, 2026-11-24) are
+    on in every deployment; they are off here because the issue-run fixtures
+    predate them (their planner is the run's first task, and their auto
+    plans start whatever they cost). Their own tests switch them on."""
+    monkeypatch.setenv("SWARM_PLAN_COST_HOLD_USD", "off")
+    monkeypatch.setenv("SWARM_READINESS_PREPASS", "off")
+
+
+@pytest.fixture(autouse=True)
 def _rendered_deny_list(monkeypatch):
     monkeypatch.setenv("SWARM_SHARED_DENY_LIST", json.dumps(list(RENDERED_DENY_LIST)))
     monkeypatch.setenv("SWARM_SHARED_DENY_LIST_SET", "1")

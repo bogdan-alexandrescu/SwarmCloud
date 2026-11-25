@@ -93,6 +93,7 @@ def _gate_args(rig_args: dict[str, Any] | None = None, **over: Any) -> dict[str,
         "credential": {"username": "qa-" + secrets.token_hex(4) + "@example.com",
                        "password": "pw-" + secrets.token_hex(12)},
         "idp_token_path": TOKEN_PATH,
+        "idp_token_origin": SSO,
     }
     args.update(rig_args or {})
     args.update(over)

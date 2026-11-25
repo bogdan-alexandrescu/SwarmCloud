@@ -1,3 +1,4 @@
+# source-text: contract - the comment beside compact.SILENT_MAX_WAIT_SECONDS must name CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT, and step.md's budget must agree with it
 """A held `swarm_follow` ends inside Claude Code's MCP idle timeout, and a row survives one that does not.
 
 MEASURED, 2026-10-04, workflow wf_a627d6b525e24823aa83 (lane U12): its review

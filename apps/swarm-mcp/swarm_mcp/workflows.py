@@ -1479,6 +1479,48 @@ def cancel(client: SwarmClient, workflow_id: str) -> dict[str, Any]:
     return data
 
 
+def pause(client: SwarmClient, workflow_id: str, reason: str | None = None) -> dict[str, Any]:
+    """`POST /v1/workflows/{id}/pause` (docs/design/workflow-pause.md section 3.1).
+
+    Answers `paused_at`, `steps_signalled` and `steps_already_terminal`, plus
+    `already_paused` for a repeat, which writes nothing and keeps the first
+    `paused_at`. Passed through unchanged. The reason is sent only when one was
+    given; the API bounds it (500 characters) and refuses anything longer.
+
+    A refusal is the API's own: 409 `workflow_terminal` or
+    `workflow_cancel_requested`, 404 for a workflow outside the tenant, and 503
+    `pause_contended` when some steps could not be signalled. The 503 is NOT
+    retried here: the workflow is already paused, and calling again finishes
+    the steps without moving `paused_at`, which is the caller's call to make.
+    """
+    payload: dict[str, Any] = {} if reason is None else {"reason": reason}
+    data = client.request("POST", f"/v1/workflows/{workflow_id}/pause", payload=payload)
+    if not isinstance(data, dict):
+        raise SwarmError(
+            f"pausing {workflow_id}: the route answered "
+            f"{type(data).__name__}, not an object"
+        )
+    return data
+
+
+def resume(client: SwarmClient, workflow_id: str) -> dict[str, Any]:
+    """`POST /v1/workflows/{id}/resume` (docs/design/workflow-pause.md section 3.2).
+
+    Answers `resumed_at`, `steps_cleared` and `steps_already_terminal`, plus
+    `already_running` for a workflow that was not paused, which writes nothing.
+    The body is empty: the route takes no field. The parked steps are promoted
+    by the scheduler's next pass, not by this call. Refusals as `pause`, and a
+    503 is likewise not retried here.
+    """
+    data = client.request("POST", f"/v1/workflows/{workflow_id}/resume", payload={})
+    if not isinstance(data, dict):
+        raise SwarmError(
+            f"resuming {workflow_id}: the route answered "
+            f"{type(data).__name__}, not an object"
+        )
+    return data
+
+
 def _envelope(payload: Any, what: str) -> dict[str, Any]:
     """The route's body, checked for the one key everything below reads.
 

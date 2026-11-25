@@ -1,3 +1,4 @@
+# source-text: forbidden-pattern - each literal probe_admin=True call is matched to the routes its endpoint serves in the built app, so the sweep needs create_app and cannot be a pure parse
 """A scoped probe admin is admin ONLY on the routes the roles and join
 acceptance probes measure (owner decision 2026-11-20, "roles + join only";
 docs/design/workspace-roles.md section 8).
@@ -14,8 +15,10 @@ Two halves:
   list, and every other `probe_admin=` only forwards its own parameter; every
   route that declares `people_scope` (which answers a probe admin from its
   entry) is on the list; and `probe_admin_tenants` is read only where the
-  list's routes need it. A NEW admin route cannot admit a probe admin without
-  failing one of these.
+  list's routes need it (the source-text rule
+  `probe-admin-tenants-read-only-by-the-listed-routes` in
+  scripts/source_text_rules/control_plane_nz.py). A NEW admin route cannot
+  admit a probe admin without failing one of these.
 * THE BEHAVIOUR: as `probe`, listed for eng, every workspace-admin write a
   workspace admin makes -- a secret, an MCP server, the tenant provider key,
   a git-token slot, the merge, code-intelligence and judgment settings, a
@@ -40,6 +43,7 @@ from fastapi.testclient import TestClient
 
 import swarm_api
 from swarm_api import codeintel, refusals, roles
+from swarm_api.admins import AUDIT_COLLECTION
 from swarm_api.auth import StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
 from swarm_api.deps import build_context
@@ -59,6 +63,8 @@ from .test_workspace_secrets import FakeSecretManager, RecordingFirestore
 
 PACKAGE = Path(swarm_api.__file__).resolve().parent
 PROBE = "probe@example.com"
+#: The row a probe admin's refused change leaves (`roles.AUDIT_PROBE_ADMIN_REFUSED`).
+PROBE_REFUSED = "workspace_probe_admin_refused"
 GROUPS = {
     PROBE: (ENG_GROUP,),
     "alice@example.com": (ENG_GROUP,),
@@ -82,13 +88,6 @@ OWNER_ALLOWED = frozenset({
     ("GET", "/v1/admin/people"),
     ("POST", "/v1/admin/join-requests/{ref}/approve"),
     ("POST", "/v1/admin/join-requests/{ref}/deny"),
-})
-#: The functions that may read `probe_admin_tenants` (module, function).
-TENANTS_READERS = frozenset({
-    ("swarm_api.roles", "probe_admin_scope"),
-    ("swarm_api.routes.people", "administered_workspaces"),
-    ("swarm_api.routes.people", "people_scope"),
-    ("swarm_api.routes.people", "join_scope"),
 })
 
 
@@ -245,21 +244,21 @@ def test_every_route_that_declares_people_scope_is_listed(client):
     assert declared <= roles.PROBE_ADMIN_ROUTES, declared - roles.PROBE_ADMIN_ROUTES
 
 
-def test_probe_admin_tenants_is_read_only_where_the_list_needs_it():
-    readers = {(module, fn.name) for module, fn, call in _calls()
-               if _name(call) == "probe_admin_tenants"}
-    assert readers, "probe_admin_tenants is called nowhere: the enumeration reads nothing"
-    assert readers <= TENANTS_READERS, readers - TENANTS_READERS
-
-
 # -- the behaviour -----------------------------------------------------------------
 
 
 def _everything(db, sm, credentials) -> dict[str, Any]:
     """What a refused write must leave alone: every document but a person's
-    own sighting, and every Secret Manager and provider-key call."""
-    docs = {p: d for p, d in db.docs.items() if not p.startswith("people/")}
+    own sighting and a probe-admin refusal's own audit row (asserted apart,
+    `_refusal_rows`), and every Secret Manager and provider-key call."""
+    docs = {p: d for p, d in db.docs.items()
+            if not p.startswith("people/") and d.get("action") != PROBE_REFUSED}
     return {"docs": docs, **stored(db, sm, credentials)}
+
+
+def _refusal_rows(db) -> list[dict[str, Any]]:
+    return [d for p, d in db.docs.items()
+            if p.startswith(f"{AUDIT_COLLECTION}/") and d.get("action") == PROBE_REFUSED]
 
 
 def _refused(response) -> None:
@@ -294,6 +293,71 @@ def test_the_other_admin_routes_refuse_it(client, db, sm, credentials, method, p
     before = _everything(db, sm, credentials)
     _refused(client.request(method, path, headers=h("probe"), json=body))
     assert _everything(db, sm, credentials) == before
+    # Only a member removal leaves the probe-admin refusal row (epic 21).
+    assert len(_refusal_rows(db)) == (1 if path == MEMBERS else 0)
+
+
+# -- a refused member removal leaves its audit row (epic 21) -----------------------
+
+MEMBERS = "/v1/workspace/members/person"
+
+
+def _remove(client, user: str, email: str):
+    return client.request("DELETE", MEMBERS, headers=h(user), json={"email": email})
+
+
+def test_a_refused_member_removal_leaves_one_refusal_row(client, db, sm, credentials):
+    before = _everything(db, sm, credentials)
+    response = _remove(client, "probe", "bob@example.com")
+    _refused(response)
+    assert _everything(db, sm, credentials) == before
+    # MUTATION: drop the row from remove_member -> no row, the refusal unrecorded.
+    (row,) = _refusal_rows(db)
+    assert (row["by"], row["target_email"], row["target_tenant_id"]) == (
+        PROBE, "bob@example.com", "eng")
+    assert row["detail"] == {"route": "member_removed", "via": roles.VIA_PROBE_ADMIN,
+                             "refused": "probe_admin_not_permitted"}
+
+
+def test_the_refusal_row_is_served_in_the_workspace_role_events(client):
+    _refused(_remove(client, "probe", "bob@example.com"))
+    events = client.app.state.ctx.roles.audit("eng")
+    # MUTATION: leave the action off WORKSPACE_AUDIT_ACTIONS -> never shown.
+    assert PROBE_REFUSED in [e["action"] for e in events]
+
+
+def test_an_unwritable_refusal_row_leaves_the_403_unchanged(client, db, monkeypatch):
+    written = _remove(client, "probe", "bob@example.com")
+    _refused(written)
+    real = db.collection
+
+    def collection(path: str) -> Any:
+        return Unwritable() if path == AUDIT_COLLECTION else real(path)
+
+    monkeypatch.setattr(db, "collection", collection)
+    response = _remove(client, "probe", "bob@example.com")
+    monkeypatch.setattr(db, "collection", real)
+    # MUTATION: let the row's failure escape -> a 500 instead of the 403.
+    assert (response.status_code, response.json()) == (written.status_code, written.json())
+    assert len(_refusal_rows(db)) == 1
+
+
+def test_an_ordinary_members_403_leaves_no_row(client, db):
+    response = _remove(client, "bob", "alice@example.com")
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] != "probe_admin_not_permitted"
+    # MUTATION: write the row for every 403 of the route -> a member's refusal recorded.
+    assert not [p for p in db.docs if p.startswith(f"{AUDIT_COLLECTION}/")]
+
+
+class Unwritable:
+    """An `admin_audit` collection whose every write fails."""
+
+    def document(self, *args: Any, **kwargs: Any) -> "Unwritable":
+        return self
+
+    def set(self, *args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("firestore unavailable")
 
 
 def test_an_accounts_caps_refuse_it_before_the_broker_is_asked(client):

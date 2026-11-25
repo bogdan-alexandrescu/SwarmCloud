@@ -328,9 +328,16 @@ def workspace_set_person(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     via = _workspace_writer(ctx, auth, body.via, probe_admin=True)
-    scoped = _probe_admin_limit(ctx, auth, body.email, roles.check_role(body.role))
-    return _set_person(request, ctx, tenant_id=tenant_id, group=auth.tenant_principal,
-                       by=auth.email, via=via, body=body, scoped=scoped)
+    role = roles.check_role(body.role)
+    # A probe admin refused on an admin's role -- by the early check or inside
+    # the transaction -- leaves one `workspace_probe_admin_refused` row.
+    with last_admin.probe_admin_refusals(
+            ctx, tenant_id=tenant_id, by=auth.email,
+            target=lambda: roles.subject_for_write(body.email),
+            detail={"route": last_admin.ROUTE_ROLE_SET, "to": role}):
+        scoped = _probe_admin_limit(ctx, auth, body.email, role)
+        return _set_person(request, ctx, tenant_id=tenant_id, group=auth.tenant_principal,
+                           by=auth.email, via=via, body=body, scoped=scoped)
 
 
 @router.delete("/v1/workspace/roles/person")
@@ -342,9 +349,14 @@ def workspace_clear_person(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     via = _workspace_writer(ctx, auth, body.via, probe_admin=True)
-    scoped = _probe_admin_limit(ctx, auth, body.email, None)
-    return _clear_person(request, ctx, tenant_id=tenant_id, group=auth.tenant_principal,
-                         by=auth.email, via=via, body=body, scoped=scoped)
+    # As `workspace_set_person`.
+    with last_admin.probe_admin_refusals(
+            ctx, tenant_id=tenant_id, by=auth.email,
+            target=lambda: roles.subject_for_write(body.email),
+            detail={"route": last_admin.ROUTE_ROLE_CLEARED}):
+        scoped = _probe_admin_limit(ctx, auth, body.email, None)
+        return _clear_person(request, ctx, tenant_id=tenant_id, group=auth.tenant_principal,
+                             by=auth.email, via=via, body=body, scoped=scoped)
 
 
 @router.put("/v1/workspace/roles/default")

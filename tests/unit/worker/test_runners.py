@@ -385,12 +385,9 @@ def test_the_browser_runner_accepts_ordinary_web_urls(url):
     assert browser._check_url(url) == url
 
 
-def test_the_browser_runner_has_no_evaluate_javascript_action():
-    """Arbitrary script execution in a browser holding a tenant's session is an
-    exfiltration primitive. The action list is a closed set."""
-    source = Path(browser.__file__).read_text()
-    assert "page.evaluate" not in source
-    assert "add_init_script" not in source
+# That the browser runner evaluates no script (`page.evaluate`,
+# `add_init_script`) is the rule `browser-runner-no-script-evaluation` in
+# scripts/source_text_rules/worker.py (issue 73).
 
 
 # ---------------------------------------------------------------------------

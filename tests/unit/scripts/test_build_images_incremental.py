@@ -1,3 +1,4 @@
+# source-text: fixture - the App.tsx it reads and appends to is one the test wrote into its own throwaway git repository
 """Main rebuilds only the images a commit changed, and re-tags the previous
 digests of the rest (owner decision 2026-10-08, observer proposal H).
 

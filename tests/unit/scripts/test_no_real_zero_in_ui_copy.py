@@ -1,3 +1,4 @@
+# source-text: fixture - copies apps/swarm-ui/src and plants a line in help.ts to prove the ui-copy-says-no-real-zero rule's scanner names it
 """The console never says "real zero" to a user.
 
 OWNER DECISION, 2026-10-11. "Real zero" is the console's design term for "the
@@ -7,6 +8,12 @@ is-zero`). The distinction stays; the words go. The mark now reads `none`, and
 every sentence that said "a real zero, not a failed read" says what happened
 instead. The term was coined for the people building the console, and a user
 reading it had to learn the vocabulary to understand the sentence.
+
+WHERE THE SCAN RUNS. The sweep of the real console is the lint rule
+`ui-copy-says-no-real-zero` in scripts/source_text_rules/scripts_tree.py, run
+once per pull request by scripts/check_source_text.py (issue 73). The scanner
+below is that rule's own `strip_comments` and `real_zero_hits`, and this file
+proves it.
 
 WHAT IS SCANNED. Every `.ts`, `.tsx` and `.css` file under apps/swarm-ui/src,
 except `__tests__/`, which asserts the old words are gone and so has to name
@@ -27,15 +34,17 @@ hyphenated `real-zero` is not matched: no sentence spells it that way, and
 class names and test ids do.
 
 BREAK IT: put `zero: 'real zero'` back in primitives.tsx, or a help.ts entry
-that says "a real zero". This test names the file and line. The planted-string
+that says "a real zero". The rule names the file and line. The planted-string
 tests below prove the scanner finds each place copy can live, and ignores the
 comments, on a temp copy rather than by trusting it.
 """
 
 from __future__ import annotations
 
-import re
+import importlib
+import importlib.util
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -43,90 +52,31 @@ import pytest
 REPO = Path(__file__).resolve().parents[3]
 SRC = REPO / "apps" / "swarm-ui" / "src"
 SUFFIXES = (".ts", ".tsx", ".css")
-PHRASE = re.compile(r"real\s+zero", re.IGNORECASE)
+RULES_DIR = REPO / "scripts" / "source_text_rules"
 
 
-def strip_comments(text: str, *, css: bool = False) -> str:
-    """Return ``text`` with every comment replaced by spaces, newlines kept.
-
-    Line numbers survive because only non-newline characters are blanked.
-    Strings and template literals are tracked so a `//` or `/*` inside one is
-    not taken for a comment; a template's `${...}` is code again, and may hold
-    its own strings and templates, so the state is a stack.
-    """
-    out = list(text)
-    i, n = 0, len(text)
-    # Each frame: ("code", brace_depth) or ("tpl", 0).
-    stack: list[list] = [["code", 0]]
-
-    def blank(start: int, end: int) -> None:
-        for k in range(start, end):
-            if out[k] != "\n":
-                out[k] = " "
-
-    while i < n:
-        mode = stack[-1][0]
-        c = text[i]
-        nxt = text[i + 1] if i + 1 < n else ""
-        if mode == "tpl":
-            if c == "\\":
-                i += 2
-            elif c == "`":
-                stack.pop()
-                i += 1
-            elif c == "$" and nxt == "{":
-                stack.append(["code", 0])
-                i += 2
-            else:
-                i += 1
-            continue
-        # code
-        if c == "/" and nxt == "*":
-            end = text.find("*/", i + 2)
-            end = n if end < 0 else end + 2
-            blank(i, end)
-            i = end
-        elif c == "/" and nxt == "/" and not css:
-            end = text.find("\n", i)
-            end = n if end < 0 else end
-            blank(i, end)
-            i = end
-        elif c in "'\"":
-            # A quote never runs past its line: an apostrophe in JSX text
-            # costs at most the rest of that line.
-            j = i + 1
-            while j < n and text[j] not in (c, "\n"):
-                j += 2 if text[j] == "\\" else 1
-            i = j + 1
-        elif c == "`" and not css:
-            stack.append(["tpl", 0])
-            i += 1
-        elif c == "{":
-            stack[-1][1] += 1
-            i += 1
-        elif c == "}":
-            if stack[-1][1] == 0 and len(stack) > 1:
-                stack.pop()  # the end of a template's ${...}
-            else:
-                stack[-1][1] -= 1
-            i += 1
-        else:
-            i += 1
-    return "".join(out)
+def _rules():
+    """scripts/source_text_rules/scripts_tree.py, loaded the way
+    scripts/check_source_text.py loads it (the package under its fixed name)."""
+    if "source_text_rules" not in sys.modules:
+        spec = importlib.util.spec_from_file_location(
+            "source_text_rules", RULES_DIR / "__init__.py", submodule_search_locations=[str(RULES_DIR)])
+        assert spec and spec.loader
+        package = importlib.util.module_from_spec(spec)
+        sys.modules["source_text_rules"] = package
+        spec.loader.exec_module(package)
+    return importlib.import_module("source_text_rules.scripts_tree")
 
 
 def findings(root: Path) -> list[str]:
-    """Every `file:line` under ``root`` (tests excluded) that shows the phrase."""
+    """Every `file:line` under ``root`` (tests excluded) that shows the phrase,
+    found by the rule's `real_zero_hits`."""
     found: list[str] = []
     for path in sorted(root.rglob("*")):
         if path.suffix not in SUFFIXES or "__tests__" in path.relative_to(root).parts:
             continue
         source = path.read_text(encoding="utf-8")
-        shown = strip_comments(source, css=path.suffix == ".css")
-        lines = source.splitlines()
-        for m in PHRASE.finditer(shown):
-            line = shown.count("\n", 0, m.start()) + 1
-            text = lines[line - 1].strip()
+        for line, text in _rules().real_zero_hits(source, css=path.suffix == ".css"):
             found.append(f"{path.relative_to(root)}:{line}: {text}")
     return found
 
@@ -141,14 +91,6 @@ def test_the_scan_visits_the_console() -> None:
     assert len(visited) > 100, f"the scan read {len(visited)} files under {SRC}"
     assert SRC / "primitives.tsx" in visited
     assert SRC / "help.ts" in visited
-
-
-def test_no_user_visible_copy_says_real_zero() -> None:
-    found = findings(SRC)
-    assert not found, (
-        'user-visible copy says "real zero" (owner decision 2026-10-11: the mark '
-        "reads `none`, and a sentence says what happened):\n  " + "\n  ".join(found)
-    )
 
 
 # ---------------------------------------------------------------------------

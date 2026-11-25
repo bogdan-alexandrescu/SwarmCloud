@@ -1,3 +1,4 @@
+# source-text: contract - codec's console URLs must follow the agent and workflow address shapes and default tab in paths.ts and agentlist.ts
 """Every task and workflow the API serves carries its console link.
 
 Owner decision 2026-10-01: the console link comes FROM THE API, one source.

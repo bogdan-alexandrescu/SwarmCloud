@@ -1,3 +1,4 @@
+# source-text: contract - every `issueci.<name>` that merge.py cites must be a top-level definition in swarm_api/issueci.py
 """merge.py's citations of `issueci.<name>` name code that exists (archived issue 976).
 
 THE DEFECT. `_verify_opener`'s docstring said swarm-api bound the merge

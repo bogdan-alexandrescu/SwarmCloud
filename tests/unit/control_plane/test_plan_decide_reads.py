@@ -247,3 +247,40 @@ def test_the_schedule_types_that_propose_say_so():
 def test_schedule_types_serve_proposes(client):
     rows = client.get("/v1/schedule-types", headers=auth_header("alice")).json()["types"]
     assert rows and all(isinstance(row["proposes"], bool) for row in rows)
+
+
+# --------------------------------------------------------------------------
+# proposals_7d on the schedules list (§3.10, lane U6 reads it)
+# --------------------------------------------------------------------------
+
+def test_the_schedules_list_serves_proposals_7d_on_the_rows_that_propose(client, db, clock):
+    seed_schedule(db, schedule_id="sch_000000000009", type_="observer")
+    seed_schedule(db, schedule_id="sch_000000000008", type_="issue-sweep")
+    seed_schedule(db, schedule_id="sch_000000000007", type_="cost-report")
+    _record(db, clock, "p1", kind=approvals.PROPOSAL, subject={"schedule_id": "sch_000000000009", "firing_id": "f"})
+    reply = client.get("/v1/schedules", headers=auth_header("alice"))
+    assert reply.status_code == 200
+    rows = {row["schedule_id"]: row for row in reply.json()["schedules"]}
+    # MUTATION: the counts computed but never served on the list.
+    assert rows["sch_000000000009"]["proposals_7d"]["proposed"] == 1
+    # MUTATION: a proposing schedule with nothing in the window left without a row (a dash, not 0).
+    assert rows["sch_000000000008"]["proposals_7d"] == {
+        "proposed": 0, "approved": 0, "auto_approved": 0, "rejected": 0, "expired": 0,
+        "running": 0, "merged": 0, "window_days": 7, "complete": True,
+    }
+    # MUTATION: a type that never proposes given a count it cannot have.
+    assert "proposals_7d" not in rows["sch_000000000007"]
+
+
+def test_the_schedules_list_still_lists_when_proposals_cannot_be_counted(client, db, monkeypatch):
+    seed_schedule(db, schedule_id="sch_000000000009", type_="observer")
+
+    def refuse(*_args, **_kwargs):
+        raise RuntimeError("index not ready")
+
+    monkeypatch.setattr(approvals, "proposals_by_schedule", refuse)
+    reply = client.get("/v1/schedules", headers=auth_header("alice"))
+    # MUTATION: a failed count failing the whole list, or served as zeros.
+    assert reply.status_code == 200
+    (row,) = [r for r in reply.json()["schedules"] if r["schedule_id"] == "sch_000000000009"]
+    assert "proposals_7d" not in row

@@ -1,3 +1,4 @@
+# source-text: contract - the forwarder's FQDN policy must name exactly the UPSTREAM_HOST and SECRET_MANAGER hosts its upstream.py and main.py dial
 """Where api.typesafe.ai is named as an egress destination, and where it is not
 (the TypeSafe egress allowlist; part of
 archived issue 2688).

@@ -198,10 +198,8 @@ def test_no_message_names_a_flag_install_does_not_have() -> None:
     install.add_arguments(parser)
     with pytest.raises(SystemExit):
         parser.parse_args(["--resume"])
-    root = Path(install.__file__).resolve().parents[1]
-    named = [str(path.relative_to(root)) for path in sorted(root.rglob("*.py"))
-             if "swarm install --resume" in path.read_text(encoding="utf-8")]
-    assert named == []
+    # No module names the flag: the rule install-names-no-resume-flag in
+    # scripts/source_text_rules/services.py.
 
 
 def test_the_resume_line_names_the_install_and_no_bang_in_a_terminal() -> None:

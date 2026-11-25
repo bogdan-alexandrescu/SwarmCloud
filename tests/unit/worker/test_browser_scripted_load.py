@@ -1,3 +1,4 @@
+# source-text: contract - each failure code docs/browser-scripted-runner.md names must appear in the browser runner's source
 """QA-SCRIPTED (part of archived issue 1363): the scripted browser runner extracts a page
 whose DOM is ready instead of failing on a load-event or font-wait timeout.
 

@@ -184,7 +184,7 @@ describe('an Actions one-time link', () => {
     await act(async () => {
       fireEvent.click(within(dialog).getByRole('button', { name: /^set secret$/i }))
     })
-    await screen.findByText(/MERGE_APP_PRIVATE_KEY was set/i)
+    await screen.findByText(/MERGE_APP_PRIVATE_KEY was set/i, { ignore: '[data-help-description]' })
     const puts = calls.filter((c) => c.method === 'PUT')
     expect(puts).toHaveLength(1)
     // MUTATION: lose the token on its way to the pane, or mint a second link -> fails.
@@ -430,14 +430,14 @@ describe('VQ-041: the page agrees with the strip and with its own Keys table', (
   it('names the key set below For agents\' empty list, and leaves it out of "Usually first"', async () => {
     keyOnly()
     await drawWithStrip(null)
-    await screen.findByText('No secret for agents in eng yet.')
+    await screen.findByText('No agent secret in eng.')
     // The key set below is the line's (i), a moved sentence the reader can still reach.
     expect(tipOf(screen.getByRole('button', { name: 'About Keys set' }))).toBe('1 key is set below, under Keys for agents and MCP.')
     // MUTATION: suggest the TypeSafe key whatever the keys say -> fails.
     const first = document.querySelector('.sec-first')
     expect(visible(first)).not.toContain('TypeSafe')
     expect(visible(first)).toContain('A search API key')
-    expect(screen.queryByText(/^No secret is stored for eng yet/)).toBeNull()
+    expect(screen.queryByText(/^No secret stored for eng/)).toBeNull()
   })
 
   it('still suggests the TypeSafe key, and calls step 3 what the strip calls it, in a workspace with nothing set', async () => {
@@ -446,7 +446,7 @@ describe('VQ-041: the page agrees with the strip and with its own Keys table', (
     const lead = await screen.findByRole('region', { name: /add your first secret/i })
     // MUTATION: keep "Step 3 · next" under a strip that measured step 3 done -> fails.
     expect(visible(lead)).toMatch(/^Step 3 · nothing missing/)
-    await screen.findByText('No secret is stored for eng yet.')
+    await screen.findByText('No secret stored for eng.')
     expect(visible(document.querySelector('.sec-first'))).toContain('The TypeSafe key')
   })
 
