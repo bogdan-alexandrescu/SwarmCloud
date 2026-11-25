@@ -1,0 +1,26 @@
+/* AUTOMATE › SETTINGS (docs/design/plans-pipeline.md §2.5, §6.4, §7.8; lane
+   U11): the Plan review card and the schedules that plan under it. Tokens
+   only, so both themes draw it; every selector is `.as-`, so nothing here
+   reaches another page. At 390px each choice wraps inside its card rather
+   than widening the page. */
+
+.as-page { display: grid; gap: 14px; min-width: 0; }
+.as-card { min-width: 0; }
+.as-fields { display: grid; gap: 12px; min-width: 0; }
+.as-field { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; }
+.as-k { display: inline-flex; align-items: center; gap: 4px; min-width: 9em; font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; color: var(--text); }
+
+/* The shared segmented control, wrapped: its height is the row's, not one line's. */
+.as-seg.c-seg { flex-wrap: wrap; max-width: 100%; height: auto; }
+.as-seg.c-seg > button { min-height: var(--h-ctl); }
+
+.as-caps { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0; min-width: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
+.as-who { color: var(--text); }
+
+.as-rows { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; min-width: 0; }
+.as-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-width: 0; }
+.as-name { font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.as-type { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); overflow-wrap: anywhere; }
+.as-row > .as-seg { margin-left: auto; }
+.as-refusal { flex: 1 1 100%; min-width: 0; }
+.as-none { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
