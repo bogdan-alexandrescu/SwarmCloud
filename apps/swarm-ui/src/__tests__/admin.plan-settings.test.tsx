@@ -111,8 +111,13 @@ describe('Admin › Settings › Plan review', () => {
     // Nothing changed, so nothing to save.
     expect(saveButton(section).disabled).toBe(true)
     // Each range sits behind a help mark, not on the card.
-    expect(within(section).getByRole('button', { name: 'About Re-plans' })).toBeTruthy()
-    expect(within(section).queryByText(/0 to 20/)).toBeNull()
+    // MUTATION: print the range beside the field -> it is found outside a hidden tooltip, fails.
+    const about = within(section).getByRole('button', { name: 'About Re-plans' })
+    const tip = document.getElementById(about.getAttribute('aria-describedby') as string) as HTMLElement
+    expect(tip.textContent).toContain('0 to 20')
+    expect(tip.hidden).toBe(true)
+    const outsideTips = within(section).getAllByText(/0 to 20/).filter((el) => el.closest('[role="tooltip"]') === null)
+    expect(outsideTips).toEqual([])
   })
 
   it('refuses a cap outside its range before the save, naming the range', async () => {
@@ -205,13 +210,26 @@ describe('a non-admin never sees the group', () => {
     expect(calls.filter((c) => c.url === '/v1/admin/settings')).toEqual([])
   })
 
+  it('draws nothing, and reads nothing, while the session has not said', async () => {
+    const calls = adminApi(platformSettings())
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    const { PlanReviewSettingsCard } = await import('../AdminSettings')
+    const { container } = render(<PlanReviewSettingsCard admin={null} />)
+    await new Promise((r) => setTimeout(r, 30))
+    // MUTATION: read and draw the group before the session says admin -> fails.
+    expect(container.textContent).toBe('')
+    expect(calls.filter((c) => c.url === '/v1/admin/settings')).toEqual([])
+  })
+
   it('draws nothing when the settings read answers 403', async () => {
     adminApi(null)
     vi.stubEnv('VITE_LIVE', '1')
     vi.resetModules()
     const { PlanReviewSettingsCard } = await import('../AdminSettings')
-    const { container } = render(<PlanReviewSettingsCard admin={null} />)
+    const { container } = render(<PlanReviewSettingsCard admin />)
     await new Promise((r) => setTimeout(r, 60))
+    // MUTATION: draw "Not read" or "Platform admins only." over a 403 -> fails.
     expect(container.textContent).toBe('')
   })
 

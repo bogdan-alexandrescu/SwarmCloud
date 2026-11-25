@@ -4527,13 +4527,16 @@ function fixturePrices(): Record<string, unknown> {
   }
 }
 
-/** `GET /v1/admin/settings` in the fixture build: the two repository limits set by an admin, and the price table above. */
+/** `GET /v1/admin/settings` in the fixture build: the two repository limits set by an admin, the price table above, and the plan-review keys at their defaults. */
 function fixturePlatformSettings(): Record<string, unknown> {
   return {
     merge_by_default: false,
     max_additional_repositories: 4,
     additional_repositories_budget_gib: 20,
     model_prices: fixturePrices(),
+    plan_diagrams_default: true,
+    plan_chat_model_class: 'sonnet',
+    plan_review_caps: { replans: 5, diagram_asks: 20, chat_turns: 40, review_usd: 25, set_by: null, set_at: null },
     updated_at: new Date(FIXTURE_NOW - 2 * 86_400_000).toISOString(),
     updated_by: 'ops@example.com',
     settings_document: 'present',
@@ -4603,9 +4606,59 @@ export function normModelPrices(raw: unknown): Record<string, ModelPrice> {
   return out
 }
 
+/** A cap as served: a finite number of at least 0, else null. */
+function capOf(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null
+}
+
+/** `plan_review_caps` as served, or null when it is not served whole (an API older than the settings). */
+function normPlanReviewCaps(raw: unknown): PlatformSettings['plan_review_caps'] {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
+  const r = raw as Record<string, unknown>
+  const replans = capOf(r.replans)
+  const diagramAsks = capOf(r.diagram_asks)
+  const chatTurns = capOf(r.chat_turns)
+  const reviewUsd = capOf(r.review_usd)
+  if (replans === null || diagramAsks === null || chatTurns === null || reviewUsd === null) return null
+  return {
+    replans,
+    diagram_asks: diagramAsks,
+    chat_turns: chatTurns,
+    review_usd: reviewUsd,
+    set_by: typeof r.set_by === 'string' ? r.set_by : null,
+    set_at: typeof r.set_at === 'string' ? r.set_at : null,
+  }
+}
+
 function normPlatformSettings(raw: unknown): PlatformSettings {
   const s = raw as PlatformSettings
-  return { ...s, model_prices: normModelPrices((raw as { model_prices?: unknown } | null)?.model_prices) }
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  return {
+    ...s,
+    model_prices: normModelPrices(r.model_prices),
+    plan_diagrams_default: typeof r.plan_diagrams_default === 'boolean' ? r.plan_diagrams_default : null,
+    plan_chat_model_class: typeof r.plan_chat_model_class === 'string' && r.plan_chat_model_class !== '' ? r.plan_chat_model_class : null,
+    plan_review_caps: normPlanReviewCaps(r.plan_review_caps),
+  }
+}
+
+/**
+ * `PUT /v1/admin/settings` with the plan-review keys that changed and nothing
+ * else (docs/design/plans-pipeline.md §7.8), so a save never rewrites a
+ * setting it did not touch. The caps named replace theirs and the others keep
+ * their figure (`plansettings.platform_changes`), so `plan_review_caps` names
+ * only the caps that changed. The response is the settings AS STORED.
+ */
+export interface PlanReviewChange {
+  plan_diagrams_default?: boolean
+  plan_chat_model_class?: string
+  plan_review_caps?: Partial<Record<'replans' | 'diagram_asks' | 'chat_turns' | 'review_usd', number>>
+}
+
+export async function savePlanReviewSettings(change: PlanReviewChange): Promise<Result<PlatformSettings>> {
+  const r = await write(route('/v1/admin/settings'), 'PUT', change)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normPlatformSettings(r.data) }
+  return r as Result<PlatformSettings>
 }
 
 /**

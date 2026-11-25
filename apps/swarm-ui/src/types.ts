@@ -797,6 +797,25 @@ export interface PlatformSettings {
    * reported", never a guessed figure (`swarm_api.modelprices`).
    */
   model_prices: Record<string, ModelPrice>
+  /**
+   * The plan-review settings' platform level (docs/design/plans-pipeline.md
+   * §6.4, §7.8; `plansettings`): whether a planner draws diagrams where a
+   * workspace and a schedule leave it to the platform, the plan chat's model
+   * class, and what one run's review may ask for. Null when the API answering
+   * serves no such key (one older than the settings); the console then reads
+   * them as not served, never as a default it invented.
+   */
+  plan_diagrams_default: boolean | null
+  plan_chat_model_class: string | null
+  plan_review_caps: {
+    replans: number
+    diagram_asks: number
+    chat_turns: number
+    /** Dollars, to the cent. */
+    review_usd: number
+    set_by: string | null
+    set_at: string | null
+  } | null
   updated_at: string | null
   updated_by: string | null
   /** `missing`: every value above is a default nobody has set. */
