@@ -40,6 +40,15 @@ describe('a 429 says whose it was', () => {
     expect(error.retryAfterSeconds).toBe(2)
   })
 
+  it("keeps a cap's refusal (`replan_cap`, plans-pipeline §5.4) in its own sentence", async () => {
+    const sentence = 'This run has had its 5 re-plans. The cap is a platform setting.'
+    respond(429, JSON.stringify({ code: 'replan_cap', message: sentence, detail: { cap: 'replans', used: 5, limit: 5 } }), { 'content-type': 'application/json' })
+    const error = await errorOf()
+    // MUTATION: reading the cap's 429 as Cloud Run's hides why Request changes is refused.
+    expect(error.code).toBe('replan_cap')
+    expect(error.message).toBe(sentence)
+  })
+
   it.each([
     ['text', 'Rate exceeded.', 'text/plain'],
     ['html', '<html><body>429 Too Many Requests</body></html>', 'text/html'],

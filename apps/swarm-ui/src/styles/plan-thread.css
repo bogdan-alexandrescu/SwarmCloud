@@ -1,0 +1,78 @@
+/* The plan's thread in the decision page's margin, Request changes in its bar,
+   and the revision picker and diff (PlanThread.tsx, PlanRevisions.tsx,
+   docs/design/plans-pipeline.md §2.3, §3.3-§3.5, §5). Every colour is a
+   console token, so light and dark follow the theme; nothing is wider than
+   its column, and at 640px and under the margin (with its thread) already
+   folds under each part (plan-document.css), so the thread only has to wrap. */
+
+.pt-thread { display: grid; gap: 8px; min-width: 0; }
+.pt-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; min-width: 0; }
+.pt-entry {
+  display: grid; gap: 4px; min-width: 0; padding: 8px 10px;
+  font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere;
+  background: var(--surface); border: 1px solid var(--line-soft); border-radius: 8px;
+}
+.pt-entry.is-event { padding: 4px 10px; background: transparent; border-style: dashed; }
+.pt-entry.is-answer { border-color: color-mix(in srgb, var(--info) 45%, transparent); }
+.pt-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; min-width: 0; }
+.pt-by { font-weight: 600; overflow-wrap: anywhere; }
+.pt-when { margin-left: auto; font-size: var(--t-micro); line-height: var(--lh-micro); }
+.pt-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.pt-cost { font-family: var(--mono); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.pt-chip {
+  display: inline-flex; align-items: center; gap: 4px; padding: 0 7px;
+  font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim);
+  border: 1px solid var(--line); border-radius: var(--r-pill);
+}
+.pt-chip.is-ok { color: var(--ok-ink); border-color: color-mix(in srgb, var(--ok) 55%, transparent); }
+.pt-chip.is-live { color: var(--warn-ink); border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+.pt-acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.pt-refused { color: var(--bad-ink); font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
+.pt-replanning { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.pt-resolved > summary { cursor: pointer; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); font-weight: 600; }
+.pt-resolved[open] > summary { margin-bottom: 6px; }
+.pt-resolved .pt-entry { opacity: 0.8; }
+
+.pt-compose { display: grid; gap: 6px; min-width: 0; }
+.pt-box, .pt-select {
+  box-sizing: border-box; width: 100%; max-width: 100%; min-width: 0;
+  font: inherit; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text);
+  background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px;
+}
+.pt-box { resize: vertical; }
+.pt-select { width: auto; }
+
+/* ---- in the decision bar ---------------------------------------------- */
+.pt-bar { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.pt-bar-note { overflow-wrap: anywhere; }
+
+/* ---- the revision picker and the diff --------------------------------- */
+.pr-wrap { display: grid; gap: 8px; padding: 10px 18px; min-width: 0; border-bottom: 1px solid var(--line-soft); }
+.pr-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.pr-rev {
+  display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; min-width: 0; padding: 3px 10px; cursor: pointer;
+  font: inherit; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text);
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-pill);
+}
+.pr-rev.is-on { border-color: var(--info); background: color-mix(in srgb, var(--info) 12%, var(--surface)); }
+.pr-view { display: grid; gap: 8px; min-width: 0; padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--line-soft); border-radius: 10px; }
+.pr-view-h { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; }
+.pr-view-h > .c-btn { margin-left: auto; }
+.pr-plan { display: grid; gap: 6px; min-width: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.pr-summary { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.pr-reqs, .pr-steps { margin: 0; padding-left: 1.4em; display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.pr-steps > li { display: grid; gap: 4px; min-width: 0; }
+.pr-diff { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; min-width: 0; font-size: var(--t-micro); line-height: var(--lh-micro); }
+.pr-diff.is-same { display: block; }
+.pr-row { display: grid; gap: 2px; min-width: 0; padding: 4px 8px; border-left: 2px solid var(--line); overflow-wrap: anywhere; }
+.pr-row[data-op='add'] { border-left-color: var(--ok); }
+.pr-row[data-op='remove'] { border-left-color: var(--bad); }
+.pr-path { font-family: var(--mono); color: var(--text-dim); overflow-wrap: anywhere; }
+.pr-del { color: var(--bad-ink); text-decoration: line-through; white-space: pre-wrap; }
+.pr-ins { color: var(--ok-ink); text-decoration: none; white-space: pre-wrap; }
+
+@media (max-width: 640px) {
+  .pr-wrap { padding: 8px 14px; }
+  .pt-when { margin-left: 0; }
+}
+.pt-rev { font-weight: 600; }
