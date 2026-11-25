@@ -111,6 +111,7 @@ import { Banner, Button, ButtonLink, Card, Chip, CodeBlock, ToneMark, Tooltip, b
 import { read, route, write } from './fetch'
 import { ADMIN_PLUGIN_ADD_PATH, adminPluginPath } from './pluginPaths'
 import { agentPath } from './OverviewRegions'
+import { InfoTip } from './InfoTip'
 import { OWN_SIGN_IN_WINDOW } from './SetupLink'
 import type { TaskState } from './types'
 import './styles/onboarding.css'
@@ -1563,7 +1564,13 @@ export function addonsRow(state: SetupState): Row {
     title: 'Add-ons',
     state: 'todo',
     by: 'optional',
-    line: 'Off by default; core runs without them. Enabling one is a terminal step: it needs a Terraform switch',
+    // ONE SHORT LINE, THE REST BEHIND ITS (i) (issue 81).
+    line: (
+      <>
+        Off by default; core runs without them{' '}
+        <InfoTip about="add-ons" tip="Off by default; core runs without them. Enabling one is a terminal step: it needs a Terraform switch" />
+      </>
+    ),
     body:
       state.addons.length === 0 ? undefined : (
         <Facts items={state.addons.map((a) => ({ state: 'todo', name: a.name, text: <code>{a.enable}</code> }))} label="Add-ons" />
@@ -1786,10 +1793,16 @@ export function ConsoleChecks({ state, onChanged }: { state: SetupState; onChang
     const first = firstWorkspace(state)
     const whose = isOnePerson(state) ? 'your personal workspace' : 'the first team'
     const granted = first !== null && first.grant?.state === 'granted' && first.grant.repositories.length > 0
-    const text =
+    const said =
       state.finished !== null
         ? `swarm-api starts them on this page’s next read, as ${whose}${granted ? '' : ', once it has its repository grant'}`
         : `start by themselves when you hand over, as ${whose} on a repository of its grant`
+    // A FEW WORDS ON THE SURFACE, THE SENTENCE BEHIND ITS (i) (issue 81).
+    const text = (
+      <>
+        {state.finished !== null ? 'start on next read' : 'start at hand-over'} <InfoTip about="the console checks" tip={said} />
+      </>
+    )
     return <Facts items={[{ state: 'todo', name: 'Console task and workflow', text }]} label="Console checks" />
   }
   const items: Fact[] = []

@@ -142,6 +142,14 @@ const FIXTURE_PERSONA: FixturePersona = USE_FIXTURES ? readFixturePersona() : 'm
  */
 const EXAMPLE_PLANS_COOKIE = 'swarm_fixture_example_plans'
 const FIXTURE_EXAMPLE_PLANS = USE_FIXTURES && readFixtureCookie(EXAMPLE_PLANS_COOKIE) === 'on'
+const FIXTURE_COST_HOLD_RUNS = USE_FIXTURES && readFixtureCookie('swarm_fixture_cost_hold') === 'on'
+/**
+ * THE PROPOSING SOURCES' SWITCH, as the example plans' is: the two proposing
+ * fixture schedules (`?proposes=1`) and the catalogue's `proposes` flags load
+ * only when the page carries `swarm_fixture_proposing=on`. Off by default, so
+ * the default fixtures list the schedules every ratchet and test pins.
+ */
+const FIXTURE_PROPOSING = USE_FIXTURES && readFixtureCookie('swarm_fixture_proposing') === 'on'
 /** Whether the fixture caller is a platform admin: the `platform-admin` persona only. */
 const fixtureIsAdmin = FIXTURE_PERSONA === 'platform-admin'
 /**
@@ -2014,6 +2022,39 @@ function fixtureExampleRuns(): IssueRun[] {
 const fixtureRunsMade: IssueRun[] = []
 const fixtureRunsDecided = new Map<string, Partial<IssueRun>>()
 
+/**
+ * The cost-hold run and the pre-pass NOT_READY run (owner, 2026-11-24). Served
+ * only when the page carries `swarm_fixture_cost_hold=on`, so the default
+ * fixture build lists the same runs it always did; a dev server turns it on with
+ *   document.cookie = 'swarm_fixture_cost_hold=on'
+ */
+function fixtureCostHoldRuns(created: string, planned: string): IssueRun[] {
+  return [
+    // An `auto` plan held for its expected cost (owner, 2026-11-24).
+      fixtureIssueRun('run_c057h01d', {
+        plan_approval: 'auto', created_at: created, updated_at: planned,
+        plan_lint: {
+          replans: 0, held: true, replan_findings: [], planner_task_ids: ['task_planner_fixture'], replan_error: null,
+          findings: [{
+            code: 'EXPECTED_COST_OVER_THRESHOLD', step: null, requirement: null,
+            message: "The plan's expected cost is $41.00-$68.00, above the $30.00 an automatic approval may start (SWARM_PLAN_COST_HOLD_USD); a person approves it.",
+          }],
+        },
+      }),
+      // A run the readiness pre-pass ended NOT_READY, before any planner ran.
+      fixtureIssueRun('run_9e4d0a5b', {
+        state: 'NOT_READY', terminal: true, plan: null, plan_digest: null, plan_revision: 0,
+        created_at: created, updated_at: planned,
+        not_ready: {
+          kind: 'too_vague', reason: 'The issue does not say which export is meant or what the date should be.',
+          needs: ['Name the export (notes or invoices)', 'State the expected date format'],
+        },
+        readiness: { task_id: 'task_readiness_fixture', outcome: 'not_ready', reason: 'Read by the pre-pass: too vague to plan.', cost_usd: 0.04 },
+        history: [{ at: created, from: null, to: 'PLANNING', by: 'operator@example.com' }, { at: planned, from: 'PLANNING', to: 'NOT_READY', by: 'swarm-api' }],
+      }),
+  ]
+}
+
 function fixtureIssueRuns(): IssueRun[] {
   const planned = new Date(FIXTURE_NOW - 40 * 60_000).toISOString()
   const approved = new Date(FIXTURE_NOW - 30 * 60_000).toISOString()
@@ -2022,6 +2063,7 @@ function fixtureIssueRuns(): IssueRun[] {
     ...fixtureRunsMade,
     ...fixtureExampleRuns(),
     fixtureIssueRun('run_4c1e09d2'),
+    ...(FIXTURE_COST_HOLD_RUNS ? fixtureCostHoldRuns(created, planned) : []),
     // The workflow it started is one the workflow fixture holds (QA1-FIX-22, runs-submit-04).
     fixtureIssueRun('run_19ab77e0', {
       state: 'RUNNING', workflow_id: 'wf_audit_01', approved_by: 'operator@example.com',
@@ -2464,6 +2506,56 @@ export async function cancelWorkflow(workflowId: string): Promise<Result<CancelW
   return write(route('/v1/workflows/{id}/cancel', { id: workflowId }), 'POST') as Promise<
     Result<CancelWorkflowResult>
   >
+}
+
+/**
+ * What this client reads of a pause or resume answer
+ * (apps/swarm-api/swarm_api/routes/workflows.py `pause_workflow`,
+ * `resume_workflow`; docs/design/workflow-pause.md §3). Nothing on the page
+ * draws its fields: `PauseWorkflow` re-reads the workflow, whose `paused`,
+ * `paused_at` and `paused_by` are the record. A repeat answers
+ * `already_paused` / `already_running` and writes nothing.
+ */
+export interface PauseWorkflowResult {
+  workflow_id?: string
+  paused?: boolean
+  paused_at?: string | null
+  already_paused?: boolean
+  already_running?: boolean
+}
+
+/**
+ * PAUSE ONE WORKFLOW. `POST /v1/workflows/{id}/pause` with an empty body: the
+ * console sends no reason. Any member may (owner decision Q3); a viewer is
+ * refused 403 `role_member_required`, a finished workflow 409
+ * `workflow_terminal`, one being cancelled 409 `workflow_cancel_requested`,
+ * and a step that stayed contended 503 `pause_contended` (a retry finishes it
+ * without moving `paused_at`). Called by `PauseWorkflow` in Workflows.tsx.
+ * The fixture build records the probe and pauses nothing.
+ */
+export async function pauseWorkflow(workflowId: string): Promise<Result<PauseWorkflowResult>> {
+  return pauseOrResume(route('/v1/workflows/{id}/pause', { id: workflowId }), workflowId)
+}
+
+/**
+ * RESUME ONE PAUSED WORKFLOW. `POST /v1/workflows/{id}/resume` with an empty
+ * body (the route accepts no field). The same gate and refusals as pause; the
+ * scheduler's sweep promotes the parked steps. Called by `PauseWorkflow`.
+ */
+export async function resumeWorkflow(workflowId: string): Promise<Result<PauseWorkflowResult>> {
+  return pauseOrResume(route('/v1/workflows/{id}/resume', { id: workflowId }), workflowId)
+}
+
+async function pauseOrResume(target: ApiRoute, workflowId: string): Promise<Result<PauseWorkflowResult>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 60))
+    fixturePaused.set(workflowId, target.template.endsWith('/pause'))
+    // The same `route()` as the live path, so the fixture lands in the same
+    // registry record a live write would (CH-18). It claims no step it signalled.
+    noteFixtureProbe(target, 60, true)
+    return { status: 'ok', fetchedAt: Date.now(), data: { workflow_id: workflowId } }
+  }
+  return write(target, 'POST', {}) as Promise<Result<PauseWorkflowResult>>
 }
 
 /**
@@ -5136,7 +5228,7 @@ type FixtureInputContract = RunnerInputContract & { inputs?: Record<string, unkn
 const FIXTURE_INPUT_CONTRACTS: Record<string, FixtureInputContract> = {
   "mock": {"required_keys": []},
   "generic": {"required_keys": []},
-  "claude-code": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}, "pull_request": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "a pull request in the task's repository: its body, conversation and review threads are written to pull_request.md in the workspace and named in the prompt"}}},
+  "claude-code": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}, "pull_request": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "a pull request in the task's repository: its body, conversation and review threads are written to pull_request.md in the workspace and named in the prompt"}, "context_ceiling": {"kind": "object", "minimum": null, "maximum": null, "choices": [], "required": false, "means": "lowers this step's session limits; never raises them"}}},
   "codex": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}, "pull_request": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "a pull request in the task's repository: its body, conversation and review threads are written to pull_request.md in the workspace and named in the prompt"}}},
   "browser": {"required_keys": []},
   "merge": {"required_keys": []},
@@ -5144,9 +5236,9 @@ const FIXTURE_INPUT_CONTRACTS: Record<string, FixtureInputContract> = {
   "claude-code-review": {"required_keys": ["prompt"]},
   "indexer": {"required_keys": ["prompt"]},
   "claude-code-browser": {"required_keys": ["prompt"]},
-  "claude-code-large": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}}},
-  "claude-code-medium": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}}},
-  "claude-code-lightpanda": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}}},
+  "claude-code-large": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}, "context_ceiling": {"kind": "object", "minimum": null, "maximum": null, "choices": [], "required": false, "means": "lowers this step's session limits; never raises them"}}},
+  "claude-code-medium": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}, "context_ceiling": {"kind": "object", "minimum": null, "maximum": null, "choices": [], "required": false, "means": "lowers this step's session limits; never raises them"}}},
+  "claude-code-lightpanda": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}, "context_ceiling": {"kind": "object", "minimum": null, "maximum": null, "choices": [], "required": false, "means": "lowers this step's session limits; never raises them"}}},
   "await-input": {"required_keys": []},
   "fix-loop": {"required_keys": []}
 }
@@ -7018,7 +7110,12 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
   // wf_audit_01's were typed as one succeeded beside two step tasks the
   // Timeline drew as succeeded. Counted here as `rollup.py` counts them: each
   // step's task state, `unstarted` for a step with no task yet.
-  return [...fixtureWorkflowsMade, ...workflows].map((w) => {
+  return [...fixtureWorkflowsMade, ...workflows].map((made) => {
+    // THE PAUSE THE FIXTURE HOLDS: one queued workflow starts paused so Resume
+    // and the paused mark can be looked at, and a fixture pause or resume flips it.
+    const flip = fixturePaused.get(made.workflow_id)
+    const w: Workflow =
+      flip === undefined ? made : flip ? { ...made, paused: true, paused_by: 'alice@example.com', paused_at: FIXTURE_PAUSED_AT } : { ...made, paused: false }
     if (w.rollup === undefined || w.rollup === null) return w
     const counts: Record<string, number> = {}
     for (const st of w.steps) {
@@ -7036,6 +7133,10 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
  * derives a workflow none of whose steps has started (`steps_not_started`).
  */
 const fixtureWorkflowsMade: Workflow[] = []
+
+const FIXTURE_PAUSED_AT = '2026-11-24T08:00:00Z'
+/** Workflow id -> whether the fixture holds it paused; `wf_bcdc9180e4fb4a209f31` starts paused. */
+const fixturePaused = new Map<string, boolean>([['wf_bcdc9180e4fb4a209f31', true]])
 
 type FixtureStepAsked = { step_id: string; depends_on: string[]; runner_profile: string; resource_class?: string; input_from?: Record<string, string> }
 
@@ -13770,6 +13871,18 @@ function fixtureScheduleRows(): Schedule[] {
       created_at: fixtureAgo(30 * 24 * FIXTURE_HOUR), next_run_at: null, revision: 5,
     },
   ]
+  // Proposing sources (`?proposes=1`): an empty gate, an incomplete seven-day
+  // count and one the list does not carry.
+  const seven = (proposed: number, complete: boolean) => ({
+    window_days: 7, proposed, complete, approved: 1, auto_approved: 0, rejected: 0, expired: 0, running: 0, merged: 0,
+  })
+  const proposing = [
+    { ...base, schedule_id: 'sch_5d1c9e2f7a40', name: 'Plan sweep, all repositories', gate: {}, proposals_7d: seven(12, false) },
+    { ...base, schedule_id: 'sch_6e2d0a3b8c51', name: 'Plan sweep, docs', gate: { plan: 'approve', merge: 'approve' }, proposals_7d: null },
+  ].map((extra) => ({
+    ...schedules[0], ...extra, state_word: undefined,
+  })) as unknown as Schedule[]
+  if (FIXTURE_PROPOSING) schedules.push(...proposing)
   return schedules.map((row) => ({ ...row, state_word: fixtureStateWord(row) }))
 }
 
@@ -13848,6 +13961,128 @@ export async function loadApprovals(
       status: 'error',
       error: { kind: 'server_error', httpStatus: 200, code: null, message: 'The approvals answer carried no list of approvals.' },
     }
+  }
+  return r
+}
+
+/** The five stages of the Pipeline board, in its order (plans-pipeline §2.1, §3.2). */
+export const PIPELINE_STAGES = ['found', 'planned', 'running', 'pr_ci', 'ended'] as const
+export type PipelineStage = (typeof PIPELINE_STAGES)[number]
+
+/** One card on the board, as `GET /v1/pipeline` serves it, already in its stage. */
+export interface PipelineCard {
+  card_id: string
+  stage: PipelineStage
+  source: { kind: string; schedule_type?: string | null; schedule_id?: string | null; fingerprint?: string | null; proposal_id?: string | null }
+  subject: { run_id?: string; issue?: string; title: string; approval_id?: string | null }
+  state: string
+  waits_on_person: boolean
+  approval_kind: 'plan' | 'hold' | 'merge' | 'proposal' | null
+  expires_at: string | null
+  since: string | null
+  last_word?: { by: string; at: string; text: string } | null
+  revision?: number | null
+  plan_digest?: string | null
+  pull_request?: { number?: number | null; url?: string | null; checks?: unknown } | null
+}
+
+/** A column's figures: what it shows, what a filter or the bound left out, its oldest card's time. */
+export interface PipelineColumn {
+  count: number
+  hidden: number
+  oldest_at: string | null
+}
+
+/** `GET /v1/pipeline` (plans-pipeline §3.2). `partial` names a read that failed; the others still answer. */
+export interface PipelineBoard {
+  cards: PipelineCard[]
+  by_stage: Record<PipelineStage, PipelineColumn>
+  waits_on_person: number
+  partial: { read: string; status: number }[]
+  window_days: number | null
+}
+
+/** The board's filters, its address's own keys (`?source=&state=&waits=person`). */
+export interface PipelineFilters {
+  source?: string | null
+  state?: string | null
+  waits?: 'person' | null
+}
+
+/**
+ * THE FIXTURE BOARD: one card per stage, drawn from the fixture clock, and
+ * behind the example plans' switch the three example plans as waiting plan
+ * cards in Found, so the development build draws every stage, filter and
+ * waiting card. Filtered as the route filters (`source`, `state`, `waits`).
+ */
+function fixturePipeline(filters: PipelineFilters): Result<PipelineBoard> {
+  const ago = (minutes: number) => new Date(FIXTURE_NOW - minutes * 60_000).toISOString()
+  const base = (card_id: string, stage: PipelineStage, source: string, state: string, title: string, issue: string, minutes: number): PipelineCard => ({
+    card_id, stage, source: { kind: source }, subject: { run_id: card_id, issue, title }, state,
+    waits_on_person: false, approval_kind: null, expires_at: null, since: ago(minutes),
+  })
+  const cards: PipelineCard[] = [
+    base('fx_found', 'found', 'sweep', 'found', 'A retry loop never backs off after a 429', 'example-org/example-api#31', 20),
+    base('fx_planned', 'planned', 'failure_review', 'decided', 'A failed export leaves a half-written file', 'example-org/example-api#27', 45),
+    base('fx_running', 'running', 'hand', 'running', 'Page size ignored on the second page', 'example-org/example-api#19', 15),
+    base('fx_pr', 'pr_ci', 'observer', 'running', 'Slow health check marks a ready pod unready', 'example-org/example-api#12', 8),
+    base('fx_ended', 'ended', 'sweep', 'ended', 'Typo in the export column header', 'example-org/example-api#5', 180),
+  ]
+  for (const r of fixtureExampleRuns()) {
+    const plan = r.plan_approval === 'required' && r.state === 'PLANNED'
+    if (!plan) continue
+    cards.push({
+      card_id: r.id, stage: 'found', source: { kind: 'plan_only' }, subject: { run_id: r.id, issue: r.issue.ref, title: r.issue_read?.title ?? r.issue.ref, approval_id: `${FIXTURE_RUN_APPROVAL}${r.id}` },
+      state: 'waiting', waits_on_person: true, approval_kind: 'plan', expires_at: new Date(FIXTURE_NOW + 20 * 3_600_000).toISOString(), since: r.created_at,
+    })
+  }
+  const stagesOf: Record<string, readonly PipelineStage[]> = { waiting: ['found', 'planned'], running: ['running', 'pr_ci'], decided: ['planned', 'running'], ended: ['ended'] }
+  const kept = cards.filter(
+    (c) =>
+      (!filters.source || c.source.kind === filters.source) &&
+      (filters.waits !== 'person' || c.waits_on_person) &&
+      (!filters.state || (stagesOf[filters.state] ?? PIPELINE_STAGES).includes(c.stage)) &&
+      (filters.state !== 'waiting' || c.waits_on_person),
+  )
+  const by_stage = {} as Record<PipelineStage, PipelineColumn>
+  for (const stage of PIPELINE_STAGES) {
+    const here = kept.filter((c) => c.stage === stage)
+    const all = cards.filter((c) => c.stage === stage)
+    const times = here.map((c) => c.since).filter((t): t is string => t !== null).sort()
+    by_stage[stage] = { count: here.length, hidden: all.length - here.length, oldest_at: times[0] ?? null }
+  }
+  return {
+    status: 'ok', fetchedAt: Date.now(),
+    data: { cards: kept, by_stage, waits_on_person: cards.filter((c) => c.waits_on_person).length, partial: [], window_days: 14 },
+  }
+}
+
+/**
+ * `GET /v1/pipeline`: the board, each card in its one stage. A board with
+ * no card, nothing hidden and no failed read is the measured empty board
+ * (`empty`); a filtered board that hides cards is not empty. A 200 without
+ * `cards` or `by_stage` is a failure, never an empty board. A 404 is passed
+ * on as the failure it is: the board's screen draws "not served" from it.
+ */
+export async function loadPipeline(filters: PipelineFilters = {}): Promise<Result<PipelineBoard>> {
+  if (USE_FIXTURES) return fixturePipeline(filters)
+  const query = new URLSearchParams()
+  if (filters.source) query.set('source', filters.source)
+  if (filters.state) query.set('state', filters.state)
+  if (filters.waits === 'person') query.set('waits', 'person')
+  const r = await read<PipelineBoard>(route('/v1/pipeline', {}, query.toString() === '' ? undefined : query), (d) =>
+    Array.isArray(d.cards) &&
+    d.cards.length === 0 &&
+    (!Array.isArray(d.partial) || d.partial.length === 0) &&
+    !(typeof d.waits_on_person === 'number' && d.waits_on_person > 0) &&
+    Object.values(d.by_stage ?? {}).every((c) => !c || (!c.count && !c.hidden)),
+  )
+  if ((r.status === 'ok' || r.status === 'stale') && (!Array.isArray(r.data.cards) || typeof r.data.by_stage !== 'object' || r.data.by_stage === null)) {
+    return { status: 'error', error: { kind: 'server_error', httpStatus: 200, code: null, message: 'The pipeline answer carried no cards.' } }
+  }
+  if (r.status === 'ok' || r.status === 'stale') {
+    const d = r.data
+    return { ...r, data: { ...d, partial: Array.isArray(d.partial) ? d.partial : [], waits_on_person: typeof d.waits_on_person === 'number' ? d.waits_on_person : d.cards.filter((c) => c.waits_on_person).length, window_days: typeof d.window_days === 'number' ? d.window_days : null } }
   }
   return r
 }
@@ -14225,8 +14460,8 @@ function fixtureScheduleTypes(): ScheduleTypeRow[] {
       min_interval_minutes: 15,
       budget_caps: { per_run_usd: 3, per_day_usd: 30, max_concurrent: 5 },
       scopes: ['repos', 'all'], creatable_scopes: ['repos', 'all'], gate_notes: null,
-      available: true, disabled_reason: null,
-    },
+      available: true, disabled_reason: null, ...(FIXTURE_PROPOSING ? { proposes: true } : {}),
+    } as ScheduleTypeRow,
     {
       name: 'cost-report',
       description: 'Sum reported cost over the window by schedule, repository, profile and person, with coverage.',
@@ -14241,8 +14476,8 @@ function fixtureScheduleTypes(): ScheduleTypeRow[] {
       min_interval_minutes: 24 * 60,
       budget_caps: null,
       scopes: ['repos', 'all', 'platform'], creatable_scopes: fixtureIsAdmin ? ['repos', 'all', 'platform'] : ['repos', 'all'], gate_notes: null,
-      available: true, disabled_reason: null,
-    },
+      available: true, disabled_reason: null, ...(FIXTURE_PROPOSING ? { proposes: false } : {}),
+    } as ScheduleTypeRow,
   ]
 }
 
@@ -14258,6 +14493,19 @@ function scheduleNotServed<T>(target: ApiRoute): Result<T> {
 async function scheduleWrite(target: ApiRoute, method: 'POST' | 'PATCH', body: unknown): Promise<Result<{ schedule: Schedule }>> {
   if (USE_FIXTURES) return scheduleNotServed(target)
   return (await write(target, method, body)) as Result<{ schedule: Schedule }>
+}
+
+/**
+ * What a schedule's `inherit` resolves to now:
+ * `GET /v1/workspaces/{tenant_id}/plan-settings` `.effective.diagrams.value`
+ * (the workspace's choice over the platform's), or null when it was not read.
+ */
+export async function loadEffectivePlanDiagrams(tenantId: string): Promise<'on' | 'off' | null> {
+  if (USE_FIXTURES) return null
+  const r = await read<unknown>(route('/v1/workspaces/{tenant_id}/plan-settings', { tenant_id: tenantId }), () => false)
+  if (r.status !== 'ok' && r.status !== 'stale') return null
+  const value = (r.data as { effective?: { diagrams?: { value?: unknown } } } | null)?.effective?.diagrams?.value
+  return value === 'on' || value === 'off' ? value : null
 }
 
 /** `GET /v1/schedule-types`: the types this caller may create, with their gates. */

@@ -185,6 +185,6 @@ def test_the_swarm_verify_image_carries_the_frozen_identity_module():
     build = [line.strip() for line in CLOUDBUILD.read_text().splitlines()]
     assert f"cp {path} /workspace/verify-ctx/{path}" in build
     assert f"test -f /workspace/verify-ctx/{path}" in build
-    # Standard library only, so the image needs nothing else to import it.
-    imports = re.findall(r"^(?:from|import) (\S+)", (ROOT / path).read_text(), re.M)
-    assert set(imports) <= {"__future__", "hashlib", "re", "collections.abc", "dataclasses"}, imports
+    # Standard library only, so the image needs nothing else to import it: the
+    # lint rule `verify-identity-imports-stdlib-only`
+    # (scripts/source_text_rules/scripts_tree.py).

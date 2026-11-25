@@ -1,3 +1,4 @@
+# source-text: contract - the stop control and ArtifactViewer.tsx must offer cancel on the states the API accepts and render artifact content without HTML injection
 """The two console surfaces added for B28 and B29, held to what the API does.
 
 Read as TEXT, like `test_blocker_ui_surface.py` and `test_runtimes_screen.py`
@@ -10,7 +11,11 @@ preference:
 
   1. THE STOP CONTROL IS ACTUALLY WIRED. `POST /v1/tasks/{id}/cancel` worked
      for weeks with no caller. A component that exists and is rendered by
-     nothing is the same hole with a nicer filename.
+     nothing is the same hole with a nicer filename. That each cancel route
+     has one client function, called from one confirming file, is held by
+     the source-text rules `one-client-function-per-cancel-route`,
+     `cancel-task-only-from-stop-run` and `cancel-workflow-only-from-workflows`
+     (scripts/source_text_rules/control_plane_nz.py).
   2. A STOP ALREADY REQUESTED IS NOT OFFERED AGAIN. That the control is offered
      on exactly the states the API accepts is `contract.constants.test.ts`'s,
      against the constants generated from the frozen states (part of #72); that
@@ -75,55 +80,6 @@ def test_the_stop_control_is_rendered_by_the_screens_that_need_it(screen) -> Non
         "and no caller again."
     )
     assert "<StopRun" in text, f"{screen} imports StopRun and never renders it."
-
-
-def test_only_the_stop_control_calls_the_cancel_route() -> None:
-    """One caller, so the confirmation cannot be bypassed by a second one.
-
-    `cancelTask` is the only function that posts to the route, and `StopRun` is
-    the only file that calls `cancelTask`. A second call site would be a stop
-    with no confirmation behind it.
-    """
-    # `write()` takes the value `route()` builds, never a bare string (CH-18,
-    # swarm-ui fetch.ts), so the target is `route('/v1/tasks/{id}/cancel', …)`;
-    # a bare template literal is still accepted in case one comes back.
-    #
-    # THE WORKFLOW'S CANCEL ROUTE IS A SECOND ROUTE, NOT A SECOND CALLER OF THIS
-    # ONE (Workflows V2, rebrand 2026-10-01): `POST /v1/workflows/{id}/cancel`
-    # has its own client function and its own confirmation (`CancelWorkflow`).
-    # The property is per route -- each cancel route has exactly one client
-    # function, called from exactly one confirming place -- so each is counted
-    # on its own, and a THIRD /cancel write still fails the total.
-    writes = re.findall(r"write\(\s*(?:route\(\s*)?['\"`][^'\"`]*?/cancel['\"`]", code("api.ts"))
-    task_writes = [w for w in writes if "/v1/tasks/" in w]
-    workflow_writes = [w for w in writes if "/v1/workflows/" in w]
-    assert len(task_writes) == 1, (
-        f"{len(task_writes)} write() calls in api.ts target the task /cancel path; the "
-        "cancel route should have exactly one client function."
-    )
-    assert len(workflow_writes) == 1, (
-        f"{len(workflow_writes)} write() calls in api.ts target the workflow /cancel path; "
-        "it should have exactly one client function."
-    )
-    assert len(writes) == 2, f"a /cancel route this test does not name is written to: {writes}"
-    wf_callers = [
-        path.name
-        for path in sorted(UI.glob("*.tsx"))
-        if "cancelWorkflow" in code(path.name) and path.name != "api.ts"
-    ]
-    assert wf_callers == ["Workflows.tsx"], (
-        f"cancelWorkflow is used from {wf_callers}; it must be used only from "
-        "Workflows.tsx, which owns the confirmation."
-    )
-    callers = [
-        path.name
-        for path in sorted(UI.glob("*.tsx"))
-        if "cancelTask(" in code(path.name)
-    ]
-    assert callers == ["StopRun.tsx"], (
-        f"cancelTask() is called from {callers}; it must be called only from "
-        "StopRun.tsx, which owns the confirmation."
-    )
 
 
 # --------------------------------------------------------------------------

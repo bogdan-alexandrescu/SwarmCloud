@@ -155,7 +155,7 @@ describe('a platform admin reads every person against every workspace (S5c)', ()
     expect(lead.dataset.lead).toBe('warn')
     // MUTATION: lead with the newest request, or the first row -> fay is named and this fails.
     expect(visible(lead)).toContain('2 requests are waiting for an admin')
-    expect(visible(lead)).toContain('The oldest: devops@example.com asked for a workspace 40m ago')
+    expect(visible(lead)).toContain('oldest · devops@example.com asked for a workspace 40m ago')
     const buttons = within(lead).getAllByRole('button')
     expect(buttons.map((b) => b.textContent)).toEqual(['Review the oldest'])
     fireEvent.click(buttons[0]!)

@@ -718,6 +718,9 @@ class Workflow(BaseModel):
     updated_at: datetime
     submitted_by: str | None
     submitted_by_name: str | None = None
+    paused: bool = Field(False, description="True while a person has paused the workflow (docs/design/workflow-pause.md).")
+    paused_at: datetime | None = None
+    paused_by: str | None = None
     priority: int
     on_step_failure: str
     cancel_requested: bool

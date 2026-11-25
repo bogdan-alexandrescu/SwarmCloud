@@ -1,3 +1,4 @@
+# source-text: fixture - reads only the graph manifest.json a fake shard writes; the checker selects it through a variable name that elsewhere in the file holds a .py path (the selector and index tools, imported, not read)
 """A truncated test map never narrows what related-tests or the pre-publish gate select.
 
 The owner's agent quality program (the owner, 2026-11-03): a graph promoted with

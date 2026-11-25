@@ -1,3 +1,4 @@
+# source-text: contract - reads each constants group's module source to hold its generated JSON to the objects the group reads
 """The console's generated constants are what their groups build NOW (part of #72).
 
 `scripts/gen_api_types.py` writes, beside `api-types.ts`, one JSON file per

@@ -1223,6 +1223,10 @@
     },
     {
       "method": "POST",
+      "path": "/v1/runs/{run_id}/plan:revise"
+    },
+    {
+      "method": "POST",
       "path": "/v1/runs/{run_id}:end"
     },
     {
@@ -1760,6 +1764,14 @@
     {
       "method": "PUT",
       "path": "/v1/workflows/{workflow_id}/mcp-credentials"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/workflows/{workflow_id}/pause"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/workflows/{workflow_id}/resume"
     },
     {
       "method": "GET",

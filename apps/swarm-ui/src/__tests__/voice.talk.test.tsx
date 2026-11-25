@@ -40,6 +40,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { helpIn, shownIn } from './proseruns'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { cascade } from './cssgate'
@@ -441,10 +442,13 @@ describe('the cards beside the Talk pane', () => {
     const details = screen.getByRole('article', { name: 'Details: Which theme first?' })
     expect(details.textContent).toContain('Which theme should the mock-ups use first?')
     expect(within(details).getByLabelText('Options').textContent).toBe('LightDark')
-    expect(details.textContent).toContain('Say which one, or answer in your own words')
+    // Issue 81: a few words on the surface, the sentence behind the card's (i).
+    expect(shownIn(details)).toContain('Say which one, or your own words')
+    expect(helpIn(details)).toContain('Say which one, or answer in your own words; Voice it writes it here.')
 
     // Phase two spends nothing: no card draws a button that acts.
-    expect(within(container).queryAllByRole('button')).toHaveLength(0)
+    // An (i) (issue 81) explains and does not act: every button is one.
+    expect(within(container).queryAllByRole('button').filter((b) => !(b.getAttribute('aria-label') ?? '').startsWith('About '))).toHaveLength(0)
   })
 
   it('draws only the catalogue fields, and links nowhere but the console and GitHub', () => {

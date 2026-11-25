@@ -1,5 +1,7 @@
 import { loadPlatformSecrets, type PlatformSecretRow, type PlatformSecrets } from './api'
 import { Banner, Card } from './components'
+import { Explained } from './AdminSetupHealth'
+import { InfoTip } from './InfoTip'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
 import { timeAgo } from './types'
@@ -128,15 +130,7 @@ function PlatformSecretsBody({ data }: { data: PlatformSecrets }) {
                 ? `${look[0]!.secret_id} has no secret yet`
                 : `${look[0]!.secret_id} is ${STATUS_WORDS[look[0]!.status] ?? look[0]!.status}`}
           </b>
-          <span>
-            {look.length === 1 && look[0]!.status === 'not_declared'
-              ? 'It is in the catalogue but nothing was stored. '
-              : ''}
-            {grace.length > 0 ? `${grace.length === 1 ? 'One other is' : `${grace.length} are`} mid-rotation, which is expected for 24 h. ` : ''}
-            {blind.length > 0
-              ? `${blind.length} other${blind.length === 1 ? '' : 's'} could not be read${blindReason !== null ? `: ${REASON_WORDS[blindReason] ?? blindReason}` : ''}.`
-              : ''}
-          </span>
+          <LookFacts facts={lookFacts(look, grace, blind, blindReason)} />
         </section>
       ) : blind.length > 0 ? (
         <section className="sec-lead" aria-label="Status not read">
@@ -161,8 +155,12 @@ function PlatformSecretsBody({ data }: { data: PlatformSecrets }) {
         </section>
       )}
       <Banner tone="info" title="Status only">
-        Read from Secret Manager metadata. No value, length or version content is read, and nothing on this page can set
-        one.
+        {/* THE DISCLOSURE IS ONE SHORT LINE (issue 81), the sentence it
+            shortens in its tooltip. Not an (i): a ghost button's border on
+            the info banner falls under the spacing sweep's divider floor. */}
+        <Explained tip="Read from Secret Manager metadata. No value, length or version content is read, and nothing on this page can set one.">
+          No value is read.
+        </Explained>
       </Banner>
       {data.accounts_unread && <Banner tone="warn" title="The quota broker's account documents were not read">The catalogue rows below are still current.</Banner>}
       {data.accounts_refused > 0 && (
@@ -230,5 +228,52 @@ function PlatformSecretsBody({ data }: { data: PlatformSecrets }) {
         {data.accounts_truncated && <p className="sec-hint">More accounts exist than this page reads at once; the line above counts the first ones.</p>}
       </Card>
     </>
+  )
+}
+
+interface LookFact {
+  /** The fact as drawn: a few words. */
+  short: string
+  /** The sentence it shortens, behind the lead's (i); null when the fact is already its own words. */
+  said: string | null
+}
+
+/** The Needs-a-look lead's facts, in the order its sentences were said. */
+function lookFacts(look: readonly PlatformSecretRow[], grace: readonly PlatformSecretRow[], blind: readonly PlatformSecretRow[], blindReason: string | null): LookFact[] {
+  const out: LookFact[] = []
+  if (look.length === 1 && look[0]!.status === 'not_declared') {
+    out.push({ short: 'in the catalogue, nothing stored', said: 'It is in the catalogue but nothing was stored.' })
+  }
+  if (grace.length > 0) {
+    const others = grace.length === 1 ? 'one other' : `${grace.length} others`
+    const are = grace.length === 1 ? 'One other is' : `${grace.length} are`
+    out.push({ short: `${others} mid-rotation (expected for 24 h)`, said: `${are} mid-rotation, which is expected for 24 h.` })
+  }
+  if (blind.length > 0) {
+    const why = blindReason === null ? '' : `: ${REASON_WORDS[blindReason] ?? blindReason}`
+    const plural = blind.length === 1 ? '' : 's'
+    out.push({ short: `${blind.length} other${plural} could not be read${why}`, said: null })
+  }
+  return out
+}
+
+/**
+ * The Needs-a-look lead's line (issue 81): each fact short on the surface,
+ * joined by ' · ', and the sentences they shorten behind one (i), word for
+ * word. A fact with no sentence (`said: null`) is already its own words.
+ */
+function LookFacts({ facts }: Readonly<{ facts: readonly LookFact[] }>) {
+  if (facts.length === 0) return null
+  const said = facts.flatMap((f) => (f.said === null ? [] : [f.said])).join(' ')
+  return (
+    <span>
+      {facts.map((f) => f.short).join(' · ')}
+      {said !== '' && (
+        <>
+          {' '}
+          <InfoTip about="this lead" tip={said} />
+        </>
+      )}
+    </span>
   )
 }

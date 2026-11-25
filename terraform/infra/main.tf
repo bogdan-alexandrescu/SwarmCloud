@@ -798,6 +798,10 @@ module "monitoring" {
   # that module is behind a `count` (as for workspace_deployer above).
   gke_cluster_name = "${var.name_prefix}-autopilot"
 
+  # The uptime check reads https://<front door>/healthz. Empty while the
+  # front door is off: there is no host to check, and no check is made.
+  front_door_hostname = var.enable_frontend ? var.frontend_hostname : ""
+
   alert_emails                 = var.alert_emails
   extra_notification_channels  = var.extra_notification_channels
   urgent_notification_channels = var.urgent_notification_channels

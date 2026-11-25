@@ -41,7 +41,6 @@ and it round-tripped throughout. If it ever fails, the harness is wrong.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pytest
 
@@ -297,11 +296,9 @@ def test_the_task_list_route_serves_them(client, db):
 # 5. The UI's typed surface, and the note that told it not to look
 # --------------------------------------------------------------------------
 #
-# Read as text, like test_dispatch_ui_surface.py does, and skipped rather than
-# failed when the UI is not checked out: this suite has to pass in a tree that
-# holds only the Python services.
-
-UI = Path(__file__).resolve().parents[3] / "apps/swarm-ui/src"
+# The stale "NOT on the task" note in types.ts is held absent by the rule
+# `types-ts-records-no-stale-generation-note` of
+# scripts/source_text_rules/control_plane_nz.py.
 
 
 @pytest.mark.parametrize("field", FENCING)
@@ -319,19 +316,3 @@ def test_the_ui_declares_the_fencing_fields_on_task(field):
     assert WireTask.model_fields[field].is_required(), f"`{field}` is sent on every task"
 
 
-@pytest.mark.skipif(not UI.is_dir(), reason="apps/swarm-ui/src is not present")
-def test_the_ui_no_longer_records_the_fields_as_unavailable():
-    """A comment that has stopped being true is worse than none.
-
-    types.ts carried a block headed "NOT on the task: `current_generation`",
-    ending "task_to_api does not send it, so no screen can show it and no
-    screen should imply it". That is the same failure as the spend comment
-    blaming a shipped worker fix: it was accurate when written, it stopped
-    being accurate here, and while it stands it is the documented reason not
-    to build the one indicator that explains a stalled task.
-    """
-    source = (UI / "types.ts").read_text()
-    assert "NOT on the task" not in source, (
-        "types.ts still records current_generation as absent from the task API; "
-        "task_to_api now sends it and this note is why no screen renders it"
-    )

@@ -643,6 +643,30 @@ SWITCHES: dict[str, Switch] = {
         "refuses the same names before sending is released and no stored schedule's spec "
         "carries a longer name",
     ),
+    # Workflow pause and resume (docs/design/workflow-pause.md section 3, part
+    # of issue 7; contract request 160 accepted 2026-11-24). Both refusals gate
+    # only POST /v1/workflows/{id}/pause and /resume, routes that did not exist
+    # before, so no existing caller can be refused by them (archived pull
+    # request 845's failure cannot recur). SHIPS ON (default=True), pending the
+    # owner's answer to the lane's question (questions.json): report-only
+    # would record a pause on a finished workflow, or one being cancelled,
+    # that nothing can act on and that the reconciler's `paused == true`
+    # query would then read for ever. Off (REFUSAL_WORKFLOW_TERMINAL=off,
+    # REFUSAL_WORKFLOW_CANCEL_REQUESTED=off), the pause or resume is recorded.
+    "workflow_terminal": Switch(
+        code="workflow_terminal",
+        why="pausing or resuming a workflow that has finished is refused 409. Ships on: the "
+        "route is new, so no caller relies on it; off, the pause is recorded on a workflow "
+        "none of whose steps can act on it",
+        default=True,
+    ),
+    "workflow_cancel_requested": Switch(
+        code="workflow_cancel_requested",
+        why="pausing or resuming a workflow being cancelled is refused 409: cancel wins. Ships "
+        "on: the route is new, so no caller relies on it; off, the pause is recorded and the "
+        "cancel still ends every step",
+        default=True,
+    ),
     # Join requests (docs/design/join-requests.md §4.9, lane JOIN-STORE, part
     # of archived issue 2325) have NO switch here, deliberately: join_link_unknown,
     # join_already_member, join_already_reaches, join_not_offered,
@@ -674,6 +698,34 @@ SWITCHES: dict[str, Switch] = {
         why="a plan:comment on a run that is not PLANNED through DONE (a rejected plan, a "
         "NOT_READY verdict, a run still planning, failed or cancelled) is refused 409. On "
         "once the decision page (lane U4) hides the composer on such a run",
+    ),
+    # The person-asked re-plan (docs/design/plans-pipeline.md §3.5, §5, lane
+    # P4 PLANS-REVISE). Each gates `plan:revise` (and `replan_running` also
+    # `plan:edit`), a route new with that lane. Off, the request goes ahead
+    # and the log names the refusal it would have made; what keeps the plan
+    # safe then is the digest: an answer to a plan that moved is never
+    # applied, and a second re-plan cancels the one it replaces.
+    "edit_level_required": Switch(
+        code="edit_level_required",
+        why="a plan:revise by a member who may comment on the plan but not edit it (the "
+        "owner's Q6) is refused 403. On once the decision page (lane U4) offers Request "
+        "changes only at may_decide.edit",
+    ),
+    "nothing_to_revise": Switch(
+        code="nothing_to_revise",
+        why="a plan:revise with no open comment to send is refused 422. On once the decision "
+        "page (lane U4) offers Request changes only while a comment is open",
+    ),
+    "replan_cap": Switch(
+        code="replan_cap",
+        why="a plan:revise past plan_review_caps.replans (5 by default, Admin › Settings) is "
+        "refused 429. On once the settings lane's cap is set in every environment and the "
+        "decision page shows the count",
+    ),
+    "replan_running": Switch(
+        code="replan_running",
+        why="a plan:edit or another plan:revise while a re-plan runs is refused 409. On once "
+        "the decision page (lane U4) offers Cancel the re-plan beside the editor",
     ),
 }
 

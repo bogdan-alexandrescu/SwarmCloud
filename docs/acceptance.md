@@ -104,6 +104,40 @@ local run against a branch you pushed to the sandbox yourself sets
 | `SWARM_ACCEPTANCE_ISSUE`, `_ISSUE_EXPECT` | `1`, `sandbox-probe.sh` | the sandbox issue the `issue` input fetches, and a string only its text contains |
 | `SWARM_ACCEPTANCE_GITHUB_TOKEN` (or `GH_TOKEN`, `GITHUB_TOKEN`) | unset | a token that reads and writes the sandbox: lets each check read its pull request back and close it. Without one, those reads are SKIPs (the sandbox is private) |
 
+## The never-touch list is read before anything runs, and retried (2026-11-24)
+
+The swarm-verify job sources `scripts/lib/common.sh`, which reads the
+project's never-touch list, `config/<env>/deny-list.json` in the state bucket,
+before smoke or any other group runs. Nothing that mutates runs without it:
+`deny_list_require` refuses everything when the list cannot be read, is
+missing, or is not the expected shape. That rule does not move.
+
+Issue 370: dev acceptance went red on one read of the list that timed out
+after 30 s (`curl: (28)`). Nothing was wrong with dev; the read was simply
+never asked for again, so the smoke target refused to run anything. Since
+then the REST transport the job uses (`SWARM_CONFIG_TRANSPORT=rest`, no
+gcloud in its image) tries each of its three calls -- the metadata server's
+token, the object's generation, its media -- **up to 3 times, 10 s apart**,
+and only on a network timeout or no connection (curl exit 28 or 7) or an
+HTTP 5xx. A retry prints `try N of 3` and never a bucket, URL or token.
+
+What is never retried, and still refused at once: a 403 (the identity may not
+read the list), a 404 (the list is missing, and its cached copy is dropped),
+any other answer, and a body that is not a valid list. After the last try the
+read fails exactly as a single failed read did, and `deny_list_require` refuses
+everything: an unread list is never read as an empty list, and never as its
+last cached copy.
+
+The cost, worst case: a read that never succeeds takes 110 s for the storage
+call that fails (3 × 30 s + 2 × 10 s) instead of 30 s. Every call needing all
+its tries, the last one failing, takes 270 s instead of 70 s: 200 s more,
+inside the swarm-verify task's 1800 s and the accept job's 30 minutes.
+`SWARM_CONFIG_READ_TRIES` (1-5) and `SWARM_CONFIG_READ_PAUSE` (0-30 s) override
+the two defaults, which are explained next to their values in `common.sh`; a
+value out of range refuses the read before any network call. The gcloud
+transport is unchanged. `tests/unit/scripts/test_common_config_fetch_retry.py`
+holds all of it, offline, with a fake curl and a fake sleep.
+
 ## SKIP is not PASS
 
 A check that cannot be measured says so and why: a profile input this

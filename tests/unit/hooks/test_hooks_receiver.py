@@ -217,14 +217,9 @@ def test_a_signature_over_another_body_is_401(parts, key):
     assert reply.status == 401 and store.calls == []
 
 
-def test_the_signature_is_compared_in_constant_time():
-    import inspect
-
-    from swarm_github_hooks import receiver
-
-    source = inspect.getsource(receiver)
-    assert "hmac.compare_digest(" in source
-    assert "== expected" not in source and "expected ==" not in source
+# The signature is compared in constant time (`hmac.compare_digest`, never
+# `==`): the rule hooks-receiver-compares-in-constant-time in
+# scripts/source_text_rules/services.py.
 
 
 def test_an_unsigned_ping_is_401_too(parts, key):

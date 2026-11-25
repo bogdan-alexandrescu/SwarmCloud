@@ -1,3 +1,4 @@
+# source-text: fixture - reads only the weights JSON the refresh writes into a scratch tree; the checker selects it through a variable name that elsewhere in the file holds a .py path
 """The unit shard weights are refreshed by a script, not by a hand-typed recipe (archived issue 2364).
 
 tests/unit/scripts/unit_test_durations.json was refreshed only by hand, so new

@@ -1453,6 +1453,17 @@ if args[:1] == ["api"]:
         world["rerun_by"] = "app" if os.environ["GH_TOKEN"] == os.environ["APP_TOKEN"] else "workflow"
         save()
         sys.exit(0)
+    if method == "POST" and parts[:2] == ["actions", "jobs"] and parts[3:] == ["rerun"]:
+        # One job's re-run. Whether GitHub accepts it while the job's run is
+        # still in progress is not proven in this repository (issue 387), so
+        # each test says which way it answers; by default it refuses.
+        if world.get("job_rerun") != "accept":
+            print("HTTP 403: (fake) refused while the run is in progress", file=sys.stderr)
+            sys.exit(1)
+        world.setdefault("job_reruns", []).append(int(parts[2]))
+        world["rerun_by"] = "app" if os.environ["GH_TOKEN"] == os.environ["APP_TOKEN"] else "workflow"
+        save()
+        sys.exit(0)
     if method == "POST" and parts[0] == "statuses":
         sys.exit(0)
     if method == "DELETE":
@@ -1468,10 +1479,25 @@ if args[:1] == ["api"]:
     if parts == ["commits", "main"]:
         print(json.dumps({"sha": world["main"]}))
         sys.exit(0)
+    if parts[0] == "check-runs" and parts[2:] == ["annotations"]:
+        # A check run's annotations, one page (per_page, page) at a time.
+        rows = world.get("annotations", {}).get(parts[1], [])
+        per, page = int(query.get("per_page", 30)), int(query.get("page", 1))
+        print(json.dumps(rows[(page - 1) * per:page * per]))
+        sys.exit(0)
+    if parts[0] == "pulls" and parts[2:] == ["files"]:
+        # The files a pull request changes, one page (per_page, page) at a time.
+        rows = [{"filename": f, "status": "modified"} for f in world.get("files", {}).get(parts[1], [])]
+        per, page = int(query.get("per_page", 30)), int(query.get("page", 1))
+        print(json.dumps(rows[(page - 1) * per:page * per]))
+        sys.exit(0)
     if parts[0] == "commits":
         at = world["checks"].get(parts[1], {})
         if parts[2] == "check-runs":
-            print(json.dumps({"check_runs": at.get("check_runs", [])}))
+            rows = at.get("check_runs", [])
+            per, page = int(query.get("per_page", 30)), int(query.get("page", 1))
+            print(json.dumps({"total_count": at.get("check_runs_total", world.get("check_runs_total", len(rows))),
+                              "check_runs": rows[(page - 1) * per:page * per]}))
         else:
             print(json.dumps({"statuses": at.get("statuses", [])}))
         sys.exit(0)
@@ -1621,9 +1647,14 @@ def test_a_first_red_re_runs_only_the_failed_jobs_and_keeps_the_train_open(red_t
     t = red_tick([101, 102, 103])
     _red_at_head(t)
     _main(t, [*REQUIRED_TICK, UNIT])
+    next(c for c in t.world["checks"][t.head]["check_runs"] if c["name"] == UNIT)["completed_at"] = \
+        time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 2400))
     out = t.run()
     failing_run = next(r["id"] for r in t.world["checks"][t.head]["runs"]
                        if r["conclusion"] == "failure")
+    # Issue 387: the wait from the first failed job's end to the retry is logged.
+    delay = int(re.search(r"(\d+) seconds from the first failed job's end", out).group(1))
+    assert 2400 <= delay < 2500
     # Only the failing run, through the rerun-failed-jobs endpoint.
     assert t.after.get("reruns") == [failing_run]
     assert t.after.get("rerun_by") == "workflow", "the workflow's own token, by default"
@@ -1676,6 +1707,7 @@ def test_a_first_red_while_its_run_still_runs_waits_to_retry(red_tick):
     train waits for it rather than finding nothing to re-run and bisecting."""
     t = red_tick([101, 102])
     _red_at_head(t)
+    t.world["job_rerun"] = "refuse"
     failing = t.world["checks"][t.head]["runs"][-1]
     failing.update({"status": "in_progress", "conclusion": None})
     out = t.run()
@@ -1683,6 +1715,124 @@ def test_a_first_red_while_its_run_still_runs_waits_to_retry(red_tick):
     assert TRAIN_PR not in t.after.get("closed_now", [])
     assert t.recorded("retry") is None
     assert "rule 1 (retry once)" in out
+
+
+# Issue 387: a test job fails in five minutes while `build changed images
+# without pushing`, a job of the same run, goes on for forty. The train
+# re-runs the failed job at once if GitHub allows it, and never lets a retry
+# started early land a train before every required check is green.
+
+IMAGES = "build changed images without pushing"
+
+
+def _red_while_its_run_builds_images(t: RedTick, *, failed_ago: int = 300) -> dict:
+    """UNIT failed `failed_ago` seconds ago; the image build of the same run
+    (same check suite) still runs, so that run is in progress."""
+    _red_at_head(t)
+    at = t.world["checks"][t.head]
+    failing = next(c for c in at["check_runs"] if c["name"] == UNIT)
+    failing["completed_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - failed_ago))
+    suite = failing["check_suite"]["id"]
+    at["check_runs"].append({"id": 10 * suite + 1, "name": IMAGES, "status": "in_progress",
+                             "conclusion": None, "check_suite": {"id": suite}})
+    run = next(r for r in at["runs"] if r["check_suite_id"] == suite)
+    run.update({"status": "in_progress", "conclusion": None})
+    return failing
+
+
+def test_a_first_red_re_runs_the_failed_job_at_once_while_its_run_builds_images(red_tick):
+    t = red_tick([101, 102])
+    t.world["job_rerun"] = "accept"
+    failing = _red_while_its_run_builds_images(t, failed_ago=300)
+    out = t.run()
+    assert t.after.get("job_reruns") == [failing["id"]], "the failed job alone, now"
+    assert not t.after.get("reruns"), "no run-wide re-run of a run still in progress"
+    assert t.recorded("retry") is not None and t.recorded("retry").endswith(":" + t.head)
+    assert TRAIN_PR not in t.after.get("closed_now", []), "the train stays open"
+    assert not t.after.get("merged")
+    assert "waiting for them" not in out
+    assert "rule 1 (retry once): re-running job(s)" in out
+    delay = int(re.search(r"(\d+) seconds from the first failed job's end", out).group(1))
+    assert 300 <= delay < 400
+    assert "rule 1 (retry once)" in t.comments().lower()
+
+
+def test_a_job_re_run_github_refuses_while_its_run_runs_waits_and_spends_no_retry(red_tick):
+    t = red_tick([101, 102])
+    t.world["job_rerun"] = "refuse"
+    _red_while_its_run_builds_images(t)
+    out = t.run()
+    assert not t.after.get("job_reruns") and not t.after.get("reruns")
+    assert t.recorded("retry") is None, "a refused re-run is not the one retry"
+    assert TRAIN_PR not in t.after.get("closed_now", [])
+    lines = [line for line in out.splitlines() if "rule 1 (retry once)" in line]
+    assert len(lines) == 1, out
+    assert "waiting for them before re-running the failed jobs" in lines[0]
+    assert "GitHub refused to re-run job " + UNIT in lines[0]
+    assert "the retry is not spent" in lines[0]
+    # Once every run has finished, today's retry runs: the refusal spent nothing.
+    t.world["checks"][t.head] = _at(REQUIRED_TICK, [UNIT])
+    _main(t, [*REQUIRED_TICK, UNIT])
+    out = t.run()
+    failing_run = next(r["id"] for r in t.world["checks"][t.head]["runs"]
+                       if r["conclusion"] == "failure")
+    assert t.after.get("reruns") == [failing_run]
+    assert t.recorded("retry") is not None
+    assert TRAIN_PR not in t.after.get("closed_now", [])
+    assert "seconds from the first failed job's end" in out or "is not measured" in out
+
+
+def test_a_failed_run_that_finished_is_re_run_while_another_run_still_runs(red_tick):
+    """A failed run that has finished needs no answer about single jobs:
+    its failed jobs are re-run at once, whatever another run is doing."""
+    t = red_tick([101, 102])
+    _red_at_head(t)
+    t.world["checks"][t.head]["runs"].append(
+        {"id": 990, "check_suite_id": 990, "event": "pull_request",
+         "status": "in_progress", "conclusion": None})
+    out = t.run()
+    failing_run = next(r["id"] for r in t.world["checks"][t.head]["runs"]
+                       if r["conclusion"] == "failure")
+    assert t.after.get("reruns") == [failing_run]
+    assert not t.after.get("job_reruns")
+    assert t.recorded("retry") is not None
+    assert "waiting for them" not in out
+    assert "the failed jobs of finished run(s) " + str(failing_run) in out
+
+
+def test_an_early_retry_never_lands_while_a_required_check_still_runs(red_tick):
+    """The re-run job is green, but a required check of the run is still
+    going: pending, so nothing lands (issue 387, part 3)."""
+    t = red_tick([101, 102])
+    t.extra = [f"retry={int(time.time()) - 60}:{t.head}"]
+    t.world["checks"][t.head] = _at([*REQUIRED_TICK, UNIT])
+    at = t.world["checks"][t.head]
+    still = next(c for c in at["check_runs"] if c["name"] == REQUIRED_TICK[-1])
+    still.update({"status": "in_progress", "conclusion": None})
+    out = t.run()
+    assert not t.after.get("merged")
+    assert TRAIN_PR not in t.after.get("closed_now", [])
+    assert "is still running its checks" in out
+
+
+def test_an_early_retry_never_lands_while_another_job_is_red(red_tick):
+    """The re-run job is green, another job failed while its run still runs:
+    red, never landed, and the retry already spent is not spent again."""
+    t = red_tick([101, 102])
+    t.world["job_rerun"] = "accept"
+    t.extra = [f"retry={int(time.time()) - 60}:{t.head}"]
+    _red_while_its_run_builds_images(t)
+    at = t.world["checks"][t.head]
+    failing = next(c for c in at["check_runs"] if c["name"] == UNIT)
+    # The re-run of UNIT, green, as the latest run of its name; SHARD red.
+    at["check_runs"].append({**failing, "id": failing["id"] + 5, "conclusion": "success"})
+    at["check_runs"].append({"id": failing["id"] + 6, "name": SHARD, "status": "completed",
+                             "conclusion": "failure", "check_suite": failing["check_suite"]})
+    out = t.run()
+    assert not t.after.get("merged")
+    assert TRAIN_PR not in t.after.get("closed_now", [])
+    assert not t.after.get("job_reruns") and not t.after.get("reruns")
+    assert "its re-run at " in out and "is still running: waiting" in out
 
 
 def _stuck_run(t: RedTick) -> None:
@@ -2168,7 +2318,7 @@ TICK_READS = [
     ("main's rules", _green_train, lambda t: [_api("rules/branches/main")], 1, 0),
     ("main's branch protection", _green_train, lambda t: [_api("branches/main")], 1, 0),
     ("the check runs at the train head", _green_train,
-     lambda t: [_api(f"commits/{t.head}/check-runs?per_page=100")], 1, 0),
+     lambda t: [_api(f"commits/{t.head}/check-runs?per_page=100&page=1")], 1, 0),
     ("the statuses at the train head", _green_train,
      lambda t: [_api(f"commits/{t.head}/status?per_page=100")], 1, 0),
     ("the Actions runs at the train head", _green_train_ran_twice, _head_runs, 1, 0),
@@ -2185,7 +2335,7 @@ TICK_READS = [
     ("rule 1's runs to re-run", _first_red, _head_runs, 2, 1),
     ("main's head commit", _red_while_main_is_red, lambda t: [_api("commits/main")], 1, 0),
     ("the check runs on main", _red_while_main_is_red,
-     lambda t: [_api(f"commits/{t.main}/check-runs?per_page=100")], 1, 0),
+     lambda t: [_api(f"commits/{t.main}/check-runs?per_page=100&page=1")], 1, 0),
     ("the statuses on main", _red_while_main_is_red,
      lambda t: [_api(f"commits/{t.main}/status?per_page=100")], 1, 0),
     ("the Actions runs on main", _red_while_main_is_red,
@@ -2233,7 +2383,7 @@ def test_the_tick_s_outcome_survives_one_timeout_on_each_read_it_decides_on(red_
     """Each read through gh_read decides as if it never failed."""
     t = red_tick([101, 102])
     _green_train(t)
-    faults = _faulty(t, [{"words": [_api(f"commits/{t.head}/check-runs?per_page=100")],
+    faults = _faulty(t, [{"words": [_api(f"commits/{t.head}/check-runs?per_page=100&page=1")],
                           "fail": ["timeout"]},
                          {"words": [_api(f"commits/{t.head}/status?per_page=100")],
                           "fail": ["eof"]},

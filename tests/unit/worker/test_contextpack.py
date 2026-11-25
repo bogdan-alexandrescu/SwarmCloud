@@ -1,3 +1,4 @@
+# source-text: fixture - reads the context-pack artifact JSON a step wrote under its artifacts dir, and a sample repository's manifest
 """The context pack: what a step is told about its repository before it starts
 (docs/design/context-quality.md §4.3-§4.5; lane CTXQ-P).
 

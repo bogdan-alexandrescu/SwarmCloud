@@ -1,3 +1,4 @@
+# source-text: fixture - reads only the repo-index design doc, its mock-up and the deployment pattern list; the checker selects it through a variable name that elsewhere in the file holds a .py path (deployment_values.py, imported, not read)
 """Repository index, design lane RI0: the doc and the mock-ups say what the owner asked.
 
 WHY THIS EXISTS. Owner request 2026-10-04: register repositories per tenant,

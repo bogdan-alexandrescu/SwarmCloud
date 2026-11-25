@@ -1,3 +1,4 @@
+# source-text: contract - types.ts's strategies, carriers and dispatch keys must be this API's, and AgentDetail.tsx's matchers the worker's publish reasons
 """The web UI's dispatch control, and the seams it sits on.
 
 `strategy` and `carrier` were accepted by swarm-api, stored on the task, honoured

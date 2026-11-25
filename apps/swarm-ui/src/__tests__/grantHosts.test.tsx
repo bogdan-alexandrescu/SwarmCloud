@@ -20,7 +20,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
 import server from '../generated/constants/server.json'
-import { HOST_REFUSED, HOSTS_TOO_MANY, MAX_SLOT_HOSTS, SLOT_HOST, hostsNeeded } from '../WorkspaceSecrets'
+import { HOST_REFUSED, HOSTS_TOO_MANY, MAX_SLOT_HOSTS, SLOT_HOST, hostsNeeded } from '../slotHosts'
 
 const AT = '2026-10-26T09:30:00+00:00'
 const BROWSER = 'profile:claude-code-browser'

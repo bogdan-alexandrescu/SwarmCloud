@@ -1,3 +1,4 @@
+# source-text: contract - every path::qualname docs/BUILD_PROMPT_V2.md cites must still be a symbol whose source holds the cited call
 """The spec says what the code does: owner decisions of 2026-10-01.
 
 WHY THIS EXISTS. Two documents described a platform this repository does not
@@ -117,12 +118,23 @@ def _cited_symbol(path: str, qualname: str) -> str:
     class level name (`TOKEN_ENDPOINT`, `WorkerConfig.checkpoint_interval_seconds`)
     the `#:` comment block directly above it, the convention that documents a
     name in this repository.
+
+    A class member the class inherits from a mixin it imports from a sibling
+    module (`lifecycle.Worker`'s, split out of `lifecycle.py` by issue 68)
+    resolves there: `Worker._park_for_quota` is still `Worker`'s.
     """
     source = (REPO / path).read_text(encoding="utf-8")
-    scope: ast.AST = ast.parse(source, filename=path)
-    for part in qualname.split("."):
-        scope = next((node for node in ast.iter_child_nodes(scope) if _defines(node, part)), None)
-        assert scope is not None, f"{path} has no {qualname} (no {part!r})"
+    module = ast.parse(source, filename=path)
+    scope: ast.AST = module
+    parts = qualname.split(".")
+    for index, part in enumerate(parts):
+        found = next((node for node in ast.iter_child_nodes(scope) if _defines(node, part)), None)
+        if found is None and isinstance(scope, ast.ClassDef):
+            inherited = _inherited_member(path, module, scope, ".".join(parts[index:]))
+            if inherited is not None:
+                return inherited
+        assert found is not None, f"{path} has no {qualname} (no {part!r})"
+        scope = found
     lines = source.splitlines()
     start = scope.lineno
     if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -131,6 +143,27 @@ def _cited_symbol(path: str, qualname: str) -> str:
         while start > 1 and lines[start - 2].strip().startswith("#:"):
             start -= 1
     return "\n".join(lines[start - 1 : scope.end_lineno])
+
+
+def _inherited_member(path: str, module: ast.Module, cls: ast.ClassDef, member: str) -> str | None:
+    """The source of `member` in a base of `cls` imported `from .sibling import Base`, or None."""
+    siblings = {
+        alias.asname or alias.name: node.module
+        for node in module.body
+        if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module
+        for alias in node.names
+    }
+    for base in cls.bases:
+        if not (isinstance(base, ast.Name) and base.id in siblings):
+            continue
+        sibling = str(Path(path).parent / f"{siblings[base.id].replace('.', '/')}.py")
+        if not (REPO / sibling).is_file():
+            continue
+        try:
+            return _cited_symbol(sibling, f"{base.id}.{member}")
+        except AssertionError:
+            continue
+    return None
 
 
 def _defines(node: ast.AST, name: str) -> bool:

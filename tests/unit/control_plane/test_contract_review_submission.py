@@ -169,12 +169,9 @@ def test_the_mode_is_its_own_setting_and_anything_unknown_is_off(raw, want):
     assert cr.mode(environ) == want
 
 
-def test_the_mode_is_not_a_refusals_switch():
-    """Answer 7: outside `refusals.py`, whose switch is keyed on the code."""
-    from swarm_api import refusals
-
-    source = open(refusals.__file__, encoding="utf-8").read()
-    assert cr.MODE_ENV not in source and "contract_review" not in source
+# Answer 7, the mode is outside `refusals.py`, whose switch is keyed on the code:
+# the lint rule `contract-review-mode-is-not-a-refusals-switch`
+# (scripts/source_text_rules/control_plane_am.py).
 
 
 def test_off_reads_nothing_sends_nothing_and_records_nothing(client, context, db, routed,

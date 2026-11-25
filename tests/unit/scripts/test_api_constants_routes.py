@@ -1,3 +1,4 @@
+# source-text: contract - reads the route sources the routes constants group is built from to hold its JSON to them
 """The `routes` constants group, against the objects it reads (part of #72).
 
 `scripts/api_constants/routes.py` writes `generated/constants/routes.json`:

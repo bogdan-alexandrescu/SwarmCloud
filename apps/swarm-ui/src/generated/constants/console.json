@@ -1337,6 +1337,7 @@
       "work/runs",
       "automate/schedules",
       "automate/approvals",
+      "automate/pipeline",
       "capacity/pools",
       "capacity/profiles",
       "capacity/catalogue",

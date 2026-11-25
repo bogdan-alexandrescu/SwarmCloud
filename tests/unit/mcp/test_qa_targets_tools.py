@@ -1,3 +1,4 @@
+# source-text: contract - the request calls in swarm_mcp/qatargets.py must be exactly the three QA-target routes swarm-api serves
 """The QA-target tools of the sc plugin (lane VQ-6 CONSOLE-PLUGIN, part of archived issue 1933).
 
 docs/design/visual-qa-any-app.md §2.1, §6 and §7 name three plugin tools over
@@ -202,11 +203,9 @@ def test_an_undeclared_credential_argument_is_refused_with_nothing_sent():
     assert password not in str(caught.value)
 
 
-def test_nothing_in_the_bridge_calls_the_route_that_takes_the_credential():
-    source = (REPO / "apps/swarm-mcp/swarm_mcp/qatargets.py").read_text()
-    # MUTATION: add a `client.request("PUT", ".../credential", ...)` to qatargets.py.
-    assert '"PUT"' not in source and "'PUT'" not in source
-    assert re.search(r"/credential[\"'?]", source) is None
+# Nothing in the bridge calls the route that takes the credential: no `"PUT"`
+# and no `/credential` route in qatargets.py, the rule
+# mcp-qa-targets-never-sends-the-credential in scripts/source_text_rules/services.py.
 
 
 # -- swarm_qa_targets ---------------------------------------------------------------

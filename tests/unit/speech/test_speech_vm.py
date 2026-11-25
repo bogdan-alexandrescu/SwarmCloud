@@ -1,3 +1,4 @@
+# source-text: contract - the env names swarm_speech/main.py reads must equal the launcher's --env set, which systemd, files.json and the manifest also hold
 """The speech machine's files agree with each other and with the server
 (docs/design/voice-it-own-speech.md §4.5, §5.1-§5.3; apps/swarm-speech/vm/).
 

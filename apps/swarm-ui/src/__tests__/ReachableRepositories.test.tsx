@@ -8,9 +8,10 @@
 //
 // Fixtures only; no network.
 
+import { helpIn, shownIn } from './proseruns'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
-import { serve, visible } from './repofixture'
+import { serve } from './repofixture'
 
 const ID = (n: number) => `repo_${String(n).padStart(16, '0')}`
 
@@ -33,6 +34,7 @@ const GRANTS = [
   GRANT(3, 'octo-dev/example-api', 'write', { clone: 'ok', push: 'ok', pull_request: 'ok' }),
 ]
 
+const grantsCard = () => document.querySelector('.ac-grants')
 const rowOf = (repository: string) => document.querySelector(`li.ac-grant[data-repo="${repository}"]`) as HTMLElement
 
 afterEach(() => {
@@ -65,7 +67,9 @@ describe('ReachableRepositories', () => {
     expect(within(svc).getAllByRole('radio').map((b) => [b.textContent, b.getAttribute('aria-checked')])).toEqual([['Read', 'false'], ['Write', 'true']])
     expect(screen.getByRole('button', { name: 'Re-check all' })).toBeTruthy()
     // MUTATION: drop the card's foot.
-    expect(visible(document.querySelector('.ac-grants'))).toContain('An agent for a repository not on this list is refused at submission.')
+    expect(shownIn(grantsCard())).toContain('Unlisted repositories are refused at submission.')
+    // Issue 81: the full sentence is behind the foot's (i), word for word.
+    expect(helpIn(grantsCard())).toContain('An agent for a repository not on this list is refused at submission.')
   })
 
   it('says no repository is chosen yet when there are no grants, and Re-check all is off', async () => {

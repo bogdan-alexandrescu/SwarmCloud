@@ -544,6 +544,38 @@ def _inbox(ctx: AppContext, tenant_id: str) -> list[dict[str, Any]] | None:
         return None
 
 
+def _proposes(doc: Mapping[str, Any]) -> bool:
+    """Whether the schedule's type is one whose firings propose (§2.4); an unknown type does not."""
+    entry = scheduletypes.get(str(doc.get("type")))
+    return entry is not None and entry.proposes
+
+
+def _proposals(ctx: AppContext, tenant_id: str, rows: list[Mapping[str, Any]]) -> dict[str, dict[str, Any]] | None:
+    """`proposals_7d` (plans-pipeline §3.10) for each listed schedule whose
+    type proposes, from `approvals.proposals_by_schedule`'s two bounded reads.
+    A proposing schedule with nothing in the window gets zeros, and says
+    `complete: false` when the reads were full, as the counted ones do. Not
+    read at all when no listed schedule proposes. None when it cannot be
+    read: the field is then absent, and the console draws a dash, never 0."""
+    ids = [str(row["schedule_id"]) for row in rows if _proposes(row)]
+    if not ids:
+        return {}
+    try:
+        counts = approvals.proposals_by_schedule(ctx, tenant_id)
+    except Exception as exc:  # one read's failure does not blank the list
+        log.warning("schedules: proposals of %s not counted: %s", tenant_id, type(exc).__name__)
+        return None
+    complete = all(row.get("complete") is not False for row in counts.values())
+    out: dict[str, dict[str, Any]] = {}
+    for sid in ids:
+        row = counts.get(sid)
+        if row is None:
+            row = {"proposed": 0, "approved": 0, "auto_approved": 0, "rejected": 0, "expired": 0,
+                   "running": 0, "merged": 0, "window_days": approvals.PROPOSALS_DAYS, "complete": complete}
+        out[sid] = row
+    return out
+
+
 def _waiting(items: Iterable[Mapping[str, Any]]) -> dict[str, int]:
     """Waiting approvals per schedule: every inbox item whose subject names
     one -- a firing waiting to run, a scheduled run's plan or hold, and its
@@ -666,6 +698,10 @@ def list_schedules(
     pending = _waiting(inbox) if inbox is not None else _pending(ctx, tenant_id)
     rows = sorted(_tenant_schedules(ctx, tenant_id), key=lambda d: str(d.get("name", "")).casefold())
     listed = [schedule_to_api(row, now, pending=pending.get(row["schedule_id"], 0)) for row in rows]
+    proposals = _proposals(ctx, tenant_id, rows)
+    for out in listed:
+        if proposals is not None and out["schedule_id"] in proposals:
+            out["proposals_7d"] = proposals[out["schedule_id"]]
     return {
         "schedules": listed,
         "summary": _json(schedules.summarize((row["state_word"] for row in listed), inbox)),
@@ -992,8 +1028,12 @@ def _run_targets(ctx: AppContext, tenant_id: str, run_id: str) -> list[tuple[str
         return []
     if run.state in TERMINAL_RUN_STATES:
         return []
-    if run.state == RunState.PLANNING and run.planner_task_id:
-        return [("task", run.planner_task_id)]
+    if run.state == RunState.PLANNING:
+        # Its planner, or before one is linked its readiness pre-pass
+        # (owner, 2026-11-24), whose cancellation ends the run CANCELLED.
+        live = run.planner_task_id or str((run.readiness or {}).get("task_id") or "")
+        if live:
+            return [("task", live)]
     if run.state == RunState.FIXING and run.ci_fix_workflows:
         return [("workflow", run.ci_fix_workflows[-1])]
     if run.workflow_id and run.state in (RunState.APPROVED, RunState.RUNNING, RunState.FIXING):
@@ -1278,6 +1318,8 @@ def _item_tasks(ctx: AppContext, tenant_id: str, item: Mapping[str, Any]) -> tup
         except NotFound:
             return [], {"unread": "its issue run was not found"}
         out: list[tuple[str, str | None]] = []
+        if (run.readiness or {}).get("task_id"):
+            out.append((str(run.readiness["task_id"]), "readiness"))
         if run.planner_task_id:
             out.append((run.planner_task_id, "plan"))
         wf_ids = ([run.workflow_id] if run.workflow_id else []) + list(run.ci_fix_workflows)

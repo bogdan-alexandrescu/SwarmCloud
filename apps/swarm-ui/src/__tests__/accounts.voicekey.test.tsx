@@ -266,7 +266,9 @@ describe('an OpenAI API key account in the Voice it pool', () => {
           </>,
         )
         const section = screen.getByRole('region', { name: 'Voice it pool' })
-        expect(within(section).getAllByText(/not measured/).length).toBe(2)
+        // One per window cell on the surface; the reason is each one's (i) (issue 81).
+        const unmeasured = within(section).getAllByText(/not measured/).filter((el) => !el.hasAttribute('data-help-description'))
+        expect(unmeasured.map((el) => el.textContent)).toHaveLength(2)
         if (width <= 560) expect(section.querySelectorAll('article.acct-card').length).toBe(1)
         else expect(within(section).getByRole('table')).toBeTruthy()
         const block = await screen.findByRole('region', { name: VOICE_KEY_BUTTON }, WAIT)

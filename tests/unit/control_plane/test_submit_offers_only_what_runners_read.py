@@ -1,3 +1,4 @@
+# source-text: contract - limits.py and the runner modules' source must read the input keys the catalogue offers
 """What the Submit form may offer, served from the catalogue; what each runner reads (archived pull request 213 review, archived issue 218).
 
 `SUGGESTED` in the console's Submit form is what it offers per profile. The

@@ -138,8 +138,10 @@ def test_it_is_selectable_by_name():
 def test_it_accepts_the_issue_input_like_claude_code():
     # And `browser_tool` besides, by contract request 77 (BSTATUS-API), and
     # `mcp_servers`, by contract request 88 (MCP-CONTRACT), and `qa_identity`,
-    # by contract request 106 (QI-CONTRACT).
-    assert set(RUNNER_PROFILES[PROFILE].inputs) == {"issue", "browser_tool", "mcp_servers", "qa_identity"}
+    # by contract request 106 (QI-CONTRACT), and `context_ceiling`, by
+    # contract request 158 (accepted 2026-11-24).
+    assert set(RUNNER_PROFILES[PROFILE].inputs) == {"issue", "browser_tool", "mcp_servers", "qa_identity",
+                                                    "context_ceiling"}
     assert RUNNER_PROFILES[PROFILE].inputs["issue"] == RUNNER_PROFILES["claude-code"].inputs["issue"]
     assert check_inputs(RUNNER_PROFILES[PROFILE], {"issue": 42}) == {"issue": 42}
     assert check_inputs(RUNNER_PROFILES[PROFILE], {"issue": 42.0}) == {"issue": 42}

@@ -8745,8 +8745,8 @@ entries:
   stage: 13
   provider: engine
   check: gcloud alpha monitoring policies list --project=$P --format='value(displayName)' | wc -l
-  apply: 'module.monitoring -> terraform/modules/monitoring/alerts.tf (13 policies: safety_tick_absent, service_errors, job_failures, generation_fenced, dead_letter_backlog, wake_backlog, tasks_dead_lettered, dispatch_failing_by_backend, reconciler_blind, spec_signature_invalid, worker_action_ended, schedule_needs_attention, workspace_stuck) + terraform/modules/monitoring/stranded_prs.tf:89 (pr_stranded) + terraform/modules/monitoring/tenant_namespace.tf:99 (tenant_namespace_mismatch) + terraform/modules/monitoring/workspace_alerts.tf:370 for_each over 6 keys (outside_personal_workers, foreign_runtime, job_changed, foreign_run, front_door_iam, tenant_secret_iam) = 21 total'
-  verify: gcloud alpha monitoring policies list --project=$P --format='value(displayName)' returns exactly 21 swarm-prefixed policies, and each has at least one notification channel attached
+  apply: 'module.monitoring -> terraform/modules/monitoring/alerts.tf (13 policies: safety_tick_absent, service_errors, job_failures, generation_fenced, dead_letter_backlog, wake_backlog, tasks_dead_lettered, dispatch_failing_by_backend, reconciler_blind, spec_signature_invalid, worker_action_ended, schedule_needs_attention, workspace_stuck) + terraform/modules/monitoring/stranded_prs.tf:89 (pr_stranded) + terraform/modules/monitoring/tenant_namespace.tf:99 (tenant_namespace_mismatch) + terraform/modules/monitoring/workspace_alerts.tf:370 for_each over 6 keys (outside_personal_workers, foreign_runtime, job_changed, foreign_run, front_door_iam, tenant_secret_iam) = 21 total; plus front_door_down, reconciler_pass_slow, nat_drops and browser_secret_grant (alerts.tf, the operational monitors) = 25, and the front_door uptime check (google_monitoring_uptime_check_config) when front_door_hostname is set'
+  verify: gcloud alpha monitoring policies list --project=$P --format='value(displayName)' returns exactly 25 swarm-prefixed policies (24 with no front_door_hostname), and each has at least one notification channel attached
   explain: 'Every pool/fencing/dispatch/reconciler/workspace failure mode this platform knows about has an alert. #1817: until 2026-10-21, every one of the 21 policies had NO notification channel -- they fired and notified nobody. A guard (require_alert_channels) now fails the plan if no channel is set.'
   guards: '#1817 -- 21 policies reached nobody; guarded now by a plan-time error_message requiring extra_notification_channels and/or urgent_notification_channels to be set'
   secret_entry: null
@@ -8769,6 +8769,7 @@ entries:
     - modules/monitoring/google_monitoring_alert_policy.tenant_namespace_mismatch
     - modules/monitoring/google_monitoring_alert_policy.workspace
     - modules/monitoring/google_monitoring_alert_policy.*
+    - modules/monitoring/google_monitoring_uptime_check_config.front_door
     variable:
     - infra/require_alert_channels
     - infra/create_alerts
@@ -8798,7 +8799,7 @@ entries:
   stage: 13
   provider: engine
   check: gcloud logging metrics list --project=$P --filter='name~swarm'
-  apply: 'grouped: terraform/modules/monitoring/metrics.tf (events, peak_rss, oom_near_miss, safety_tick_attempts, dispatch_failures, spec_signature_invalid, spec_upstream_invalid, worker_action_ended, schedule_auto_paused, schedule_needs_owner, workspace_stuck) + alerts.tf:573 reconciler_backend_unavailable, :602 reconciler_not_repairing + stranded_prs.tf:52 pr_stranded + tenant_namespace.tf:63 tenant_namespace_mismatch'
+  apply: 'grouped: terraform/modules/monitoring/metrics.tf (events, peak_rss, oom_near_miss, safety_tick_attempts, dispatch_failures, spec_signature_invalid, spec_upstream_invalid, worker_action_ended, schedule_auto_paused, schedule_needs_owner, workspace_stuck) + alerts.tf:573 reconciler_backend_unavailable, :602 reconciler_not_repairing + stranded_prs.tf:52 pr_stranded + tenant_namespace.tf:63 tenant_namespace_mismatch + alerts.tf reconciler_pass_duration'
   verify: each metric shows a nonzero sample count once the matching log line is emitted by the service it watches
   explain: Log-based metrics that feed monitoring.alert-policies; without these, the matching alert policy has nothing to threshold on.
   guards: null
@@ -8828,6 +8829,7 @@ entries:
     - modules/monitoring/google_logging_metric.reconciler_not_repairing
     - modules/monitoring/google_logging_metric.pr_stranded
     - modules/monitoring/google_logging_metric.tenant_namespace_mismatch
+    - modules/monitoring/google_logging_metric.reconciler_pass_duration
 - id: monitoring.notification-channel
   kind: monitoring
   scope: core
@@ -9387,7 +9389,7 @@ env:
   BUILD_TIME:
     setter: apps/swarm-egress/Dockerfile:139
   CANCEL_ENFORCE_AFTER_SECONDS:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:497; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:560; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   CANDIDATE_BATCH_SIZE:
     setter: 'internal: read at apps/scheduler/scheduler/settings.py:608; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   CHECKPOINT_INTERVAL_SECONDS:
@@ -9395,11 +9397,11 @@ env:
   CHECKPOINT_MAX_INTERVAL_SECONDS:
     setter: 'internal: read at apps/agent-worker/agent_worker/config.py:658; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   CHECKPOINT_ORPHAN_BACKSTOP_SECONDS:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:525; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:594; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   CHECKPOINT_SCAN_LIMIT:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:528; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:596; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   CHECKPOINT_SWEEP_INTERVAL_SECONDS:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:529; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:597; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   CHILD_AWAIT_MAX_SECONDS:
     setter: 'internal: read at apps/scheduler/scheduler/settings.py:636; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   CHILD_PROOF_SKEW_SECONDS:
@@ -9439,7 +9441,7 @@ env:
   EGRESS_TICKET_SECONDS:
     setter: 'internal: read at apps/swarm-api/swarm_api/settings.py:1061; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   EMPTY_NAMESPACE_TTL_SECONDS:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:488; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:551; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   ENABLE_CLOUD_RUN_JOBS:
     setter: 'internal: read at apps/common/swarm_common/config.py:130; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   ENABLE_GKE_AUTOPILOT:
@@ -9447,7 +9449,7 @@ env:
   ENABLE_QUOTA_PREWARM:
     setter: 'internal: read at apps/common/swarm_common/config.py:127; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   ENDED_EXECUTION_GRACE_SECONDS:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:498; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:562; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   ENVIRONMENT:
     setter: terraform/infra/verify.tf:223
   EXECUTION_CANCEL_ENABLED:
@@ -9523,7 +9525,7 @@ env:
   HEARTBEAT_INTERVAL_SECONDS:
     setter: 'internal: read at apps/common/swarm_common/config.py:124; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   HELD_LEASE_ALERT_MINUTES:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:506; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:574; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   HOME:
     setter: kubernetes/benchmarks/gvisor-overhead.yaml:113
   HOSTNAME:
@@ -9547,7 +9549,7 @@ env:
   LEASE_TIMEOUT_SECONDS:
     setter: 'internal: read at apps/common/swarm_common/config.py:123; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   LEFT_RUNNING_GRACE_SECONDS:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:496; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:559; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   LIVE_BROWSER_SIDECAR:
     setter: terraform/infra/locals.tf:1269
   LIVE_CONTROL_RENEW_SECONDS:
@@ -9579,15 +9581,15 @@ env:
   LOG_LEVEL:
     setter: 'internal: read at apps/agent-worker/agent_worker/__main__.py:367; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   LOST_AFTER_FINISH_GRACE_SECONDS:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:499; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:563; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   LOST_AFTER_FINISH_LOOKBACK_SECONDS:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:500; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:565; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   MAX_ACTIVE_AGENTS:
     setter: terraform/infra/locals.tf:688
   MAX_CHILDREN_PER_TASK:
     setter: 'internal: read at apps/swarm-api/swarm_api/settings.py:1041; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   MAX_FINDINGS_PER_PASS:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:515; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:583; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   MAX_HANDOFFS_PER_ATTEMPT:
     setter: 'internal: read at apps/swarm-api/swarm_api/settings.py:1059; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   MAX_IN_WORKER_RETRY_DELAY_SECONDS:
@@ -9611,11 +9613,11 @@ env:
   MIN_LOG_BYTES:
     setter: 'internal: read at apps/swarm-api/swarm_api/settings.py:1017; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   MISSING_EXECUTION_GRACE_SECONDS:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:483; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:547; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   MODEL:
     setter: terraform/infra/locals.tf:664
   NEVER_STARTED_RELEASE_SECONDS:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:509; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:577; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   NO_COLOR:
     setter: apps/swarm-egress/Dockerfile:107
   OBJECT_SCAN_LIMIT:
@@ -9623,11 +9625,13 @@ env:
   ON_STEP_FAILURE_ENFORCED_SINCE:
     setter: 'internal: read at apps/scheduler/scheduler/on_step_failure_audit.py:156; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   ORPHAN_EXECUTION_GRACE_SECONDS:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:486; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:549; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   PASS_RETENTION_HOURS:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:482; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:542; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   PATH:
     setter: apps/swarm-egress/Dockerfile:108
+  PAUSE_ENFORCE_AFTER_SECONDS:
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:561; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   PERFORMANCE_PROFILE:
     setter: 'internal: read at apps/common/swarm_common/config.py:132; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   PLATFORM_ADMIN_REACH:
@@ -9669,21 +9673,21 @@ env:
   RECONCILER_ALLOWED_INVOKERS:
     setter: 'internal: read at apps/reconciler/reconciler/service.py:103; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   RECONCILER_DRY_RUN:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:516; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:584; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   RECONCILER_ENABLE_CHECKPOINT_GC:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:524; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:592; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   RECONCILER_ENABLE_CLOUD_RUN_STALL_GUARD:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:493; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:556; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   RECONCILER_ENABLE_GC:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:519; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:587; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   RECONCILER_ENABLE_GKE_EVICTION:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:489; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:552; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   RECONCILER_FULL_SWEEP_EVERY:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:507; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:543; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   RECONCILER_INCREMENTAL_OVERLAP_SECONDS:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:509; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:545; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   RECONCILER_TICK_SECONDS:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:508; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:544; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   REGION:
     setter: terraform/infra/locals.tf:682
   REPOSITORY_GRANTS_ENFORCED:
@@ -9737,13 +9741,13 @@ env:
   SPEC_VERIFY_KEYS:
     setter: terraform/infra/locals.tf:1009
   STARTUP_REFUND_LIMIT:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:504; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:568; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   STUCK_AFTER_SECONDS:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:490; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:553; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   STUCK_CPU_FLOOR_CORES:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:494; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:557; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   STUCK_EVIDENCE_MAX_GAP_SECONDS:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:495; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:558; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   SWARM_ACCESS_TOKEN:
     setter: 'internal: read at apps/swarm-mcp/swarm_mcp/client.py:1654; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   SWARM_API_AUDIENCE:
@@ -9891,7 +9895,7 @@ env:
   TYPESAFE_TICKET_SECONDS:
     setter: 'internal: read at apps/swarm-api/swarm_api/settings.py:1068; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   UNUSED_JOB_TTL_SECONDS:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:487; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:550; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   VISUAL:
     setter: 'internal: the operator''s shell'
   VITE_LIVE:
@@ -9913,13 +9917,13 @@ env:
   WORKER_SERVICE_ACCOUNT_TEMPLATE:
     setter: terraform/infra/locals.tf:1331
   WORKFLOW_NO_PROGRESS_MINUTES:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:512; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:580; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   WORKFLOW_PROMOTE_GRACE_SECONDS:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:513; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:581; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   WORKFLOW_SCAN_LIMIT:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:514; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:582; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   WORKFLOW_START_BUDGET_SECONDS:
-    setter: 'internal: read at apps/reconciler/reconciler/config.py:511; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:579; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   WORKSPACE_APPLY_PUBLISH:
     setter: terraform/infra/locals.tf:986
   WORKSPACE_APPLY_TOPIC:

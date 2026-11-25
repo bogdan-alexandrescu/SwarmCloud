@@ -1,3 +1,4 @@
+# source-text: contract - lifecycle.py must start the plugins before writing input.json and apply their guidance, env and record
 """A step's agent plugins at the start of a step (`agent_worker.plugins`).
 
 The owner chose plugins per step, gstack first, baked into the images at a

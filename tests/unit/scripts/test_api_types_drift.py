@@ -1,3 +1,4 @@
+# source-text: contract - the committed apps/swarm-ui/src/generated/api-types.ts must equal what scripts/gen_api_types.py writes now
 """The console's generated API types are what the generator writes NOW (part of #72).
 
 `apps/swarm-ui/src/generated/api-types.ts` is written by

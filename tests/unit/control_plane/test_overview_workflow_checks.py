@@ -1,3 +1,4 @@
+# source-text: contract - checks.ts, types.ts, api.ts and Overview.tsx must list the park reasons, stall threshold and workflow route this platform writes
 """Overview's workflow and parked checks, at the seams Python can hold.
 
 THE DEFECT THESE EXIST FOR. `overview/now` ran six derived checks -- dispatch,

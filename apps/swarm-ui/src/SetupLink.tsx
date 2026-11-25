@@ -56,6 +56,7 @@
  * swarm-api forwards it once to the quota broker, which files it into the
  * Voice it pool, and the answer names the account, never the key.
  */
+import { InfoTip } from './InfoTip'
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import { USE_FIXTURES, beginAccountSignIn, finishAccountSignIn } from './api'
 import { spanWords, type StepState } from './AdminSetupSteps'
@@ -341,9 +342,13 @@ export function SetupLinkScreen({ token }: { token: string | null }) {
       <PoolSignIn link={pool.link} startNow={pool.startNow} onSignedIn={() => learn({ done: true })} />
     ) : token === null ? (
       <Card title="Open your link">
+        {/* ISSUE 81: one short line; the sentences it was are behind the (i), word for word. */}
         <p className="pk-lead">
-          This page opens a one-time link an admin made for you in Admin &rsaquo; Setup. The link is read once, when
-          you open it, and is not kept in the address: open the link from the admin&rsquo;s message again.
+          Open the link from the admin&rsquo;s message again.{' '}
+          <InfoTip
+            about="setup links"
+            tip="This page opens a one-time link an admin made for you in Admin › Setup. The link is read once, when you open it, and is not kept in the address: open the link from the admin’s message again."
+          />
         </p>
       </Card>
     ) : token === '' ? (
@@ -452,9 +457,13 @@ function OpenLink({ token, auto, onPart, onPool }: { token: string; auto: boolea
   }
   return (
     <Card title="Open your setup link">
+      {/* ISSUE 81: that it works once stays, as one short line; the sentences are behind the (i). */}
       <p className="pk-lead">
-        An admin made this link for you in Admin &rsaquo; Setup. It works once: opening it signs your Claude
-        subscription into the team&rsquo;s pool, or asks for the one value it was made for.
+        An admin&rsquo;s link; it works once.{' '}
+        <InfoTip
+          about="this link"
+          tip="An admin made this link for you in Admin › Setup. It works once: opening it signs your Claude subscription into the team’s pool, or asks for the one value it was made for."
+        />
       </p>
       {refused !== null && <Banner tone="bad" title={refused.line} role="alert" />}
       {notReady !== null && (
@@ -471,22 +480,30 @@ function OpenLink({ token, auto, onPart, onPool }: { token: string; auto: boolea
   )
 }
 
-const VALUE_WORDS: Record<FormKind, { title: string; field: string; lead: string; verb: string }> = {
+/**
+ * `short` is what the form says on the surface (issue 81: one short line, the
+ * must-stay fact that the value is never shown again); `lead` is behind the
+ * (i) beside it, word for word.
+ */
+const VALUE_WORDS: Record<FormKind, { title: string; field: string; short: string; lead: string; verb: string }> = {
   'team-git': {
     title: "Store the team's GitHub token",
     field: "The team's GitHub token",
+    short: 'Stored in Secret Manager; never shown again.',
     lead: 'The value goes straight from this page into its one secret in Secret Manager. It is never shown again, and the link is used only once it is stored.',
     verb: 'Store it',
   },
   'addon-secret': {
     title: "Store the add-on's secret",
     field: "The add-on's secret",
+    short: 'Stored in Secret Manager; never shown again.',
     lead: 'The value goes straight from this page into its one secret in Secret Manager. It is never shown again, and the link is used only once it is stored.',
     verb: 'Store it',
   },
   'voice-api-key': {
     title: "Add Voice it's OpenAI API key",
     field: 'OpenAI API key (it begins sk-)',
+    short: 'A developer API key; never shown again.',
     lead: 'A developer API key from your OpenAI account, not a ChatGPT sign-in: only a key can open a Live session. It goes from this page to the account pool once, into a secret only the pool reads, and is never shown again. Sending it uses the link, so a key the pool refuses needs a new link from Admin › Accounts.',
     verb: 'Add the key',
   },
@@ -525,7 +542,9 @@ function ValueForm({ token, kind, onPart, onWritten }: {
   return (
     <Card title={words.title}>
       <form className="pk-form" autoComplete="off" onSubmit={(e) => void send(e)}>
-        <p className="pk-lead">{words.lead}</p>
+        <p className="pk-lead">
+          {words.short} <InfoTip about="this value" tip={words.lead} />
+        </p>
         <label htmlFor={`${id}-v`}>{words.field}</label>
         <input id={`${id}-v`} className="c-inp" type="password" autoComplete="off" spellCheck={false} value={value}
           onChange={(e) => setValue(e.target.value)} />
@@ -657,13 +676,18 @@ function PoolSignIn({ link, startNow, onSignedIn }: { link: PoolLink; startNow: 
     return (
       <Card title="Sign in your Claude account">
         {facts}
+        {/* ISSUE 81: short lines; the sentences they were are behind the (i), word for word. */}
         <p className="pk-lead">
-          Your link is open. Sign in with the Claude subscription the admin asked you for; the account lands in the{' '}
-          {link.tenant} workspace&rsquo;s pool under the name {link.label}.
+          Your link is open.{' '}
+          <InfoTip
+            about="the sign-in"
+            tip={`Sign in with the Claude subscription the admin asked you for; the account lands in the ${link.tenant} workspace’s pool under the name ${link.label}.`}
+          />
         </p>
         {at.kind === 'starting' && retries.current > 0 && (
           <p className="pk-lead" role="status">
-            Your workspace is finishing its setup; the sign-in starts again by itself in a few seconds.
+            Workspace still setting up; retrying in seconds.{' '}
+            <InfoTip about="the retry" tip="Your workspace is finishing its setup; the sign-in starts again by itself in a few seconds." />
           </p>
         )}
         {at.kind === 'start_failed' && (
@@ -685,13 +709,17 @@ function PoolSignIn({ link, startNow, onSignedIn }: { link: PoolLink; startNow: 
     <Card title="Sign in your Claude account">
       {facts}
       <form className="pk-form" autoComplete="off" onSubmit={(e) => void finish(e)}>
+        {/* ISSUE 81: each step is one short line; its sentence is behind the (i), word for word. */}
         <p className="pk-lead">
-          1. Open Claude&rsquo;s sign-in page and sign in with the subscription the admin asked you for.{' '}
+          1.{' '}
           <a href={at.auth.authorize_url} target="_blank" rel="noopener noreferrer">
             Open the Claude sign-in page
-          </a>
+          </a>{' '}
+          <InfoTip about="step 1" tip="Open Claude’s sign-in page and sign in with the subscription the admin asked you for." />
         </p>
-        <p className="pk-lead">2. Claude then shows a code. Paste it here.</p>
+        <p className="pk-lead">
+          2. Paste the code Claude shows. <InfoTip about="step 2" tip="Claude then shows a code. Paste it here." />
+        </p>
         <label htmlFor={`${id}-code`}>The code Claude shows</label>
         <input id={`${id}-code`} className="c-inp" autoComplete="off" spellCheck={false} value={at.code}
           onChange={(e) => setAt({ ...at, code: e.target.value })} />

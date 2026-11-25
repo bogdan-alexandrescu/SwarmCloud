@@ -40,13 +40,14 @@ from swarm_common.states import (
     TaskState,
     can_transition,
 )
-from swarm_rollup import settled_unpin
+from swarm_rollup import settled_unpause, settled_unpin
 
 from .backends import TENANT_NAMESPACE_MISMATCH, _namespace_mismatch_due, sanitize_name
 from .config import ReconcilerConfig
 from .model import (
     DISK_EVICTIONS_KEY,
     NEVER_STARTED_REQUEUES_KEY,
+    PAUSE_REFUNDS_KEY,
     STARTUP_REFUNDS_KEY,
     AttemptView,
     ControlSnapshot,
@@ -58,9 +59,11 @@ from .model import (
     cancel_end_cause,
     count_disk_eviction,
     count_never_started,
+    count_pause_requeue,
     count_startup_end,
     disk_evictions_used,
     never_started_requeues_used,
+    pause_refunds_used,
     startup_refunds_used,
 )
 from .model import as_datetime as _as_datetime
@@ -176,6 +179,16 @@ class RepairPlan:
     #: LEASED or DISPATCHED; one a worker moved on is judged as before. None:
     #: not this rule.
     never_started_requeue_limit: int | None = None
+    #: The pause-overdue requeue (issue 7, owner decision Q1): the attempt a
+    #: workflow pause ended is refunded, up to this many times, counted in
+    #: `metadata.pause_refunds` (`count_pause_requeue`). Only on this
+    #: transaction's own fence and only for a READY target. None: not this rule.
+    pause_refund_limit: int | None = None
+    #: The paused workflow the finding was about, re-read inside the
+    #: transaction so the event can say whether the pause was lifted between
+    #: the detection and the repair. It never decides whether the release or
+    #: the requeue happens: after a confirmed kill they always do.
+    pause_workflow_id: str | None = None
 
 
 #: The states in which no attempt of a task has reached STARTING: a worker
@@ -204,6 +217,12 @@ class OneRepair:
     #: The never-started rule decided the repair: the re-queue count the task
     #: holds afterwards. None when that rule did not decide it.
     never_started_requeues: int | None = None
+    #: For a pause-overdue repair: whether the workflow, read in this
+    #: transaction, was no longer paused (resumed, or gone). None otherwise.
+    pause_lifted: bool | None = None
+    #: For a pause-overdue repair that wrote the task: the pause refunds it
+    #: holds afterwards. None otherwise.
+    pause_refunds: int | None = None
 
 
 def heartbeat_resumed(
@@ -250,6 +269,11 @@ class WorkflowPage(WorkflowRead):
     """
 
     next_after: str | None = None
+
+
+#: How many paused workflows one `paused_workflows` read returns. Pages are
+#: read until a short one, so this bounds one response, not the set.
+PAUSED_WORKFLOWS_PAGE = 500
 
 
 def _active_states() -> list[str]:
@@ -300,6 +324,7 @@ class ControlStore:
 
         self._read_lease_attempts(snapshot, withheld)
         _withhold(snapshot, withheld)
+        self._attach_paused_workflows(snapshot)
         return snapshot
 
     def incremental_snapshot(
@@ -378,6 +403,7 @@ class ControlStore:
 
         self._read_lease_attempts(snapshot, withheld)
         _withhold(snapshot, withheld)
+        self._attach_paused_workflows(snapshot)
         return snapshot
 
     def _add_task(
@@ -754,6 +780,82 @@ class ControlStore:
         return TaskView.from_doc(snap.to_dict() or {}, task_id) if snap.exists else None
 
     # -- workflows (archived issue 616) ------------------------------------------------
+    def paused_workflows(
+        self, *, limit: int, after: str | None = None
+    ) -> tuple[dict[str, tuple[str, datetime | None]], str | None]:
+        """One page of the workflows whose pause is in force, and where the next starts.
+
+        `workflows where paused == true`, ordered by document id from `after`
+        (docs/design/workflow-pause.md section 6.1). An EQUALITY query on one
+        boolean, answered from the single-field index Firestore builds by
+        itself, never a scan: the set stays small because a cancel and every
+        write that ends a workflow clear `paused`. Only a stored `paused` that
+        IS True is a pause, so a workflow written before contract request 160
+        is not paused.
+
+        Returns `{workflow_id: (tenant_id, paused_at)}` and the last document
+        id of a full page (None after a short one). A document whose tenant
+        is not a string, or whose `paused_at` cannot be read, is logged and
+        left out: a pause nobody can place in time or tenant stops nothing.
+        """
+        from google.cloud.firestore_v1.field_path import FieldPath
+
+        doc_id = FieldPath.document_id()
+        query = (
+            self._db.collection("workflows")
+            .where(filter=self._filter("paused", "==", True))
+            .order_by(doc_id)
+        )
+        if after is not None:
+            query = query.start_after({doc_id: after})
+        docs = list(query.limit(limit).stream())
+        paused: dict[str, tuple[str, datetime | None]] = {}
+        for doc in docs:
+            data = doc.to_dict() or {}
+            tenant = data.get("tenant_id")
+            try:
+                paused_at = _as_datetime(data.get("paused_at"))
+            except _MALFORMED_TASK_DOC as exc:
+                self._log.warning(
+                    "a paused workflow's paused_at cannot be read; skipping it",
+                    workflow_id=doc.id,
+                    error=type(exc).__name__,
+                )
+                continue
+            if data.get("paused") is not True or not isinstance(tenant, str) or not tenant:
+                continue
+            paused[doc.id] = (tenant, paused_at)
+        return paused, (docs[-1].id if len(docs) >= limit else None)
+
+    def _attach_paused_workflows(self, snapshot: ControlSnapshot) -> None:
+        """Every page of `paused_workflows`, onto `snapshot`.
+
+        A read that FAILS does not fail the pass. Unlike the task and lease
+        reads, nothing here can lead to a write by its absence: an empty set
+        only withholds the pause-overdue kill for this pass, and a failure in
+        a pause read must not blind every other rule for every tenant. It is
+        recorded in `paused_workflows_error`, which the pass reports, so "the
+        pauses could not be read" never looks like "nothing is paused".
+        """
+        paused: dict[str, tuple[str, datetime | None]] = {}
+        after: str | None = None
+        try:
+            while True:
+                page, after = self.paused_workflows(limit=PAUSED_WORKFLOWS_PAGE, after=after)
+                paused.update(page)
+                if after is None:
+                    break
+        except Exception as exc:  # noqa: BLE001 - recorded on the snapshot and the pass
+            self._log.warning(
+                "the paused workflows could not be read; the pause-overdue rule stands "
+                "down this pass",
+                error=type(exc).__name__,
+            )
+            snapshot.paused_workflows = {}
+            snapshot.paused_workflows_error = f"{type(exc).__name__}: {exc}"[:500]
+            return
+        snapshot.paused_workflows = paused
+
     def workflows_for_stall_check(self, *, limit: int, after: str | None = None) -> WorkflowPage:
         """The next `limit` non-terminal workflows after `after`, and their step tasks.
 
@@ -919,7 +1021,9 @@ class ControlStore:
             # a worker that crashed after its graph ticket and before its
             # step's end left them, and this repair is what settles it.
             txn.update(
-                ref, {"state": to.value, "updated_at": utcnow(), **settled_unpin(to, stored)}
+                ref,
+                {"state": to.value, "updated_at": utcnow(), **settled_unpin(to, stored),
+                 **settled_unpause(to, stored)},
             )
             return None
 
@@ -1468,6 +1572,7 @@ class ControlStore:
         fenced_generation: int | None,
         disk_eviction: bool = False,
         never_started_requeue_limit: int | None = None,
+        pause_refund_limit: int | None = None,
     ) -> tuple[TaskState, dict[str, Any]] | None:
         """`repair_task_state`'s judgement on a document read in the caller's
         transaction: the state it moves to and the payload, or None to refuse.
@@ -1574,6 +1679,30 @@ class ControlStore:
                 message = f"{never.words}; {error}" if error else never.words
             else:
                 message = f"{error}; {never.words}" if error else never.words
+        elif target is TaskState.READY and pause_refund_limit is not None:
+            # The pause-overdue requeue (issue 7, owner decision Q1): refund
+            # first, then decide whether the attempts are spent, from this
+            # re-read. `fenced_generation` is this transaction's own fence:
+            # a task somebody else fenced is counted as before (invariant 5).
+            metadata = data.get("metadata")
+            fenced_here = fenced_generation is not None and int(
+                data.get("current_generation", 0)
+            ) == int(fenced_generation)
+            paused = count_pause_requeue(
+                int(data.get("attempt_count", 0)),
+                int(data.get("max_attempts", 3)),
+                pause_refunds_used(metadata),
+                max(0, int(pause_refund_limit)) if fenced_here else 0,
+            )
+            if paused.refunded:
+                counting["attempt_count"] = paused.attempt_count
+                counting["metadata"] = {
+                    **(metadata if isinstance(metadata, dict) else {}),
+                    PAUSE_REFUNDS_KEY: paused.refunds_used,
+                }
+            if paused.exhausted:
+                target = TaskState.FAILED
+            message = f"{error}; {paused.tail}" if error else paused.tail
         elif target is TaskState.READY:
             # ONLY a READY target is ever downgraded. A CANCELLED target is
             # the user's decision and survives exhausted attempts: recording
@@ -1737,6 +1866,13 @@ class ControlStore:
                     )
                     lease_task = (snap.to_dict() or {}) if snap.exists else None
             attempt = self._read_attempt(txn, attempt_ref)
+            # The paused workflow, for the event's `pause_lifted` alone.
+            workflow: dict[str, Any] | None = None
+            if repair is not None and repair.pause_workflow_id:
+                snap = _snapshot(
+                    txn.get(self._db.collection("workflows").document(repair.pause_workflow_id))
+                )
+                workflow = (snap.to_dict() or {}) if snap.exists else None
 
             # ---- decisions ---------------------------------------------
             # The worker beat after the snapshot this reclaim was decided on:
@@ -1789,10 +1925,14 @@ class ControlStore:
                     failed_cause=repair.failed_cause,
                     startup_refund_limit=repair.startup_refund_limit,
                     fenced_generation=(
-                        new_generation if repair.startup_refund_limit is not None else None
+                        new_generation
+                        if repair.startup_refund_limit is not None
+                        or repair.pause_refund_limit is not None
+                        else None
                     ),
                     disk_eviction=repair.disk_eviction,
                     never_started_requeue_limit=repair.never_started_requeue_limit,
+                    pause_refund_limit=repair.pause_refund_limit,
                 )
             never_started: int | None = None
             if (
@@ -1806,6 +1946,18 @@ class ControlStore:
                 written = decided[1].get("metadata")
                 if isinstance(written, dict) and NEVER_STARTED_REQUEUES_KEY in written:
                     never_started = int(written[NEVER_STARTED_REQUEUES_KEY])
+            pause_lifted: bool | None = None
+            pause_refunds: int | None = None
+            if repair is not None and repair.pause_workflow_id:
+                pause_lifted = not (
+                    workflow is not None
+                    and workflow.get("paused") is True
+                    and workflow.get("tenant_id") == (after or {}).get("tenant_id")
+                )
+            if decided is not None and repair is not None and repair.pause_refund_limit is not None:
+                written = decided[1].get("metadata")
+                source = written if isinstance(written, dict) else (after or {}).get("metadata")
+                pause_refunds = pause_refunds_used(source)
 
             # ---- writes --------------------------------------------------
             # The frozen release reads the lease and its pools before it
@@ -1859,6 +2011,8 @@ class ControlStore:
                 release_refused=refused,
                 attempt_ended=attempt_ended,
                 never_started_requeues=never_started,
+                pause_lifted=pause_lifted,
+                pause_refunds=pause_refunds,
             )
 
         return self._txn.run(_apply)

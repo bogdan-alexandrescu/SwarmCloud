@@ -10,7 +10,7 @@ protobuf field from becoming a decision to kill someone's job.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum
 from typing import Any
@@ -242,6 +242,48 @@ def count_startup_end(
     )
 
 
+#: Where a task counts the attempts taken back because a workflow PAUSE ended
+#: them (issue 7, owner decision Q1 of docs/design/workflow-pause.md): the
+#: worker's own pause park and the reconciler's pause-overdue requeue share
+#: this one count. Free-form `Task.metadata`, like the keys above.
+PAUSE_REFUNDS_KEY = "pause_refunds"
+
+#: How many pause-ended attempts are refunded before one counts: five, the
+#: quota park's `QUOTA_MAX_RESUMES`, as decision Q1 fixed it. A pause is a
+#: person's choice, not a failure -- without a refund two pauses of a running
+#: step spend a default three-attempt step -- and the bound is what stops a
+#: worker wedged on every attempt from requeueing for ever on refunds.
+PAUSE_REFUND_LIMIT = 5
+
+
+def pause_refunds_used(metadata: Any) -> int:
+    """How many pause refunds a task's `metadata` records. Absent or unreadable
+    is 0, read by the same total reader as `startup_refunds_used`."""
+    if not isinstance(metadata, dict):
+        return 0
+    used = _startup_refunds_int(metadata.get(PAUSE_REFUNDS_KEY))
+    return used if used is not None else 0
+
+
+def count_pause_requeue(
+    attempt_count: int, max_attempts: int, refunds_used: int, limit: int
+) -> StartupEnd:
+    """Refund a pause-ended attempt while fewer than `limit` are refunded; else count it.
+
+    The same arithmetic as `count_startup_end` -- the refund first, then the
+    frozen `retries_exhausted` -- in the pause's own words, so `last_error`
+    says why the attempt was or was not counted.
+    """
+    counted = count_startup_end(attempt_count, max_attempts, refunds_used, limit)
+    if counted.refunded:
+        tail = f"ended by a workflow pause, not counted ({counted.refunds_used}/{limit}); retrying"
+    else:
+        tail = "no attempts left" if counted.exhausted else "retrying"
+        if refunds_used >= limit:
+            tail += f" (counted: {refunds_used}/{limit} pause-ended attempts already refunded)"
+    return replace(counted, tail=tail)
+
+
 #: Where a task records how many times the reconciler re-queued it because its
 #: lease went silent before any attempt reached STARTING (part of archived issue 2688,
 #: `count_never_started`). Free-form `Task.metadata`, like the two above, so
@@ -317,6 +359,12 @@ def count_never_started(
     )
 
 
+def _workflow_id_of(value: Any) -> str | None:
+    """A task's `workflow_id`, or None for anything that is not a non-empty
+    string: a malformed value names no workflow, so it joins no pause."""
+    return value if isinstance(value, str) and value else None
+
+
 @dataclass(frozen=True)
 class TaskView:
     task_id: str
@@ -335,6 +383,10 @@ class TaskView:
     #: bound from; None on a task cancelled before it was written (archived issue 627).
     cancel_requested_at: datetime | None = None
     started_at: datetime | None = None
+    #: The workflow this task is a step of, read raw from the task document;
+    #: None for a task submitted on its own. `detect_pause_overdue` joins it,
+    #: with the tenant, to `ControlSnapshot.paused_workflows` (issue 7).
+    workflow_id: str | None = None
     #: The resume pointer `agent_worker.checkpointing._restore_checkpoint` reads
     #: first. Carried here because checkpoint retention has to know which
     #: checkpoint a future attempt of this task would come back to; the
@@ -382,6 +434,7 @@ class TaskView:
             cancel_requested=bool(doc.get("cancel_requested")),
             cancel_requested_at=as_datetime(doc.get("cancel_requested_at")),
             started_at=as_datetime(doc.get("started_at")),
+            workflow_id=_workflow_id_of(doc.get("workflow_id")),
             latest_checkpoint=doc.get("latest_checkpoint"),
             completed_at=as_datetime(doc.get("completed_at")),
             startup_refunds=startup_refunds_used(doc.get("metadata")),
@@ -620,6 +673,15 @@ class ControlSnapshot:
     #: Task ids an unreleased lease names whose by-id read FAILED this pass.
     #: The orphan-lease rule concludes nothing about their leases.
     lease_unreadable: set[str] = field(default_factory=set)
+    #: workflow id -> (tenant id, `paused_at`) for every workflow whose pause
+    #: is in force, read by `paused == true` alone (`ControlStore.paused_workflows`,
+    #: issue 7). Read by `detect_pause_overdue` ALONE; a step joins it on both
+    #: its `workflow_id` and its tenant (invariant 9).
+    paused_workflows: dict[str, tuple[str, datetime | None]] = field(default_factory=dict)
+    #: Why the paused-workflows read failed this pass, or None. On a failure
+    #: `paused_workflows` is empty, so the pause-overdue rule -- which only
+    #: ever ADDS a kill -- stands down for the pass, and the pass reports it.
+    paused_workflows_error: str | None = None
 
     def task_named(self, task_id: str | None) -> TaskView | None:
         """The task an execution names, whichever read found it."""

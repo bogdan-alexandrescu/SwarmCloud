@@ -30,7 +30,6 @@ swarm-api in any case.
 from __future__ import annotations
 
 import hashlib
-import re
 import secrets
 import sys
 from dataclasses import replace
@@ -590,32 +589,12 @@ def test_the_store_never_promotes_a_failed_task(db):
     assert events(db, "task_dead", "ready") == []
 
 
-#: A write whose source is FAILED and whose target is READY, spelled the
-#: ways this repository spells a transition.
-_FAILED_TO_READY = re.compile(
-    r"(?:assert|can)_transition\(\s*TaskState\.FAILED\s*,\s*TaskState\.READY"
-    r"|\(\s*TaskState\.FAILED\s*,\s*TaskState\.READY\s*\)"
-)
-
-
-def test_no_writer_moves_a_failed_task_back_to_ready():
-    """The table keeps FAILED -> READY, and no component writes it: every
-    READY write is from PARKED (`promote_to_ready`, swarm-api's `human-ready`,
-    the reconciler's dependency promotion) or from a lease being returned.
-    This holds that so: a writer that names the edge must first say why a
-    task ended `mcp_credential_expired` may not take it."""
-    apps = Path(__file__).resolve().parents[3] / "apps"
-    common = apps / "common" / "swarm_common"
-    scanned = 0
-    found: list[str] = []
-    for path in sorted(apps.rglob("*.py")):
-        if common in path.parents:
-            continue
-        scanned += 1
-        text = path.read_text(encoding="utf-8")
-        found += [f"{path.relative_to(apps)}" for _ in _FAILED_TO_READY.finditer(text)]
-    assert scanned > 100, scanned
-    assert found == []
+# The table keeps FAILED -> READY, and no component writes it: every READY
+# write is from PARKED (`promote_to_ready`, swarm-api's `human-ready`, the
+# reconciler's dependency promotion) or from a lease being returned. A writer
+# that names the edge must first say why a task ended `mcp_credential_expired`
+# may not take it: the rule no-writer-moves-failed-to-ready in
+# scripts/source_text_rules/services.py.
 
 
 def test_a_task_leased_meanwhile_is_not_failed(db):

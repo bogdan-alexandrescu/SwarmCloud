@@ -1,3 +1,4 @@
+# source-text: contract - every record code register-tenant.sh and images/workspace-apply/entry.py can write must have its copy in the workspaces FAILURE_COPY
 """A person's personal workspace: the record, the request, the loan request,
 the submission gate and `WORKSPACE_GATE` (docs/workspaces.md §1, §5, §6.3;
 archived issue 847, lane W1).

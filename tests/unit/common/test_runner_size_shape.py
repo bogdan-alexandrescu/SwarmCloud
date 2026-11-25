@@ -1,3 +1,4 @@
+# source-text: contract - runner sizes' definitions in the source must match what the contract request 110 names
 """Contract request 110: `ResourceSize`, `LiveShare`, `default_sizes` and `effective_size` (SIZES-CONTRACT-2, part of archived issue 1689).
 
 docs/design/runner-sizes.md §5 request RS-3, accepted by the owner on

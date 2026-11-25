@@ -1,3 +1,4 @@
+# source-text: contract - every `path::Symbol` that docs/jev-data-flow.md cites must resolve to a definition in that source file
 """docs/jev-data-flow.md: every §5.4 rule names the code and the test that hold it (archived issue 1336).
 
 The record is what the security pass (archived issue 476) signs off before Jev is turned on

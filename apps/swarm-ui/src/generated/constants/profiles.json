@@ -120,7 +120,8 @@
       "declared_inputs": [
         "issue",
         "mcp_servers",
-        "pull_request"
+        "pull_request",
+        "context_ceiling"
       ],
       "input_choices": {},
       "required_keys": [
@@ -134,7 +135,8 @@
         "issue",
         "mcp_servers",
         "browser_tool",
-        "qa_identity"
+        "qa_identity",
+        "context_ceiling"
       ],
       "input_choices": {
         "browser_tool": [
@@ -156,7 +158,8 @@
       "control_plane": false,
       "declared_inputs": [
         "issue",
-        "mcp_servers"
+        "mcp_servers",
+        "context_ceiling"
       ],
       "input_choices": {},
       "required_keys": [
@@ -168,7 +171,8 @@
       "control_plane": false,
       "declared_inputs": [
         "issue",
-        "mcp_servers"
+        "mcp_servers",
+        "context_ceiling"
       ],
       "input_choices": {},
       "required_keys": [
@@ -180,7 +184,8 @@
       "control_plane": false,
       "declared_inputs": [
         "issue",
-        "mcp_servers"
+        "mcp_servers",
+        "context_ceiling"
       ],
       "input_choices": {},
       "required_keys": [
@@ -192,7 +197,8 @@
       "control_plane": false,
       "declared_inputs": [
         "issue",
-        "pull_request"
+        "pull_request",
+        "context_ceiling"
       ],
       "input_choices": {},
       "required_keys": [
@@ -248,7 +254,8 @@
     "indexer": {
       "control_plane": false,
       "declared_inputs": [
-        "issue"
+        "issue",
+        "context_ceiling"
       ],
       "input_choices": {},
       "required_keys": [

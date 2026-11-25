@@ -386,7 +386,7 @@ describe('V192: while the first run counts, the cards say so', () => {
     for (const c of cards()) {
       // MUTATION: draw `not run yet` and `not measured` whatever `counting` is.
       expect(c.textContent).not.toContain('not run yet')
-      expect(c.textContent).toContain('counting now. One exact count per state, 12 reads.')
+      expect(c.textContent).toContain('counting now · One exact count per state, 12 reads.')
       expect(c.querySelector('.ctl-mark.is-pending')?.textContent).toBe('reading')
       expect(c.querySelector('.ctl-mark.is-absent')).toBeNull()
     }

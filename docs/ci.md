@@ -50,6 +50,7 @@ Three reasons, in the order they cost the most:
 | `iam-refusal-probe.yml` | **manual dispatch on `main` only**, by the owner, once ([below](#the-deployers-refusal-is-proven-once-by-a-probe-the-owner-dispatches)) — never on a push, a pull request or a schedule | `deployer is refused an unlisted role` |
 | `publish-release.yml` | **manual dispatch on `main` only**, with a release name and a main commit whose `release` run succeeded ([the owner] 2026-10-30, "Move publishing into CI now"; [runbooks/release.md](runbooks/release.md)) — never on a push, a pull request or a schedule. `publish` waits in the GitHub environment `release` (a required reviewer) and authenticates as the deployer, which is why the file is on `wif.tf`'s `deployer_workflows`; in `swarmcloud-prod` that identity holds only the three roles `scripts/release-home.sh --ci-publisher` grants. It publishes; it never promotes | `check the version and the commit` · `publish <version> to the release home` |
 | `coverage.yml` | **once a day at 10:23 UTC** (`schedule`) and manual dispatch, **on `main` only** — never on a push, a pull request or a train, never a required check, and nothing on the merge path waits for it ([below](#coverage-floors)) | `plan the shards` · `unit tests with coverage (k/N)` · `swarm-ui component tests with coverage (k/N)` · `coverage floors` (combines and judges against `coverage-floors.json`) · `report the coverage` (the per-package summary; a red night opens or updates one `bug` issue, the next green night closes it) |
+| `refresh-weights.yml` | **Mondays 05:17 UTC** (`schedule`) and manual dispatch, **on `main` only** — never on a push, a pull request, a queue entry or a train, never a required check: it adds nothing to the merge path or a release ([below](#refreshing-the-shard-weights)) | `refresh the test weights` (runs `scripts/refresh-unit-weights.sh` and `scripts/refresh-ui-weights.sh` through `scripts/refresh-weights-pr.sh`; a change is one commit force-pushed to `maint/test-weights` and one pull request into `main`, opened or updated with the merge App's token; it never pushes `main`) |
 
 Three details in that table are easy to misread and each has bitten someone:
 
@@ -4014,10 +4015,19 @@ with no `unit-durations.json`, or a malformed one, exits 1 and writes nothing:
 an unread download is never "nothing to refresh". Only the weights' ratios
 matter, so CI's seconds replacing a container's is fine.
 
-Like `scripts/refresh-ui-weights.sh`, the script changes no workflow. A
-scheduled workflow that runs it and opens the pull request with the merge
-App's token lives under `.github/workflows/`, which only swarm-api can push,
-so it is proposed separately rather than here.
+Like `scripts/refresh-ui-weights.sh`, the script changes no workflow. The
+scheduled workflow that runs both is `.github/workflows/refresh-weights.yml`
+(Mondays, and by dispatch; never on the merge path). Its one job runs
+`scripts/refresh-weights-pr.sh refresh`, and when a weights file changed,
+`scripts/refresh-weights-pr.sh open` commits those two files alone, as one
+commit on `main`'s tip, force-pushes it to `maint/test-weights` and opens a
+pull request into `main` with the merge App's token, or leaves the open one
+updated by the push. The App token because a pull request opened with the
+workflow's `GITHUB_TOKEN` starts no workflow, so its checks would never run;
+one fixed branch so a refresh never piles up pull requests; not `swarm/`
+because a lane's pull request runs no checks. It is not labelled `ready`: a
+person reviews the figures, as the scripts ask. One refresh that cannot read
+its run turns the run red and the other's figures are still opened.
 
 ### Where pull-request CI time goes (2026-10-09)
 
@@ -4731,7 +4741,25 @@ or made slower) (`min_prs` and `max_wait_minutes` in
 [`scripts/merge-train.sh`](../scripts/merge-train.sh); the repository
 variables `MERGE_TRAIN_MIN_PRS`, `MERGE_TRAIN_MAX_WAIT_MINUTES` and
 `MERGE_TRAIN_MAX_PRS` still override them). A red train is bisected and the
-pull request that broke it ejected, so main never sees the failure.
+pull request that broke it ejected, so main never sees the failure. A train
+red on a code-scanning result skips the bisection when it can: the check's
+failure-level annotations name files (warning and notice annotations never
+eject anyone), the train maps each to the pull requests whose changed files
+hold it, and ejects those at once with the alert's rule, file and line
+(issue 377); a mapping that names no pull request, or every one on the train,
+bisects as before and still names the check. Check runs are read whole, every
+page compared with `total_count`; a read that is not whole is unreadable,
+never green. Every failing check is named with its title, whichever app
+made it, and rule 1 says a check that is not an Actions job is one no re-run
+changes. Rule 1 (retry once) re-runs a failed job at once, without waiting
+for unrelated jobs of the same run such as `build changed images without
+pushing` (issue 387): one job of a run still in progress through
+`actions/jobs/<id>/rerun`, a finished failed run through `rerun-failed-jobs`.
+If GitHub refuses a job's re-run while its run is in progress, the train waits
+for every run as before, says so on one log line, and spends no retry. Its log
+gives the seconds from the first failed job's end to the retry, and a train
+still lands only when every required check at its head is green.
+[The runbook](runbooks/merge-train.md#a-red-train) states the rules.
 
 **What a lane gives up.** A lane's pull request no longer catches a lint,
 format or contract slip before the train does: the lane's agent runs the
@@ -5985,6 +6013,68 @@ run is never cut. `GUARDS_BUDGET_SECONDS` (600 s) is wall time from the guard
 check's own start, so nothing ahead of it shortens it; only the step's
 deadline is shared. None of this is on the merge path: it runs in the lane's
 own container before it publishes.
+
+### The source-text check
+
+A test that reads a repository `.py` or `.ts` file as text pins what the code
+*says*, not what it does. Sometimes that is the point -- there is no other
+observable form of the thing -- and sometimes it is a behaviour test written
+the cheap way; until issue 73 nothing in the file said which. And every test
+that swept a tree for a forbidden pattern walked and read that tree again, so
+a guard run read the same files once per sweep.
+`scripts/check_source_text.py` (standard library only, as ruff takes no
+custom rules) does three things in one pass:
+
+* **It finds the source-text tests**: any `.py` under `tests/` or
+  `apps/*/tests/` that globs `*.py`/`*.ts`/`*.tsx` (`*.ts*` too), calls
+  `ast.parse` or `inspect.getsource`, or reads (`read_text`, `read_bytes`,
+  `open`) a path built from a string ending in a source suffix or a module's
+  `__file__` -- followed through assignments and through a helper's parameter
+  to what its callers pass, because `def src(name): return (UI /
+  name).read_text()` called as `src("api.ts")` is the commonest shape.
+  `python3 scripts/check_source_text.py --list [PATH ...]` prints each with
+  its techniques and `marked <class>` or `UNMARKED`; a PATH may be a file or
+  a directory. A test that reads only
+  its own file, docs, YAML, JSON or shell is not one (issue 71).
+* **It holds their marker**, the file's first line (the second after a
+  shebang): `# source-text: <class> - <reason>`, the reason saying why
+  *this* file reads text. The classes:
+
+  | Class | When | Example |
+  |---|---|---|
+  | `contract` | the text is the contract: a name, a table or a call shape with no behaviour to observe | `tests/unit/common/test_specsign_covers.py`: every metadata key the worker reads, found by an AST scan of `agent_worker`, is a signed key |
+  | `forbidden-pattern` | a pattern must not appear, or only where allowed; the sweep itself belongs in a rule (below) | the sweep that no test module imports a bare `conftest`, which was a test until it became the `no-bare-conftest-import` rule |
+  | `fixture` | the source read is a sample the test writes or parses, not the repository's code | `tests/unit/scripts/test_check_source_text.py`, which parses planted snippets |
+
+  A malformed marker, an unknown class, a marker below the first line or a
+  marker on a file that reads no source fails, and so does a detected file
+  with no marker (`path:1: no source-text marker (reads source by ...)`):
+  every area was marked under issue 73, so the next source-text test is
+  classified in the pull request that adds it.
+* **It runs the forbidden-pattern rules** of `scripts/source_text_rules/`.
+  Each file under the union of the rules' roots is read once and parsed at
+  most once, then handed to every rule whose roots cover it, so a new sweep
+  costs a rule's check, not another walk of the tree. A hit prints
+  `path:line: rule-id: message`.
+
+**Adding a rule.** Add a module to `scripts/source_text_rules/` (any name not
+starting with `_`; modules are found by name, there is no list to edit) that
+defines `RULES`, a tuple of `Rule(id, why, roots, check, bad, good, exempt,
+requires)`: `why` is one line naming the decision or issue it holds; `roots`
+are directories or globs; `check(path, text, tree)` returns `(line, message)`
+hits, `tree` being the AST of a `.py` file; `bad` and `good` are `(path,
+source)` samples that must hit and must pass, which the check's test runs for
+every rule; `exempt` names exact paths allowed to match, and an exemption
+whose file is gone or no longer matches fails as stale; `requires`, a
+substring or pattern a file must hold before it is parsed for the rule, keeps
+the run fast. Move the sweep out of its test file in the same change.
+
+**Where it runs.** `make lint` (`==> source-text tests`), and
+`tests/unit/scripts/test_check_source_text.py`, which runs it over the whole
+tree and is in `GUARD_TESTS`, so every pull request runs it: a rule hit can
+sit in any file, and no diff names the check. Measured 2026-11-24 in a
+14-CPU lane container: about 10 s for the whole tree, most of it parsing the
+roughly 430 test files whose text could read source.
 
 ### The install manifest completeness test
 

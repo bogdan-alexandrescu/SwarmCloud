@@ -1,3 +1,4 @@
+# source-text: contract - the TERMINAL_EVENTS set of swarm-ui's events.ts and tuple of scripts/benchstat.py must restate the API's terminal events exactly
 """A cancel that is only requested is recorded as a request, never as `cancelled`.
 
 Contract request 17 in docs/contract-change-requests.md (filed from incident

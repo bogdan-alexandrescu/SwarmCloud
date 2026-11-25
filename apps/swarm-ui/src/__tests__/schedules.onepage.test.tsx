@@ -18,6 +18,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { serve, visible } from './repofixture'
+import { helpIn, shownIn } from './proseruns'
 import { Routed } from './screenroute'
 import { SECTIONS, canonical, fromAddress } from '../App'
 import { addressToPath, pathToAddress } from '../paths'
@@ -195,7 +196,9 @@ describe('Admin › Platform counts lists the platform ticks', () => {
     const { PlatformCountsScreen } = await import('../PlatformCounts')
     render(<PlatformCountsScreen />)
     expect(screen.getByRole('heading', { name: 'Platform ticks', level: 2 })).toBeTruthy()
-    expect(screen.getByText(/The platform’s own machinery\. No tenant manages these/)).toBeTruthy()
+    // Issue 81: a short line on the surface, the sentence behind its (i).
+    expect(shownIn(document.body)).toContain('The platform’s own machinery')
+    expect(helpIn(document.body)).toMatch(/The platform’s own machinery\. No tenant manages these/)
     const ticks = screen.getByTestId('as-platform-ticks')
     const names = [...ticks.querySelectorAll<HTMLElement>('tr[data-tick]')].map((r) => r.dataset.tick)
     expect(jobsTf().length).toBeGreaterThanOrEqual(11)

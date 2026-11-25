@@ -171,7 +171,7 @@ describe('QA-011: `Sets it apart` agrees with the cred row above it', () => {
     // these reads `the only runtime that needs this credential`. (scribe is
     // told apart by its any-one-of form instead -- capacity-006, run 2 --
     // which is about how it takes its secrets, not whose they are.)
-    expect(apartCred('scribe')).toBe('the only runtime that accepts any one of its credentials')
+    expect(apartCred('scribe')).toBe('sole runtime accepting any one of its credentials')
     expect(apartCred('viewport')).toBeNull()
   })
 

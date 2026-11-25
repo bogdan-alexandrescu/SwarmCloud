@@ -74,7 +74,9 @@
     "human_control_returned",
     "human_handoff_resolved",
     "startup_progress",
-    "budget_warning"
+    "budget_warning",
+    "pause_requested",
+    "resume_requested"
   ],
   "park_reason": [
     "PROVIDER_QUOTA_EXHAUSTED",
@@ -90,7 +92,8 @@
     "HUMAN_REQUIRED",
     "AWAITING_INPUT",
     "FIX_ROUNDS_RUNNING",
-    "PLATFORM_REFUSED"
+    "PLATFORM_REFUSED",
+    "WORKFLOW_PAUSED"
   ],
   "pool_names": {
     "backend": "CLOUD_RUN_JOB",

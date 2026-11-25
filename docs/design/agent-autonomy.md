@@ -84,7 +84,7 @@ path.
 
 | # | capability | state | proof |
 |---|---|---|---|
-| 1 | read the issue | **exists** | the worker fetches `/issues/N` and its comments with the tenant slot and writes `work/issue.md` beside the checkout (`apps/agent-worker/agent_worker/issue.py`, fetch at :653) |
+| 1 | read the issue | **exists** | the worker fetches `/issues/N` and its comments with the tenant slot and writes `work/issue.md` beside the checkout (`apps/agent-worker/agent_worker/issue.py`, `fetch_issue`), keeping only comments whose `author_association` is OWNER, MEMBER or COLLABORATOR, or a marked comment from the platform's own App's bot -- trusted only when the worker passes that App's id, which it cannot today: the id (`GITHUB_APP_ID`) reaches swarm-api's environment only, no worker Job, `WorkerConfig` field, signed task field or broker answer carries it, so no bot comment is kept ([docs/workflows.md](../workflows.md)); the rest are counted, never written |
 | 2 | read the repository | **exists** | shallow clone with a 0600 credential file deleted before the agent starts (`apps/agent-worker/agent_worker/gitops.py`); later reads through `git_fetch` (`swarm_api/gittools.py` `_fetch`, :786) |
 | 3 | read another private repository | **partial** | `read_private` (`swarm_api/gittools.py`, :939): one file or one directory listing, only in repositories the tenant marked `readable_by_tasks` |
 | 4 | read a PR's checks and failing-job log tails | **partial** | `pr_checks` (`swarm_api/gittools.py`, :1024) returns the head's check runs, statuses and a scrubbed `job_log_tail` (`forgewrite.py`, :912); only for one PR's head |

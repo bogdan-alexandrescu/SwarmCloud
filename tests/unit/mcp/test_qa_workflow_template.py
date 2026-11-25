@@ -1,3 +1,4 @@
+# source-text: contract - the QA template's flow prompts must use SubmitChooser.tsx's own button label and only paths in routes.json
 """The console visual-QA workflow template is a spec the platform takes (QA-TEMPLATE, part of archived issue 1649).
 
 `docs/qa/console-qa.workflow.json` is the run docs/design/visual-qa.md §4.6

@@ -1,3 +1,4 @@
+# source-text: fixture - appends a credential line to settings and fixture files of the scratch repository the test built
 """A stacked lane that merges the default branch is scanned on its own lines only.
 
 WHAT WENT WRONG (publish scan, merged-main floor, reported 2026-11-10). When a

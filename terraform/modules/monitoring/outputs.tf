@@ -5,7 +5,7 @@ output "dashboard_id" {
 output "log_metric_names" {
   value = sort(concat(
     [for m in google_logging_metric.events : m.name],
-    [google_logging_metric.peak_rss.name, google_logging_metric.oom_near_miss.name, google_logging_metric.spec_signature_invalid.name, google_logging_metric.spec_upstream_invalid.name, google_logging_metric.worker_action_ended.name, google_logging_metric.schedule_auto_paused.name, google_logging_metric.schedule_needs_owner.name, google_logging_metric.workspace_stuck.name, google_logging_metric.pr_stranded.name, google_logging_metric.tenant_namespace_mismatch.name],
+    [google_logging_metric.peak_rss.name, google_logging_metric.oom_near_miss.name, google_logging_metric.spec_signature_invalid.name, google_logging_metric.spec_upstream_invalid.name, google_logging_metric.worker_action_ended.name, google_logging_metric.schedule_auto_paused.name, google_logging_metric.schedule_needs_owner.name, google_logging_metric.workspace_stuck.name, google_logging_metric.pr_stranded.name, google_logging_metric.tenant_namespace_mismatch.name, google_logging_metric.reconciler_pass_duration.name],
   ))
 }
 
@@ -24,6 +24,7 @@ output "log_metric_filters" {
       (google_logging_metric.schedule_needs_owner.name)      = google_logging_metric.schedule_needs_owner.filter
       (google_logging_metric.workspace_stuck.name)           = google_logging_metric.workspace_stuck.filter
       (google_logging_metric.tenant_namespace_mismatch.name) = google_logging_metric.tenant_namespace_mismatch.filter
+      (google_logging_metric.reconciler_pass_duration.name)  = google_logging_metric.reconciler_pass_duration.filter
     },
   )
 }
@@ -61,6 +62,10 @@ output "alert_policy_names" {
     google_monitoring_alert_policy.schedule_needs_attention[*].display_name,
     google_monitoring_alert_policy.workspace_stuck[*].display_name,
     google_monitoring_alert_policy.tenant_namespace_mismatch[*].display_name,
+    google_monitoring_alert_policy.front_door_down[*].display_name,
+    google_monitoring_alert_policy.reconciler_pass_slow[*].display_name,
+    google_monitoring_alert_policy.nat_drops[*].display_name,
+    google_monitoring_alert_policy.browser_secret_grant[*].display_name,
   )
 }
 

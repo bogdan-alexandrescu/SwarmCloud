@@ -2,6 +2,7 @@ import { Fragment, useState } from 'react'
 import { isPaused } from './fetch'
 import { tableMode, usePhoneTables } from './capacityPoll'
 import { WarnMark } from './marks'
+import { InfoTip } from './InfoTip'
 import { useIsAdmin } from './PermissionCards'
 import './styles/profile-matrix.css'
 import {
@@ -318,12 +319,20 @@ export function ProfileMatrix({ capacity }: { capacity: Capacity }) {
       {/* THE NOTE DESCRIBES WHAT IS DRAWN (visual QA V033). A phone draws no
           per-pool cell, so "each cell" and "the outlined cell" named nothing
           on its screen; there it says where the per-pool figures went. */}
+      {/* ISSUE 81: the note is a short label on the surface; its sentences,
+          word for word, sit behind the (i) beside it. */}
       <p className="cap-mx-note">
-        {phone
-          ? 'Runs out first names the pool with leased/ceiling units. Open a profile for every pool it clears.'
-          : tied
-            ? 'Each cell is the units free in that pool, leased/ceiling under it. The outlined cells run out first; several on one row run out together.'
-            : 'Each cell is the units free in that pool, leased/ceiling under it. The outlined cell runs out first.'}
+        How to read this{' '}
+        <InfoTip
+          about="reading the table"
+          tip={
+            phone
+              ? 'Runs out first names the pool with leased/ceiling units. Open a profile for every pool it clears.'
+              : tied
+                ? 'Each cell is the units free in that pool, leased/ceiling under it. The outlined cells run out first; several on one row run out together.'
+                : 'Each cell is the units free in that pool, leased/ceiling under it. The outlined cell runs out first.'
+          }
+        />
       </p>
     </div>
   )
