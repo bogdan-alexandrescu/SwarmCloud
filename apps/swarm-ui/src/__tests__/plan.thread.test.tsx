@@ -51,7 +51,8 @@ describe('Comment', () => {
   })
 
   it('anchors a requirement comment by the requirement’s number and a summary comment to the plan with no ref', async () => {
-    const { calls } = await mount(routes({ extra: (m, url, body) => (m === 'POST' && url.split('?')[0] === COMMENT ? { status: 201, body: { entry: comment({ entry_id: `pth_${Math.random().toString(16).slice(2, 10)}`, ...(body as Json), at: at(0) }) } } : null) }))
+    let posted = 0
+    const { calls } = await mount(routes({ extra: (m, url, body) => (m === 'POST' && url.split('?')[0] === COMMENT ? { status: 201, body: { entry: comment({ entry_id: `pth_${(++posted).toString(16).padStart(8, '0')}`, ...(body as Json), at: at(0) }) } } : null) }))
     const reqs = await part('Requirements')
     fireEvent.click(within(reqs).getByRole('button', { name: 'Comment' }))
     fireEvent.change(within(reqs).getByRole('combobox', { name: 'Requirement' }), { target: { value: '2' } })
@@ -83,8 +84,9 @@ describe('Comment', () => {
     const s2 = await part('Step 2')
     const thread = within(s2).getByTestId('pt-thread')
     await waitFor(() => expect(visible(thread)).toContain(markup), WAIT)
-    expect(thread.querySelector('img')).toBeNull()
-    expect(thread.querySelector('b')).toBeNull()
+    expect(within(thread).queryByRole('img')).toBeNull()
+    expect(thread.innerHTML).not.toContain('<b>')
+    expect(thread.innerHTML).not.toContain('<img')
   })
 })
 
@@ -95,25 +97,24 @@ describe('Request changes', () => {
     const replan = { replan_id: 'rpl_0a1b2c', task_id: 'task_replan1', from_digest: D2, from_revision: 2, entries: ['pth_open1'], requested_by: 'ana@example.com', state: 'running', cancelled: null, at: at(0) }
     const { calls } = await mount(
       routes({
-        run: () =>
-          state === 'before'
-            ? {}
-            : state === 'running'
-              ? { plan_replan: replan, plan_replans: 1 }
-              : {
-                  plan: PLAN_R3,
-                  plan_digest: D3,
-                  plan_revision: 3,
-                  plan_revisions: [REV3, REV2, REV1],
-                  plan_replan: { ...replan, state: 'applied', revision: 3 },
-                  plan_replans: 1,
-                  plan_thread: [
-                    ...(runRead().plan_thread as Json[]).slice(0, 2),
-                    comment({ answered_by_revision: 3 }),
-                    { kind: 'event', event: 'revised', at: REV3.at, ref: null, revision: 3, digest: D3, by: 'planner', made_by: 'revise' },
-                    comment({ entry_id: 'pth_ans1', kind: 'answer', by: 'planner', text: 'Write is not needed; the read binding is enough.', at: REV3.at }),
-                  ],
-                },
+        run: () => {
+          if (state === 'before') return {}
+          if (state === 'running') return { plan_replan: replan, plan_replans: 1 }
+          return {
+            plan: PLAN_R3,
+            plan_digest: D3,
+            plan_revision: 3,
+            plan_revisions: [REV3, REV2, REV1],
+            plan_replan: { ...replan, state: 'applied', revision: 3 },
+            plan_replans: 1,
+            plan_thread: [
+              ...(runRead().plan_thread as Json[]).slice(0, 2),
+              comment({ answered_by_revision: 3 }),
+              { kind: 'event', event: 'revised', at: REV3.at, ref: null, revision: 3, digest: D3, by: 'planner', made_by: 'revise' },
+              comment({ entry_id: 'pth_ans1', kind: 'answer', by: 'planner', text: 'Write is not needed; the read binding is enough.', at: REV3.at }),
+            ],
+          }
+        },
         extra: (m, url) => {
           if (m !== 'POST' || url.split('?')[0] !== REVISE) return null
           state = 'running'
@@ -154,14 +155,14 @@ describe('Request changes', () => {
     const b = await bar()
     fireEvent.click(await within(b).findByRole('button', { name: 'Request changes' }, WAIT))
     await waitFor(() => expect(visible(b)).toContain(sentence), WAIT)
-    expect((within(b).getByRole('button', { name: 'Request changes' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(within(b).getByRole('button', { name: 'Request changes' })).toHaveProperty('disabled', true)
   })
 
   it('is not offered while no comment is open on the revision', async () => {
     await mount(routes({ run: () => ({ plan_thread: [comment({ resolved: true })] }) }))
     const b = await bar()
     await waitFor(() => expect(within(b).getByRole('button', { name: 'Request changes' })).toBeTruthy(), WAIT)
-    expect((within(b).getByRole('button', { name: 'Request changes' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(within(b).getByRole('button', { name: 'Request changes' })).toHaveProperty('disabled', true)
   })
 })
 
@@ -203,7 +204,7 @@ describe('after approval', () => {
     const summary = await part('Summary')
     const order = await waitFor(() => {
       const rows = within(summary).getAllByTestId('pt-entry').map((e) => e.getAttribute('data-event'))
-      expect(rows.length).toBe(7)
+      expect(rows).toHaveLength(7)
       return rows
     }, WAIT)
     expect(order).toEqual(['approved', 'step_task', 'pull_request', 'ci_round', 'review', 'merged', 'keyword'])

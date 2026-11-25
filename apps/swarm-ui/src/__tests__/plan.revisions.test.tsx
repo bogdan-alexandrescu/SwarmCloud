@@ -36,7 +36,7 @@ describe('the revision picker', () => {
     expect(r1.getAttribute('aria-pressed')).toBe('false')
     // An unreported cost is a dash with its reason, never $0.
     expect(visible(r1)).not.toContain('$0')
-    expect(r1.querySelector('[aria-label="cost not reported"]')).not.toBeNull()
+    expect(within(r1).getByLabelText('cost not reported')).toBeTruthy()
   })
 
   it('shows an older revision read-only with its diff against the newest, and keeps the document on the shown one', async () => {
@@ -53,10 +53,10 @@ describe('the revision picker', () => {
     expect(within(view).queryByRole('textbox')).toBeNull()
     // Its diff against the newest (revision 2): step 1's prompt changed.
     const diff = within(view).getByTestId('pr-diff')
-    const row = [...diff.querySelectorAll('[data-path]')].find((r) => r.getAttribute('data-path') === 'steps.overlaps-read.prompt')!
+    const row = within(diff).getAllByRole('listitem').find((r) => r.getAttribute('data-path') === 'steps.overlaps-read.prompt')!
     expect(row).toBeTruthy()
-    expect(visible(row.querySelector('del'))).toBe(PLAN_R1.steps[0]!.prompt)
-    expect(visible(row.querySelector('ins'))).toBe(PLAN.steps[0]!.prompt)
+    expect(visible(within(row).getByRole('deletion'))).toBe(PLAN_R1.steps[0]!.prompt)
+    expect(visible(within(row).getByRole('insertion'))).toBe(PLAN.steps[0]!.prompt)
     // The document and the bar still name revision 2.
     expect(visible(screen.getByTestId('pd-summary'))).toBe(PLAN.summary)
     expect(screen.getByTestId('pd-digest').getAttribute('data-digest')).toBe(D2)
@@ -96,7 +96,8 @@ describe('diffPlans', () => {
     const markup = '<img src=x onerror="alert(1)">'
     render(<PlanDiff rows={diffPlans(PLAN, { ...PLAN, summary: markup })} />)
     const diff = screen.getByTestId('pr-diff')
-    expect(visible(diff.querySelector('ins'))).toBe(markup)
-    expect(diff.querySelector('img')).toBeNull()
+    expect(visible(within(diff).getByRole('insertion'))).toBe(markup)
+    expect(within(diff).queryByRole('img')).toBeNull()
+    expect(diff.innerHTML).not.toContain('<img')
   })
 })
