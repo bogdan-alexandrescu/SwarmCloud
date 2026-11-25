@@ -333,6 +333,8 @@ export const WORK: readonly ProseState[] = [
     group: 'work',
     files: ['Activity.tsx'],
     shows: '.ob-acts [role="status"]',
+    lines: ['Approved w-group1'],
+    moved: ['Approved w-group1. The job is starting.'],
     mount: mountTenantsRequested,
     act: async () => {
       await clickWhenDrawn('[data-workspace-id="w-group1"] .ob-acts button')
@@ -340,6 +342,23 @@ export const WORK: readonly ProseState[] = [
         await screenLoaded()
         await settle()
       }
+    },
+  },
+  {
+    key: 'tenants/deny',
+    group: 'work',
+    files: ['Activity.tsx'],
+    // The row the form opens in: the form alone is a label and two buttons.
+    shows: '[data-workspace-id="w-group1"]:has(.pp-deny)',
+    mount: mountTenantsRequested,
+    act: async () => {
+      for (let i = 0; i < 20 && document.querySelector('[data-workspace-id="w-group1"] .ob-acts button') === null; i++) {
+        await screenLoaded()
+        await settle()
+      }
+      press('Deny')
+      await screenLoaded()
+      await settle()
     },
   },
   {

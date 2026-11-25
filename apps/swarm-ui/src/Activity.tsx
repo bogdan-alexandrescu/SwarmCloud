@@ -1857,7 +1857,8 @@ function useCaller(): Caller | null {
 /** The states the job is moving by itself: the list is read again every 5 s while any row is in one. */
 const BUILDING: ReadonlySet<string> = new Set(['approved', 'applying'])
 
-type Said = { ok: true; text: string } | { ok: false; error: ApiError }
+/** `tip`: the sentence in full, behind the line's (i) (issue 439); a server's own message has none. */
+type Said = { ok: true; text: string; tip?: string } | { ok: false; error: ApiError }
 
 function SaidLine({ said }: { said: Said | null }) {
   if (said === null) return null
@@ -1865,6 +1866,12 @@ function SaidLine({ said }: { said: Said | null }) {
     return (
       <p className="ur-hint" role="status">
         {said.text}
+        {said.tip !== undefined && (
+          <>
+            {' '}
+            <InfoTip about="what happened" tip={said.tip} />
+          </>
+        )}
       </p>
     )
   return (
@@ -1874,9 +1881,12 @@ function SaidLine({ said }: { said: Said | null }) {
   )
 }
 
-function saidOf<T>(r: Result<T>, text: (data: T) => string): Said {
+function saidOf<T>(r: Result<T>, text: (data: T) => string | { text: string; tip: string }): Said {
   if (r.status === 'error') return { ok: false, error: r.error }
-  if (r.status === 'ok' || r.status === 'stale') return { ok: true, text: text(r.data) }
+  if (r.status === 'ok' || r.status === 'stale') {
+    const t = text(r.data)
+    return typeof t === 'string' ? { ok: true, text: t } : { ok: true, ...t }
+  }
   return { ok: true, text: 'Done.' }
 }
 
@@ -1957,13 +1967,13 @@ function BeingCreatedActions({ w, owner, reload }: { w: AdminWorkspaceView; owne
   const approve = () =>
     run(async () =>
       saidOf(await approveWorkspace(id), (d) =>
-        typeof d.message === 'string' && d.message !== '' ? d.message : `Approved ${id}. The job is starting.`,
+        typeof d.message === 'string' && d.message !== '' ? d.message : { text: `Approved ${id}`, tip: `Approved ${id}. The job is starting.` },
       ),
     )
   const retry = () =>
     run(async () =>
       saidOf(await retryWorkspace(id), (d) =>
-        typeof d.message === 'string' && d.message !== '' ? d.message : 'Retried. The job is starting again.',
+        typeof d.message === 'string' && d.message !== '' ? d.message : { text: 'Retried', tip: 'Retried. The job is starting again.' },
       ),
     )
   const deny = () =>
