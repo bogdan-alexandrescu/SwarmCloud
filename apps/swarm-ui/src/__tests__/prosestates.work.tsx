@@ -87,6 +87,28 @@ export const WORK: readonly ProseState[] = [
     walk: { open: TIMELINE, then: () => clickWhenDrawn('button.tl-name') },
   },
   {
+    // The list a filter emptied: no fixture attempt is dead-lettered.
+    key: 'work/timeline-filtered-empty',
+    group: 'work',
+    files: ['TimelineLanes.tsx'],
+    shows: '.tl-state:has(button)',
+    walk: {
+      open: TIMELINE,
+      then: async () => {
+        await clickWhenDrawn('button.tl-name')
+        click('.tl-sheet-toggle')
+        fold('.tl-sheet', 'State')
+        const box = [...document.querySelectorAll<HTMLInputElement>('.tl-sheet details.tl-pick[open] input')].find(
+          (i) => i.closest('label')?.textContent?.trim() === 'dead-lettered',
+        )
+        if (box === undefined) throw new Error('the State picker offers no dead-lettered')
+        fireEvent.click(box)
+        await screenLoaded()
+        await settle()
+      },
+    },
+  },
+  {
     key: 'work/outcomes-filters',
     group: 'work',
     files: ['Activity.tsx'],
