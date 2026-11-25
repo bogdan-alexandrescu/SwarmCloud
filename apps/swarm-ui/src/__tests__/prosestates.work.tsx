@@ -12,7 +12,14 @@ import { FIXTURE_CONTRACT_REFUSAL_PROMPT } from '../api'
 import type { ProseState } from './prosestates'
 import { settle } from './proseapp'
 import { fold } from './prosestates.agent'
-import { WORKFLOW_REFUSAL_MESSAGE, mountAwaitInput, mountHeldRunners, mountQuestion, mountWorkflowRefused } from './prosestates.work.mounts'
+import {
+  WORKFLOW_REFUSAL_MESSAGE,
+  mountAwaitInput,
+  mountHeldRunners,
+  mountQuestion,
+  mountTenantsRequested,
+  mountWorkflowRefused,
+} from './prosestates.work.mounts'
 import { click } from './prosestates.shell'
 import { screenLoaded } from './screenLoaded'
 
@@ -315,6 +322,21 @@ export const WORK: readonly ProseState[] = [
       await settle()
       press('Submit this workflow')
       for (let i = 0; i < 20 && document.querySelector('.state.failed') === null; i++) {
+        await screenLoaded()
+        await settle()
+      }
+    },
+  },
+  {
+    // Admin › Tenants, which Activity.tsx draws: a workspace request approved.
+    key: 'tenants/approved',
+    group: 'work',
+    files: ['Activity.tsx'],
+    shows: '.ob-acts [role="status"]',
+    mount: mountTenantsRequested,
+    act: async () => {
+      await clickWhenDrawn('[data-workspace-id="w-group1"] .ob-acts button')
+      for (let i = 0; i < 20 && document.querySelector('.ob-acts [role="status"]') === null; i++) {
         await screenLoaded()
         await settle()
       }

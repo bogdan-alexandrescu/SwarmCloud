@@ -62,6 +62,7 @@ const realFetch = globalThis.fetch
 /** Undo the mounts' fetch stubs and the live build: called after each state. */
 export function restoreWorkStubs(): void {
   globalThis.fetch = realFetch
+  document.cookie = 'swarm_qa_persona=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/'
   vi.doUnmock('../api')
   vi.resetModules()
 }
@@ -149,4 +150,50 @@ export async function mountAwaitInput(): Promise<ReactElement> {
   }
   const { AwaitInputCard } = await import('../AwaitInputCard')
   return <AwaitInputCard workflowId="wf_r" stepId="review" />
+}
+
+/** A workspace request the Tenants page's "Being created" list draws (tenants.test.tsx's `ws`). */
+const REQUESTED = {
+  state: 'requested',
+  kind: 'group',
+  setup_url: '/setup#workspace',
+  setup_command: '/sc:setup',
+  workspace_id: 'w-group1',
+  display_name: 'Platform team',
+  principal: 'platform@example.com',
+  requested_at: '2026-10-19T08:00:00Z',
+  decision: null,
+  held: null,
+  limits: { max_active: 8, capacity_units: 8 },
+  steps: {},
+  failure: null,
+}
+
+/**
+ * Admin › Tenants with one workspace request and the platform owner signed
+ * in (the fixture build lists none): Approve answers with no message, so the
+ * page says what it did in its own words. The roster stays the fixture build's.
+ */
+export async function mountTenantsRequested(): Promise<ReactElement> {
+  // The platform admin's fixture build (proseapp.ts useBase sets the same cookie), read when api.ts loads.
+  document.cookie = 'swarm_qa_persona=platform-admin; path=/'
+  vi.resetModules()
+  vi.doMock('../api', async (importOriginal) => {
+    const real = await importOriginal<typeof import('../api')>()
+    const ok = <T,>(data: T) => Promise.resolve({ status: 'ok' as const, data, fetchedAt: Date.now() })
+    return {
+      ...real,
+      loadProfile: () =>
+        ok({
+          identity: { email: 'someone@example.com', display_name: null, display_name_suggested: null, domain: 'example.com', platform_role: 'owner', is_admin: true, is_admin_unresolved: false },
+          workspaces: [],
+          revision: 1,
+          unavailable: [],
+        }),
+      loadAdminWorkspaces: () => ok([REQUESTED]),
+      approveWorkspace: () => ok({ workspace: REQUESTED }),
+    }
+  })
+  const { TenantsScreen } = await import('../Activity')
+  return <TenantsScreen />
 }
