@@ -1012,11 +1012,15 @@ export function AddSetting({ idPrefix, offers, onAdd, onOwn }: {
       </button>
       {open && (
         <div id={listId} className="sbf-addset-list" role="group" aria-label="settings to add">
+          {/* EACH KEY'S NOTE BEHIND ITS (i) (issue 439): the list is of keys; a
+              note of a dozen words under each made it a page of prose. */}
           {offers.map((s) => (
-            <button type="button" key={s.name} className="sbf-addset-item" onClick={() => { onAdd(s); setOpen(false) }}>
-              <span className="mono">{s.name}</span>
-              <em>{s.note}</em>
-            </button>
+            <span key={s.name} className="sbf-addset-row">
+              <button type="button" className="sbf-addset-item" onClick={() => { onAdd(s); setOpen(false) }}>
+                <span className="mono">{s.name}</span>
+              </button>
+              <InfoTip about={s.name} tip={s.note} end />
+            </span>
           ))}
           <button type="button" className="sbf-addset-item is-own" onClick={() => { onOwn(); setOpen(false) }}>
             <span>a setting of your own</span>
@@ -2014,7 +2018,10 @@ function Refused({ outcome, onField }: {
           ))}
         </ul>
       )}
-      <p>{outcome.sent ? 'Nothing was created. Change what it names and submit again.' : 'Nothing was sent, so nothing was created.'}</p>
+      {/* NOTHING-WAS-CREATED STAYS ONE LINE; WHAT TO DO IS ITS (i) (issue 439). */}
+      <p>{outcome.sent
+        ? <>Nothing was created <InfoTip about="the refusal" tip="Nothing was created. Change what it names and submit again." /></>
+        : 'Nothing was sent, so nothing was created.'}</p>
     </div>
   )
 }
@@ -2031,10 +2038,11 @@ function Created({ task, woke }: { task: Task; woke: boolean }) {
           names the state the task is actually in. The glyph's own screen keeps
           one, on step 1. The topic is still one click away on the Agents screen,
           where an empty `live` tab is the case the sentence cannot cover. */}
+      {/* WHO PAYS STAYS ONE LINE; ITS SENTENCE IS THE (i) (issue 439). */}
       <p>
-        That is not a running agent — it costs nothing until admission takes
-        it.
-        {task.park_reason ? <> It is parked: <code>{String(task.park_reason)}</code>.</> : null}</p>
+        Not running · costs nothing yet{' '}
+        <InfoTip about="what was created" tip="That is not a running agent — it costs nothing until admission takes it." />
+        {task.park_reason ? <> · parked: <code>{String(task.park_reason)}</code></> : null}</p>
       {/* The id verbatim: not truncated, not transformed. This is what gets pasted. */}
       <p className="mono sbf-id">{task.id}</p>
       {/* READ BACK OFF THE 201, not off the form. The form says what was asked
@@ -2048,8 +2056,9 @@ function Created({ task, woke }: { task: Task; woke: boolean }) {
       {/* A SENTENCE, SET AS ONE (live QA SUB-7): it was a `checked-at` line,
           which is the micro MONOSPACE of a read's age, not prose. */}
       <p className="sbf-woke">
-        {woke ? 'The scheduler was woken by this submission.'
-          : 'The scheduler was not woken; it will pick this up on its next pass.'}{' '}
+        {woke ? 'Scheduler woken' : 'Scheduler not woken'}{' '}
+        <InfoTip about="the scheduler" tip={woke ? 'The scheduler was woken by this submission.'
+          : 'The scheduler was not woken; it will pick this up on its next pass.'} />{' '}
         {/* The EXPLICIT drawer form. `#work/<id>` also resolves -- it is
             the shape the old nav wrote -- but only after every tab name
             has had its chance to match, so a task whose id ever spelled

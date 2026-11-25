@@ -1321,7 +1321,10 @@ function StepCard({ step, steps, profiles, keys, classes, required, nameProblem,
           </div>
           {depends.length > 0 && (
             <div className="wfb-stage-from">
-              <p className="t-label">stage a file from a step it waits for</p>
+              {/* THE LABEL'S CLAUSE BEHIND ITS (i) (issue 439): a nine-word label read as a sentence. */}
+              <p className="t-label">
+                stage a file <InfoTip about="staging a file" tip="stage a file from a step it waits for" />
+              </p>
               {depends.map((id) => (
                 <label className="wfb-from" key={id}>
                   <span className="mono">{id}</span>

@@ -82,7 +82,9 @@ describe('D34: + Add setting', () => {
     fireEvent.click(container.querySelector('.sbf-addset-btn')!)
     const item = container.querySelector('.sbf-addset-item')!
     expect(painted(item, 'flex-direction', WIDE)).toBe('column')
-    expect(painted(item.querySelector('em')!, 'text-align', WIDE)).toBe('left')
+    // The note is the key's (i) now (issue 439), word for word.
+    expect(item.parentElement!.querySelector('[data-help-description]')!.textContent).toBe('which model the runner asks the provider for; the runner default when unset')
+    expect(painted(container.querySelector('.sbf-addset-item.is-own em')!, 'text-align', WIDE)).toBe('left')
   })
 
   it('closes on Escape from the button, and gives focus back to it', () => {

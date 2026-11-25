@@ -57,6 +57,7 @@ import { guidePath } from './guidePaths'
 import { handoffOf, humanReady, needsYou, ownerQuestionsHold, type HeldQuestion } from './Handoff'
 import { LiveControl } from './LiveBrowser'
 import { WorkLists } from './HomeWorkLists'
+import { InfoTip } from './InfoTip'
 import { browserTabPath } from './LiveThumb'
 import { doneCount, SetupCard, stepRequired } from './Onboarding'
 import { agentPath } from './OverviewRegions'
@@ -203,11 +204,11 @@ function Head({ title, count, why, action }: { title: string; count?: number | n
           </em>
         )}
       </h2>
+      {/* THE NOTE BEHIND AN (i) (issue 439): a `?` fold drew it on the card as a paragraph once opened. */}
       {why !== undefined && (
-        <details className="hm-why">
-          <summary aria-label={`About ${title}`}>?</summary>
-          <p>{why}</p>
-        </details>
+        <span className="hm-why">
+          <InfoTip about={title} tip={why} />
+        </span>
       )}
       {action}
     </div>

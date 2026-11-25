@@ -8,9 +8,11 @@
 
 import { fireEvent } from '@testing-library/react'
 
+import { FIXTURE_CONTRACT_REFUSAL_PROMPT } from '../api'
 import type { ProseState } from './prosestates'
 import { settle } from './proseapp'
 import { fold } from './prosestates.agent'
+import { mountAwaitInput, mountHeldRunners, mountQuestion } from './prosestates.work.mounts'
 import { click } from './prosestates.shell'
 import { screenLoaded } from './screenLoaded'
 
@@ -80,7 +82,7 @@ export const WORK: readonly ProseState[] = [
   {
     key: 'work/timeline-lane',
     group: 'work',
-    files: ['TimelineLanes.tsx', 'TimelineRows.tsx'],
+    files: ['TimelineLanes.tsx'],
     shows: '.tl-detail',
     walk: { open: TIMELINE, then: () => clickWhenDrawn('button.tl-name') },
   },
@@ -99,6 +101,14 @@ export const WORK: readonly ProseState[] = [
     walk: { open: OUTCOMES, then: () => fold('.ol-sheet', '') },
   },
   {
+    // A figure's runs: the card Outcomes opens under the drawing.
+    key: 'work/outcomes-rows',
+    group: 'work',
+    files: ['Activity.tsx', 'TimelineRows.tsx', 'Ledger.tsx'],
+    shows: '.ol-rows',
+    walk: { open: OUTCOMES, then: () => clickWhenDrawn('a[href*="rows="]') },
+  },
+  {
     key: 'work/needs-you',
     group: 'work',
     files: ['work/NeedsYou.tsx', 'Agents.tsx'],
@@ -110,14 +120,12 @@ export const WORK: readonly ProseState[] = [
   {
     key: 'work/needs-you-answer',
     group: 'work',
-    files: ['work/NeedsYou.tsx', 'AwaitInputCard.tsx'],
+    files: ['work/NeedsYou.tsx'],
     shows: '.ny-answer',
-    walk: {
-      open: 'work/running',
-      then: async () => {
-        await clickWhenDrawn('.ny-bar')
-        await clickWhenDrawn('button[aria-label^="Answer "]')
-      },
+    mount: mountQuestion,
+    act: () => {
+      click('.ny-bar')
+      click('button[aria-label^="Answer "]')
     },
   },
   {
@@ -165,6 +173,7 @@ export const WORK: readonly ProseState[] = [
     group: 'work',
     files: ['Submit.tsx'],
     shows: '.sbf-addset-list',
+    moved: ['lowers the child wall clock; the platform ceiling still wins', 'names one argv in the platform catalogue'],
     walk: {
       open: 'work/new',
       then: async () => {
@@ -178,6 +187,8 @@ export const WORK: readonly ProseState[] = [
     group: 'work',
     files: ['Submit.tsx'],
     shows: '.state[role="status"]',
+    lines: ['Not running · costs nothing yet', 'Scheduler woken'],
+    moved: ['That is not a running agent — it costs nothing until admission takes it.', 'The scheduler was woken by this submission.'],
     walk: {
       open: 'work/new',
       then: async () => {
@@ -189,12 +200,32 @@ export const WORK: readonly ProseState[] = [
   {
     key: 'submit/refused',
     group: 'work',
-    files: ['Submit.tsx'],
+    files: ['Submit.tsx', 'ContractJev.tsx'],
     shows: '.state.failed[role="alert"]',
+    lines: ['Nothing was created', 'Rewrite each, then submit again'],
+    moved: [
+      'Work contract wc-lease-release (revision 1) is strict, and Jev’s review found requirements no worker could enforce:',
+      'Jev’s review nothing observable when the step ends decides it: the outcome it asks for is vague',
+      'Jev’s review nothing observable when the step ends decides it: it depends on something that happens after the step',
+      'Rewrite each one as something the step’s end can show, or name the proof that shows it, then submit again.',
+      'Nothing was created. Change what it names and submit again.',
+    ],
     walk: {
       open: 'work/new',
       then: async () => {
-        await runner('claude-code')
+        // The one prompt the fixture build refuses (api.ts FIXTURE_CONTRACT_REFUSAL_PROMPT), on the mock runner.
+        await runner('mock')
+        await clickWhenDrawn('.sbf-addset-btn')
+        const item = [...document.querySelectorAll<HTMLButtonElement>('.sbf-addset-item')].find((b) => b.textContent === 'prompt')
+        if (item === undefined) throw new Error('the mock runner offers no prompt setting')
+        fireEvent.click(item)
+        await screenLoaded()
+        await settle()
+        const field = [...document.querySelectorAll<HTMLElement>('.sbf-input .sbf-field')].at(-1)?.querySelector<HTMLInputElement | HTMLTextAreaElement>('textarea, input')
+        if (field === null || field === undefined) throw new Error('the prompt setting drew no field')
+        fireEvent.change(field, { target: { value: FIXTURE_CONTRACT_REFUSAL_PROMPT } })
+        await screenLoaded()
+        await settle()
         press('Start one agent')
       },
     },
@@ -202,15 +233,18 @@ export const WORK: readonly ProseState[] = [
   {
     key: 'submit/runners-held',
     group: 'work',
-    files: ['RunnerPicker.tsx', 'BrowserToolPicker.tsx'],
+    files: ['RunnerPicker.tsx'],
     shows: 'details.sbf-runners-more[open]',
-    walk: { open: 'work/new', then: () => clickWhenDrawn('details.sbf-runners-more > summary') },
+    mount: mountHeldRunners,
+    act: () => fold('body', 'Other runners'),
   },
   {
     key: 'submit-workflow/waits-for',
     group: 'work',
     files: ['SubmitWorkflow.tsx'],
     shows: 'details.wfb-more[open]',
+    lines: ['stage a file'],
+    moved: ['stage a file from a step it waits for'],
     walk: {
       open: WORKFLOW_FORM,
       then: async () => {
@@ -218,19 +252,6 @@ export const WORK: readonly ProseState[] = [
         await screenLoaded()
         await settle()
         fold('body', 'waits for')
-      },
-    },
-  },
-  {
-    key: 'submit-workflow/not-sent',
-    group: 'work',
-    files: ['SubmitWorkflow.tsx'],
-    shows: '.state.failed',
-    walk: {
-      open: WORKFLOW_FORM,
-      then: async () => {
-        await clickWhenDrawn('.wfb-add.is-stage')
-        press('Submit this workflow')
       },
     },
   },
@@ -245,6 +266,24 @@ export const WORK: readonly ProseState[] = [
         await stepRunner('generic')
         press('Submit this workflow')
       },
+    },
+  },
+  {
+    key: 'work/await-input-answered',
+    group: 'work',
+    files: ['AwaitInputCard.tsx'],
+    shows: '.ai-card:has([role="status"])',
+    lines: ['Answered', 'Written as review.json'],
+    moved: [
+      'Answered. The steps after it start on the answer.',
+      'The first answer is final; a correction is a new round.',
+      'Written as review.json, 120 B with its files, which the next step stages.',
+    ],
+    mount: mountAwaitInput,
+    act: async () => {
+      press('Approve')
+      await screenLoaded()
+      await settle()
     },
   },
 ]

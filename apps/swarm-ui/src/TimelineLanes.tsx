@@ -2723,7 +2723,7 @@ function LaneDetail({
         </dl>
         <p className="tl-acts">
           <ButtonLink kind="primary" href={href}>
-            Open in Agents ›
+            Open in Agents
           </ButtonLink>
         </p>
       </div>

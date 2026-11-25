@@ -5,6 +5,7 @@ import { Button, Chip, NamedMark } from './components'
 import { Dash } from './components/Chip'
 import type { Result } from './fetch'
 import { HelpCard } from './HelpCard'
+import { InfoTip } from './InfoTip'
 import { runAddress } from './IssueSubmit'
 import { addressToPath } from './paths'
 import { ISSUE_FORM, TASK_FORM, WORKFLOW_FORM, shortcutsIn, typedIntoField } from './shortcuts'
@@ -128,10 +129,10 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
       </PageHead>
       <div className="sb-choices">
         <div className="sb-card sb-choice">
-          <h2><TaskGlyph />Start an agent</h2>
-          <p className="sb-note">
-            One agent, one runner. It lands ready or parked and costs nothing until the scheduler admits it.
-          </p>
+          <h2>
+            <TaskGlyph />Start an agent{' '}
+            <InfoTip about="starting an agent" tip="One agent, one runner. It lands ready or parked and costs nothing until the scheduler admits it." />
+          </h2>
           <span className="sb-row">
             <Button kind="primary" aria-keyshortcuts={CAP[TASK_FORM]} onClick={() => go(TASK_FORM)}>
               Start an agent
@@ -140,8 +141,10 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
           </span>
         </div>
         <div className="sb-card sb-choice">
-          <h2><WorkflowGlyph />Submit a workflow</h2>
-          <p className="sb-note">Steps in stages that hand work to each other, opening one PR or one per step.</p>
+          <h2>
+            <WorkflowGlyph />Submit a workflow{' '}
+            <InfoTip about="submitting a workflow" tip="Steps in stages that hand work to each other, opening one PR or one per step." />
+          </h2>
           <span className="sb-row">
             <Button aria-keyshortcuts={CAP[WORKFLOW_FORM]} onClick={() => go(WORKFLOW_FORM)}>
               Start a workflow
@@ -150,10 +153,10 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
           </span>
         </div>
         <div className="sb-card sb-choice">
-          <h2><IssueGlyph />From a GitHub issue</h2>
-          <p className="sb-note">
-            Name an issue. A planner reads it and writes a plan; once the plan is approved it runs as a workflow.
-          </p>
+          <h2>
+            <IssueGlyph />From a GitHub issue{' '}
+            <InfoTip about="starting from an issue" tip="Name an issue. A planner reads it and writes a plan; once the plan is approved it runs as a workflow." />
+          </h2>
           <span className="sb-row">
             <Button aria-keyshortcuts={CAP[ISSUE_FORM]} onClick={() => go(ISSUE_FORM)}>
               Start from an issue
@@ -169,8 +172,10 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
         </div>
         <RecentSubmissions go={go} read={recent.read} reading={recent.reading} onRetry={recent.reload} />
       </section>
+      {/* THE SHORTCUT'S SENTENCE BEHIND ITS (i) (issue 439): the key stays visible. */}
       <p className="sb-note sb-foot">
-        The Submit button in the sidebar opens this page; <kbd className="sb-kbd">N</kbd> from anywhere does too.
+        Opens with <kbd className="sb-kbd">N</kbd>{' '}
+        <InfoTip about="opening this page" tip="The Submit button in the sidebar opens this page; N from anywhere does too." />
       </p>
     </section>
   )
@@ -473,7 +478,12 @@ function RecentSubmissions({ go, read, reading, onRetry }: {
           ))}
         </ul>
       )}
-      {scope !== null && <p className="sb-note sb-recent-scope">{scope}</p>}
+      {/* WHAT WAS LISTED AND WHERE IT WAS FOUND, BEHIND ITS (i) (issue 439): sentences that explain the list. */}
+      {scope !== null && (
+        <p className="sb-note sb-recent-scope">
+          What was read <InfoTip about="what was read" tip={scope} />
+        </p>
+      )}
       {read.unread.length > 0 && <UnreadLines unread={read.unread} reading={reading} onRetry={onRetry} />}
     </>
   )

@@ -59,7 +59,7 @@ describe('runs2-10: the footnote says what became of each window it read', () =>
     // none of its issue runs is yours. MUTATION: name every window after
     // "Found among" again and this reads "Found among your newest … agents,
     // the workspace’s newest … workflows, its newest … issue runs.".
-    expect(visible(recent.querySelector('.sb-recent-scope'))).toMatch(
+    expect(visible(recent.querySelector('.sb-recent-scope [data-help-description]'))).toMatch(
       /^Listed: 5 agents, newest first\. Found among your newest \d+ agents\. Yours among the workspace’s newest \d+ workflows? are older than these\. None of yours among the workspace’s newest \d+ issue runs?\.$/,
     )
   }, 20000)

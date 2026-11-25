@@ -30,6 +30,8 @@
  * and a probability outside [0, 1] is not drawn as a percentage.
  */
 import type { ReactNode } from 'react'
+
+import { InfoTip } from './InfoTip'
 import './styles/contract-jev.css'
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -116,37 +118,56 @@ function Words({ code, words }: { code: string | null; words: Readonly<Record<st
   return said === undefined ? <code>{code}</code> : <>{said}</>
 }
 
-/** The refusal, one line per requirement Jev refused, labelled as Jev's review. */
+/** A code as its words, or the code itself when the vocabulary has none: the text an (i) says. */
+function wordsOf(code: string, words: Readonly<Record<string, string>>): string {
+  return words[code] ?? code
+}
+
+/** A review class in two or three words, for the row's surface; its sentence is the row's (i). */
+const REVIEW_CLASS_SHORT: Readonly<Record<string, string>> = {
+  mechanical: 'proof can show it',
+  judgeable: 'judge decides it',
+  unenforceable: 'not enforceable',
+  not_judged: 'not judged',
+}
+
+/**
+ * The refusal, one line per requirement Jev refused, labelled as Jev's review.
+ * EACH SENTENCE BEHIND ITS (i) (issue 439): the lead, each requirement's review
+ * and the way to fix it were three paragraphs in the send panel; the surface
+ * keeps the contract, each requirement's id, a short class and its confidence.
+ */
 export function ContractRefusalPanel({ refusal }: { refusal: ContractRefusal }) {
   const named = refusal.contractId === null ? 'This work contract' : <>Work contract <code>{refusal.contractId}</code></>
+  const revision = refusal.revision === null ? '' : ` (revision ${refusal.revision})`
+  const lead =
+    `${refusal.contractId === null ? 'This work contract' : `Work contract ${refusal.contractId}`}${revision} is strict, and Jev’s review found ` +
+    `${refusal.requirements.length === 1 ? 'a requirement' : 'requirements'} no worker could enforce:`
   return (
     <div className="cj-refusal" data-testid="cj-refusal">
       <p className="cj-lead">
         {named}
-        {refusal.revision !== null && <> (revision {refusal.revision})</>} is strict, and Jev’s review found{' '}
-        {refusal.requirements.length === 1 ? 'a requirement' : 'requirements'} no worker could enforce:
+        {revision} · not enforceable <InfoTip about="the contract refusal" tip={lead} />
       </p>
       <ul className="cj-list" aria-label="Jev’s review, per requirement">
-        {refusal.requirements.map((r) => (
-          <li key={r.id} className="cj-row" data-requirement={r.id}>
-            <span className="cj-id mono">{r.id}</span>
-            <span className="cj-say">
-              <span className="cj-by">Jev’s review</span>{' '}
-              <Words code={r.cls} words={REVIEW_CLASS_WORDS} />
-              {r.reason !== null && r.reason !== 'none' && (
-                <>
-                  {': '}
-                  <Words code={r.reason} words={REVIEW_REASON_WORDS} />
-                </>
-              )}
-              {percent(r.p) !== null && <span className="cj-p"> · confidence {percent(r.p)}</span>}
-            </span>
-          </li>
-        ))}
+        {refusal.requirements.map((r) => {
+          const reason = r.reason !== null && r.reason !== 'none' ? `: ${wordsOf(r.reason, REVIEW_REASON_WORDS)}` : ''
+          return (
+            <li key={r.id} className="cj-row" data-requirement={r.id}>
+              <span className="cj-id mono">{r.id}</span>
+              <span className="cj-say">
+                {REVIEW_CLASS_SHORT[r.cls] ?? <code>{r.cls}</code>}
+                {percent(r.p) !== null && <span className="cj-p"> · confidence {percent(r.p)}</span>}{' '}
+                <InfoTip about={`Jev’s review of ${r.id}`} tip={`Jev’s review ${wordsOf(r.cls, REVIEW_CLASS_WORDS)}${reason}`} />
+              </span>
+            </li>
+          )
+        })}
       </ul>
       <p className="cj-note">
-        Rewrite each one as something the step’s end can show, or name the proof that shows it, then submit again.
-        {refusal.backend !== null && <> Judged by <code>{refusal.backend}</code>.</>}
+        Rewrite each, then submit again{' '}
+        <InfoTip about="rewriting a requirement" tip="Rewrite each one as something the step’s end can show, or name the proof that shows it, then submit again." />
+        {refusal.backend !== null && <> · judged by <code>{refusal.backend}</code></>}
       </p>
     </div>
   )

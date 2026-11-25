@@ -58,6 +58,7 @@ import {
 } from './awaitInput'
 import { Button, ButtonLink } from './components'
 import { errorHeading, type ApiError, type Result } from './fetch'
+import { InfoTip, SaidLine, type Said } from './InfoTip'
 import { useNow } from './useNow'
 
 /** The OTHER pick of an `answers` question: the person's own words. */
@@ -127,15 +128,19 @@ function Closed({ view, now }: { view: AwaitInputView; now: number }) {
     const a = view.answer
     return (
       <div className="ai-closed" data-testid="ai-closed" data-status="answered">
+        {/* WHO, WHEN AND HOW STAY; WHAT FOLLOWS IS EACH LINE'S (i) (issue 439). */}
         <p>
           Answered by <b>{a.answered_by ?? 'a person not recorded'}</b>, <At iso={a.answered_at} />,{' '}
-          {a.via === null ? 'by a channel not recorded' : (VIA_WORD[a.via] ?? `via ${a.via}`)}. The first answer is final;
-          a correction is a new round.
+          {a.via === null ? 'by a channel not recorded' : (VIA_WORD[a.via] ?? `via ${a.via}`)}{' '}
+          <InfoTip about="the answer" tip="The first answer is final; a correction is a new round." />
         </p>
         {view.artifact !== null && (
           <p className="sb-note">
-            Written as <span className="mono">{view.artifact}</span>
-            {a.bytes !== null ? `, ${bytesWords(a.bytes)} with its files` : ''}, which the next step stages.
+            Written as <span className="mono">{view.artifact}</span>{' '}
+            <InfoTip
+              about="the answer's file"
+              tip={`Written as ${view.artifact}${a.bytes !== null ? `, ${bytesWords(a.bytes)} with its files` : ''}, which the next step stages.`}
+            />
           </p>
         )}
         <AnswerFiles taskId={view.task_id} files={a.files} />
@@ -221,7 +226,7 @@ function Picker({ files, setFiles, max, problem }: {
 }
 
 /** The form the step declared, the picker, and Send. */
-function AnswerForm({ view, onSent }: { view: AwaitInputView; onSent: (said: string) => void }) {
+function AnswerForm({ view, onSent }: { view: AwaitInputView; onSent: (said: Said) => void }) {
   const answerId = useMemo(() => newAnswerId(), [])
   const [findings, setFindings] = useState('')
   const [text, setText] = useState('')
@@ -266,11 +271,12 @@ function AnswerForm({ view, onSent }: { view: AwaitInputView; onSent: (said: str
     setRefused(null)
     const r: Result<unknown> = await postAnswer(view.workflow_id, view.step_id, { answer_id: answerId, payload: built.payload }, files)
     setBusy(null)
-    if (r.status === 'ok' || r.status === 'empty') return onSent('Answered. The steps after it start on the answer.')
+    // ONE WORD AND ITS (i) (issue 439): what follows the answer is the tip.
+    if (r.status === 'ok' || r.status === 'empty') return onSent({ line: 'Answered', tip: 'Answered. The steps after it start on the answer.' })
     if (r.status === 'error') {
       setRefused(r.error)
       // Someone else's answer, an expiry or a cancel won: read the step again.
-      if (r.error.httpStatus === 409) onSent(refusalWords(r.error))
+      if (r.error.httpStatus === 409) onSent({ line: refusalWords(r.error) })
     }
   }
 
@@ -391,7 +397,7 @@ export function AwaitInputCard({ workflowId, stepId, onAnswered }: {
 }) {
   const now = useNow()
   const [r, setR] = useState<Result<AwaitInputView>>({ status: 'loading', since: Date.now() })
-  const [said, setSaid] = useState<string | null>(null)
+  const [said, setSaid] = useState<Said | null>(null)
   const [round, setRound] = useState(0)
   const reread = useCallback(() => setRound((n) => n + 1), [])
   useEffect(() => {
@@ -463,7 +469,7 @@ export function AwaitInputCard({ workflowId, stepId, onAnswered }: {
     <section className="wf-verdict ai-card" aria-label={`Step ${stepId} waits for a person`} data-testid="ai-card">
       {said !== null && (
         <p className="sb-note" role="status">
-          {said}
+          <SaidLine said={said} about="the answer" />
         </p>
       )}
       {body}
