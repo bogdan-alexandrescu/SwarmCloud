@@ -1213,7 +1213,14 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
               </h3>
             }>
           {run.state === 'PLANNED' && <PlanLintFindings lint={run.plan_lint ?? null} />}
-          {open.kind === 'edit' && actable ? (
+          {canAct && run.plan !== null && (
+            // SUMMARY ONLY (owner's pick on PR 464): the full plan, its
+            // revisions, thread and editor are on the decision page, linked
+            // in the banner above.
+            <PlanSummary plan={run.plan} revision={run.plan_revision} editedBy={run.plan_edited_by} shape={run.plan_shape ?? null}
+              advisory={(run as AdvisedIssueRun).plan_advisory ?? null} />
+          )}
+          {!canAct && (open.kind === 'edit' && actable ? (
             <PlanEditor
               key={open.digest ?? 'no-plan'}
               plan={run.plan ?? EMPTY_PLAN}
@@ -1230,11 +1237,6 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
                 ? 'No plan yet: the planner agent is still working.'
                 : 'No plan: the planner did not produce one this run could read.'}
             </p>
-          ) : canAct ? (
-            // SUMMARY ONLY (owner's pick on PR 464): the full plan, its
-            // revisions, thread and editor are on the decision page, linked
-            // in the banner above.
-            <PlanSummary plan={run.plan} revision={run.plan_revision} editedBy={run.plan_edited_by} shape={run.plan_shape ?? null} />
           ) : (
             <>
               <p className="sb-note">
@@ -1258,7 +1260,7 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
                 advisory={(run as AdvisedIssueRun).plan_advisory ?? null} revision={run.plan_revision}
                 waiting={run.state === 'PLANNED'} />
             </>
-          )}
+          ))}
           {/* THE CONFIRM OPENS IN FLOW (QA1-FIX-24, runs-submit-29, part of
               archived issue 2596): opened in the sticky bar, the reject form grew the bar
               up over the plan it was turning down. While it is open the foot's
@@ -1511,10 +1513,11 @@ function oneEllipsis(lead: string): string {
 /**
  * A PLANNED RUN'S PLAN, AS A SUMMARY (plans-pipeline §11 U5; owner's pick on
  * PR 464, "Summary only"): the revision, the lead, the mode, the estimate and
- * the step count. No steps, no requirements, no raw plan and no actions: the
- * plan is read, edited and decided on its decision page.
+ * the step count, and the planner's check (what holds it for a person). No
+ * steps, no requirements, no raw plan and no actions: the plan is read,
+ * edited and decided on its decision page.
  */
-function PlanSummary({ plan, revision, editedBy, shape }: Readonly<{ plan: RunPlan; revision: number | null; editedBy: string | null; shape: string | null }>) {
+function PlanSummary({ plan, revision, editedBy, shape, advisory }: Readonly<{ plan: RunPlan; revision: number | null; editedBy: string | null; shape: string | null; advisory: PlanAdvisory | null }>) {
   const { lead } = planLead(plan.summary)
   return (
     <div className="rn-plan-summary" data-testid="rn-plan-summary">
@@ -1531,6 +1534,7 @@ function PlanSummary({ plan, revision, editedBy, shape }: Readonly<{ plan: RunPl
           ? <Chip title="The planner's estimate for the whole plan">estimate {plan.estimate}</Chip>
           : <span className="sb-note">no estimate given</span>}
       </p>
+      <PlanCheck advisory={advisory} revision={revision} waiting />
     </div>
   )
 }

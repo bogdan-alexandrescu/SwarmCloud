@@ -340,7 +340,7 @@ export function PlanEditorMount({ runId, run, plan, digest }: Readonly<{ runId: 
   const where = useRef<HTMLDivElement>(null)
   const offered = runId !== null && plan !== null && digest !== null && saved === null && mayEdit
   useEffect(() => {
-    if (!offered || digest === null) return
+    if (!offered || typeof digest !== 'string') return
     const openHere = () => {
       setRefused(null)
       setOpen(digest)
@@ -353,7 +353,7 @@ export function PlanEditorMount({ runId, run, plan, digest }: Readonly<{ runId: 
     openers.set(digest, openHere)
     openersChanged()
     return () => {
-      if (openers.get(digest) === openHere) openers.delete(digest)
+      if (Object.is(openers.get(digest), openHere)) openers.delete(digest)
       openersChanged()
     }
   }, [offered, digest])

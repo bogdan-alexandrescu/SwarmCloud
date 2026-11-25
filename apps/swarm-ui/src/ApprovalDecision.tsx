@@ -1045,7 +1045,8 @@ function Decide({ d, onDecided, edit = null, digest, onReload }: { d: Decision; 
   const confirmOk = confirm === null || confirm.typed.trim() === confirm.expected
   // A merge names its head on the button: that head is what is approved.
   const head = a.kind === 'merge' ? mergeDigest(d).head : null
-  const approveWord = a.kind !== 'merge' ? 'Approve' : head === null ? 'Approve merge' : `Approve merge at ${short(head)}`
+  let approveWord = 'Approve'
+  if (a.kind === 'merge') approveWord = head === null ? 'Approve merge' : `Approve merge at ${short(head)}`
   const tip = [
     APPROVE_DOES[a.kind] ?? 'Approving lets this go ahead.',
     a.kind === 'merge' && head !== null ? `It merges ${short(head)} only: a new commit asks again.` : a.digest ? 'A plan or a firing changed since you read it is refused, never approved unread.' : '',

@@ -5719,7 +5719,7 @@
       "count": 2
     },
     "@typescript-eslint/no-unnecessary-type-assertion": {
-      "count": 2
+      "count": 1
     },
     "@typescript-eslint/no-unsafe-assignment": {
       "count": 1
@@ -5736,11 +5736,8 @@
     "sonarjs/no-clear-text-protocols": {
       "count": 1
     },
-    "sonarjs/no-unused-vars": {
-      "count": 2
-    },
     "testing-library/no-node-access": {
-      "count": 76
+      "count": 72
     }
   },
   "src/__tests__/interviewPage.test.tsx": {
@@ -8993,10 +8990,10 @@
       "count": 1
     },
     "testing-library/no-container": {
-      "count": 27
+      "count": 24
     },
     "testing-library/no-node-access": {
-      "count": 37
+      "count": 34
     }
   },
   "src/__tests__/qa1fix24.runtimes.test.tsx": {
