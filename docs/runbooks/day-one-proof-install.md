@@ -1227,9 +1227,11 @@ The code and the docs disagreed on these points on 2026-11-24. The owner
 decided the same day to fix them first (O5 (a)). Each is fixed; the code was
 the truth in every case, so the docs, the plugin's setup command and two
 console strings changed, and no behaviour of the installer did.
-`tests/unit/install/test_install_doc_agrees.py` holds K1, K2 and K4 to K9 to
-the code they were checked against; the console tests hold K3. A
-disagreement found later is a snag like any other (C16).
+A unit test that held K1, K2 and K4 to K9 to the code they were checked
+against (the `test_k*` names below) was deleted by issue 71, because a unit
+test reads only its own tree and never docs prose
+([ci.md](../ci.md#a-test-reads-only-its-own-tree)); the console tests hold K3.
+A disagreement found later is a snag like any other (C16).
 
 | # | The docs said | The code does (checked against) | Fixed where | How to see it |
 |---|---|---|---|---|

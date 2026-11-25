@@ -384,10 +384,8 @@ def test_the_detector_finds_the_tree_s_source_text_tests(tree):
     assert "tests/unit/control_plane/test_outcomes_classifier_parity.py" in result.detected
 
 
-def test_the_check_runs_in_the_guard_set_and_lint():
+def test_the_check_runs_in_the_guard_set():
     text = (ROOT / "scripts" / "changed-guards.sh").read_text(encoding="utf-8")
     guards = text.split("GUARD_TESTS=(", 1)[1].split(")", 1)[0].split()
     # MUTATION: drop this file from GUARD_TESTS and this is red.
     assert "tests/unit/scripts/test_check_source_text.py" in guards
-    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-    assert "check_source_text.py" in makefile.split("\nlint:", 1)[1].split("\n\n", 1)[0]

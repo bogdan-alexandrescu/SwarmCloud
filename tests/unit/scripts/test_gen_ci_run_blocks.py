@@ -1,3 +1,4 @@
+# source-text: fixture - the planted workflows the generator publishes are scratch files the test rewrites, not the repository's code
 """scripts/gen_ci_run_blocks.py publishes run text only, deterministically (issue 71).
 
 Every workflow here is written under tmp_path: the test never reads the

@@ -13,7 +13,8 @@ stage the same verdict bytes the worker would have re-published.
 
 What is held here:
 
-    the frozen PARKED row's comment is request 157's, and the request is ACCEPTED
+    the frozen PARKED row's comment is request 157's (that the request is ACCEPTED
+        is docs/contract-change-requests.md's record; a unit test reads no docs, issue 71)
     a shut gate ends the re-review SUCCEEDED: no lease, no dispatch, the
         worker's verdict record, one `succeeded` event, and the merge step
         released and admitted in the same finish event
@@ -29,7 +30,6 @@ What is held here:
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any
 
@@ -135,14 +135,6 @@ def test_the_parked_row_comment_is_request_157s():
     # contradicts the frozen text.
     assert block in text
     assert "only swarm-api writes it" not in text
-
-
-def test_request_157_is_recorded_accepted():
-    text = (REPO / "docs/contract-change-requests.md").read_text()
-    row = next(line for line in text.splitlines() if line.startswith("| 157 |"))
-    assert "ACCEPTED by the owner 2026-11-24" in row
-    section = text.split("\n## 157. ", 1)[1].split("\n## ", 1)[0]
-    assert re.search(r"^\*\*Status:\*\* ACCEPTED by the owner 2026-11-24", section, re.M)
 
 
 # -- the scheduler half ------------------------------------------------------

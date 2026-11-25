@@ -8,7 +8,10 @@ default branch.
 
 The script runs end to end here against a local bare remote (git's
 `url.<file>.insteadOf` stands in for github.com) and a fake `gh`: no
-network, no credential.
+network, no credential. The workflow's own shape (its triggers, permissions
+and token) is not pinned here: a unit test reads only its own tree (issue 71),
+and test_fork_prs_off_self_hosted.py, one of the CI security guards the owner
+kept on 2026-11-25, holds which secrets its job may reach.
 """
 
 from __future__ import annotations
@@ -20,63 +23,11 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 REPO = Path(__file__).resolve().parents[3]
-WORKFLOW = REPO / ".github" / "workflows" / "refresh-weights.yml"
 SCRIPT = REPO / "scripts" / "refresh-weights-pr.sh"
 UNIT = "tests/unit/scripts/unit_test_durations.json"
 UI = "tests/unit/scripts/ui_test_durations.json"
 BRANCH = "maint/test-weights"
-
-
-def _workflow() -> dict[Any, Any]:
-    return yaml.safe_load(WORKFLOW.read_text())
-
-
-def _steps() -> list[dict[str, Any]]:
-    return _workflow()["jobs"]["refresh"]["steps"]
-
-
-# --- the workflow ---------------------------------------------------------------
-
-
-def test_it_runs_only_on_the_schedule_and_by_hand_off_the_merge_path():
-    """MUTATION: add pull_request, push or merge_group, and it joins the
-    checks a pull request, the train or a release waits for."""
-    workflow = _workflow()
-    # PyYAML reads the bare key `on` as True.
-    triggers = workflow.get("on", workflow.get(True))
-    assert set(triggers) == {"schedule", "workflow_dispatch"}, triggers
-    assert triggers["schedule"] and all("cron" in s for s in triggers["schedule"]), triggers
-
-
-def test_it_holds_read_permissions_and_the_app_key_only_where_it_must():
-    workflow = _workflow()
-    assert workflow["permissions"] == {}, workflow["permissions"]
-    (job_id,) = workflow["jobs"]
-    job = workflow["jobs"][job_id]
-    assert job["permissions"] == {"contents": "read", "actions": "read"}, job["permissions"]
-    assert job["environment"] == {"name": "repo-secrets", "deployment": False}, job
-    assert "refs/heads/main" in job["if"] and "fork == false" in job["if"], job["if"]
-    assert job.get("timeout-minutes"), job
-
-
-def test_the_checkout_keeps_no_credential_and_the_token_is_minted_only_for_a_change():
-    steps = _steps()
-    (checkout,) = [s for s in steps if str(s.get("uses", "")).startswith("actions/checkout@")]
-    assert checkout["with"]["persist-credentials"] is False, checkout
-    (mint,) = [s for s in steps if str(s.get("uses", "")).startswith("actions/create-github-app-token@")]
-    assert "steps.refresh.outputs.changed == 'true'" in mint["if"], mint
-    perms = {k: v for k, v in mint["with"].items() if k.startswith("permission-")}
-    assert perms == {"permission-contents": "write", "permission-pull-requests": "write"}, perms
-    runs = [str(s.get("run", "")) for s in steps if s.get("run")]
-    assert runs == ["scripts/refresh-weights-pr.sh refresh", "scripts/refresh-weights-pr.sh open"], runs
-    (refresh,) = [s for s in steps if s.get("id") == "refresh"]
-    assert refresh["env"]["GH_TOKEN"] == "${{ github.token }}", refresh["env"]
-    (open_step,) = [s for s in steps if s.get("run") == "scripts/refresh-weights-pr.sh open"]
-    assert open_step["env"]["APP_TOKEN"] == "${{ steps.app-token.outputs.token }}", open_step["env"]
-    assert "steps.refresh.outputs.changed == 'true'" in open_step["if"], open_step
 
 
 def test_the_script_has_the_house_shape():

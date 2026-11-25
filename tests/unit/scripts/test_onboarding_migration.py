@@ -1,4 +1,4 @@
-# source-text: contract - swarm-api settings.py and codec.py must hold the onboarding flag's default and refusal words the runbook documents
+# source-text: contract - swarm-api settings.py must default REPOSITORY_GRANTS_ENFORCED to off and terraform must render it from the repository_grants_enforced variable
 """Onboarding's migration lane, OB10 (the per-person-slots migration): the switch is deployed.
 
 WHY THIS EXISTS. `REPOSITORY_GRANTS_ENFORCED` (swarm_api.settings
