@@ -24,7 +24,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
-import { helpIn } from './proseruns'
+import { helpIn, shownIn } from './proseruns'
 import { Routed } from './screenroute'
 import { painted } from './marks'
 
@@ -155,11 +155,11 @@ describe('the merge switch dialog, for the gate’s last editor', () => {
     expect(said).toMatch(/platform admin of this workspace \(Admin › People lists them\)/)
     expect(visible(dialog)).not.toMatch(/tenant/i)
     expect(within(body[0] as HTMLElement).getByRole('link', { name: 'Admin › People' }).getAttribute('href')).toBe('/admin/people')
-    // The rules sit behind Details, after the short summary.
-    const details = dialog.querySelector('details')
-    expect(details).not.toBeNull()
-    expect(details!.open).toBe(false)
-    expect(details!.querySelector('summary')?.textContent).toBe('Details')
+    // The rules sit behind the change list's (i)s since issue 439 (once a Details
+    // fold), after the short summary, and are not read on the surface.
+    expect(dialog.querySelector('details')).toBeNull()
+    expect(helpIn(dialog)).toMatch(/The hard stops still hold whatever this says/)
+    expect(shownIn(dialog)).not.toMatch(/The hard stops still hold whatever this says/)
     expect(visible(dialog)).toMatch(/What changes/)
   })
 
@@ -236,7 +236,7 @@ describe('the merge switch dialog, for a viewer who can switch', () => {
     expect(within(dialog).queryByTestId('sc-switch-blocked')).toBeNull()
     expect(within(dialog).queryByRole('heading', { name: 'You can’t make this switch' })).toBeNull()
     expect(visible(dialog)).toMatch(/What changes/)
-    expect(dialog.querySelector('details > summary')?.textContent).toBe('Details')
+    expect(helpIn(dialog)).toMatch(/The hard stops still hold whatever this says/)
     const [close, go, ...rest] = actionRow(dialog)
     expect(rest).toHaveLength(0)
     expect(close!.textContent).toBe('Close')
