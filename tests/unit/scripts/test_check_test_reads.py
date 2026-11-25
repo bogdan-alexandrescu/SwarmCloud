@@ -5,8 +5,13 @@ WHY THIS IS A TEST. A unit test that opens docs prose, CI YAML, a root *.md
 or the Makefile turns red on an edit to a tree it does not test.
 scripts/check_test_reads.py lists every such read, in a .py file under tests/
 or in a JS/TS test (apps/swarm-ui's console tests included). Issue 71's steps deleted
-them; step 8 removed the baselines and the --baseline-dir option, so the
-scanner holds the whole tree with no exception. The whole-tree run below sits in
+them; step 8 removed the baselines and the --baseline-dir option. The one
+exception is a short named list, SECURITY_GUARDS in the scanner: the tests
+that hold CI security decisions, kept by the owner's decision of 2026-11-25.
+A listed file passes; the same read anywhere else is red; a listed path that
+is gone or reads nothing out of its tree is red, so the list cannot rot. The
+planted cases run with an empty list (the autouse fixture below) unless they
+plant one. The whole-tree run below sits in
 changed-guards.sh's GUARD_TESTS: a new read lands in a file no diff names, so
 only a whole-tree guard reaches it. The planted cases run in scratch trees.
 """
@@ -34,6 +39,17 @@ def _load():
 
 
 ctr = _load()
+
+
+REAL_GUARDS = ("test_the_tree_holds_no_read", "test_the_list_is_the_owners_and_each_entry_says_what_it_holds")
+
+
+@pytest.fixture(autouse=True)
+def _no_listed_guards(request, monkeypatch):
+    """A scratch tree holds none of the real listed guards: scan it with an
+    empty list. The whole-tree run keeps the real one."""
+    if request.node.name not in REAL_GUARDS:
+        monkeypatch.setattr(ctr, "SECURITY_GUARDS", {}, raising=False)
 
 HEAD = "from pathlib import Path\n\nROOT = Path(__file__).resolve().parents[3]\n\n"
 WHERE = "tests/unit/scripts/test_planted.py"
@@ -293,3 +309,55 @@ def test_a_js_file_that_is_not_a_test_is_not_scanned(tmp_path, capsys):
         "apps/swarm-ui/guide-sync.mjs": UI_HEAD.replace("'..', '..', '..', '..'", "'..', '..'")
         + "readFileSync(join(REPO, 'docs', 'user-guide', 'index.md'))\n"})
     assert code == 0, out
+
+
+# The owner's named exceptions (2026-11-25): the CI security guards.
+GUARD = "tests/unit/scripts/test_planted_guard.py"
+WORKFLOW_READ = HEAD + 'def test_x():\n    (ROOT / ".github" / "workflows" / "release.yml").read_text()\n'
+
+
+def test_a_listed_guard_passes(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(ctr, "SECURITY_GUARDS", {GUARD: "holds a planted security decision"})
+    code, out = _scan(tmp_path, capsys, {GUARD: WORKFLOW_READ})
+    assert code == 0, out
+
+
+def test_an_unlisted_file_with_the_same_read_fails(tmp_path, capsys, monkeypatch):
+    # MUTATION: skip every file whose name ends in _guard.py, or match the list by stem.
+    monkeypatch.setattr(ctr, "SECURITY_GUARDS", {GUARD: "holds a planted security decision"})
+    code, out = _scan(tmp_path, capsys, {GUARD: WORKFLOW_READ, WHERE: WORKFLOW_READ})
+    assert code == 1, out
+    assert f"{WHERE}:6:" in out
+    assert GUARD not in out, out
+
+
+def test_a_listed_path_that_does_not_exist_fails(tmp_path, capsys, monkeypatch):
+    gone = "tests/unit/scripts/test_gone_guard.py"
+    monkeypatch.setattr(ctr, "SECURITY_GUARDS", {GUARD: "holds a planted decision", gone: "was deleted"})
+    code, out = _scan(tmp_path, capsys, {GUARD: WORKFLOW_READ})
+    assert code == 1, out
+    assert gone in out, out
+
+
+def test_a_listed_file_that_reads_nothing_out_of_tree_fails(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(ctr, "SECURITY_GUARDS", {GUARD: "no longer reads the workflow"})
+    code, out = _scan(tmp_path, capsys, {GUARD: HEAD + 'def test_x():\n    (ROOT / "apps" / "x.py").read_text()\n'})
+    assert code == 1, out
+    assert GUARD in out, out
+
+
+def test_the_list_is_the_owners_and_each_entry_says_what_it_holds():
+    # The owner's list of 2026-11-25, and the helper the release guards import
+    # that is a release gate itself. MUTATION: add a docs pin to the list.
+    assert set(ctr.SECURITY_GUARDS) == {
+        "tests/unit/scripts/test_fork_prs_off_self_hosted.py",
+        "tests/unit/scripts/test_release_prod_gate.py",
+        "tests/unit/scripts/test_release_dev_iam_gate.py",
+        "tests/unit/scripts/test_release_id_token_scope.py",
+        "tests/unit/scripts/test_repo_secrets_environment.py",
+        "tests/unit/scripts/test_accept_tenant_isolation_job.py",
+        "tests/unit/scripts/test_trivy_new_findings.py",
+        "tests/unit/scripts/test_ci_early.py",
+        "tests/unit/scripts/test_release_reuses_ci_images.py",
+    }
+    assert all(reason.strip() for reason in ctr.SECURITY_GUARDS.values())
