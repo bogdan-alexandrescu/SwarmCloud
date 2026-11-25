@@ -1,10 +1,9 @@
 """Every FIELD the Artifacts tab and the CPU rows read is one the API sends, and back (#184).
 
-WHY A SECOND FILE. `test_ui_api_field_contract.py` holds `types.ts` to the
-payloads it was written for -- tasks, attempts, leases, capacity -- and none of
-#184's. The Artifacts tab (archived pull request 187) and its routes (archived pull request 188) were written in two
-lanes at once, against a contract neither could run, and a parity pass that
-read both diffs side by side found the client short of what the server sends:
+WHY THIS FILE. The Artifacts tab (archived pull request 187) and its routes
+(archived pull request 188) were written in two lanes at once, against a
+contract neither could run, and a parity pass that read both diffs side by
+side found the client short of what the server sends:
 
   * `/transcript` and `/answer` send `capture_truncated`; `TaskTranscript` and
     `TaskAnswer` did not declare it, so a transcript cut at the capture cap was
@@ -17,22 +16,22 @@ read both diffs side by side found the client short of what the server sends:
   * `AttemptUsage.cpu_limit_cores` was documented, and read, as the cgroup's
     limit, when `cpu_limit_source` says it can be the class's.
 
-The first three are exactly what this file checks mechanically: BOTH
-DIRECTIONS, as the first file does -- every required client field is served,
-and every served field is declared -- for every shape the tab reads, from the
-real routes over one populated task. The fourth was a meaning, not a name,
-and `details.cpu.test.tsx` held it.
-
-THE FOLLOW-UP (#184, owner decisions of 2026-09-25). `AttemptUsage` is gone:
-contract request #15 was accepted, the CPU figures are typed `Attempt` fields
-served on every attempt row, and `test_ui_api_field_contract.py` holds
-`AttemptRow` both ways. What is new here is `TaskInputCopy`, the masked copy
-of the task's input that Inputs and Details draw (`GET /v1/tasks/{id}/input`),
-and its three texts' inline shape.
-
-The helpers are the first file's, imported rather than copied, so there is one
-reader of `types.ts` interfaces. `extends` is resolved here because
-`ArtifactEntry extends ArtifactRef`, and the first file has no such interface.
+HOW IT IS HELD NOW (part of #72). This file once read `types.ts` as text and
+compared its interfaces with these payloads by regex. The shapes are now
+models in `swarm_api.wire_types` (`ArtifactListing`, `ArtifactEntry`,
+`ArtifactContent`, `TaskLogs`, `LogAttempt`, `LogStream`, `TaskTranscript`,
+`TranscriptStream`, `TranscriptStep`, `TaskAnswer`, `TaskInputCopy`,
+`MaskedText`, `MaskedMetadata`, and `AttemptRow`), documented on their routes
+(`responses=` only), and the console's interfaces EXTEND the types
+`scripts/gen_api_types.py` generates from them, so `tsc` holds the console to
+the models and the drift check (`gen_api_types.py --check`, in CI and
+`tests/unit/scripts/test_api_types_drift.py`) holds the generated file to the
+models. What is left here is the Python half: each payload the real routes
+serve over one populated task is walked against its model at EVERY depth,
+both directions -- every served key declared, every required field served --
+and validates against it, so a null id or a missing count is a type error
+here, not a regex miss. The fourth finding was a meaning, not a name, and
+`details.cpu.test.tsx` holds it.
 
 Offline: FakeFirestore, InMemoryObjectReader, StaticTokenVerifier.
 """
@@ -40,43 +39,22 @@ Offline: FakeFirestore, InMemoryObjectReader, StaticTokenVerifier.
 from __future__ import annotations
 
 import json
-import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
+
+from swarm_api import wire_types
+from swarm_api.inspect import parse_tail_header
 
 from .conftest import PROJECT, auth_header, seed_task, seed_tenant
-from .test_ui_api_field_contract import TYPES_TS, _interface_body, _source
+from .openapi_reads import component_schemas, operation
+from .test_wire_types import nested_models, walk
 
 BUCKET = f"swarm-artifacts-{PROJECT}"
 NOW = datetime(2026, 9, 25, 12, 0, tzinfo=timezone.utc)
 BASE = "tenants/eng/tasks/task_a/attempts/att_1"
-
-
-def _fields(name: str) -> dict[str, bool]:
-    """Field -> optional, for one interface, including what it `extends`."""
-    source = _source(TYPES_TS)
-    header = re.search(rf"export interface {name}(?: extends (\w+))? \{{", source)
-    assert header, f"interface {name} is not in types.ts; this check would be vacuous"
-    parent = header.group(1)
-    body = (
-        _interface_body(source.replace(header.group(0), f"export interface {name} {{", 1), name)
-        if parent
-        else _interface_body(source, name)
-    )
-    found = dict(re.findall(r"^  (\w+)(\??):", body, flags=re.MULTILINE))
-    assert found, f"no fields parsed out of interface {name}; the check would be vacuous"
-    own = {field: mark == "?" for field, mark in found.items()}
-    return {**_fields(parent), **own} if parent else own
-
-
-def _inline_fields(interface: str, field: str) -> set[str]:
-    """The member names of an inline object type, `field: { a: T; b: U } | null`."""
-    body = _interface_body(_source(TYPES_TS), interface)
-    match = re.search(rf"^  {field}\??: \{{([^}}]*)\}}", body, flags=re.MULTILINE)
-    assert match, f"{interface}.{field} is not an inline object type in types.ts"
-    return set(re.findall(r"(\w+)\??:", match.group(1)))
 
 
 # --------------------------------------------------------------------------
@@ -93,6 +71,14 @@ STREAM_JSON = "\n".join(
         ]}},
         {"type": "user", "message": {"content": [
             {"type": "tool_result", "tool_use_id": "toolu_1", "is_error": False, "content": "# The contract"},
+        ]}},
+        # A call whose id is not a string and that has no name, and a result
+        # with no id and a non-boolean `is_error`: each is served null.
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": 7, "input": {"file_path": "README.md"}},
+        ]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "is_error": "no", "content": "# Read me"},
         ]}},
         {"type": "result", "subtype": "success", "is_error": False, "result": "# Findings\n\nDone.",
          "num_turns": 3, "stop_reason": "end_turn", "terminal_reason": "completed"},
@@ -115,6 +101,9 @@ def served(client, db, objects) -> dict[str, dict[str, Any]]:
             for name, body in artifacts.items()
         ],
         "artifact_bytes": sum(len(b) for b in artifacts.values()),
+        # One file the worker wrote and did not upload, so the skipped list
+        # is checked against a row, not against `[]`.
+        "artifacts_skipped": [{"name": "huge.bin", "cause": "cap"}],
         "logs": {"stdout": f"gs://{BUCKET}/{BASE}/logs/stdout.log"},
         "agent_streams": {
             "stdout": "claude-code.stdout.log", "stderr": None, "transcript": None,
@@ -184,62 +173,116 @@ def served(client, db, objects) -> dict[str, dict[str, Any]]:
     }
 
 
-SHAPES = (
-    "ArtifactListing", "ArtifactEntry", "ArtifactContent", "TaskLogs", "LogAttempt",
-    "LogStream", "TaskTranscript", "TranscriptStream", "TranscriptStep", "TaskAnswer",
-    "AttemptRow", "TaskInputCopy", "MaskedText", "MaskedMetadata",
-)
+#: Every shape the tab reads, and the model the console's type is generated from.
+MODELS: dict[str, type[BaseModel]] = {
+    name: getattr(wire_types, name) for name in (
+        "ArtifactListing", "ArtifactEntry", "ArtifactContent", "TaskLogs", "LogAttempt",
+        "LogStream", "TaskTranscript", "TranscriptStream", "TranscriptStep", "TaskAnswer",
+        "AttemptRow", "TaskInputCopy", "MaskedText", "MaskedMetadata",
+    )
+}
 
 
-def test_the_interim_usage_type_is_gone_with_its_route():
-    """`AttemptUsage` described `attempts?include=usage`, which the typed
-    fields replaced. A client type for a payload nobody sends is a screen
-    that can only ever draw `not served`."""
-    assert "export interface AttemptUsage" not in _source(TYPES_TS)
+def test_every_shape_the_tab_reads_has_a_model_and_a_payload(served):
+    assert set(served) == set(MODELS), sorted(set(served) ^ set(MODELS))
+    empty = sorted(name for name, payload in served.items() if not payload)
+    assert not empty, f"the populated task served no {empty}; their checks would be vacuous"
 
 
-@pytest.mark.parametrize("shape", SHAPES)
-def test_every_required_client_field_is_served(served, shape):
-    payload = served[shape]
-    missing = sorted(f for f, optional in _fields(shape).items() if not optional and f not in payload)
-    assert not missing, (
-        f"types.ts {shape} requires {missing}, which the API does not send; the "
-        "screen would draw them as absent on every read"
+@pytest.mark.parametrize("shape", sorted(MODELS))
+def test_each_payload_is_exactly_its_model_at_every_depth(served, shape):
+    """Both directions: a key the route serves and the model lacks (the
+    console's generated type could not see it), and a field the model
+    requires and the route does not send (the screen would draw it absent on
+    every read), at every depth the model describes."""
+    problems = walk(MODELS[shape], served[shape], shape, set())
+    assert not problems, (
+        f"{problems}: change `wire_types.{shape}` (or the route) and run "
+        "`uv run python scripts/gen_api_types.py`"
     )
 
 
-@pytest.mark.parametrize("shape", SHAPES)
-def test_every_field_the_api_serves_is_declared_by_the_client(served, shape):
-    undeclared = sorted(set(served[shape]) - set(_fields(shape)))
-    assert not undeclared, (
-        f"the API sends {undeclared} in {shape} and types.ts does not declare them; "
-        "a field no client declares is a finding no screen can show"
-    )
+@pytest.mark.parametrize("shape", sorted(MODELS))
+def test_each_payload_validates_against_its_model(served, shape):
+    """The scalar types too: a count served as a string, or a null where the
+    model says a value, is a generated type that lies."""
+    MODELS[shape].model_validate(served[shape])
 
 
-@pytest.mark.parametrize(("kind", "field"), [("tool_call", "tool"), ("tool_result", "tool_result")])
-def test_a_steps_inline_objects_match_what_the_server_builds(served, kind, field):
+def test_every_nested_shape_is_reached_with_a_value(served):
+    """No part of a shape is checked only against null or `[]`: the inline
+    objects (`tool`, `tool_result`, `artifact`, `object`, `redaction`)
+    included. A `tail_window` is served only for a live read of a running
+    task, so it is walked from the one function that builds it for both the
+    logs and the transcript (`inspect.parse_tail_header`)."""
+    seen: set[str] = set()
+    tail_window, _ = parse_tail_header(b"#swarm-tail offset=0 size=4 at=2026-09-25T12:00:00Z\nabcd")
+    assert tail_window is not None
+    assert not walk(wire_types.TailWindow, tail_window, "tail_window", seen)
+    wire_types.TailWindow.model_validate(tail_window)
+    for shape in ("ArtifactListing", "ArtifactContent", "TaskLogs", "TaskTranscript",
+                  "TaskAnswer", "TaskInputCopy"):
+        assert not walk(MODELS[shape], served[shape], shape, seen)
+    reachable = set().union(*(nested_models(MODELS[s]) for s in (
+        "ArtifactListing", "ArtifactContent", "TaskLogs", "TaskTranscript", "TaskAnswer",
+        "TaskInputCopy")))
+    unreached = sorted(reachable - seen)
+    assert not unreached, f"the populated task served no {unreached} with a value"
+
+
+@pytest.mark.parametrize(("kind", "field", "model"), [
+    ("tool_call", "tool", wire_types.TranscriptTool),
+    ("tool_result", "tool_result", wire_types.TranscriptToolResult),
+])
+def test_a_steps_inline_objects_are_exactly_what_the_server_builds(served, kind, field, model):
     step = next(s for s in served["TaskTranscript"]["steps"] if s["kind"] == kind)
     payload = step[field]
     assert payload is not None, f"the populated transcript's {kind} step carries no {field}"
-    declared = _inline_fields("TranscriptStep", field)
-    assert declared == set(payload), (
-        f"types.ts TranscriptStep.{field} declares {sorted(declared)}; the server builds {sorted(payload)}"
+    assert set(payload) == set(model.model_fields), (
+        f"wire_types.{model.__name__} declares {sorted(model.model_fields)}; "
+        f"the server builds {sorted(payload)}"
     )
 
 
-def test_a_step_id_the_server_may_send_as_null_is_typed_nullable():
+def test_a_step_id_the_server_sends_as_null_is_typed_nullable(served):
     """`transcript._Scrubber.text` returns None for anything that is not a string.
 
     So `tool.id`, `tool.name`, `tool_result.tool_use_id` are `string | null`
     and `is_error` is `boolean | null` on the wire. Typed as always present,
-    the client joined two null ids as a call and its result.
+    the client joined two null ids as a call and its result. The fixture's
+    second call has a numeric id and no name, and its result no id and a
+    string `is_error`: each is served null, and each validates.
     """
-    body = _interface_body(_source(TYPES_TS), "TranscriptStep")
-    tool = re.search(r"^  tool: \{([^}]*)\}", body, flags=re.MULTILINE)
-    result = re.search(r"^  tool_result: \{([^}]*)\}", body, flags=re.MULTILINE)
-    assert tool and result
-    for name in ("id", "name"):
-        assert re.search(rf"\b{name}: string \| null", tool.group(1)), f"tool.{name} is not nullable"
-    assert re.search(r"\btool_use_id: string \| null", result.group(1)), "tool_use_id is not nullable"
-    assert re.search(r"\bis_error: boolean \| null", result.group(1)), "is_error is not nullable"
+    steps = served["TaskTranscript"]["steps"]
+    call = next(s for s in steps if s["kind"] == "tool_call" and s["tool"]["id"] is None)
+    result = next(s for s in steps if s["kind"] == "tool_result"
+                  and s["tool_result"]["tool_use_id"] is None)
+    assert call["tool"]["name"] is None
+    assert result["tool_result"]["is_error"] is None
+    wire_types.TranscriptStep.model_validate(call)
+    wire_types.TranscriptStep.model_validate(result)
+
+
+def test_the_tab_routes_are_documented_with_their_models(client):
+    """The models reach the console only through the OpenAPI document, so each
+    route documents its own: a route that served the shape undocumented would
+    leave the generated type unused."""
+    for path, model in (
+        ("/v1/tasks/{task_id}/artifacts", "ArtifactListing"),
+        ("/v1/tasks/{task_id}/artifacts/content", "ArtifactContent"),
+        ("/v1/tasks/{task_id}/logs", "TaskLogs"),
+        ("/v1/tasks/{task_id}/transcript", "TaskTranscript"),
+        ("/v1/tasks/{task_id}/answer", "TaskAnswer"),
+        ("/v1/tasks/{task_id}/input", "TaskInputCopy"),
+    ):
+        schema = operation(client, path)["responses"]["200"]["content"][
+            "application/json"]["schema"]
+        assert schema.get("$ref") == f"#/components/schemas/{model}", (path, schema)
+
+
+def test_the_interim_usage_shape_is_gone_with_its_route(client):
+    """`AttemptUsage` described `attempts?include=usage`, which the typed
+    fields replaced. Neither the models nor the OpenAPI document (so neither
+    the generated console type) carries it."""
+    assert not hasattr(wire_types, "AttemptUsage")
+    assert "AttemptUsage" not in component_schemas(client)

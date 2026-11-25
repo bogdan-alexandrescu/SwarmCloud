@@ -63,6 +63,7 @@ from ..errors import KeyLinkInvalid, ValidationFailed
 from ..schemas import FEATURE_UNKNOWN, CredentialCreate, FeatureState, StrictModel, TenantFeatures
 from ..store import TENANTS
 from ..validation import AWAIT_INPUT_PROFILE, known_providers
+from ..wire_types import Me
 from .people import apply_ready_loans
 from .workspace_name import clean_name
 
@@ -137,7 +138,7 @@ def consume_runner_key_link(db: Any, token: str, *, email: str, tenant_id: str, 
     return _consume(transaction)
 
 
-@router.get("/me")
+@router.get("/me", responses={200: {"model": Me}})
 def get_me(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
