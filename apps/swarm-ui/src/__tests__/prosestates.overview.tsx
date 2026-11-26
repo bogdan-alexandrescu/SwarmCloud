@@ -399,8 +399,7 @@ export const OVERVIEW: readonly ProseState[] = [
     data: ['A note with no zone is dated in UTC, as today'],
     mount: mountApproval,
     act: async () => {
-      for (let i = 0; i < 40 && document.querySelector('details.pd-more') === null; i++) await settle()
-      click('details.pd-more > summary')
+      await clickDrawn('details.pd-more > summary')
     },
   },
   {
@@ -411,8 +410,7 @@ export const OVERVIEW: readonly ProseState[] = [
     data: ['Name the bucket.'],
     mount: mountResolvedComment,
     act: async () => {
-      for (let i = 0; i < 40 && document.querySelector('details.pt-resolved') === null; i++) await settle()
-      click('details.pt-resolved > summary')
+      await clickDrawn('details.pt-resolved > summary')
     },
   },
   {
@@ -422,8 +420,7 @@ export const OVERVIEW: readonly ProseState[] = [
     shows: 'details[data-testid="ab-design"][open]',
     mount: mountDesignDoc,
     act: async () => {
-      for (let i = 0; i < 40 && document.querySelector('details[data-testid="ab-design"]') === null; i++) await settle()
-      click('details[data-testid="ab-design"] > summary')
+      await clickDrawn('details[data-testid="ab-design"] > summary')
     },
   },
 ]

@@ -110,9 +110,9 @@ export async function mountTheaterProtocol(): Promise<ReactElement> {
     kind: 'cdp',
     method,
   }))
-  globalThis.fetch = vi.fn(
-    async () => new Response(JSON.stringify({ attempt_id: 'att_fold', actions }), { status: 200, headers: { 'content-type': 'application/json' } }),
-  ) as unknown as typeof fetch
+  const served: typeof fetch = () =>
+    Promise.resolve(new Response(JSON.stringify({ attempt_id: 'att_fold', actions }), { status: 200, headers: { 'content-type': 'application/json' } }))
+  globalThis.fetch = vi.fn(served)
   vi.resetModules()
   const { TheaterTimeline } = await import('../TheaterTimeline')
   return <TheaterTimeline taskId="task_live" live={false} />

@@ -11,7 +11,6 @@ import { useState, type ReactElement } from 'react'
 import { fireEvent } from '@testing-library/react'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
-import * as Overlay from '../components/Overlay'
 import { InfoTip } from '../InfoTip'
 import { OVERLAYS as STATE_OVERLAYS, visitMount, type ProseState, type Theme } from './prosestates'
 import { allOpeners, scanOpeners, SOURCES } from './prosestates.openers'

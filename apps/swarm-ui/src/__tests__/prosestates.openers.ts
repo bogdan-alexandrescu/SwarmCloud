@@ -68,6 +68,12 @@ export interface Opener {
  * it renders but Tooltip, which opens on hover and focus and holds a tip, not
  * a state.
  */
+/** An opener match's kind: `role=dialog`, `details`, or the overlay component's name. */
+function openerKind(match: string): string {
+  if (match.startsWith('role=')) return match.replace(/"/g, '')
+  return match.startsWith('<details') ? 'details' : match.slice(1)
+}
+
 export function scanOpeners(file: string, src: string, overlays: readonly string[]): Opener[] {
   const code = blankComments(src)
   const tags = overlays.filter((name) => name !== 'Tooltip').map((name) => `<${name}\\b`)
@@ -76,7 +82,7 @@ export function scanOpeners(file: string, src: string, overlays: readonly string
   const out: Opener[] = []
   for (const m of code.matchAll(re)) {
     const at = m.index ?? 0
-    const kind = m[0].startsWith('role=') ? m[0].replace(/"/g, '') : m[0].startsWith('<details') ? 'details' : m[0].slice(1)
+    const kind = openerKind(m[0])
     // A role attribute belongs to the element whose `<` comes last before it.
     let start = at
     if (m[0].startsWith('role=')) for (const t of code.slice(0, at).matchAll(/<[A-Za-z]/g)) start = t.index ?? start
@@ -146,26 +152,32 @@ function fromSrc(fileName: string): string | null {
   return at === -1 ? null : fileName.slice(at + '/src/'.length)
 }
 
+/** Whether opener `o`, drawn by `fiber`, is open: its own element, or for an overlay component what it renders. */
+function opened(o: Opener, fiber: Fiber): boolean {
+  if (o.kind === 'details' || o.kind.startsWith('role=')) return fiber.stateNode instanceof Element && openHost(fiber.stateNode)
+  return hosts(fiber).some(openHost)
+}
+
 /** The ids of the openers open in the document now, read from React's mounted tree. */
 export function openNow(overlays: readonly string[]): Set<string> {
   const byLine = new Map<string, Opener[]>()
+  const scanned = new Set<string>()
   const ids = new Set<string>()
+  /** The openers drawn at `file`'s line `line`, scanning the file once. */
+  const at = (file: string, line: number): Opener[] => {
+    if (!scanned.has(file)) {
+      scanned.add(file)
+      for (const o of scanOpeners(file, SOURCES[file] ?? '', overlays)) byLine.set(`${file}:${o.line}`, [...(byLine.get(`${file}:${o.line}`) ?? []), o])
+    }
+    return byLine.get(`${file}:${line}`) ?? []
+  }
   const visit = (f: Fiber | null): void => {
-    for (let at = f; at !== null; at = at.sibling) {
-      const where = at._debugSource
+    for (let fiber = f; fiber !== null; fiber = fiber.sibling) {
+      const where = fiber._debugSource
       const file = where == null ? null : fromSrc(where.fileName)
-      if (where != null && file !== null && SOURCES[file] !== undefined) {
-        if (!byLine.has(file)) for (const o of scanOpeners(file, SOURCES[file] ?? '', overlays)) byLine.set(`${file}:${o.line}`, [...(byLine.get(`${file}:${o.line}`) ?? []), o])
-        for (const o of byLine.get(`${file}:${where.lineNumber}`) ?? []) {
-          const open =
-            o.kind === 'details' || o.kind.startsWith('role=')
-              ? at.stateNode instanceof Element && openHost(at.stateNode)
-              : hosts(at).some(openHost)
-          if (open) ids.add(o.id)
-        }
-        if (!byLine.has(file)) byLine.set(file, [])
-      }
-      visit(at.child)
+      if (where != null && file !== null && SOURCES[file] !== undefined)
+        for (const o of at(file, where.lineNumber)) if (opened(o, fiber)) ids.add(o.id)
+      visit(fiber.child)
     }
   }
   for (const root of roots()) visit(root)

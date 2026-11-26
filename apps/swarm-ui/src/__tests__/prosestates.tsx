@@ -172,7 +172,7 @@ export const OVERLAYS: readonly string[] = Object.entries(Overlay)
  * fails an opener no state lists, so every opener is opened by some click.
  */
 export function opensChecked(state: ProseState, theme: Theme, before: ReadonlySet<string>): string[] {
-  const opened = [...openNow(OVERLAYS)].filter((id) => !before.has(id)).sort()
+  const opened = [...openNow(OVERLAYS)].filter((id) => !before.has(id)).sort((a, b) => a.localeCompare(b))
   console.log(`PROSE STATE OPENS ${state.key} (${theme}): ${JSON.stringify(opened)}`)
   const missed = (OPENS[state.key] ?? []).filter((id) => !opened.includes(id))
   if (missed.length > 0)

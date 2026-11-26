@@ -23,6 +23,7 @@ import {
   mountQuestionsAnswered,
   mountRunFiles,
   mountStepCard,
+  mountStepInspector,
   mountWorkflowFacts,
 } from './prosestates.workflows.mounts'
 import { mountAnsweredQuestions, mountWideStage } from './prosestates.workflows.board'
@@ -42,7 +43,6 @@ import {
 } from './prosestates.workflows.runs'
 import { RUN_POLL_MS } from '../Runs'
 import { screenLoaded } from './screenLoaded'
-import { mountStepInspector } from './prosestates.workflows.mounts'
 
 /** The fixture workflow of five checks and a synthesis, one failed. */
 const CHECKS = '/workflows/wf_5e5ad3b6f7da4299a839'

@@ -30,6 +30,7 @@ import {
   releaseStop,
 } from './prosestates.agent.mounts'
 import { click } from './prosestates.shell'
+import { clickDrawn } from './prosestates.overview'
 import { mountTheaterProtocol, mountTraceEdit } from './prosestates.opened.mounts'
 
 /** The ordinary running agent the QA capture opens (qa/routes.json). */
@@ -504,8 +505,7 @@ export const AGENT: readonly ProseState[] = [
     shows: 'details.trc-more[open]',
     mount: mountTraceEdit,
     act: async () => {
-      for (let i = 0; i < 20 && document.querySelector('button.trc-row.is-edit') === null; i++) await settle()
-      click('button.trc-row.is-edit')
+      await clickDrawn('button.trc-row.is-edit')
       await settle()
       click('details.trc-more > summary')
     },

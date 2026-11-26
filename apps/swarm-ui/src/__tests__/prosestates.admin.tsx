@@ -595,9 +595,9 @@ export const ADMIN: readonly ProseState[] = [
       then: async () => {
         await drawn('.rs-field')
         // The standard class's memory, 8 GiB, cut to 4: under its 7-day max peak of 5.6 GiB.
-        const memory = [...document.querySelectorAll<HTMLElement>('.rs-field')].find((f) => /^standard memory/i.test(f.querySelector('label')?.textContent ?? ''))
+        const [memory] = screen.getAllByLabelText(/^standard memory/i)
         if (memory === undefined) throw new Error('no memory field')
-        fireEvent.change(memory.querySelector('input') as HTMLInputElement, { target: { value: '4' } })
+        fireEvent.change(memory, { target: { value: '4' } })
         await settle()
         await typeInto('.rs-save textarea', 'less memory for the standard lanes')
         await press('.rs-save', 'Save')
