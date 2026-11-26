@@ -60,7 +60,9 @@ REPO = "https://github.com/example-org/example.git"
 
 ROOT = Path(__file__).resolve().parents[3]
 UI = ROOT / "apps/swarm-ui/src"
-WORKER_LIFECYCLE = ROOT / "apps/agent-worker/agent_worker/lifecycle.py"
+#: The worker's git publish, where `_publish_git` builds these reasons: it moved
+#: out of `lifecycle.py` into `gitpublish.py` (issue 68).
+WORKER_PUBLISH = ROOT / "apps/agent-worker/agent_worker/gitpublish.py"
 
 #: Skipped rather than failed when the UI is not checked out, matching the
 #: existing api.ts seam test: this suite has to pass in a tree that holds only
@@ -359,19 +361,19 @@ CONTRIBUTOR_REASON = (
 
 
 @pytest.mark.skipif(
-    not WORKER_LIFECYCLE.exists(), reason="agent-worker is not present"
+    not WORKER_PUBLISH.exists(), reason="agent-worker is not present"
 )
 @pytest.mark.parametrize(
     "reason", [COLLECT_REASON, CONTRIBUTOR_REASON], ids=["collect", "contributor"]
 )
 def test_the_quoted_worker_reasons_are_still_the_worker_s(reason: str):
-    """The copies above must still match `_publish`, or the matchers below lie.
+    """The copies above must still match `_publish_git`, or the matchers below lie.
 
     Compared with whitespace collapsed: the worker's are implicitly-concatenated
     literals split across source lines, so the line breaks are an artefact of
     formatting rather than part of the string.
     """
-    source = " ".join(WORKER_LIFECYCLE.read_text().split())
+    source = " ".join(WORKER_PUBLISH.read_text().split())
     needle = " ".join(reason.split())
     # The worker's literal is split across lines with quotes between the parts,
     # so the joined source carries those quotes; comparing the distinctive
