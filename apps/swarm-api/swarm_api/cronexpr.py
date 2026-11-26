@@ -207,7 +207,7 @@ def _can_fire(expr: CronExpr) -> bool:
 def _known_zones() -> frozenset[str]:
     try:
         return frozenset(available_timezones())
-    except Exception:  # pragma: no cover - depends on the image
+    except Exception:  # pragma: no cover - depends on the image  # noqa: BLE001
         return frozenset()
 
 

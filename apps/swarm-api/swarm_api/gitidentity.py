@@ -139,7 +139,7 @@ def connected_github(db: Any, tenant_id: str, email: str) -> dict[str, str] | No
     try:
         snap = db.collection(CONNECTIONS).document(connection_id_for(tenant_id, key)).get()
         doc = snap.to_dict() if snap.exists else None
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         log.warning("github connection unread for the commit identity tenant=%s (%s); "
                     "the bot commits", tenant_id, type(exc).__name__)
         return None

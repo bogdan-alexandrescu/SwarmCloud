@@ -1501,7 +1501,7 @@ class Worker(
             )
             probe.start()
             self._egress = probe
-        except Exception as exc:  # a measurement is never worth an attempt
+        except Exception as exc:  # a measurement is never worth an attempt  # noqa: BLE001
             self.log.warning("egress probe did not start", error=type(exc).__name__)
 
     def _add_egress_target(self, url: Any) -> None:
@@ -1511,7 +1511,7 @@ class Worker(
             return
         try:
             probe.add_target(egress_mod.target_of(url))
-        except Exception as exc:  # a measurement is never worth an attempt
+        except Exception as exc:  # a measurement is never worth an attempt  # noqa: BLE001
             self.log.warning("egress probe: clone host not added", error=type(exc).__name__)
 
     def _stop_egress_probe(self) -> None:
@@ -1850,7 +1850,7 @@ class Worker(
                         )
                     except (FencedError, TenantMismatchError):
                         raise
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001
                         self.log.warning(
                             "could not record the credential reload; reloading anyway",
                             error=f"{type(exc).__name__}: {_one_line(exc)}",
@@ -2082,7 +2082,7 @@ class Worker(
                 self.db, tenant_id=cfg.tenant_id, where=where, base_sha=base_sha,
                 call_options=self.control.call_options("tenant"),
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             skipped(f"the base version could not be read ({type(exc).__name__})")
             return None
         if isinstance(base, str):
@@ -2096,7 +2096,7 @@ class Worker(
         destination = ws.work / indexrun_mod.BASE_INDEX_FILE
         try:
             kept = self.store.download_bytes(where.index_key(base_sha))
-        except Exception:
+        except Exception:  # noqa: BLE001
             kept = None
         if (kept is not None and len(kept) <= indexrun_mod.MAX_BASE_INDEX_BYTES
                 and indexrun_mod.content_digest(kept) == base.digest):
@@ -2121,7 +2121,7 @@ class Worker(
         except InputUnavailable as exc:
             skipped(self._scrub(str(exc)))
             return None
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             skipped(f"the base index could not be fetched ({type(exc).__name__})")
             return None
         if indexrun_mod.content_digest(data) != base.digest:
@@ -2360,7 +2360,7 @@ class Worker(
         try:
             data = self.store.download_bytes(f"{cfg.artifact_prefix}/{indexrun_mod.INDEX_FILE}")
             self.store.upload_bytes(key, data, content_type="application/json")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning("the index was not copied under repos/", error=type(exc).__name__)
             return
         self.log.info("index copied under repos/", key=key, bytes=len(data))
@@ -2410,7 +2410,7 @@ class Worker(
                 next_heartbeat = now + cfg.heartbeat_interval_seconds
                 try:
                     self._heartbeat()
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     outage = self._control_plane_call_failed("heartbeat", exc)
                     if outage is not None:
                         return self._exit_control_plane_outage(
@@ -2420,7 +2420,7 @@ class Worker(
                 next_poll = now + cfg.control_poll_seconds
                 try:
                     signals = self.control.poll(cfg.provider)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     outage = self._control_plane_call_failed("control poll", exc)
                     if outage is not None:
                         return self._exit_control_plane_outage(
@@ -2660,7 +2660,7 @@ class Worker(
                         "for a requeue"
                     ),
                 )
-            except Exception as write_exc:
+            except Exception as write_exc:  # noqa: BLE001
                 self.log.warning(
                     "could not record the outage on this attempt's own document",
                     error=f"{type(write_exc).__name__}: {write_exc}",
@@ -3570,6 +3570,8 @@ class Worker(
         # A provider that is already exhausted must not be hit again.
         self.phases.enter("quota_preflight")
         preflight = self.control.poll(cfg.provider)
+        if self._paused_before_runner(preflight):
+            return functools.partial(self._park_for_pause, None)
         quota_signal = signal_from_control(preflight, cfg.provider)
         if quota_signal is not None:
             decision = decide(
@@ -3607,7 +3609,7 @@ class Worker(
             self.control.emit(EventType.RUNNING, detail=detail)
         except FencedError:
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning("the Python warm-up's event was not written",
                              error=type(exc).__name__, warmup=detail)
 
@@ -3730,7 +3732,7 @@ class Worker(
                 next_heartbeat = now + cfg.heartbeat_interval_seconds
                 try:
                     self._heartbeat()
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     outage = self._control_plane_call_failed("heartbeat", exc)
                     if outage is not None:
                         return self._exit_control_plane_outage(child, outage)
@@ -3779,7 +3781,7 @@ class Worker(
                 next_poll = now + cfg.control_poll_seconds
                 try:
                     signals = self.control.poll(cfg.provider)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     outage = self._control_plane_call_failed("control poll", exc)
                     if outage is not None:
                         return self._exit_control_plane_outage(child, outage)
@@ -3962,7 +3964,7 @@ class Worker(
                     "for a requeue"
                 ),
             )
-        except Exception as write_exc:
+        except Exception as write_exc:  # noqa: BLE001
             self.log.warning(
                 "could not record the outage on this attempt's own document",
                 error=f"{type(write_exc).__name__}: {write_exc}",
@@ -4002,6 +4004,8 @@ class Worker(
             self._child_ended()
             return self._finish_cancelled()
 
+        if signals.pause_requested:  # after the fence and the cancel (`_park_for_pause`)
+            return self._park_for_pause(child)
         quota = signal_from_control(signals, cfg.provider)
         if quota is not None:
             decision = decide(
@@ -4108,7 +4112,7 @@ class Worker(
         """
         try:
             return bool((self.control.fetch_task() or {}).get("cancel_requested"))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning(
                 "could not read whether a cancel was requested",
                 error=f"{type(exc).__name__}: {exc}",
@@ -4289,11 +4293,11 @@ class Worker(
             if child.poll() is None:
                 child.terminate(self.cfg.termination_grace_seconds, reason=reason)
             child.finish()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning("could not stop the runner cleanly", error=f"{type(exc).__name__}: {exc}")
         try:
             self._child_ended()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning(
                 "could not record the runner's usage", error=f"{type(exc).__name__}: {exc}"
             )
@@ -4310,7 +4314,7 @@ class Worker(
             self.control.record_attempt_end(
                 exit_code=ExitCode.GENERATION_FENCED, error=self._scrub(reason[:4000])
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning(
                 "could not record the fenced exit on this attempt's document",
                 error=f"{type(exc).__name__}: {exc}",
@@ -4809,7 +4813,7 @@ class Worker(
         cfg = self.cfg
         try:
             parks = self.control.parked_uploads()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning(
                 "could not read the earlier parked attempts' uploads; only this "
                 "attempt's own are listed",
@@ -4847,7 +4851,7 @@ class Worker(
         for name, entry in carried.items():
             try:
                 exists = self.store.exists(f"{prefix}{entry['carried_from']}/artifacts/{name}")
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self.log.warning(
                     "could not confirm a parked attempt's upload still exists; not carried",
                     artifact=standalone_mod.shown(self._scrub(name)),
@@ -4977,7 +4981,7 @@ class Worker(
                     "phase": "startup",
                 },
             )
-        except Exception as emit_exc:  # the exit code is the real signal
+        except Exception as emit_exc:  # the exit code is the real signal  # noqa: BLE001
             self.log.warning("could not record the fencing event", error=str(emit_exc))
         return ExitCode.GENERATION_FENCED
 
@@ -5248,7 +5252,7 @@ class Worker(
                 self.control.record_attempt_end(
                     exit_code=exit_code, error=self._scrub(error[:4000])
                 )
-        except Exception as write_exc:
+        except Exception as write_exc:  # noqa: BLE001
             self.log.warning(
                 "could not record the end of this attempt on its own document",
                 error=f"{type(write_exc).__name__}: {write_exc}",
@@ -7548,7 +7552,7 @@ class Worker(
                 tenant_id=self.cfg.tenant_id,
                 call_options=self.control.call_options(),
             )
-        except Exception as exc:  # a digest is never worth the step
+        except Exception as exc:  # a digest is never worth the step  # noqa: BLE001
             self.log.warning(
                 "verdict gate: the review's task could not be read, so its findings' "
                 "locations carry no patch digest",
@@ -7925,7 +7929,7 @@ class Worker(
             try:
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 size = self.store.download_file(key, destination)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 skipped += 1
                 self.log.warning(
                     "could not carry the previous attempt's upload",
@@ -8130,7 +8134,7 @@ class Worker(
             return False
         try:
             data = self.store.download_bytes(reference.key)
-        except Exception as exc:  # the store's own errors vary by backend
+        except Exception as exc:  # the store's own errors vary by backend  # noqa: BLE001
             self.log.warning("the implementer's file could not be read; not used",
                              file=name, error=type(exc).__name__)
             return False
@@ -8332,7 +8336,7 @@ class Worker(
             present = frozenset(
                 standalone_mod.scan(ws.work, reserved=self._workdir_reserved()).files
             )
-        except Exception as exc:  # pragma: no cover - defensive; never fails the attempt
+        except Exception as exc:  # pragma: no cover - defensive; never fails the attempt  # noqa: BLE001
             # No baseline means nothing is uploaded from the working folder:
             # the behaviour before #184, said once, rather than a failed run.
             self.log.warning(
@@ -8490,7 +8494,7 @@ class Worker(
                     continue
                 try:
                     self.store.upload_file(key, staging)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     self.log.warning(
                         "working-folder upload failed", artifact=self._scrub(name), error=str(exc)
                     )
@@ -10421,7 +10425,7 @@ class Worker(
             return
         try:
             counts = qualitygates_mod.finish(self._gates_env)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning("could not read the quality gates' counts", error=type(exc).__name__)
             return
         summary[qualitygates_mod.SUMMARY_KEY] = {"jev": True, **(counts or {}),
@@ -10650,7 +10654,7 @@ class Worker(
             return
         try:
             elapsed = child.elapsed_seconds
-        except Exception:
+        except Exception:  # noqa: BLE001
             return
         if elapsed is None:
             return
@@ -10665,7 +10669,7 @@ class Worker(
             from .runners.claude_code import browser_use as browser_use_counts
 
             counts = browser_use_counts(ws.artifacts / files.stdout, ws.artifacts)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning("could not read whether the agent has used its browser",
                              error=f"{type(exc).__name__}: {exc}")
             return
@@ -10699,7 +10703,7 @@ class Worker(
             return
         try:
             self.control.emit(EventType.RUNNING, {"cause": cause, **detail})
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning(
                 "could not record a startup mark on the task's events",
                 cause=cause,
@@ -10852,7 +10856,7 @@ class Worker(
         if self._sampler is not None:
             try:
                 series_clock = self._sampler.series_elapsed()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self.log.warning("could not read the series clock", error=f"{type(exc).__name__}: {exc}")
         return {
             # The heartbeat's clock: 0 before the agent child starts, as it
@@ -10879,7 +10883,7 @@ class Worker(
             return []
         try:
             return list(self._sampler.drain_points())
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning("could not read utilisation points", error=f"{type(exc).__name__}: {exc}")
             return []
 
@@ -10891,7 +10895,7 @@ class Worker(
             return enforced
         try:
             limit = int(self.cfg.memory_limit_bytes_of(self._memory_class()))
-        except Exception:
+        except Exception:  # noqa: BLE001
             return None
         return limit if limit > 0 else None
 
@@ -10931,7 +10935,7 @@ class Worker(
             return
         try:
             self.control.record_cpu_usage(fields)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning("could not record CPU usage", error=f"{type(exc).__name__}: {exc}")
             return
         self._cpu_recorded = dict(fields)
@@ -10973,7 +10977,7 @@ class Worker(
         """
         try:
             cores = cgroup_cpu_limit_cores()
-        except Exception:  # pragma: no cover - a telemetry read never fails an attempt
+        except Exception:  # pragma: no cover - a telemetry read never fails an attempt  # noqa: BLE001
             cores = None
         if cores is not None:
             return cores, "cgroup"
@@ -11058,7 +11062,7 @@ class Worker(
             # Not a failed push: the attempt is over (invariant 5), and every
             # caller of `_checkpoint` already ends it on these.
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning(
                 "carrier: the step's branch was not pushed at this checkpoint; the "
                 "attempt goes on",
@@ -11701,7 +11705,7 @@ class Worker(
                 timeout_seconds=self.cfg.git_harvest_timeout_seconds,
                 logger=self.log,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning(
                 "could not read the pushed branch's commits",
                 branch=branch,
@@ -11895,7 +11899,7 @@ class Worker(
                 self.store.upload_file(key, staging)
             else:
                 self.store.upload_file(key, staging, content_type=content_type)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning("artifact upload failed", artifact=shown, error=str(exc))
             return _Upload(skipped=standalone_mod.UPLOAD_FAILED)
         finally:
@@ -12174,7 +12178,7 @@ class Worker(
                 (header + text).encode("utf-8"),
                 content_type="text/plain; charset=utf-8",
             )
-        except Exception as exc:  # pragma: no cover - never fail a run for this
+        except Exception as exc:  # pragma: no cover - never fail a run for this  # noqa: BLE001
             self.log.debug("could not publish a live log tail", stream=label, error=str(exc))
 
     def _dispatch_block(self) -> dict[str, Any]:
@@ -15105,7 +15109,7 @@ class Worker(
         except gittools_mod.GitToolRefused as refusal:
             self.log.warning("the broker refused the workflow publish", code=refusal.code)
             return None, {"code": refusal.code, "message": str(self._scrub(refusal.message))}
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning("the broker's workflow publish failed", error=type(exc).__name__)
             return None, {"code": "api_unavailable", "message": (
                 f"the workflow publish did not reach swarm-api ({type(exc).__name__})")}
@@ -16277,7 +16281,7 @@ class Worker(
                 peak_disk_bytes=attempt.peak_disk_bytes,
                 oom_near_miss=attempt.oom_near_miss,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning("could not record resource usage", error=f"{type(exc).__name__}: {exc}")
         if usage.oom_near_miss:
             self.log.error(
@@ -16301,7 +16305,7 @@ class Worker(
             return
         try:
             kills = self._sampler.drain_guard_kills()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning("could not read memory guard kills", error=f"{type(exc).__name__}: {exc}")
             return
         for kill in kills:
@@ -16380,7 +16384,7 @@ class Worker(
                     "task_id": self.cfg.task_id,
                 },
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning(
                 "metrics export failed",
                 exporter=type(self.metrics).__name__,
@@ -16577,7 +16581,7 @@ class Worker(
             )
         except FencedError:
             raise
-        except Exception as again:
+        except Exception as again:  # noqa: BLE001
             self.log.error(
                 "the minimal terminal write was refused too",
                 state=decided,
@@ -16761,7 +16765,7 @@ class Worker(
         ):
             try:
                 action()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self.log.warning(
                     "cleanup step failed; the exit code is the task's",
                     step=step,

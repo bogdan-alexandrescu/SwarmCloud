@@ -854,7 +854,7 @@ class CdpProxy:
             connection.closed = True
             try:
                 await connection.link.close()
-            except Exception:  # noqa: BLE001 -- a link already gone is closed
+            except Exception:  # noqa: BLE001, S110 -- a link already gone is closed
                 pass
 
     def _forget_session(self, session: str) -> None:
@@ -914,7 +914,7 @@ class CdpProxy:
     async def _close_link(self, link: AgentLink) -> None:
         try:
             await asyncio.wait_for(link.close(), self._agent_send_seconds)
-        except Exception:  # noqa: BLE001 -- already gone or stalled: nothing more to close
+        except Exception:  # noqa: BLE001, S110 -- already gone or stalled: nothing more to close
             pass
 
     async def on_agent_message(self, connection: AgentConnection, message: Mapping[str, Any]) -> None:

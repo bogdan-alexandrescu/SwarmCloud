@@ -143,7 +143,7 @@ class AppContext:
         """
         try:
             self.store.get_control()
-        except Exception as exc:  # pragma: no cover - depends on live Firestore
+        except Exception as exc:  # pragma: no cover - depends on live Firestore  # noqa: BLE001
             return False, f"firestore unavailable: {type(exc).__name__}"
         return True, "ok"
 

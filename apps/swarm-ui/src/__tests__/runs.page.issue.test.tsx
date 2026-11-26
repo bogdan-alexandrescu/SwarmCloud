@@ -186,7 +186,8 @@ describe('item 5: the plan is drawn from its schema', () => {
   })
 
   it('numbers the steps with title and id, files / tests / estimate when present, and folds each prompt', async () => {
-    const { container } = await mount(run())
+    // The whole plan is drawn on a run not waiting on its decision page (a PLANNED one is a summary, PR 464).
+    const { container } = await mount(run({ state: 'REJECTED' }))
     const steps = [...container.querySelectorAll<HTMLElement>('.rn-plan .rn-step')]
     expect(steps).toHaveLength(2)
     expect(visible(steps[0]!.querySelector('.rn-step-h'))).toBe('1 · api: the plan schema and its overlaps')
@@ -205,7 +206,8 @@ describe('item 5: the plan is drawn from its schema', () => {
   })
 
   it('draws overlaps and risks when the plan has them, and the raw plan behind a disclosure', async () => {
-    const { container } = await mount(run())
+    // The whole plan is drawn on a run not waiting on its decision page (a PLANNED one is a summary, PR 464).
+    const { container } = await mount(run({ state: 'REJECTED' }))
     expect(visible(container.querySelector('.rn-overlaps'))).toContain('PR #498 also edits Runs.tsx')
     expect(visible(container.querySelector('.rn-risks'))).toContain('The forge token must never reach a log line.')
     const raw = container.querySelector<HTMLDetailsElement>('details.rn-raw')!

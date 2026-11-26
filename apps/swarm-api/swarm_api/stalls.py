@@ -57,7 +57,7 @@ def stalled_workflows(db: Any, tenant_id: str) -> dict[str, Any]:
             .limit(1)
             .stream()
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         log.warning("could not read the reconciler's latest pass: %s", exc)
         return _unknown(f"the reconciler's latest pass could not be read: {exc}"[:500])
     if not docs:

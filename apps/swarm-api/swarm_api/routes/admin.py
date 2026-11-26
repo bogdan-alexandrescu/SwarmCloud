@@ -83,6 +83,7 @@ from ..task_accounts import accounts_for
 from ..task_input import masking_for
 from ..validation import known_providers
 from ..workspaces import WORKSPACES, kind_of
+from ..wire_types import DispatchControl, LeasePage, QuotaPage, TenantPage
 from .accounts import account_pool
 from .browser_logins import browser_vault
 from .runs import advance_tenant_runs
@@ -127,7 +128,7 @@ def _check_runner(runner_profile: str) -> str:
 
 # -- dispatch pause -------------------------------------------------------
 
-@router.get("/dispatch")
+@router.get("/dispatch", responses={200: {"model": DispatchControl}})
 def get_dispatch(
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),
@@ -746,7 +747,7 @@ def units_held_by_pool(leases: list[Lease]) -> dict[str, int]:
     return held
 
 
-@router.get("/leases")
+@router.get("/leases", responses={200: {"model": LeasePage}})
 def list_leases(
     tenant_id: str | None = Query(default=None),
     active_only: bool = Query(default=True),
@@ -841,7 +842,7 @@ def list_leases(
             # (the archived pull request 229 review): this row crosses tenants, and `last_error`
             # can be the agent's stderr tail.
             errors[lease.task_id] = masking_for(task).text(task.last_error)[0]
-        except Exception:
+        except Exception:  # noqa: BLE001
             # A lease whose task is gone is itself a finding -- the reconciler
             # calls it task_missing. Do not let it fail the whole listing.
             tasks[lease.task_id] = None
@@ -974,7 +975,7 @@ def purge_history(
     return result
 
 
-@router.get("/quota")
+@router.get("/quota", responses={200: {"model": QuotaPage}})
 def list_quota(
     tenant_id: str | None = Query(default=None),
     auth: AuthContext = Depends(admin_auth),
@@ -1173,7 +1174,7 @@ def _workspace_records(ctx: AppContext, tenant_ids: list[str]) -> dict[str, dict
     }
 
 
-@router.get("/tenants")
+@router.get("/tenants", responses={200: {"model": TenantPage}})
 def list_tenants(
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),
@@ -1252,7 +1253,7 @@ def rollup_workflows(
         else:
             try:
                 sealed = ctx.outcomes.seal_recent(tenant_id=tenant_id)
-            except Exception:  # noqa: BLE001 -- the next tick seals what this one did not
+            except Exception:  # the next tick seals what this one did not
                 log.exception("outcome seal failed tenant=%s", tenant_id)
                 sealed = {"tenant_id": tenant_id, "error": "seal_failed"}
         ctx.metrics.admin_actions.labels(action="outcomes_seal").inc()
@@ -1621,14 +1622,14 @@ def task_finished_push(
     try:
         QaTargets(ctx.db, now=ctx.now).settle_discovery(
             task_id, ctx.inspection, tenant_id=fields.get("tenant_id"))
-    except Exception:  # noqa: BLE001 -- a doorbell: the target's next read settles it
+    except Exception:  # a doorbell: the target's next read settles it
         log.exception("qa target discovery settle failed task=%s", task_id)
     # A step of a leg's QA run ended: once its capture steps all have, merge
     # what their crawls found into that leg's `discovered` (qa-environments.md
     # §5, lane QAENV-SETTLE). Never raises: the run's next step to end rings again.
     try:
         QaTargets(ctx.db, now=ctx.now).settle_run(task_id, ctx.inspection, tenant_id=fields.get("tenant_id"))
-    except Exception:  # noqa: BLE001 -- a doorbell: the run's next ended step settles it
+    except Exception:  # a doorbell: the run's next ended step settles it
         log.exception("qa run settle failed task=%s", task_id)
     # A personal workflow that this step ended loses its browser session
     # carry now (docs/design/live-browser.md §5.5.1, lane LB-L9b). Never

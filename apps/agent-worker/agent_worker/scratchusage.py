@@ -400,7 +400,7 @@ class ScratchSampler:
         try:
             # `start_thread` looked up when called, so a test's patch holds.
             self._thread = (self._starter or start_thread)(self._loop, "scratch-sampler")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._warn_once(exc)
 
     def stop(self, timeout: float = 1.0) -> None:
@@ -415,7 +415,7 @@ class ScratchSampler:
             return
         try:
             thread.join(timeout)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._warn_once(exc)
 
     def latest(self) -> dict[str, Any] | None:
@@ -436,7 +436,7 @@ class ScratchSampler:
                 entry["complete_used_bytes"] = self._complete.get(name)
                 entry["read_at"] = read_at
             reading = bounded(reading)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._warn_once(exc)
             return None
         with self._lock:
@@ -456,7 +456,7 @@ class ScratchSampler:
         self._warned = True
         try:
             self._warn(f"{type(exc).__name__}: {exc}")
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
 
 

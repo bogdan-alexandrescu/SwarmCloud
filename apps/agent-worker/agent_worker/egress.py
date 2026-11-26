@@ -334,7 +334,7 @@ class EgressProbe:
                 if self._ended is None:
                     done = all(self._answered[t].is_set() for t in self.targets)
                     self._ended = "ready" if done else "stopped"
-        except Exception as exc:  # a measurement never takes the worker down
+        except Exception as exc:  # a measurement never takes the worker down  # noqa: BLE001
             self._set_ended(f"error: {type(exc).__name__}")
         finally:
             self._finished.set()

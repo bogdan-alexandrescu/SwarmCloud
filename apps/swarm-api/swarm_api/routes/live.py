@@ -570,7 +570,7 @@ async def _admit(websocket: WebSocket, session_id: str, ctx: AppContext,
     iap = headers.get("x-goog-iap-jwt-assertion")
     try:
         await run_in_threadpool(ctx.authenticator.authenticate, presented, iap)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         ctx.metrics.auth_failures.labels(kind=type(exc).__name__).inc()
         return CLOSE_UNAUTHENTICATED
     try:
@@ -600,7 +600,7 @@ async def _admit(websocket: WebSocket, session_id: str, ctx: AppContext,
         return await run_in_threadpool(
             lambda: service.admit(auth, session_id, ticket, submitted_by=submitted_by)
         )
-    except Exception as exc:  # every refusal reads alike (§5.2 step 2)
+    except Exception as exc:  # every refusal reads alike (§5.2 step 2)  # noqa: BLE001
         log.info("live socket refused (%s)", type(exc).__name__)
         return CLOSE_REFUSED
 
@@ -615,7 +615,7 @@ def _ticket_tenant(ticket: str) -> str | None:
         claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
         tenant = claims.get("tenant_id")
         return tenant if isinstance(tenant, str) and tenant else None
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -637,7 +637,7 @@ async def live_socket(websocket: WebSocket, session_id: str) -> None:
         return
     try:
         link = await _relay(websocket.app).connect(url.rstrip("/") + RELAY_VIEW_PATH)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         log.warning("the live relay could not be reached (%s)", type(exc).__name__)
         await _close(websocket, CLOSE_NO_RELAY)
         return
@@ -657,7 +657,7 @@ async def _hello(link: RelayLink, admission: Admission) -> int | None:
     try:
         await link.send(admission.ticket)
         first = await asyncio.wait_for(link.recv(), FIRST_MESSAGE_SECONDS)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         log.info("the live relay did not answer the viewer ticket (%s)", type(exc).__name__)
         first = None
     ready = False
@@ -671,7 +671,7 @@ async def _hello(link: RelayLink, admission: Admission) -> int | None:
     code = getattr(link, "close_code", None)
     try:
         await link.close()
-    except Exception:  # the relay already went
+    except Exception:  # the relay already went  # noqa: BLE001, S110
         pass
     log.info("live socket refused by the relay (close code %s)", code)
     return CLOSE_FULL if code == RELAY_CLOSE_FULL else CLOSE_REFUSED
@@ -732,7 +732,7 @@ class _Proxy:
                 await self._settle_on_relay_end()
             try:
                 await self.link.close()
-            except Exception:  # the relay already went
+            except Exception:  # the relay already went  # noqa: BLE001, S110
                 pass
             await _close(self.ws, self.close_code)
             await run_in_threadpool(

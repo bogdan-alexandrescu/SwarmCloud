@@ -15,7 +15,8 @@ What is held here, over archived pull request 196's fixture week (`test_outcomes
   * another tenant's work never appears, in tenant scope;
   * the rows are served from the fold the page already read (no new read);
   * the parameters are validated with the one error envelope;
-  * the block is the shape outcomes.ts declares (`EndedRows`), every field.
+  * the block is the shape `wire_types.EndedRows` documents, every field, both
+    directions (the console's `EndedRows` is the generated one; part of #72).
 
 Offline: FakeFirestore, StaticTokenVerifier, StaticGroups, a fixed clock.
 """
@@ -32,7 +33,7 @@ from swarm_api.groups import StaticGroups
 from swarm_api.main import create_app
 
 from . import test_outcomes_route as route_tests
-from .test_outcomes_ui_field_contract import _Checker, _declarations
+from .openapi_reads import operation
 
 WEEK = route_tests.WEEK
 SEP22 = "2026-09-22T00:00:00+00:00"
@@ -180,47 +181,38 @@ def test_a_non_admin_cannot_list_another_tenants_rows_by_naming_rows(api):
 # The shape the page reads
 # --------------------------------------------------------------------------
 
-def test_the_block_is_exactly_the_shape_outcomes_ts_declares(api):
-    checker = _Checker(_declarations())
-    seen: tuple[set[str], set[str]] = (set(), set())
-    errors: list[str] = []
+def test_the_block_is_exactly_the_model_both_directions(api):
+    """The block against `wire_types.EndedRows` at every depth, which the
+    console's generated `EndedRows` is (part of #72: this once parsed outcomes.ts)."""
+    from swarm_api import wire_types
+
+    from .test_wire_types import walk
+
+    seen: set[str] = set()
+    problems: list[str] = []
     for params in (
         {"rows": "failed", "rows_at": SEP22},
         {"rows": "cancelled", "rows_at": SEP22},
         {"rows": "succeeded", "group": "submitted_by", "rows_key": "alice@example.com"},
     ):
-        errors += checker.check(rows(api, **params), ("ref", "EndedRows"), "EndedRows", seen)
-    assert not errors, "outcomes.ts and the rows block disagree:\n  " + "\n  ".join(errors[:40])
-    arrays: set[str] = set()
-    checker.expected(("ref", "EndedRows"), "EndedRows", arrays, set())
-    assert arrays and not (arrays - seen[0]), f"arrays never checked with an element: {arrays - seen[0]}"
+        block = rows(api, **params)
+        problems += walk(wire_types.EndedRows, block, "EndedRows", seen)
+        wire_types.EndedRows.model_validate(block)
+    assert not problems, "wire_types.EndedRows and the rows block disagree:\n  " + "\n  ".join(problems[:40])
+    assert "EndedRow" in seen, "no row was checked; the element type is unproven"
 
 
-def test_the_pages_row_outcomes_are_the_routes():
-    from .test_outcomes_ui_field_contract import _const_list, _source, _strip_comments
+def test_the_row_outcomes_are_the_routes():
+    """The generated union (and the generated constants the page's
+    ROW_OUTCOMES is held to in contract.shapes.test.ts) are the route's tuple."""
+    from swarm_api import wire_types
 
-    source = _strip_comments(_source())
-    assert _const_list(source, "ROW_OUTCOMES") == list(module.ROW_OUTCOMES)
-    checker = _Checker(_declarations())
-    assert checker.literals(("ref", "RowOutcome")) == set(module.ROW_OUTCOMES)
+    assert [m.value for m in wire_types.RowOutcome] == list(module.ROW_OUTCOMES)
 
 
-def test_every_parameter_the_rows_read_sends_is_one_the_route_declares():
-    import inspect
-    import re
-
-    from fastapi.params import Query
-
-    from swarm_api.routes import outcomes as routes
-
-    from .test_outcomes_ui_field_contract import _function_body, _source, _strip_comments
-
-    declared = {
-        name
-        for name, p in inspect.signature(routes.get_outcomes).parameters.items()
-        if isinstance(p.default, Query)
-    }
-    body = _function_body(_strip_comments(_source()), "rowsQuery")
-    sent = set(re.findall(r"q\.(?:set|append)\('(\w+)'", body))
-    assert {"rows", "rows_at", "rows_key"} <= sent, f"rowsQuery sends {sorted(sent)}"
-    assert sent <= declared, f"rowsQuery sends parameters the route does not declare: {sorted(sent - declared)}"
+def test_every_parameter_the_rows_read_sends_is_one_the_route_declares(client):
+    """`rowsQuery` sends `rows`, `rows_at` and `rows_key` beside the ledger's
+    query (contract.shapes.test.ts); the route declares all three."""
+    declared = {p["name"] for p in operation(client, "/v1/outcomes")["parameters"]
+                if p["in"] == "query"}
+    assert {"rows", "rows_at", "rows_key"} <= declared, sorted(declared)

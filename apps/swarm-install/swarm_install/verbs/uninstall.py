@@ -379,7 +379,7 @@ def open_store(project: str, environment: str) -> StateStore:
     try:
         bucket = GcsObjectStore(state_bucket(project))
         found = bucket.read(STATE_OBJECT)
-    except Exception as exc:  # no bucket any more, or no access: the local cache is what is left
+    except Exception as exc:  # no bucket any more, or no access: the local cache is what is left  # noqa: BLE001
         print(f"swarm uninstall: gs://{state_bucket(project)} could not be read ({type(exc).__name__}); "
               f"using {local}", file=sys.stderr)
         found, bucket = None, None

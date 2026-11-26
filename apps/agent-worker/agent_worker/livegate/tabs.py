@@ -283,7 +283,7 @@ class TabKeeper:
                 else:
                     result = await self._call("Target.createTarget", {"url": url, "background": True}, None)
                     target = result.get("targetId")
-            except Exception:  # one tab that would not open costs that tab only
+            except Exception:  # one tab that would not open costs that tab only  # noqa: BLE001
                 dropped += 1
                 continue
             opened.append(url)
@@ -294,12 +294,12 @@ class TabKeeper:
                 if page.get("url") in ("", "about:blank") and isinstance(page.get("targetId"), str):
                     try:
                         await self._call("Target.closeTarget", {"targetId": page["targetId"]}, None)
-                    except Exception:
+                    except Exception:  # noqa: BLE001, S110
                         pass
             if active_target is not None:
                 try:
                     await self._call("Target.activateTarget", {"targetId": active_target}, None)
-                except Exception:
+                except Exception:  # noqa: BLE001, S110
                     pass
         self._record("browser_tabs_restored", {
             "tabs": len(opened), "dropped": dropped, "storage_origins": written, "storage_skipped": skipped,
@@ -329,7 +329,7 @@ class TabKeeper:
                     answer = await self._call(
                         "Runtime.evaluate", {"expression": "location.origin", "returnByValue": True}, session)
                     value = (answer.get("result") or {}).get("value")
-                except Exception:  # the document is being swapped
+                except Exception:  # the document is being swapped  # noqa: BLE001
                     value = None
                 if value == origin:
                     ok = True
@@ -341,6 +341,6 @@ class TabKeeper:
             # Detaching the gate's session removes its new-document script.
             try:
                 await self._call("Target.detachFromTarget", {"sessionId": session}, None)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass
         return target, ok

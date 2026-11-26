@@ -1001,6 +1001,81 @@ class ParkMixin:
                       attempt_refunded=bool(refunded))
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
+    def _paused_before_runner(self, preflight: Any) -> bool:
+        """Whether the quota preflight's poll, the attempt's first, asks for
+        the pause park before the runner starts (docs/design/workflow-pause.md
+        5.3). STEP 2 already walked the attempt to RUNNING, the only worker
+        edge into PARKED, and the workspace is restored, so `_park_for_pause`
+        checkpoints it with nothing to terminate and the agent never starts.
+
+        A cancel is left to the supervision loop's first poll, which ends the
+        step CANCELLED (a cancel outranks a pause). A fenced attempt is never
+        parked: it goes on as before, and that first poll exits it writing
+        nothing (invariant 5).
+        """
+        return bool(preflight.pause_requested and not preflight.cancel_requested
+                    and not preflight.is_fenced(self.cfg.generation))
+
+    def _park_for_pause(self, child: ChildProcess | None) -> Outcome:
+        """The step's workflow is paused (docs/design/workflow-pause.md 5.2):
+        stop the runner -> checkpoint("workflow-pause") -> upload -> PARK
+        WORKFLOW_PAUSED -> release -> exit 75. NEVER A SLEEP: the worker does
+        not wait for the resume, which is the scheduler's promotion plus a
+        fresh lease, generation and restore (invariant 4); a pause may last
+        days, and a waiting worker would hold its lease and pool units the
+        whole time.
+
+        Reached from `_apply_control_signals` after the fence and the cancel
+        (a fenced worker writes nothing; a cancel outranks a pause) and before
+        the quota, and with
+        `child` None from the quota preflight's poll, the first poll, for a
+        step whose mirror was set before its runner started (5.3): the worker
+        walked to RUNNING in STEP 2, since a worker has no pre-running edge
+        into PARKED, and the checkpoint holds the restored workspace.
+
+        `workflow-pause` is not the `periodic` label, so the checkpoint is
+        always written. The park is the quota park's single fenced
+        transaction (`ControlPlane.park`, or swarm-api's `AttemptState.park`):
+        PARKED, the attempt's end and the lease release, or nothing at all.
+        A fence that lands meanwhile refuses the checkpoint or the park
+        (`FencedWriteRefused`), and `run` stands the attempt down without
+        touching the lease (invariant 5). The attempt is refunded within the
+        server's bound (decision Q1).
+        """
+        from .lifecycle import Outcome
+
+        cfg = self.cfg
+        self.log.warning("workflow paused; checkpointing and parking",
+                         runner_started=child is not None)
+        if child is not None:
+            # A live-browser hand-off's hold ends first, as the cancel's does,
+            # while the task is still RUNNING. swarm-api's resolve takes
+            # `unavailable` (it has no `paused` outcome): the agent's `wait`
+            # exits refused, and the next attempt asks again.
+            if self.handoff.end(
+                self.ws.work if self.ws is not None else None,
+                outcome="unavailable",
+                cause="workflow_paused",
+            ):
+                child.wait(handoff_mod.CANCEL_ANSWER_SECONDS)
+            child.terminate(cfg.termination_grace_seconds, reason="workflow paused")
+            child.finish()
+            self._child_ended()
+        self._checkpoint("workflow-pause")
+        summary = self._upload_outputs()
+        with self._metrics_after_the_record():
+            # `next_eligible_at` is now: the park waits on the workflow, not
+            # on a clock. The scheduler's sweep promotes it once the workflow
+            # document says it is no longer paused.
+            refunded = self.control.park(
+                reason=ParkReason.WORKFLOW_PAUSED,
+                next_eligible_at=utcnow(),
+                detail={"park_phase": "workflow_pause",
+                        "runner_started": child is not None, **summary},
+            )
+        self.log.info("parked for the workflow's pause", attempt_refunded=bool(refunded))
+        return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
+
     def _quota_from_child(self, result: ChildResult) -> Any:
         ws = self.ws
         assert ws is not None

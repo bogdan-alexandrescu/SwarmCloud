@@ -293,7 +293,7 @@ def one_page(pw, engine: str, binary: str, page_def: tuple) -> dict:
                     errors.append("load: " + short(exc))
                 try:
                     page.wait_for_load_state("networkidle", timeout=5000)
-                except Exception:  # noqa: BLE001 -- networkidle is best effort
+                except Exception:  # noqa: BLE001, S110 -- networkidle is best effort
                     pass
                 rec["final_url"] = page.url
                 text = page.evaluate("() => document.body ? document.body.innerText : ''")
@@ -312,7 +312,7 @@ def one_page(pw, engine: str, binary: str, page_def: tuple) -> dict:
                 for fr in page.frames[1:]:
                     try:
                         pw_chars += fr.evaluate("() => document.body ? document.body.innerText.length : 0")
-                    except Exception:  # noqa: BLE001 -- a detached frame counts nothing
+                    except Exception:  # noqa: BLE001, S110 -- a detached frame counts nothing
                         pass
                 rec["iframe_text_chars_playwright"] = pw_chars
                 rec["iframe_text_chars_dom"] = page.evaluate(FRAME_TEXT_JS)

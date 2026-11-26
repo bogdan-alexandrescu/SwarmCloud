@@ -363,7 +363,7 @@ class BrowserSlots:
             )
         except ApiError:
             raise
-        except Exception:
+        except Exception:  # noqa: BLE001
             log.warning("browser session slot could not reach Secret Manager", exc_info=False)
             raise BrowserLoginVaultUnavailable(
                 "the session's secret could not be provisioned; nothing was stored, and asking "

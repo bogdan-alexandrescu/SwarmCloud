@@ -65,7 +65,7 @@ def main():
             }
         }))
         sys.stdout.flush()
-    except Exception:
+    except Exception:  # noqa: BLE001
         return 0
     return 0
 

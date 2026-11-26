@@ -600,7 +600,7 @@ def evaluate_requirements(
             "requirements_unmet": unmet,
             "requirements_note": failure_text(note) if note else None,
         })
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         # The keyword is then written from what the run already held.
         log.warning(
             "issue run %s: requirements finding not stored (%s)", run.id, type(exc).__name__
@@ -900,7 +900,7 @@ def _check_section(writer: GitHubWriter, ref: IssueRef, label: str, check: Mappi
     if isinstance(check_id, int) and not isinstance(check_id, bool):
         try:
             lines = _annotation_lines(writer.check_annotations(ref, check_id, token))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.info("%s: annotations of %s not read (%s)", label, check_id, type(exc).__name__)
             lines = []
         if lines:
@@ -910,7 +910,7 @@ def _check_section(writer: GitHubWriter, ref: IssueRef, label: str, check: Mappi
             # An Actions check run's id is its job's id.
             try:
                 tail = writer.job_log_tail(ref, check_id, token, limit=LOG_READ_BYTES)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 log.info("%s: log of %s not read (%s)", label, check_id, type(exc).__name__)
                 tail = None
             tail = tail or ""
@@ -923,7 +923,7 @@ def _check_section(writer: GitHubWriter, ref: IssueRef, label: str, check: Mappi
                 try:
                     full = writer.job_log_tail(ref, check_id, token, limit=MAX_LOG_FULL_READ_BYTES,
                                                cap=MAX_LOG_FULL_READ_BYTES)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     log.info("%s: log of %s not re-read (%s)", label, check_id, type(exc).__name__)
                     full = None
                 if full and len(_fail_headers(_step_lines(full))) > found:
@@ -1225,7 +1225,7 @@ def _gate_jobs(writer: GitHubWriter, ref: IssueRef, label: str,
     for run_id, event in list(runs.items())[:MAX_EXCERPT_CHECKS]:
         try:
             read = writer.run_jobs(ref, run_id, token)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.info("%s: jobs of Actions run %s not read (%s)", label, run_id, type(exc).__name__)
             continue
         jobs.setdefault(event, []).extend(job for job in read if isinstance(job, Mapping))
@@ -1284,7 +1284,7 @@ def _gate_leaves(
                     try:
                         at_sha = [run for run in writer.actions_check_runs(ref, sha, token)
                                   if isinstance(run, Mapping)]
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001
                         log.info("%s: Actions jobs at the head not read (%s)", label,
                                  type(exc).__name__)
                         at_sha = []
@@ -1726,7 +1726,7 @@ def _visit_checking(ctx: Any, tenant_id: str, run: IssueRun, owner_auth: OwnerAu
                 getattr(ctx, "forge_installations", None), run.tenant_id,
                 run.issue.owner, run.issue.repo) or token
             pull, reading = _read_ci(writer, run, number, reader)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
             message = exc.message if isinstance(exc, ApiError) else f"the CI read failed ({code})"
             reason = f"{code}: {message}"
@@ -1865,7 +1865,7 @@ def _visit_checking(ctx: Any, tenant_id: str, run: IssueRun, owner_auth: OwnerAu
             return _start_round(ctx, tenant_id, run, record, excerpt, head, owner_auth)
         except Conflict:
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
             message = exc.message if isinstance(exc, ApiError) else f"the move failed ({code})"
             log.warning(
@@ -1986,7 +1986,7 @@ def _rerun_red_head(
             ctx.forge_writer.rerun_failed_jobs(ref, run_id, token)
         for job in alone:
             ctx.forge_writer.rerun_job(ref, job, token)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         reason = exc.message if isinstance(exc, ApiError) else (
             str(exc) if isinstance(exc, ForgeWriteError) else type(exc).__name__
         )
@@ -2035,7 +2035,7 @@ def _start_round(
     except UpstreamUnavailable:
         log.warning("issue run %s: fix round %d waits: membership unresolved", run.id, round_no)
         return runs.patch(tenant_id, run.id, {"pull_request": record})
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         reason = exc.message if isinstance(exc, ApiError) else type(exc).__name__
         log.warning("issue run %s: fix round %d refused (%s)", run.id, round_no, reason)
         return runs.transition(
@@ -2089,7 +2089,7 @@ def _start_round(
             tenant_id, run.id, RunState.CHECKING, by=ACTOR, from_states={RunState.FIXING},
             patch={"ci_fix_round": run.ci_fix_round, "ci_round_sha": run.ci_round_sha},
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         reason = exc.message if isinstance(exc, ApiError) else type(exc).__name__
         log.warning("issue run %s: fix round %d refused (%s)", run.id, round_no, reason)
         return runs.transition(
@@ -2784,7 +2784,7 @@ def _merge(
                 writer, run.issue, token, head=head, base=base,
                 known=lambda sha: sha if sha == claimed_head or sha in round_heads else None,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             return _read_failed(exc)
         in_flight = reached is not None
 
@@ -2832,7 +2832,7 @@ def _merge(
             writer, run.issue, token, head=head, base=base,
             known=lambda sha: _pushing_task(ctx, tenant_id, run, sha),
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return _read_failed(exc)
     if pushed_by is None:
         return _fail(
@@ -2847,7 +2847,7 @@ def _merge(
     except UpstreamUnavailable:
         log.warning("issue run %s: merge waits: membership unresolved", run.id)
         return runs.patch(tenant_id, run.id, {"pull_request": record})
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         reason = exc.message if isinstance(exc, ApiError) else type(exc).__name__
         return _fail(f"its merge was refused ({reason})")
 
@@ -2868,7 +2868,7 @@ def _merge(
         merge_spec = merge_workflow(run, pushed_by, head)
         with submitting(merge_spec):
             submission = ctx.submissions.submit_workflow(owner, merge_spec)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         reason = exc.message if isinstance(exc, ApiError) else type(exc).__name__
         log.warning("issue run %s: merge refused at submission (%s)", run.id, reason)
         return _fail(f"its merge was refused at submission ({reason})")

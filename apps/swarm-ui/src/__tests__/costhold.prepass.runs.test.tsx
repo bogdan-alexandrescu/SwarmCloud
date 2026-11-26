@@ -53,7 +53,8 @@ function run(extra: Record<string, unknown> = {}) {
 /** What the page POSTed: each write's path and body. */
 type Sent = { url: string; body: Record<string, unknown> }
 
-async function mount(served: unknown, sent: Sent[] = [], ready = '.rn-steps') {
+// A PLANNED run's plan is a summary (owner's pick on PR 464): ready once it draws.
+async function mount(served: unknown, sent: Sent[] = [], ready = '[data-testid="rn-plan-summary"]') {
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     if (init?.method === 'POST') {
