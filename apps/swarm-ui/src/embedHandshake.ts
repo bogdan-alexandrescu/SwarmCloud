@@ -42,8 +42,7 @@ export function parentDomain(host: string): string {
  * browser gives no origin to go by.
  */
 export function embedderOrigin(win: EmbedWindow): string | null {
-  const ancestors = win.location.ancestorOrigins
-  const claimed = ancestors !== undefined && ancestors.length > 0 ? ancestors[0] : win.document.referrer
+  const claimed = win.location.ancestorOrigins?.[0] ?? win.document.referrer
   let url: URL
   try {
     url = new URL(claimed)
