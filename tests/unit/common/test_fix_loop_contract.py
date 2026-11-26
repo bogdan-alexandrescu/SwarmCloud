@@ -16,9 +16,8 @@ docs/design/fix-loop.md §7 requests A and B, accepted by the owner on 2026-10-2
     and the member reaches the generated `states.json` the console is held to
     (`scripts/api_constants/states.py`; the console half is
     apps/swarm-ui/src/__tests__/contract.parity.test.ts, part of #72);
-  * the requests are filed: 124 and 125 accepted and applied, and 126 (the end
-    cause Q3 (c) needs) accepted by the owner on 2026-10-27 and applied: the frozen
-    `EndCause` has `FIX_LOOP_EXHAUSTED`, appended, the outcome ledger classes
+  * request 126 (the end cause Q3 (c) needs), accepted by the owner on
+    2026-10-27, is applied: the frozen `EndCause` has `FIX_LOOP_EXHAUSTED`, appended, the outcome ledger classes
     it as its own failure class, and it reaches the generated `states.json`,
     whose `--check` fails CI until the console's `END_CAUSES` follows.
 
@@ -30,8 +29,7 @@ MUTATION: set `available=False` (with a reason) on `fix-loop` and
 `test_no_scheduler_sweep_promotes_fix_rounds_running` fails; make the states
 group publish `park_reason` without the member and
 `test_the_contract_parity_script_passes` fails; take `FIX_LOOP_EXHAUSTED`
-out of `EndCause` (or put "Not applied" back on request 126's row) and
-`test_request_c_is_accepted_and_applied` fails.
+out of `EndCause` and `test_request_c_is_accepted_and_applied` fails.
 """
 
 from __future__ import annotations

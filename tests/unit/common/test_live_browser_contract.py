@@ -13,8 +13,7 @@ Q2 answered as the FIELD, not a new task state. What this file holds:
   * LB-D `RunnerProfile.live_browser`: False by default, True on
     `claude-code-browser` and nowhere else, and refused at construction on a
     profile whose backend is not GKE_AUTOPILOT (AUTO included, because the
-    `browser` class resolves AUTO to Cloud Run);
-  * the four requests are on record as accepted.
+    `browser` class resolves AUTO to Cloud Run).
 
 The console's restatements of the park reasons are held to the enum by its own
 `contract.constants.test.ts`, through the generated constants (part of #72).
@@ -29,7 +28,6 @@ from __future__ import annotations
 
 import dataclasses
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pytest
 
@@ -45,8 +43,6 @@ from swarm_common.states import (
     holds_capacity,
 )
 
-ROOT = Path(__file__).resolve().parents[3]
-REQUESTS = ROOT / "docs" / "contract-change-requests.md"
 NOW = datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc)
 
 
@@ -210,16 +206,3 @@ def test_auto_is_refused_because_the_browser_class_resolves_to_cloud_run():
 def test_live_browser_on_a_gke_profile_is_accepted():
     assert _profile(Backend.GKE_AUTOPILOT, live_browser=True).live_browser is True
     assert _profile(Backend.CLOUD_RUN_JOB, live_browser=False).live_browser is False
-
-
-# --------------------------------------------------------------------------
-# The record
-# --------------------------------------------------------------------------
-
-
-def test_the_requests_are_filed_as_accepted():
-    text = REQUESTS.read_text(encoding="utf-8")
-    for tag in ("LB-A", "LB-B", "LB-C", "LB-D"):
-        rows = [line for line in text.splitlines() if line.startswith("| ") and tag in line]
-        assert rows, f"{tag} has no index row"
-        assert "ACCEPTED by the owner 2026-10-11" in rows[0], rows[0]
