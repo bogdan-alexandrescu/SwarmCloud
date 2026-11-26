@@ -17,7 +17,6 @@ On fake Google clients with no credentials and no network.
 
 from __future__ import annotations
 
-import inspect
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -176,10 +175,8 @@ def test_adopt_and_remains_never_name_the_brands_api() -> None:
     down); the Desktop client is adopted from the record."""
     assert not hasattr(adopt, "brand")
     assert not hasattr(adopt.InstallGcp, "oauth_clients")
-    for module in (adopt, remains, edge):
-        source = inspect.getsource(module)
-        assert "iap_brands" not in source and "/brands" not in source, module.__name__
-        assert "identityAwareProxyClients" not in source, module.__name__
+    # adopt, remains and edge name neither API: the rule
+    # install-names-no-brands-api in scripts/source_text_rules/services.py.
     assert adopt.desktop_client({"desktop_client_id": CLIENT_ID}) == CLIENT_ID
     assert adopt.desktop_client({"desktop_client_id": "x"}) is None
     assert adopt.desktop_client(None) is None

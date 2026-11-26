@@ -375,7 +375,7 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> GateReport:
             if not token:
                 try:
                     token = ctx.forge_tokens.token_for(tenant)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     token_error = exc.code if isinstance(exc, ApiError) else type(exc).__name__
                     log.warning("after-prs tick tenant=%s: no forge token (%s)",
                                 tenant_id, token_error)
@@ -401,7 +401,7 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> GateReport:
                         # on a rotated token is worse than waiting.
                         error = "pull_request_not_found"
                         break
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001
                         error = exc.code if isinstance(exc, ApiError) else type(exc).__name__
                         if isinstance(exc, ForgeRateLimited):
                             # Refused for quota: no other gate is asked this

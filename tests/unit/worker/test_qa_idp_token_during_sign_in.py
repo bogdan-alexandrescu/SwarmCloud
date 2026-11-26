@@ -56,7 +56,8 @@ def _leg_args(**over: Any) -> dict[str, Any]:
     approved extra origin, and its token path approved."""
     sign_in = {"kind": "own_login", "login_url": f"{ORIGIN}/?env=production", "signed_in_selector": "#account",
                "start_clicks": [{"text": "Production"}]}
-    args = qs._args(qs._target_id(), qs._password(), sign_in=sign_in, idp_token_path=TOKEN_PATH)
+    args = qs._args(qs._target_id(), qs._password(), sign_in=sign_in, idp_token_path=TOKEN_PATH,
+                    idp_token_origin=IDP)
     args.update(over)
     return args
 
@@ -152,7 +153,7 @@ def test_nothing_after_the_wipe_even_mid_sign_in():
 
 
 def test_a_target_with_no_token_path_gains_nothing_while_it_hands_back():
-    target = _target(idp_token_path=None)
+    target = _target(idp_token_path=None, idp_token_origin=None)
     target.signing_in = True
     target.signing_in = False
     assert _post(target, TOKEN_URL).action == "refuse"

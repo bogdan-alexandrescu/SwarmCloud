@@ -138,6 +138,7 @@ from .cdpproxy import AgentConnection, AgentLink, CdpError, CdpProxy, PipeTransp
 from .ctl import DEFAULT_MARKER, CtlServer, GateDown, OpRefused
 from .device import WINDOW_OVERHANG, DeviceController, XRandrDisplay, captured
 from .. import browser_tools, buildinfo
+from ..metrics import cgroup_memory_events
 from .egress import EgressConfigError, EgressSettings, LocalForwarder, chromium_proxy_args, describe, notice_url
 from .inject import InjectError, XInjector, display_socket
 from .mask import MaskCdp, MaskState
@@ -433,7 +434,7 @@ class Browser:
         if self._stderr_task is not None:
             try:
                 await asyncio.wait_for(asyncio.shield(self._stderr_task), 1.0)
-            except Exception:  # noqa: BLE001 -- a timeout or a failed read: what was read is kept
+            except Exception:  # noqa: BLE001, S110 -- a timeout or a failed read: what was read is kept
                 pass
         return self.proc.returncode, list(self.stderr)
 
@@ -606,6 +607,13 @@ async def start_egress(cfg: GateConfig, record: Callable[[str, Mapping[str, Any]
     return forwarder
 
 
+def read_oom_kills() -> int | None:
+    """The sidecar's own cgroup `oom_kill` count (cgroup v2 `memory.events`), or
+    None when the file cannot be read or has no such line (part of issue 272)."""
+    value = cgroup_memory_events().get("oom_kill")
+    return value if isinstance(value, int) else None
+
+
 @dataclass
 class Deps:
     """What touches the operating system. Tests replace each with a fake."""
@@ -620,6 +628,8 @@ class Deps:
     connect_relay: Callable[[str], Awaitable[Any]] | None = None
     #: The proxied-egress forwarder, started only when egress is on.
     start_egress: Callable[..., Awaitable[Any]] = start_egress
+    #: The sidecar's cgroup `oom_kill` count, or None unreadable (`browser_exit`).
+    oom_kills: Callable[[], int | None] = read_oom_kills
 
 
 # --------------------------------------------------------------------------
@@ -1068,7 +1078,7 @@ class PageFollower:
     async def _quietly(self, work: Awaitable[None]) -> None:
         try:
             await work
-        except Exception as exc:  # a page that closed before the attach answered, a session that went
+        except Exception as exc:  # a page that closed before the attach answered, a session that went  # noqa: BLE001
             self.recover("attach_failed", exc)
 
     async def follow(self, target: str | None) -> None:
@@ -1089,7 +1099,7 @@ class PageFollower:
             if old_session is not None:
                 try:
                     await self._cdp.call("Target.detachFromTarget", {"sessionId": old_session})
-                except Exception:  # noqa: BLE001 -- already gone with its page
+                except Exception:  # noqa: BLE001, S110 -- already gone with its page
                     pass
             self.current = target
             self._origin(None)
@@ -1117,7 +1127,7 @@ class PageFollower:
                     self._children.clear()
                 try:
                     await self._cdp.call("Target.detachFromTarget", {"sessionId": session})
-                except Exception:  # noqa: BLE001 -- already gone
+                except Exception:  # noqa: BLE001, S110 -- already gone
                     pass
                 raise
             if self._session != session:
@@ -1267,6 +1277,14 @@ class LiveGate:
         self._clock = clock
         self._relaunches: list[float] = []
         self.restarts = 0
+        #: THE LAST UNEXPECTED EXIT, FOR THE WORKER (part of issue 272): its
+        #: cause word, exit code, signal name, the gate's wall time, and how far
+        #: this sidecar's cgroup `oom_kill` counter rose since the gate started
+        #: (None when it cannot be read). Served in `status` as `browser_exit`;
+        #: None until Chromium exits unexpectedly. Two review tasks lost the
+        #: browser and only this sidecar's log knew why. Never stderr or a URL.
+        self.browser_exit: dict[str, Any] | None = None
+        self._oom_base = self._oom_kills()
         #: The browser that has finished starting: only its exit is handled.
         self._ready_browser: Any = None
         self._stopping = False
@@ -1562,6 +1580,19 @@ class LiveGate:
             self.cdp_server.close()
         await self._browser_exited(browser)
 
+    def _oom_kills(self) -> int | None:
+        try:
+            value = self.deps.oom_kills()
+        except Exception:  # noqa: BLE001 -- a counter never costs the browser
+            return None
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    def _oom_kills_since_start(self) -> int | None:
+        now = self._oom_kills()
+        if now is None or self._oom_base is None:
+            return None
+        return max(0, now - self._oom_base)
+
     async def _browser_exited(self, browser: Any) -> None:
         """Chromium exited unexpectedly: say why, end a person's control, start it again or say it is gone.
 
@@ -1574,11 +1605,14 @@ class LiveGate:
         code, tail = await exited(EXIT_WAIT_SECONDS) if exited is not None else (None, [])
         cause, signame = exit_cause(code)
         exit_fields = {"exit_code": code, "signal": signame}
-        log.warning("live gate: chromium exited (%s); its last stderr lines: %s",
-                    cause, json.dumps(redacted_stderr(tail)))
-        self.record("browser_exited", exit_fields)
+        oom_kills = self._oom_kills_since_start()
+        log.warning("live gate: chromium exited (%s; oom_kills %s); its last stderr lines: %s",
+                    cause, oom_kills, json.dumps(redacted_stderr(tail)))
+        self.record("browser_exited", {**exit_fields, "oom_kills": oom_kills})
         if self.wiped or self._stopping:
             return  # wiped or stopped while it was exiting: closed as asked
+        self.browser_exit = {"exit_cause": cause, "exit_code": code, "signal": signame,
+                             "oom_kills": oom_kills, "at": self._wall()}
         # The timeline says why the screen went grey, rather than nothing.
         await self._action({"kind": "control", "event": "browser_closed", "cause": cause})
         relaunch = self._may_relaunch()
@@ -2027,6 +2061,9 @@ class LiveGate:
                 "running" if self.browser is not None and not self.browser_closed
                 else "restarting" if self.browser_state == "restarting" else "closed"),
             "browser_restarts": self.restarts,
+            # Part of issue 272: the last unexpected exit (cause, exit_code,
+            # signal, oom_kills, at), or None; the worker tells the agent.
+            "browser_exit": dict(self.browser_exit) if self.browser_exit is not None else None,
             "paused": bool(self.proxy is not None and self.proxy.paused),
             "in_control": self._episode is not None,
             "tunnel": tunnel,

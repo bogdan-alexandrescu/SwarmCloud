@@ -158,7 +158,7 @@ afterEach(() => {
 const tableFirst = () => window.localStorage.setItem(HISTORY_VIEW_KEY, 'table')
 
 describe('the Automate section', () => {
-  it('is a literal section between Work and Capacity, with Schedules and Approvals as its tabs', () => {
+  it('is a literal section between Work and Capacity, with Schedules, Pipeline, Approvals and Settings as its tabs', () => {
     const ids = SECTIONS.map((s) => s.id)
     expect(ids.indexOf('automate')).toBe(ids.indexOf('work') + 1)
     expect(ids.indexOf('capacity')).toBe(ids.indexOf('automate') + 1)
@@ -167,9 +167,14 @@ describe('the Automate section', () => {
     expect(automate.question.trim().endsWith('?')).toBe(true)
     expect(automate.tabs).toEqual([
       { id: 'schedules', label: 'Schedules' },
+      { id: 'pipeline', label: 'Pipeline' },
       { id: 'approvals', label: 'Approvals' },
+      // plans-pipeline §6.4 (PD4, B): the plan-review settings, after Approvals.
+      { id: 'settings', label: 'Settings' },
     ])
-    expect(PANEL_PAGES.automate.map((p) => p.to)).toEqual(['automate/schedules', 'automate/approvals'])
+    expect(PANEL_PAGES.automate.map((p) => p.to)).toEqual(['automate/schedules', 'automate/pipeline', 'automate/approvals', 'automate/settings'])
+    expect(addressToPath('automate/settings')).toBe('/automate/settings')
+    expect(pathToAddress('/automate/settings')?.address).toBe('automate/settings')
   })
 
   it('routes the list and one schedule, both ways', () => {

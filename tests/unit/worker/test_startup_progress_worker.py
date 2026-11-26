@@ -176,17 +176,24 @@ def test_a_status_without_startup_or_with_junk_writes_nothing():
     assert written == []
 
 
-def test_without_a_live_path_the_two_browser_steps_are_read_then_reading_stops(tmp_path):
+def test_without_a_live_path_the_two_browser_steps_are_written_once_and_the_browser_still_watched(tmp_path):
     written: list[str] = []
     path = _path(offered=False, progress=lambda step, at: written.append(step) or True)
     gate = StatusGate({"browser_launching": LAUNCH, "browser_ready": READY})
     path.gate = gate
+    assert path.browser_ready
 
     for _ in range(4):
         path.tick(tmp_path, lambda: {})
 
     assert written == ["browser_launching", "browser_ready"]
-    assert gate.calls == 1, "a settled start-up costs no further status reads"
+    # The agent still has its browser: one status read per tick goes on after
+    # start-up settles, or a Chromium exit mid-task goes unnoticed (issue 272).
+    assert gate.calls == 4
+    # Once the browser is gone for good there is nothing left to watch.
+    path.browser_gone = {"state": "crashed", "restarts": 0, "last_exit": None, "message": "gone"}
+    path.tick(tmp_path, lambda: {})
+    assert gate.calls == 4
 
 
 def test_the_live_tick_notes_the_steps_from_the_status_it_already_reads(tmp_path):

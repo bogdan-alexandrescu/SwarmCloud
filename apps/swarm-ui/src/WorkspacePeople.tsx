@@ -1,4 +1,5 @@
 import { Fragment, useContext, useEffect, useId, useState, type FormEvent, type ReactNode } from 'react'
+import { InfoTip } from './InfoTip'
 import {
   clearWorkspacePersonRole, loadAccessMembers, loadJoinedMembers, loadJoinLink, loadMe, loadWorkspaceRoles,
   removeJoinedMember, setJoinLink, setWorkspaceDefaultRole, setWorkspacePersonRole,
@@ -444,9 +445,13 @@ function Members() {
               </EmptyState>
             ) : (
               <>
+                {/* ISSUE 81: one short line; the sentence it was is behind the (i), word for word. */}
                 <p className="pk-lead">
-                  Every member of {d.tenant_id}: whether they connected GitHub, the owners they enabled and how many
-                  repositories they chose.
+                  Every member of {d.tenant_id}.{' '}
+                  <InfoTip
+                    about="the members"
+                    tip={`Every member of ${d.tenant_id}: whether they connected GitHub, the owners they enabled and how many repositories they chose.`}
+                  />
                 </p>
                 {/* The rows' column names (visual QA V230); a phone's records carry their own (`.ac-cell-l`). */}
                 <div className="ac-members-h" aria-hidden="true">
@@ -483,7 +488,10 @@ function PersonalOnly() {
   const admin = usePlatformAdmin()
   return (
     <>
-      <p className="pk-lead">You are this workspace&rsquo;s admin; a personal workspace has only you.</p>
+      <p className="pk-lead">
+        You are this workspace&rsquo;s admin.{' '}
+        <InfoTip about="a personal workspace" tip="You are this workspace’s admin; a personal workspace has only you." />
+      </p>
       <p className="ur-hint">
         {/* WHO CREATES WHAT, IN PLAIN WORDS (visual QA pass 2, config2-21): "a platform admin adds one" read as
             adding a person as well as a workspace. */}
@@ -519,13 +527,28 @@ function Roster({ data, said, whole, onClear, onDefault }: {
 
   if (data.kind === 'user') return <PersonalOnly />
 
+  const defaultRole = data.default_role ?? 'no readable default'
+  // How the caller holds the role: its source, who gave it and when, said behind the role line's (i).
+  const held = [
+    data.me.source !== '' ? sourceWords(data.me.source) : '',
+    data.me.granted_by !== undefined ? `by ${data.me.granted_by}` : '',
+    data.me.granted_at !== undefined ? timeAgo(data.me.granted_at) : '',
+  ]
+    .filter((w) => w !== '')
+    .join(' ')
+
   return (
     <>
+      {/* ISSUE 81: each lead is one short line; how the role is held, and
+          the sentences the lines were, are behind each (i), word for word. */}
       <p className="pk-lead" aria-label="Your role">
-        You hold <b>{data.me.role || 'no readable role'}</b> in {name}
-        {data.me.source !== '' && <>, {sourceWords(data.me.source)}</>}
-        {data.me.granted_by !== undefined && <> by {data.me.granted_by}</>}
-        {data.me.granted_at !== undefined && <span title={data.me.granted_at}> {timeAgo(data.me.granted_at)}</span>}.
+        You hold <b>{data.me.role || 'no readable role'}</b> in {name}.
+        {held !== '' && (
+          <>
+            {' '}
+            <InfoTip about="how you hold it" tip={held} />
+          </>
+        )}
       </p>
       {/* ONE STATEMENT OF WHO HOLDS WHAT, IN ONE TYPE SIZE (visual QA VQ-047): the lead said "Only you hold
           a role", a second line said "Nobody in eng holds a role of their own", and the caller's role and the
@@ -533,14 +556,21 @@ function Roster({ data, said, whole, onClear, onDefault }: {
           in the lead's words, and every line of it is `pk-lead`. */}
       {data.me.via === 'platform_admin' && (
         <p className="pk-lead">
-          You are not in {name}&rsquo;s group: you reach it as a platform admin, and every action you take here is
-          recorded in its audit log.
+          Not a member; every action here is audited.{' '}
+          <InfoTip
+            about="reaching it as a platform admin"
+            tip={`You are not in ${name}’s group: you reach it as a platform admin, and every action you take here is recorded in its audit log.`}
+          />
         </p>
       )}
       <p className="pk-lead" aria-label="Default role">
-        Everyone else in {name} holds <b>{data.default_role ?? 'no readable default'}</b>, the workspace&rsquo;s
-        default{others === 0 ? ': nobody else holds a role of their own yet' : ', unless they are listed below with a role of their own'}.
-        {data.default_source === 'migration' && ' Nobody has set the default yet, so it is what every member could do before roles.'}
+        Everyone else holds <b>{defaultRole}</b>.{' '}
+        <InfoTip
+          about="the default role"
+          tip={`Everyone else in ${name} holds ${defaultRole}, the workspace’s default${
+            others === 0 ? ': nobody else holds a role of their own yet' : ', unless they are listed below with a role of their own'
+          }.${data.default_source === 'migration' ? ' Nobody has set the default yet, so it is what every member could do before roles.' : ''}`}
+        />
       </p>
 
       <People data={data} onClear={onClear} />
@@ -872,15 +902,21 @@ function JoinLinkCard({ name }: { name: string }) {
         {(d) => (
           <section className="pk-row" aria-label="Join link">
             {d.on ? (
+              // ISSUE 81: one short line each; the sentences are behind the (i), word for word.
               <p className="pk-lead">
-                The join link is <b>on</b>: anyone holding it can ask to join {name}
-                {d.set_by !== '' && <>, turned on by {d.set_by}</>}
-                {d.set_at !== '' && <span title={d.set_at}> {timeAgo(d.set_at)}</span>}.
+                The join link is <b>on</b>.{' '}
+                <InfoTip
+                  about="the join link"
+                  tip={['The join link is on: anyone holding it can ask to join ', name, d.set_by !== '' ? ', turned on by ' + d.set_by : '', d.set_at !== '' ? ' ' + timeAgo(d.set_at) : '', '.'].join('')}
+                />
               </p>
             ) : (
               <p className="pk-lead">
-                The join link is <b>off</b>: nobody can ask to join {name}. Turn it on to share a link a person asks to
-                join with.
+                The join link is <b>off</b>.{' '}
+                <InfoTip
+                  about="the join link"
+                  tip={`The join link is off: nobody can ask to join ${name}. Turn it on to share a link a person asks to join with.`}
+                />
               </p>
             )}
             <p className="ur-small">

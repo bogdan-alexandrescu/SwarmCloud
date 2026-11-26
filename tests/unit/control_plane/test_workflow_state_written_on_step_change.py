@@ -234,3 +234,41 @@ def test_the_changed_task_is_judged_as_the_transaction_leaves_it(db):
 
     assert ref.id == WORKFLOW
     assert patch["state"] == "PARKED"
+
+
+# --------------------------------------------------------------------------
+# a terminal write lifts a pause (design section 11, P1)
+# --------------------------------------------------------------------------
+
+
+def test_a_paused_workflow_whose_last_step_succeeds_is_unpaused_by_the_settling_write(db):
+    from swarm_rollup import settled_unpause
+
+    _seed_implement(db)
+    seed_task(db, task_id=TASK, tenant_id="eng", state="RUNNING", workflow_id=WORKFLOW)
+    _seed_workflow(db, state="RUNNING", steps=_two_steps())
+    db.docs[f"workflows/{WORKFLOW}"].update({"paused": True, "paused_at": datetime.now(timezone.utc)})
+
+    _ref, patch = _write(db, changed={TASK: {**db.docs[f"tasks/{TASK}"], "state": "SUCCEEDED"}})
+
+    assert patch["state"] == "SUCCEEDED"
+    assert patch["paused"] is False
+    assert patch["paused_at"] is None
+    # A live write never touches the pause; a terminal write of an unpaused one adds nothing.
+    assert settled_unpause("RUNNING", {"paused": True}) == {}
+    assert settled_unpause("FAILED", {"paused": False}) == {}
+    assert settled_unpause("FAILED", {"paused": True}) == {"paused": False, "paused_at": None}
+    assert settled_unpause("CANCELLED") == {"paused": False, "paused_at": None}
+
+
+def test_a_paused_workflow_that_fails_is_unpaused_by_the_settling_write(db):
+    _seed_implement(db)
+    seed_task(db, task_id=TASK, tenant_id="eng", state="RUNNING", workflow_id=WORKFLOW)
+    _seed_workflow(db, state="RUNNING", steps=_two_steps())
+    db.docs[f"workflows/{WORKFLOW}"].update({"paused": True, "paused_at": datetime.now(timezone.utc)})
+
+    _ref, patch = _write(db, changed={TASK: {**db.docs[f"tasks/{TASK}"], "state": "FAILED"}})
+
+    assert patch["state"] == "FAILED"
+    assert patch["paused"] is False
+    assert patch["paused_at"] is None

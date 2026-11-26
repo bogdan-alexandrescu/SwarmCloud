@@ -12,7 +12,8 @@
 // WHAT EACH CASE HOLDS:
 //   * the rows here and the fixture build's rows carry exactly the keys
 //     doctor.py's Finding.to_json writes, and statuses exitcodes.py defines
-//     (read from the Python source, so a writer change turns this red);
+//     (read from the live objects into generated/constants/server.json, so a
+//     writer change fails the generator's --check until it is regenerated);
 //   * met draws passed, unmet draws failed, unknown draws not checked;
 //   * an unmet finding shows what the probe saw, the doctor's fix and its
 //     repair command; an unknown one says it could not be checked and why;
@@ -21,7 +22,7 @@
 //   * a row in the console's own shape is NOT read as a pass or a finding;
 //   * no doctor run says the hourly doctor has not run yet, never that it
 //     is off (every install turns it on: tfvars.py's SCHEDULED_DOCTOR_SHIPPED,
-//     read from the Python source), and is not drawn as healthy;
+//     from generated/constants/server.json), and is not drawn as healthy;
 //   * NO EXPLANATORY PROSE ON THE SURFACE (the owner's standing rule, 2026-11-05):
 //     why a check could not look is the tooltip of a tick beside its title,
 //     "no repair command" is the title's tooltip, and what Health is sits
@@ -29,17 +30,15 @@
 //
 // Fixtures only; no network.
 
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen } from '@testing-library/react'
 import { serve, visible } from './repofixture'
+import server from '../generated/constants/server.json'
 
 type Json = Record<string, unknown>
 
 const RUN_AT = '2026-10-29T14:58:00Z'
 const NOW_MS = Date.parse('2026-10-29T15:00:00Z')
-const INSTALL = join(__dirname, '..', '..', '..', 'swarm-install', 'swarm_install')
 
 /** One row as `doctor.Finding.to_json()` writes it. */
 function row(id: string, status: string, over: Json = {}): Json {
@@ -67,22 +66,15 @@ const RUN = [
   row('quota.cloud-run-jobs', 'unknown', { step: null, cause: 'missing_grant', detail: 'missing grant: the doctor lacks serviceusage.quotas.get, so this could not be checked' }),
 ]
 
-/** The keys `Finding.to_json` returns, read from doctor.py. */
+/** The keys `Finding.to_json` returns, sorted, as the generated server.json holds them. */
 function writerKeys(): string[] {
-  const py = readFileSync(join(INSTALL, 'doctor.py'), 'utf8')
-  const body = /def to_json\(self\)[^\n]*\n\s+return \{([\s\S]*?)\n\s+\}/.exec(py)
-  expect(body, 'doctor.py has no Finding.to_json returning a dict literal').not.toBeNull()
-  return Array.from(((body as RegExpExecArray)[1] ?? '').matchAll(/"(\w+)":/g), (m) => m[1] ?? '').sort()
+  expect(server.doctor.finding_keys.length, 'server.json holds no Finding.to_json keys').toBeGreaterThan(0)
+  return [...server.doctor.finding_keys].sort()
 }
 
-/** MET, UNMET and UNKNOWN as exitcodes.py defines them. */
+/** MET, UNMET and UNKNOWN as exitcodes.py defines them, from server.json. */
 function writerStatuses(): string[] {
-  const py = readFileSync(join(INSTALL, 'exitcodes.py'), 'utf8')
-  return ['MET', 'UNMET', 'UNKNOWN'].map((name) => {
-    const m = new RegExp(`^${name} = "(\\w+)"`, 'm').exec(py)
-    expect(m, `exitcodes.py defines no ${name}`).not.toBeNull()
-    return (m as RegExpExecArray)[1] ?? ''
-  })
+  return [...server.doctor.statuses]
 }
 
 async function mount(body: Json) {
@@ -191,7 +183,7 @@ describe('Admin › Setup › Health reads the doctor’s shape', () => {
 
   it('says the hourly doctor has not run yet when no run is recorded, not that it is off or that everything is healthy', async () => {
     // Every install turns the doctor on in infra pass 2; if that stops, this wording is wrong.
-    expect(readFileSync(join(INSTALL, 'tfvars.py'), 'utf8')).toMatch(/^SCHEDULED_DOCTOR_SHIPPED = True$/m)
+    expect(server.doctor.scheduled_doctor_shipped).toBe(true)
     await mount({ latest: null })
     // MUTATION: say the doctor is off right after an install that turned it on.
     expect(await screen.findByText(/The hourly doctor has not run yet/)).toBeTruthy()

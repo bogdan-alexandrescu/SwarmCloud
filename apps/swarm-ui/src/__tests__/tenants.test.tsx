@@ -21,6 +21,7 @@ import SHEET from '../styles.css?raw'
 import ADMIN from '../styles/admin.css?raw'
 import { describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { helpIn } from './proseruns'
 
 import type { Result } from '../fetch'
 import { HELP } from '../help'
@@ -325,15 +326,17 @@ describe('Tenants says there is no budget in the reader’s words (AH-21)', () =
     const c = await roster()
     const note = [...c.querySelectorAll('.ctl-panel-note')].find((p) => /budget/.test(p.textContent ?? ''))
     expect(note, 'there is no budget note').toBeTruthy()
-    const link = note!.querySelector('a')
-    expect(link?.getAttribute('href')).toBe('#help/tenant-fields')
-    expect(link?.textContent).toBe('Why →')
-    const words = visible(note!).replace('Why →', '').trim()
+    // Issue 81: the why is the note's (i), no arrowed text link; the topic
+    // stays linked from the panel's help footer.
+    expect(note!.querySelector('a'), 'the note draws an arrowed Why link again').toBeNull()
+    expect(note!.querySelector('button[aria-label="About the budget column"]')).toBeTruthy()
+    expect(helpIn(note)).toContain('Tenants have no budget column: no budget can be set here.')
+    const words = visible(note!).trim()
     // A SENTENCE, IN THE BODY FONT (visual QA pass 1, admin-shell-18): the
     // mono `no budget column · no budget can be set` read as debug output.
     // MUTATION: restore the mono fragment, or drop `font-family` from
     // `.ctl-panel-note.ten-budget`.
-    expect(words).toBe('Tenants have no budget column: no budget can be set here.')
+    expect(words).toBe('No budget can be set here.')
     expect(painted(note!, 'font-family', WIDE)).toBe('var(--font)')
     // A budget is a setting, not a measurement: no `not measured` mark.
     expect(note!.querySelector('.ctl-mark'), 'a setting is drawn as an unmeasured figure').toBeNull()

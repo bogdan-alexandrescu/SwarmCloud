@@ -1109,6 +1109,16 @@ def test_directory_scopes_refused_at_stage_0_signs_in_without_them(refusal: str)
     assert gcloud.ran == []
 
 
+def test_stage_0_says_when_the_desktop_client_exists() -> None:
+    """Issue 368: the deployment's Desktop client is made in Admin › Setup's
+    Sign-in client step, which stage 13 waits for, so stage 0's line and its
+    blocked-page hint never promise a stage 8 sign-in through it."""
+    for said in (preflight.DIRECTORY_LATER, preflight.CONSENT_HINT):
+        assert "Sign-in client" in said and "stage 13" in said, said
+        assert "through the deployment's own" not in said, said
+    assert "stage 8" in preflight.DIRECTORY_LATER and "\n" not in preflight.DIRECTORY_LATER
+
+
 @pytest.mark.parametrize("refusal", ["blocked", "interrupted"])
 def test_a_blocked_consent_page_never_hangs_the_sign_in(refusal: str) -> None:
     """Audit 4a F2: Google's "This app is blocked" page never returns to gcloud.

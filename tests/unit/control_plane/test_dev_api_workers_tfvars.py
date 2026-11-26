@@ -38,8 +38,6 @@ def test_the_infra_default_is_one():
     assert re.search(r"^\s*default\s*=\s*1\s*$", block.group("body"), re.MULTILINE)
 
 
-def test_the_installer_renders_no_worker_count():
-    # A fresh deployment needs no setting: infra's default 1 is today's one
-    # worker. MUTATION: render api_workers from apps/swarm-install and this fails.
-    installer = ROOT / "apps" / "swarm-install" / "swarm_install"
-    assert not [p for p in installer.rglob("*.py") if "api_workers" in p.read_text()]
+# That the installer renders no worker count -- a fresh deployment keeps infra's
+# default of one -- is the lint rule `installer-renders-no-api-workers`
+# (scripts/source_text_rules/control_plane_am.py).

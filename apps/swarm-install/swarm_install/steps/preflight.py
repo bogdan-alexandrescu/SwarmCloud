@@ -9,7 +9,7 @@ zero mutating calls).
 | Step | Manifest entries | Lesson |
 |---|---|---|
 | `preflight.tools` | the core `local-tool.*` | 12: terraform `1.16.2`, kubectl ≥ 1.30 |
-| `preflight.sign-in` | `other.installer-sign-in` | gcloud and ADC signed in, by the installer itself; ADC with the Directory scopes, or without them when Google refuses them (`directory_scopes` false; stage 8 asks, N14), a blocked consent page included: that sign-in waits at most `CONSENT_WAIT_S` and Ctrl-C stops gcloud, not the run (audit 4a F2); records `installer` |
+| `preflight.sign-in` | `other.installer-sign-in` | gcloud and ADC signed in, by the installer itself; ADC with the Directory scopes, or without them when Google refuses them (`directory_scopes` false; stage 8 works without them, N14, issue 368), a blocked consent page included: that sign-in waits at most `CONSENT_WAIT_S` and Ctrl-C stops gcloud, not the run (audit 4a F2); records `installer` |
 | `preflight.organization` | — | audit archived pull request 24: no organisation is said first; the Cloud Identity Free sign-up opens and is polled; billing creation opens when the organisation waits on it (N16) |
 | `preflight.inputs` | `other.github-org` | R7: the alert email, the hostname (the verb's), the GitHub org, the billing account (listed; with none, billing creation opens and is polled, N15) |
 | `preflight.region` | — | 2: the region (the verb's) is confirmed, typed, before stage 1 |
@@ -794,12 +794,14 @@ ADC_SCOPES = (
     "https://www.googleapis.com/auth/admin.directory.rolemanagement",
 )
 #: What the engine and terraform cannot run without; the Directory scopes are
-#: the rest, and stage 8 asks for them itself when Google refuses them here
+#: the rest, and stage 8 works without them when Google refuses them here
 #: (audit N14, DAYONE-DIR-SCOPES).
 CLOUD_PLATFORM_SCOPE = ADC_SCOPES[0]
 DIRECTORY_SCOPES = ADC_SCOPES[1:]
 DIRECTORY_LATER = ("Google refused the Directory scopes to this sign-in, so it went on without them; stage 8 "
-                   "asks for them through the deployment's own Desktop client when it needs them.")
+                   "creates the groups with this sign-in and opens the Admin console's roles page for the "
+                   "Groups Reader role, because the deployment's Desktop client is made only later, in Admin › "
+                   "Setup's Sign-in client step that stage 13 waits for.")
 
 
 def adc_login(scopes: Sequence[str] = ADC_SCOPES) -> list[str]:
@@ -813,7 +815,7 @@ def adc_login(scopes: Sequence[str] = ADC_SCOPES) -> list[str]:
 
 def directory_declined(ctx: Any) -> bool:
     """Stage 0's sign-in went on without the Directory scopes (`directory_scopes`
-    is false): stage 8 asks for them, and stage 0 never asks again."""
+    is false): stage 8 works without them, and stage 0 never asks again."""
     return ctx is not None and ctx.outputs.get("directory_scopes") is False
 
 
@@ -856,8 +858,10 @@ CONSENT_WAIT_S = 5 * 60
 #: `run_auth`'s answer when gcloud was stopped at `timeout` (timeout(1)'s code).
 TIMED_OUT = 124
 CONSENT_HINT = ("If Google says this app is blocked, press Ctrl-C here (or wait "
-                f"{CONSENT_WAIT_S // 60} minutes): the installer then signs in with Cloud Platform alone and "
-                "asks for the Directory scopes later, through the deployment's own client.")
+                f"{CONSENT_WAIT_S // 60} minutes): the installer then signs in with Cloud Platform alone, and "
+                "the install does its Directory work without these scopes (the deployment's Desktop client, which "
+                "could ask for them, is made later, in Admin › Setup's Sign-in client step that stage 13 "
+                "waits for).")
 
 
 def run_auth(argv: Sequence[str], *, timeout: float | None = None) -> int:
@@ -881,8 +885,12 @@ class SignInStep(_Base):
     Google may refuse the Directory scopes to gcloud's own OAuth client (the
     browser says the app is blocked, or the token comes back without them,
     audit N14). The sign-in is then run again with Cloud Platform alone,
-    `directory_scopes` is recorded false and one line says stage 8 asks for
-    them later (`identity.directory_sign_in`); it is never a dead end. A
+    `directory_scopes` is recorded false and one line says what stage 8 does
+    without them: the groups with this sign-in under the organisation's
+    customer id, the Groups Reader role on the Admin console's roles page,
+    since the Desktop client is made only in the Sign-in client step stage 13
+    waits for (issue 368; `identity.GroupsStep`, `GroupsReaderRoleStep`); it
+    is never a dead end. A
     sign-in that fails with Cloud Platform alone too still stops the run."""
 
     id = "preflight.sign-in"
@@ -957,7 +965,7 @@ class SignInStep(_Base):
             ctx.events.emit("step_apply", step=self.id, message=f"{what}; signing in: your browser opens")
             if args == adc_login():
                 if directory_declined(ctx):
-                    # Google already refused the Directory scopes; stage 8 asks for them.
+                    # Google already refused the Directory scopes; stage 8 works without them.
                     args = adc_login((CLOUD_PLATFORM_SCOPE,))
                 else:
                     self._adc_sign_in(ctx, gcloud, what)

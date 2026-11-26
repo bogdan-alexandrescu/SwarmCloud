@@ -27,6 +27,8 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
+import pytest
+
 _HERE = Path(__file__).resolve().parent
 for _path in (str(_HERE.parent), str(_HERE)):
     if _path not in sys.path:
@@ -112,6 +114,47 @@ async def _settle(h: Harness, predicate, what: str) -> None:
 
 def _said(h: Harness) -> list[str]:
     return [f["text"] for f in h.browser.frames() if f.get("t") == "say.start"]
+
+
+def test_the_harness_waits_for_a_lease_write_whose_thread_runs_late():
+    """A busy runner may not run the relay's worker thread for longer than the
+    event loop takes over 5,000 empty turns (issue 411). Here the last lease
+    write before ready is held for 6,000 turns, whatever the machine's speed."""
+    async def go():
+        ran = threading.Event()
+
+        async def late(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+            if fn != h.machine.ready:
+                return fn(*args, **kwargs)
+
+            def held() -> Any:
+                assert ran.wait(10.0)
+                return fn(*args, **kwargs)
+
+            working = asyncio.ensure_future(asyncio.to_thread(held))
+            for _ in range(6000):
+                await asyncio.sleep(0)
+            ran.set()
+            return await working
+
+        h = Harness(dialer=Dialer(FakeVm()), turns=StreamingTurns(first=None))
+        h.relay._to_thread = late
+        task = await h.ready()
+        assert h.browser.statuses()[-1] == sr.READY
+        await h.close(task)
+    run(go())
+
+
+def test_the_harness_still_fails_a_relay_that_never_becomes_ready():
+    async def go():
+        h = Harness(dialer=Dialer(FakeVm(ready=False)), turns=StreamingTurns())
+        h.give_up_seconds = 0.2
+        task = asyncio.ensure_future(h.relay.run())
+        with pytest.raises(AssertionError, match="^never saw ready; browser got .*loading models"):
+            await h.until(lambda: sr.READY in h.browser.statuses(), "ready")
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    run(go())
 
 
 def test_the_first_sentence_reaches_the_speech_call_before_the_turns_last_token():

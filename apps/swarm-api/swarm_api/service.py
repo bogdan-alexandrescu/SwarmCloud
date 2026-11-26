@@ -140,6 +140,7 @@ from . import wfdescription
 from .store import Store, derived_service_account
 from .task_accounts import takes_pool_account
 from . import reviewgate
+from . import stepceiling
 from .stepclass import (
     CLASS_AT_GATE_KEY,
     CLASS_CHOSEN_BY_KEY,
@@ -1977,6 +1978,12 @@ class SubmissionService:
         # one that names none is stored with the platform's default block,
         # which swarm-api resolves against the workspace's setting.
         default_gated = default_review_gate_steps(spec.steps, spec.metadata)
+        # The reviews, from the workflow's graph (a step another step's
+        # `when` reads), never from a step's metadata: each is stamped with
+        # the review role's session limits unless its caller set its own
+        # (contract request 158, `stepceiling`). The re-review was stamped
+        # as it was derived (`rereview_step_for`); a build step never is.
+        reviews = stepceiling.review_steps(spec.steps) - {rereview_step_id}
         now = self._now()
         workflow_id = new_id("wf")
 
@@ -2076,7 +2083,9 @@ class SubmissionService:
             task = self._build_task(
                 spec=TaskCreate(
                     runner_profile=source.runner_profile,
-                    input=source.input,
+                    input=(stepceiling.stamp(stepceiling.SUBMITTED_REVIEW_ROLE,
+                                             source.runner_profile, source.input)
+                           if step_id in reviews else source.input),
                     priority=spec.priority,
                     metadata={
                         **spec.metadata, **source.metadata, "workflow_step": step_id,
@@ -3268,7 +3277,7 @@ class SubmissionService:
             return "not_configured", set()
         try:
             listing = accounts(tenant_id)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.warning(
                 "providers: the account pool could not be read",
                 extra={"tenant_id": tenant_id, "error": type(exc).__name__},

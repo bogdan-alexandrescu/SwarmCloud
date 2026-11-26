@@ -1853,6 +1853,12 @@ def repository_userinfo(url: str) -> tuple[int, int] | None:
     return start, start + at
 
 
+#: The schemes a `repository_url` may start with: `check_repository_url`'s
+#: rule, and what the console's dispatch form warns against otherwise (it reads
+#: this tuple through `apps/swarm-ui/src/generated/constants/server.json`).
+REPOSITORY_URL_PREFIXES: tuple[str, ...] = ("https://", "git@", "ssh://")
+
+
 def check_repository_url(value: str | None) -> str | None:
     """The one `repository_url` rule, for `TaskCreate` and `WorkflowCreate` alike.
 
@@ -1860,7 +1866,7 @@ def check_repository_url(value: str | None) -> str | None:
     """
     if value is None:
         return None
-    if not value.startswith(("https://", "git@", "ssh://")):
+    if not value.startswith(REPOSITORY_URL_PREFIXES):
         raise ValueError("repository_url must be an https://, ssh:// or git@ URL")
     if repository_userinfo(value) is not None:
         # Constants only: see the section header.
@@ -2598,7 +2604,17 @@ class DispatchOptions:
             block[FIX_LOOP_FIELD] = json.loads(json.dumps(self.fix_loop))
         # Absent on every task but a fix loop's round (FL-DRIVE).
         if self.fix_loop_round is not None:
-            block[FIX_LOOP_ROUND_FIELD] = json.loads(json.dumps(self.fix_loop_round))
+            record = json.loads(json.dumps(self.fix_loop_round))
+            block[FIX_LOOP_ROUND_FIELD] = record
+            # The worker's rendered-review gate reads the lane's paths at the
+            # top of the block (`agent_worker.verdict.ui_paths_in_dispatch`),
+            # not inside the record: signed in the record alone, the gate
+            # bound no re-review (issue 393). A value that is not a list is
+            # the worker's "could not be told", which it gates.
+            if record.get(RENDERED_REVIEW_UNKNOWN_KEY):
+                block[RENDERED_REVIEW_PATHS_KEY] = None
+            elif RENDERED_REVIEW_PATHS_KEY in record:
+                block[RENDERED_REVIEW_PATHS_KEY] = record[RENDERED_REVIEW_PATHS_KEY]
         # Absent unless the spec named a pull request (archived issue 2183), so every other
         # dispatch stores exactly the block it stored before. The worker
         # spells the key `agent_worker.publishpr.FIELD`.
@@ -3927,6 +3943,7 @@ def rereview_step_for(
     (`REREVIEW_ALSO_PREAMBLE`). `also_reviews` maps each of those step ids to
     the step as submitted; one missing derives nothing.
     """
+    from .stepceiling import stamp
     from .stepclass import ROLE_REREVIEW, choose
 
     sources = merge_sources(steps, strategy)
@@ -3977,8 +3994,12 @@ def rereview_step_for(
     step: dict[str, Any] = {
         "step_id": _free_step_id(REREVIEW_STEP_ID, {s.step_id for s in steps}),
         "runner_profile": profile,
-        "input": {**original, "prompt": preamble + (prompt if isinstance(prompt, str) else "")
-                  + lenses},
+        # The review's own `context_ceiling` when its caller set one (copied
+        # with the rest of its input), else the re-review role's
+        # (contract request 158, `stepceiling`).
+        "input": stamp(ROLE_REREVIEW, profile, {
+            **original, "prompt": preamble + (prompt if isinstance(prompt, str) else "")
+            + lenses}),
         "depends_on": list(dict.fromkeys([sources.pull_request, *staged])),
         "builds_on": sources.pull_request,
         "input_from": staged,
@@ -5279,6 +5300,11 @@ FIX_LOOP_FIELD = "fix_loop"
 #: A fix loop round's signed record in its `metadata.dispatch` (FL-DRIVE, §4.3),
 #: and the unsigned copy beside it in `metadata` that `cifix.ROUND_KINDS` reads.
 FIX_LOOP_ROUND_FIELD = "fix_loop_round"
+#: In a re-review's record: the lane's changed paths, which the worker's
+#: rendered-review gate reads (`agent_worker.verdict.RENDERED_REVIEW_PATHS_KEY`),
+#: and the mark of a list that cannot say, which is gated naming no path.
+RENDERED_REVIEW_PATHS_KEY = "rendered_review_paths"
+RENDERED_REVIEW_UNKNOWN_KEY = "rendered_review_unknown"
 #: `fix_loop.max_rounds`: the fix agents the loop's workflow may run in all,
 #: the declared `fix` counted as round 1. 1-5 and 3 when absent (the owner Q5 (a)):
 #: the same range and default as `MERGE_FIX_ROUNDS_MAX` and an issue run's

@@ -92,6 +92,7 @@ from .errors import ApiError, ValidationFailed
 from .forgeapp import GRANTS
 from .mergesettings import COLLECTION as WORKSPACE_SETTINGS
 from .provider_keys import KEYS_COLLECTION as PROVIDER_KEYS
+from .publishtopr import DISPATCH_FIELD as PUBLISH_TO_PR_FIELD
 from .repositories import parse_repository, repo_id_for
 from .repoindex import BASE_LINE, INDEXER_PROFILE, KEPT_VERSIONS, VERSIONS_COLLECTION
 from .rollup import derived_state_write
@@ -175,6 +176,18 @@ QUOTA_MAX_RESUMES = 5
 #: looping, not finishing. The worker restates it
 #: (`control.TIME_LIMIT_MAX_CONTINUATIONS`), stops continuing at it and fails
 #: the task saying it ran out of continuations; it sends no number here.
+#: A WORKFLOW_PAUSED park (docs/design/workflow-pause.md section 5.4; the
+#: owner's decision Q1, 2026-11-24, "(a) refund both, bounded"): a pause is a
+#: person's choice, not a failed attempt, so the worker's pause park is
+#: refunded, counted in `metadata.pause_refunds`. 5 BECAUSE it is the quota
+#: park's number (QUOTA_MAX_RESUMES): without a refund two pauses of a running
+#: step exhaust a default three-attempt step and fail it, and the bound stops a
+#: step that only ever parks from looping on refunds; past it the park spends
+#: an attempt. The reconciler's pause-overdue requeue counts against the SAME
+#: key and bound (Q1), so a step has five pause refunds in all, not five per
+#: path. A worker sends no number here.
+PAUSE_REFUNDS = "pause_refunds"
+PAUSE_MAX_REFUNDS = 5
 TIME_LIMIT = "time_limit"
 TIME_LIMIT_CONTINUATIONS = "time_limit_continuations"
 TIME_LIMIT_MAX_CONTINUATIONS = 2
@@ -496,15 +509,29 @@ def _bounded(value: Any, what: str) -> Any:
     return value
 
 
-def fence_view(task: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    """What every writing answer carries (§4.2), enough for `ControlSignals`."""
+def fence_view(task: Mapping[str, Any] | None, attempt: AttemptTuple | None = None, *,
+               fenced: bool = False) -> dict[str, Any] | None:
+    """What every writing answer carries (§4.2), enough for `ControlSignals`.
+
+    `pause_requested` is the step's raw `pause_requested_at` mirror
+    (docs/design/workflow-pause.md sections 2.1 and 5.1): it rides the read the
+    poll already makes, and a cleared mirror (a resume) reads False. It is a
+    signal to the attempt that owns the task and to no other: when `attempt`
+    is given and is not the task's current generation (or tenant), or the
+    caller found the attempt `fenced`, it is False. A stale worker exits on
+    the fence; it must not park, so it learns nothing of the pause.
+    """
     if task is None:
         return None
+    owns = not fenced and (attempt is None or (
+        task.get("current_generation") == attempt.generation
+        and task.get("tenant_id") == attempt.tenant_id))
     return {
         "state": task.get("state"),
         "current_generation": task.get("current_generation"),
         "current_lease_id": task.get("current_lease_id"),
         "cancel_requested": bool(task.get("cancel_requested")),
+        "pause_requested": owns and bool(task.get("pause_requested_at")),
         "next_eligible_at": jsonable(task.get("next_eligible_at")),
     }
 
@@ -759,6 +786,33 @@ class _Walk:
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _publishes_onto(block: Mapping[str, Any], merge: Mapping[str, Any],
+                    candidate: Mapping[str, Any], root: str) -> bool:
+    """Whether `candidate` is a lane `publish_to_pr` pushed onto `root`'s branch
+    in the merge step's own repository (fr-5fdbfbf85bba, issue 283).
+
+    `block` is the candidate's `metadata.dispatch` and `merge` the merge
+    step's document, each read from a document whose spec signature the
+    caller verified, so `publish_to_pr` and `repository_url` are the ones
+    swarm-api signed at submission (`publishtopr`), never a later rewrite.
+    Held to what `publishtopr` could have written, as the worker's
+    `publishpr.target` holds it: a positive pull request number, the task
+    id the root's `swarm/<root>` branch derives from -- the same root the
+    `continues` rule compares -- and neither `continues` nor `pr_role`
+    beside it. The repository is compared as `owner/repo`, case-folded as
+    GitHub compares it; a candidate or merge with none names nothing."""
+    published = _mapping(block.get(PUBLISH_TO_PR_FIELD))
+    number = published.get("number")
+    if (published.get("task_id") != root or isinstance(number, bool)
+            or not isinstance(number, int) or number < 1
+            or block.get("continues") or block.get("pr_role")):
+        return False
+    own = owner_repo(merge.get("repository_url"))
+    theirs = owner_repo(candidate.get("repository_url"))
+    return (own is not None and theirs is not None
+            and tuple(p.lower() for p in own) == tuple(p.lower() for p in theirs))
 
 
 #: A fix loop's re-review round, as `fixloop.REVIEW_KIND` signs it in the
@@ -1150,8 +1204,12 @@ class AttemptState:
         return released
 
     @staticmethod
-    def _answer(task: Mapping[str, Any] | None, **extra: Any) -> dict[str, Any]:
-        return {"ok": True, "task": fence_view(task), **extra}
+    def _answer(task: Mapping[str, Any] | None, attempt: AttemptTuple | None = None,
+                **extra: Any) -> dict[str, Any]:
+        """The writing answer. A repeat passes its `attempt`: the task it read
+        is not fenced, and a newer generation may own it by now, whose pause
+        signal is not this attempt's to read (`fence_view`)."""
+        return {"ok": True, "task": fence_view(task, attempt), **extra}
 
     # -- the task's read-side views (contract request 132) -------------------
 
@@ -1165,7 +1223,7 @@ class AttemptState:
         `GET /v1/tasks` then derives the row as it always has."""
         try:
             docs = task_attempt_docs(self._db, attempt.tenant_id, attempt.task_id)
-        except Exception as exc:  # a view never fails the write it rides on
+        except Exception as exc:  # a view never fails the write it rides on  # noqa: BLE001
             log.warning("attempt totals not stored: %s", type(exc).__name__)
             return None
         return stored_totals(docs, attempt_id=attempt.attempt_id,
@@ -1216,7 +1274,7 @@ class AttemptState:
             "ok": True,
             "registration": registered,
             "task": jsonable(task),
-            "fence": fence_view(task),
+            "fence": fence_view(task, attempt),
             "lease": jsonable(lease),
             "attempt": jsonable(own),
             "restore_attempt": jsonable(restore),
@@ -1283,11 +1341,11 @@ class AttemptState:
         def _apply(txn: Any) -> dict[str, Any]:
             seen = self._seen(txn, attempt, event_id)
             if seen is not None:
-                return self._answer(seen, repeat=True)
+                return self._answer(seen, attempt, repeat=True)
             task = self._fenced(txn, attempt)
             current = TaskState(task["state"])
             if current is to:
-                return self._answer(task, repeat=True)
+                return self._answer(task, attempt, repeat=True)
             if not worker_may_transition(current, to):
                 raise TransitionRefused(
                     f"a worker may not move a task from {current.value} to {to.value}"
@@ -1554,7 +1612,9 @@ class AttemptState:
         human park, and DEPENDENCY_INCOMPLETE whose detail carries a
         `release_wait` block is `park_release_wait` (AU7-REFUND),
         PROVIDER_QUOTA_EXHAUSTED is `ControlPlane.park`'s quota refund
-        (archived issue 2350); any other reason is `ControlPlane.park`, no refund.
+        (archived issue 2350), WORKFLOW_PAUSED is the pause park's refund
+        (docs/design/workflow-pause.md section 5.4, decision Q1, bounded by
+        PAUSE_MAX_REFUNDS); any other reason is `ControlPlane.park`, no refund.
         """
         body: ParkBody = call.body
         attempt = call.attempt
@@ -1574,7 +1634,7 @@ class AttemptState:
         def _apply(txn: Any) -> dict[str, Any]:
             seen = self._seen(txn, attempt, event_id)
             if seen is not None:
-                return self._answer(seen, repeat=True)
+                return self._answer(seen, attempt, repeat=True)
             task = self._fenced(txn, attempt)
             current = TaskState(task["state"])
             if not worker_may_transition(current, TaskState.PARKED):
@@ -1742,6 +1802,16 @@ class AttemptState:
                     payload["metadata"] = metadata
                 extra = {TIME_LIMIT_CONTINUATIONS: used + (1 if refund else 0),
                          "max_continuations": TIME_LIMIT_MAX_CONTINUATIONS}
+            elif reason is ParkReason.WORKFLOW_PAUSED:
+                # Decision Q1: refunded within the server's bound, on its own
+                # counter (never another reason's); past it the park counts.
+                used = _count(metadata.get(PAUSE_REFUNDS))
+                refund = used < PAUSE_MAX_REFUNDS and attempt_count > 0
+                if refund:
+                    metadata[PAUSE_REFUNDS] = used + 1
+                    payload["metadata"] = metadata
+                extra = {PAUSE_REFUNDS: used + (1 if refund else 0),
+                         "max_refunds": PAUSE_MAX_REFUNDS}
         if refund:
             payload["attempt_count"] = attempt_count - 1
         kind = EventType.PARKED
@@ -1749,7 +1819,8 @@ class AttemptState:
             "reason": reason.value, "next_eligible_at": payload["next_eligible_at"],
             **({"attempt_refunded": refund} if release_wait or time_limit or reason in (
                 ParkReason.CHILDREN_INCOMPLETE, ParkReason.CI_PENDING,
-                ParkReason.HUMAN_REQUIRED, ParkReason.PROVIDER_QUOTA_EXHAUSTED) else {}),
+                ParkReason.HUMAN_REQUIRED, ParkReason.PROVIDER_QUOTA_EXHAUSTED,
+                ParkReason.WORKFLOW_PAUSED) else {}),
             **extra, **detail}
         release_reason = f"parked:{reason.value}"
         if reason is ParkReason.HUMAN_REQUIRED:
@@ -1808,7 +1879,7 @@ class AttemptState:
         def _apply(txn: Any) -> dict[str, Any]:
             seen = self._seen(txn, attempt, event_id)
             if seen is not None:
-                return self._answer(seen, repeat=True)
+                return self._answer(seen, attempt, repeat=True)
             task = self._fenced(txn, attempt)
             current = TaskState(task["state"])
             if not worker_may_transition(current, to):
@@ -1865,7 +1936,7 @@ class AttemptState:
         def _apply(txn: Any) -> dict[str, Any]:
             seen = self._seen(txn, attempt, event_id)
             if seen is not None:
-                return self._answer(seen, repeat=True)
+                return self._answer(seen, attempt, repeat=True)
             task = self._fenced(txn, attempt)
             return self._retry_writes(
                 txn, attempt, task, error=body.error, cause=body.cause, end_cause=cause,
@@ -2019,7 +2090,7 @@ class AttemptState:
         def _apply(txn: Any) -> dict[str, Any]:
             seen = self._seen(txn, attempt, event_id)
             if seen is not None:
-                return self._answer(seen, repeat=True)
+                return self._answer(seen, attempt, repeat=True)
             task = self._fenced(txn, attempt)
             contract = cr.signed_contract(self._settings, task, attempt.task_id)
             if isinstance(contract, str):
@@ -2163,10 +2234,11 @@ class AttemptState:
             if not _PROVIDER.fullmatch(provider):
                 raise ValidationFailed("provider must be a provider name")
             quota = self._read(self._ref(QUOTA, f"{provider}:{attempt.tenant_id}"))
+        fenced = fence_reason(task, lease, attempt)
         return {
             "ok": True,
-            "task": fence_view(task),
-            "fenced": fence_reason(task, lease, attempt),
+            "task": fence_view(task, attempt, fenced=fenced is not None),
+            "fenced": fenced,
             "lease": None if lease is None else {
                 "released": lease.get("released_at") is not None,
                 "expires_at": jsonable(lease.get("expires_at")),
@@ -2374,7 +2446,11 @@ class AttemptState:
             signed `dispatch.merge_target.pull_request` and that task's own
             signed `dispatch.continues`; and any task of this tenant whose
             signed dispatch block `continues` that root -- a merge's CI-fix
-            or conflict fix round, or a PR-side fixer of the same branch.
+            or conflict fix round, or a PR-side fixer of the same branch --
+            or whose signed `publish_to_pr.task_id` is that root, in this
+            task's own signed repository (`_publishes_onto`): a person's
+            lane that fast-forwarded onto this pull request, which
+            `agent_worker.merge._person_lane` reads (fr-5fdbfbf85bba).
             Every task document is tenant-writable after signing
             (docs/design/tenant-settings-integrity.md §1.1), so each of the
             three `metadata.dispatch` fields followed is read only from a
@@ -2450,7 +2526,9 @@ class AttemptState:
         doc = self._read(self._ref(TASKS, upstream_task_id))
         if doc is None or not self._verified(attempt, doc, upstream_task_id, walk):
             return False
-        return _mapping(_mapping(doc.get("metadata")).get("dispatch")).get("continues") == root
+        block = _mapping(_mapping(doc.get("metadata")).get("dispatch"))
+        return (block.get("continues") == root
+                or _publishes_onto(block, task, doc, root))
 
     def _signed(self, attempt: AttemptTuple, doc: Mapping[str, Any], task_id: str) -> bool:
         """`doc`, read by `task_id`, is this tenant's and its spec signature verifies:

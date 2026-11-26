@@ -10,6 +10,61 @@
 // An offline drift test fails while this file differs from what that
 // command writes.
 
+/** One subscription account, as the broker serves it and swarm-api rebuilds it. */
+export interface Account {
+  account_id: string
+  owner_tenant: string
+  label: string
+  display_name?: string | null
+  provider: string
+  state: string
+  reason: string
+  lend_to: string[]
+  assigned: number
+  windows: { [key: string]: AccountWindow }
+  observed_at: string | null
+  stale: boolean
+  unreadable_by: string[]
+  /**
+   * The tenants the pool is skipping this account for NOW (the verdict, with the
+   * server's clock); `unreadable_by` is only the record, with no ages.
+   */
+  unreadable_now: string[]
+  last_assigned_at: string | null
+  vendor?: string | null
+  kind?: string | null
+  tier?: string | null
+  /** Per borrowing tenant: its caps. */
+  lends?: { [key: string]: unknown } | null
+  per_workspace_max?: { [key: string]: unknown } | null
+  monthly_spend_cap_usd?: number | null
+  month_spend_usd?: number | null
+  lend_spend_usd?: { [key: string]: unknown } | null
+  exhausted_at?: string | null
+  voice_dedicated?: boolean | null
+  model_classes?: string[] | null
+  organisation?: unknown
+  duplicate_of?: string | null
+  duplicate_reason?: string | null
+  duplicate_matched_on?: unknown
+  possible_duplicate?: unknown
+  max_agents?: number | null
+  pools?: string[] | null
+  voice_it_people?: unknown[] | null
+  voice_it_holder?: unknown
+  can_take_new_agent?: boolean | null
+  blocked_by?: unknown[] | null
+  next_eligible_at?: string | null
+  latest_hold_deadline?: string | null
+  measured?: boolean | null
+  last_refresh_at?: string | null
+  token_expires_at?: string | null
+  last_refresh_reason?: string | null
+  /** Health events by kind, last 24 h. */
+  health_24h?: { [key: string]: number } | null
+  health_status?: string | null
+}
+
 /**
  * Register a Claude subscription or a ChatGPT plan into the CALLER's pool.
  *
@@ -168,6 +223,25 @@ export interface AccountStateChange {
   reason?: string
 }
 
+export interface AccountWindow {
+  utilization: number
+  resets_at: string
+  reset: boolean
+}
+
+/** `GET /v1/accounts`: every account this tenant may run on. */
+export interface AccountsPage {
+  accounts: Account[]
+  tenant_id: string | null
+  unreadable_documents: string[]
+  /**
+   * How many account documents the broker could not read; the ids are named only
+   * to their owner.
+   */
+  unreadable_document_count: number
+  refresh_sweep?: RefreshSweep | null
+}
+
 export interface ActionsLinkRequest {
   name: string
   environment?: string | null
@@ -245,6 +319,14 @@ export interface AnswerBody {
   session?: string | null
 }
 
+/** `object` on the answer: the stored stream the answer was read from. */
+export interface AnswerObject {
+  stream: 'agent_stdout'
+  source: 'final' | 'live' | 'artifact'
+  uri: string | null
+  object_updated_at: string | null
+}
+
 export interface ApplyBody {
   version_id: string
   diff_sha256: string
@@ -256,9 +338,154 @@ export interface Approval {
   session_id?: string | null
 }
 
+/**
+ * `GET /v1/tasks/{id}/artifacts/content?name=`: one artifact's text, bounded
+ * and redacted.
+ */
+export interface ArtifactContent {
+  task_id: string
+  tenant_id: string
+  /** Empty for an inline control-plane entry. */
+  attempt_id: string
+  artifact: ArtifactContentRef
+  status: 'ok' | 'absent' | 'unreadable' | 'binary'
+  detail: string | null
+  key: string | null
+  uri: string | null
+  /** Null unless `status` is `ok`. */
+  content: string | null
+  total_bytes: number | null
+  offset: number
+  returned_bytes: number
+  next_offset: number | null
+  truncated: boolean
+  redacted: boolean
+  redaction_count: number
+  invalid_utf8_bytes?: number | null
+  redaction: ReadRedaction
+  kind?: string | null
+  content_type?: string | null
+}
+
+/** `artifact` on an artifact read: the manifest entry the name resolved to. */
+export interface ArtifactContentRef {
+  name: string | null
+  bytes: number | null
+  uri: string | null
+}
+
+/**
+ * One entry of `GET /v1/tasks/{id}/artifacts`: the worker's manifest entry as
+ * stored, plus the four keys the listing derives beside it (`attempt_id`,
+ * `kind`, `content_type`, `role`). The stored keys pass through unchanged, so
+ * only `name` is required of them.
+ */
+export interface ArtifactEntry {
+  name: string
+  bytes?: number | null
+  /**
+   * A `gs://` reference, never a download URL. Absent on an inline control-plane
+   * entry.
+   */
+  uri?: string | null
+  /**
+   * The attempt the stored uri lies under; null when the uri is absent or not
+   * under this task.
+   */
+  attempt_id?: string | null
+  /** From the one name table: markdown, json, ndjson, log, text, image or binary. */
+  kind?: string | null
+  content_type?: string | null
+  /**
+   * `agent_stdout`, `agent_stderr` or `agent_transcript` for the agent's own
+   * streams.
+   */
+  role?: string | null
+  /** Set on an entry carried over from an earlier attempt. */
+  carried_from?: string | null
+  /** Set on a control-plane entry. */
+  written_by?: string | null
+  /** Set on a control-plane entry. */
+  republished_from?: string | null
+  /** The text of an inline control-plane entry, which has no stored object. */
+  inline?: string | null
+  attachments?: unknown
+}
+
+/** `GET /v1/tasks/{id}/artifacts`: what the attempt left in GCS, by reference. */
+export interface ArtifactListing {
+  task_id: string
+  artifacts: ArtifactEntry[]
+  artifacts_skipped: SkippedArtifact[]
+  /**
+   * Files past the 500-file cap (archived issue 227): null until `complete`, 0
+   * when none were.
+   */
+  artifacts_over_cap?: number | null
+  artifact_bytes: number | null
+  /**
+   * False until the task is terminal and its result summary is written, so "no
+   * artifacts yet" and "produced none" differ.
+   */
+  complete: boolean
+  attempt_id?: string | null
+}
+
 export interface AskBody {
   code: string
   message?: string | null
+}
+
+/** `GET /v1/tasks/{task_id}/attempts`. */
+export interface AttemptPage {
+  task_id: string
+  read_at: string
+  attempts: AttemptRow[]
+  /** The subscription account each attempt ran on, keyed by attempt id. */
+  accounts_by_attempt: { [key: string]: unknown }
+}
+
+/** `attempt_to_api` in codec.py: one attempt, with its five spend fields. */
+export interface AttemptRow {
+  attempt_id: string
+  task_id: string
+  tenant_id: string
+  generation: number
+  lease_id: string
+  backend: string
+  execution_name: string | null
+  created_at: string
+  started_at: string | null
+  completed_at: string | null
+  exit_code: number | null
+  error: string | null
+  error_redaction_count?: number | null
+  peak_rss_bytes: number | null
+  peak_disk_bytes: number | null
+  oom_near_miss: boolean
+  checkpoints: string[]
+  input_tokens: number | null
+  output_tokens: number | null
+  cache_read_input_tokens: number | null
+  cache_creation_input_tokens: number | null
+  cost_usd: number | null
+  cpu_seconds?: number | null
+  peak_cpu_cores?: number | null
+  mean_cpu_cores?: number | null
+  cpu_limit_cores?: number | null
+  cpu_measured_at?: string | null
+  cpu_limit_source?: string | null
+  cpu_reading_age_seconds?: number | null
+  model?: string | null
+  size_version?: number | null
+  sized_cpu_request?: number | null
+  sized_cpu_limit?: number | null
+  sized_memory_gib?: number | null
+  sized_disk_gib?: number | null
+  sized_live_split?: unknown
+  account_id?: string | null
+  credential_source?: string | null
+  credential_tier?: string | null
 }
 
 export interface AuthBody {
@@ -279,6 +506,9 @@ export interface BriefWrite {
   text: string
 }
 
+/** A bucket's state; when `unread`, every count on it is null. */
+export type BucketState = 'sealed' | 'open' | 'unread'
+
 /**
  * `agent_budget_ceiling` (archived issue 2459): the most any workspace default
  * or step budget may name, per unit. A unit left out has no ceiling, so `{}`
@@ -298,6 +528,47 @@ export interface BypassWrite {
   value: string
   environment?: string | null
   link_token?: string | null
+}
+
+/** Why a task was cancelled (`swarm_api.outcomes.CANCEL_CAUSES`). */
+export type CancelCauseKey = 'requested' | 'after_failure' | 'after_cancel' | 'workflow_sweep' | 'child_cascade' | 'other'
+
+export interface CancelCauseLabel {
+  key: CancelCauseKey
+  label: string
+}
+
+/** Cancels by cause; none of them is a failure. */
+export interface CancelSplit {
+  total: number
+  requested: number
+  after_failure: number
+  /**
+   * A cascade cancel that followed a cancel somebody asked for, at its parent or
+   * further up the chain -- not a failure (archived issue 185, decision 2).
+   */
+  after_cancel: number
+  workflow_sweep: number
+  /**
+   * Contract request 41: a child task cancelled because its parent was
+   * cancelled, ended, or out-waited its await. OPTIONAL: an API before
+   * DERIVE_VERSION 6 does not send it, and absent is not zero.
+   */
+  child_cascade?: number | null
+  other: number
+}
+
+/**
+ * `GET /v1/capacity`: the caller's pools and what each runner profile can
+ * admit.
+ */
+export interface Capacity {
+  pools: Pool[]
+  runner_profiles: { [key: string]: RunnerProfile }
+  tenant_id?: string | null
+  pools_complete?: boolean | null
+  blocked_reason_groups?: { [key: string]: string[] } | null
+  generated_at: string
 }
 
 export interface CeilingRequest {
@@ -329,11 +600,55 @@ export interface Conversion {
   state: string
 }
 
+export interface CostByOutcome {
+  succeeded: CostCell
+  failed: CostCell
+  dead_lettered: CostCell
+  cancelled: CostCell
+}
+
+/** Reported cost over some attempts. */
+export interface CostCell {
+  /** null when no attempt reported a cost: an absence, never $0.00. */
+  sum_usd: number | null
+  attempts: number
+  reporting: number
+}
+
+/**
+ * What one relaxed ceiling would buy a runner profile
+ * (`ProfileAdmission.counterfactual`).
+ */
+export interface Counterfactual {
+  pool: string
+  action: string
+  headroom_after: number | null
+  basis_after: string
+  delta: number | null
+  next_binding: string[]
+}
+
+/** TENANT-DAYS ON THE UTC CALENDAR, the rollup's own unit. */
+export interface CoverageDays {
+  total: number
+  sealed: number
+  live: number
+  unread: number
+}
+
 export interface CredentialWrite {
   username: string
   password: string
   link_token: string
   environment?: string | null
+}
+
+export interface DeclaredCost {
+  /** null when no attempt reported a cost: an absence, never $0.00. */
+  sum_usd: number | null
+  attempts: number
+  reporting: number
+  profiles: string[]
 }
 
 export interface DefaultRole {
@@ -358,8 +673,36 @@ export interface DenyRequest {
   reason: string
 }
 
+export interface DiagramAnchor {
+  part: 'plan' | 'step' | 'requirement' | 'overlap'
+  ref?: string | null
+}
+
+/**
+ * Where the diagram added comes from: one thread entry, or one diagram of one
+ * chat turn, of this run. Never a source text: only what an agent drew, and
+ * the API checked, is added this way.
+ */
+export interface DiagramSource {
+  entry_id?: string | null
+  chat_turn_id?: string | null
+  diagram_id?: string | null
+}
+
 export interface DismissBody {
   dismissed?: boolean
+}
+
+/** `GET /v1/admin/dispatch`: the platform dispatch switch. */
+export interface DispatchControl {
+  dispatch_paused: boolean
+  updated_at: string | null
+  updated_by: string | null
+  reason: string | null
+  /** running, paused or unknown (U26). */
+  dispatch_state?: string | null
+  /** present or missing (U26). */
+  control_document?: string | null
 }
 
 export interface DrainRequest {
@@ -394,6 +737,39 @@ export interface EndSession {
   cause?: 'ended_by_person' | 'tab_closed'
 }
 
+/** One ended task, as the ledger placed it: by `completed_at`. */
+export interface EndedRow {
+  id: string
+  tenant_id: string
+  state: 'SUCCEEDED' | 'FAILED' | 'DEAD_LETTERED' | 'CANCELLED'
+  completed_at: string
+  runner_profile: string | null
+  /** Lower case; '' when the task recorded no submitter. */
+  submitted_by: string
+  workflow_id: string | null
+  step_id: string | null
+  failure_class: FailureClassKey | null
+  cancel_cause: CancelCauseKey | null
+}
+
+/**
+ * THE ROWS BEHIND ONE FIGURE (`rows=`), from the fold the figure was counted
+ * from, so `total` is the figure and `rows` are the tasks in it (newest end
+ * first, at most `rows_max`). `at`/`end` name the bucket, or are null for the
+ * span; `key` is the group row under `group`, or null for every row.
+ */
+export interface EndedRows {
+  outcome: RowOutcome
+  at: string | null
+  end: string | null
+  unread_reason: UnreadReason | null
+  group: GroupBy
+  key: string | null
+  total: number
+  rows_max: number
+  rows: EndedRow[]
+}
+
 /**
  * What the callback page posts: GitHub's `state` and `code`, or the `error`
  * GitHub sent instead of a code.
@@ -402,6 +778,33 @@ export interface ExchangeBody {
   state: string
   code?: string | null
   error?: string | null
+}
+
+export interface ExitCount {
+  exit_code: number | null
+  label: string
+  n: number
+}
+
+export interface FailingStep {
+  step_id: string
+  n: number
+}
+
+/** Why an ended task failed (`swarm_api.outcomes.FAILURE_CLASSES`). */
+export type FailureClassKey = 'runner_error' | 'timeout' | 'lost_worker' | 'could_not_start' | 'inputs_unavailable' | 'outputs_missing' | 'dispatch_failed' | 'spec_signature_invalid' | 'verdict_refused' | 'verdict_failed' | 'merge_refused' | 'merge_failed' | 'publish_refused' | 'budget_exceeded' | 'fix_loop_exhausted' | 'other' | 'no_reason' | 'intended'
+
+export interface FailureClassLabel {
+  key: FailureClassKey
+  label: string
+}
+
+export interface FirstFailed {
+  /** The task's own, which the route reads as it is and does not promise. */
+  step_id: string | null
+  task_id: string
+  failure_class: FailureClassKey
+  ended_at: string
 }
 
 export interface FocusBody {
@@ -427,9 +830,38 @@ export interface GrantWrite {
   hosts?: string[] | null
 }
 
+/** The Timeline's group picker (`swarm_api.outcomes.GROUPS`). */
+export type GroupBy = 'runner_profile' | 'submitted_by' | 'tenant_id' | 'model' | 'model_class'
+
 export interface GroupProbe {
   group: string
   member: string
+}
+
+export interface GroupRow {
+  /**
+   * Grouped by person, `''` is the tasks with no submitter recorded: a row, but
+   * not a name.
+   */
+  key: string
+  /**
+   * Null for the `model` group: arrivals are counted per task, before an attempt
+   * has run on any model, so no model can be credited with them.
+   */
+  submitted: number | null
+  ended: number
+  succeeded: number
+  failed: number
+  dead_lettered: number
+  cancelled: CancelSplit
+  rate: Rate | null
+  cost: CostCell
+  declared_cost: boolean
+  /**
+   * Aligned 1:1 with buckets; a null entry is an unread bucket. The whole field
+   * is null past 120 buckets.
+   */
+  series: (SeriesPoint | null)[] | null
 }
 
 export interface GroupsProbeRequest {
@@ -531,6 +963,104 @@ export interface JudgmentBackendWrite {
   judgment_backend: string
 }
 
+export interface LatencyOutcome {
+  n: number
+  wait: Stat | null
+  run: Stat | null
+  total: Stat | null
+}
+
+export interface LatencyRow {
+  runner_profile: string
+  /** null when the row's tasks do not share one timeout_seconds. */
+  timeout_s: number | null
+  succeeded: LatencyOutcome
+  /** Includes dead-lettered. */
+  failed: LatencyOutcome
+}
+
+/**
+ * One row of `GET /v1/leases`: a live lease's heartbeat, for a tenant's
+ * member.
+ */
+export interface LeaseHeartbeat {
+  task_id: string
+  lease_id: string
+  attempt_id: string
+  generation: number
+  task_state: TaskState
+  dispatch_state: string
+  created_at: string
+  dispatch_deadline: string
+  expires_at: string
+  heartbeat_at: string | null
+  silent_seconds: number | null
+  silent: boolean
+  expired: boolean
+  dispatch_overdue: boolean
+}
+
+/** `GET /v1/leases`. */
+export interface LeaseHeartbeatPage {
+  tenant_id: string
+  read_at: string
+  thresholds: LeaseThresholds
+  heartbeats: LeaseHeartbeat[]
+}
+
+/** `GET /v1/admin/leases`. */
+export interface LeasePage {
+  leases: LeaseRow[]
+  next_page_token?: string | null
+  thresholds: LeaseThresholds
+  evaluated_at: string
+  active_only: boolean
+  tenant_id: string | null
+  units_held: number
+  units_held_by_pool?: { [key: string]: number } | null
+  active_beyond_window: number
+  truncated: boolean
+  examined: number
+}
+
+/**
+ * `lease_to_api` in codec.py. The lease's own state is `dispatch_state`, never
+ * `state`: nothing writes STARTING or RUNNING to a lease, so it is not the
+ * task's state.
+ */
+export interface LeaseRow {
+  lease_id: string
+  task_id: string
+  attempt_id: string
+  tenant_id: string
+  generation: number
+  pools: string[]
+  units: number
+  pool_units?: { [key: string]: number } | null
+  dispatch_state: string
+  created_at: string
+  dispatch_deadline: string
+  expires_at: string
+  heartbeat_at: string | null
+  released_at: string | null
+  release_reason: string | null
+  released: boolean
+  expired: boolean
+  dispatch_overdue: boolean
+  silent_seconds: number
+  heartbeat_ever: boolean
+  last_error: string | null
+}
+
+/**
+ * The reconciler's own thresholds, served with the leases so no client
+ * restates them.
+ */
+export interface LeaseThresholds {
+  heartbeat_grace_seconds: number
+  lease_timeout_seconds: number
+}
+
 /**
  * REQUIRED, `{}` at least, as application/json (epic 21): no body, or any body
  * a cross-site form can send (urlencoded, multipart, text/plain), is a 422
@@ -541,6 +1071,9 @@ export interface JudgmentBackendWrite {
 export interface LeaveBody {
   reason?: string | null
 }
+
+/** The bucket a ledger read is cut into (`swarm_api.outcomes.BUCKETS`). */
+export type LedgerBucketSize = 'hour' | 'day' | 'week' | 'month'
 
 export interface LegBody {
   environment?: string | null
@@ -763,8 +1296,58 @@ export interface LoanRequest {
   lend: boolean
 }
 
+/** `attempt` on the logs, transcript and answer reads: which attempt was read. */
+export interface LogAttempt {
+  status: 'latest' | 'requested' | 'unknown_attempt' | 'no_attempt_yet'
+  known: boolean
+  generation: number | null
+  created_at: string | null
+  completed_at: string | null
+  exit_code: number | null
+}
+
+/** One stream of `GET /v1/tasks/{id}/logs`. */
+export interface LogStream {
+  /**
+   * `stdout`/`stderr` are the runner process's; `agent_stdout`/`agent_stderr`
+   * the agent CLI's.
+   */
+  stream: string
+  source: 'final' | 'live' | 'artifact' | null
+  status: 'ok' | 'absent' | 'unreadable' | 'not_applicable'
+  detail: string | null
+  key: string | null
+  uri: string | null
+  /** Null for absent and unreadable; an empty string is a real, empty log. */
+  content: string | null
+  total_bytes: number | null
+  offset: number
+  returned_bytes: number
+  next_offset: number | null
+  truncated: boolean
+  redacted: boolean
+  redaction_count: number
+  tail_window: TailWindow | null
+  object_updated_at?: string | null
+  age_seconds?: number | null
+  invalid_utf8_bytes?: number | null
+}
+
 export interface ManifestStart {
   name?: string | null
+}
+
+/** The task's metadata, masked by the same masker as its input. */
+export interface MaskedMetadata {
+  value: { [key: string]: unknown }
+  redaction_count: number
+  platform_keys: string[]
+}
+
+/** A text as `redaction.redact` returns it, with its own count. */
+export interface MaskedText {
+  text: string
+  redaction_count: number
 }
 
 /**
@@ -790,6 +1373,21 @@ export interface McpCredentialCreate {
  */
 export interface McpCredentialRestore {
   mcp_credentials?: { [key: string]: McpCredentialCreate } | null
+}
+
+/** `GET /v1/tenants/me`: the caller and the workspace they are in. */
+export interface Me {
+  tenant: unknown
+  principal: unknown
+  environment: string
+  environment_declared: boolean
+  /** The caller's role in the selected workspace, {name, source}. */
+  role?: unknown
+  /**
+   * caller_mcp/await_input/service_answer, each true, false or "unknown"
+   * (FEATURES-READ).
+   */
+  features?: unknown
 }
 
 export interface MemberRemoval {
@@ -851,12 +1449,22 @@ export interface ModelPriceTierRequest {
   cache_write: number
 }
 
+export interface NeededRetry {
+  k: number
+  of: number
+}
+
 export interface NewWorkspaceRequest {
   kind: 'personal' | 'group' | 'service'
   principal: string
   display_name?: string | null
   limits?: RequestLimits | null
   first_admin?: string | null
+}
+
+export interface NotFinal {
+  attempts: number
+  by_exit: ExitCount[]
 }
 
 export interface NoteBody {
@@ -878,6 +1486,154 @@ export interface NotificationPreferences {
   reminder: string
 }
 
+/** One bucket. When `state` is unread, every count below is null. */
+export interface OutcomeBucket {
+  start: string
+  end: string
+  state: BucketState
+  /** end > generated_at: the current period, drawn as "so far". */
+  in_progress: boolean
+  unread_reason: UnreadReason | null
+  /** By created_at: the ONLY submission-time field on a bucket. */
+  submitted: number | null
+  ended: number | null
+  succeeded: number | null
+  failed: number | null
+  dead_lettered: number | null
+  cancelled: CancelSplit | null
+  rate: Rate | null
+  failure_classes: { [key: string]: number } | null
+  cost: CostCell | null
+}
+
+export interface OutcomeCoverage {
+  days: CoverageDays
+  unread: UnreadDay[]
+  derived_now: number
+  built_through: string | null
+  reopened: number
+  /** null when the count query failed: not read, never 0. */
+  terminal_without_completed_at: number | null
+  wait_excluded: number
+  seal_grace_s: number
+}
+
+export interface OutcomeGroups {
+  by: GroupBy
+  rows_total: number
+  rows: GroupRow[]
+}
+
+export interface OutcomeLatency {
+  percentile_method: string
+  by_profile: LatencyRow[]
+  /**
+   * The same number as `coverage.wait_excluded`, carried here so the latency
+   * card need not read `coverage`.
+   */
+  wait_excluded: number
+}
+
+export interface OutcomePrevious {
+  since: string
+  until: string
+  complete: boolean
+  succeeded: number
+  failed: number
+  dead_lettered: number
+  cancelled_total: number
+  rate: Rate | null
+}
+
+export interface OutcomeRetries {
+  tries: RetryTries[]
+  needed_retry: NeededRetry
+  rescued: number
+  failed_after_retry: number
+  not_final: NotFinal
+  admissions_without_attempt_doc: number
+}
+
+export interface OutcomeTotals {
+  complete: boolean
+  buckets: number
+  buckets_read: number
+  submitted: number
+  ended: number
+  succeeded: number
+  failed: number
+  dead_lettered: number
+  cancelled: CancelSplit
+  rate: Rate | null
+  failure_classes: { [key: string]: number }
+  cost: TotalsCost
+}
+
+/**
+ * `GET /v1/outcomes`: what the work in a span ended as, bucketed by when it
+ * ended.
+ *
+ * `coverage` and `previous` are required here because a whole read sends them;
+ * the console's `OutcomesHead` is the payload a `section` read may send
+ * without them. `ended_rows` (`rows=`) and `usage` (`usage=`) are sent only
+ * when asked for.
+ */
+export interface Outcomes {
+  scope: TenantScope | PlatformScope
+  tz: string
+  requested: OutcomesRequested
+  since: string
+  until: string
+  bucket: LedgerBucketSize
+  bucket_chosen_by: 'server' | 'caller'
+  basis: OutcomesBasis
+  filters: OutcomesFilters
+  vocab: OutcomesVocab
+  buckets: OutcomeBucket[]
+  totals: OutcomeTotals
+  retries: OutcomeRetries
+  latency: OutcomeLatency
+  groups: OutcomeGroups
+  workflows_failed: WorkflowsFailed
+  coverage: OutcomeCoverage
+  previous: OutcomePrevious | null
+  reads: number
+  cached: boolean
+  generated_at: string
+  /** The tasks behind one figure, with `rows=`. */
+  ended_rows?: EndedRows | null
+  /** The agents' usage, with `usage=`. */
+  usage?: unknown
+}
+
+/** WHICH TIMESTAMP EACH SERIES IS PLACED BY, as the route says it. */
+export interface OutcomesBasis {
+  outcomes: string
+  submitted: string
+}
+
+export interface OutcomesFilters {
+  profile: string[]
+  submitted_by: string[]
+  kind: string
+  tenant: string[]
+  exclude_tenant: string[]
+  group: GroupBy
+}
+
+export interface OutcomesRequested {
+  span: string | null
+  since: string | null
+  until: string | null
+  bucket: string
+}
+
+export interface OutcomesVocab {
+  failure_classes: FailureClassLabel[]
+  cancel_causes: CancelCauseLabel[]
+  classifier_version: number
+}
+
 /**
  * D5: a personal access token for one owner. `owner` and `token` and nothing
  * else -- a tenant, a user or a scope in the body is a 422 that does not echo
@@ -891,6 +1647,15 @@ export interface OwnerTokenBody {
 
 export interface PauseRequest {
   reason?: string | null
+}
+
+export interface PerSucceededTask {
+  n: number
+  of: number
+  p50_usd: number | null
+  p95_usd: number | null
+  max_usd: number | null
+  values_usd: number[] | null
 }
 
 export interface PersonClear {
@@ -910,8 +1675,58 @@ export interface PickedTestRepository {
   repository: string
 }
 
+/** `plan:add-diagram`'s body. */
+export interface PlanAddDiagram {
+  plan_digest: string
+  from: DiagramSource
+  explains?: DiagramAnchor | null
+}
+
 export interface PlanApprove {
   plan_digest: string
+}
+
+/**
+ * A question to the review agent. Text only: there is no field for a profile,
+ * an image, a command, a resource or a model (invariant 10); the class comes
+ * from the plan-review settings, and any other key is 422.
+ */
+export interface PlanChatAsk {
+  plan_digest: string
+  ask: string
+  anchor?: DiagramAnchor | null
+}
+
+/** Where in the thread a pinned answer is anchored. */
+export interface PlanChatPin {
+  anchor: DiagramAnchor
+}
+
+/**
+ * `plan:comment`'s body (plans-pipeline.md §3.4): a new comment
+ * (`plan_digest`, `anchor`, `text`) or a fold (`entry_id`, `resolved`).
+ *
+ * `text` is bounded here only so the request is; the comment's own bound,
+ * MAX_THREAD_TEXT_CHARS, is `issueruns.thread_text`'s, with its message.
+ */
+export interface PlanComment {
+  plan_digest?: string | null
+  anchor?: PlanThreadAnchor | null
+  text?: string | null
+  entry_id?: string | null
+  resolved?: boolean | null
+}
+
+/**
+ * `plan:diagram`'s body. There is no field for a profile, an image, a command,
+ * a resource or a model: the review agent's shape is fixed and its class is
+ * the settings' (invariant 10), and any other key is refused 422.
+ */
+export interface PlanDiagramAsk {
+  plan_digest: string
+  anchor: DiagramAnchor
+  ask: string
+  kind?: 'flow' | 'sequence' | 'architecture' | 'state' | 'data' | 'schematic' | null
 }
 
 export interface PlanEdit {
@@ -936,6 +1751,19 @@ export interface PlanReviewCapsRequest {
 }
 
 /**
+ * `plan:revise`'s body: a request for changes (`plan_digest`, and `entries` to
+ * send only some open comments), or `cancel` naming the re-plan to stop. There
+ * is no field for a profile, an image, a command, a resource or a model: the
+ * agent's shape is the run's planner's (invariant 10), and any other key is
+ * refused 422.
+ */
+export interface PlanRevise {
+  plan_digest?: string | null
+  entries?: string[] | null
+  cancel?: string | null
+}
+
+/**
  * `PUT /v1/workspaces/{tenant_id}/plan-settings`. A field left out is
  * unchanged; `inherit` clears the workspace's choice so the platform's
  * applies. The caps are the platform's: a `caps` key is refused by name.
@@ -943,6 +1771,18 @@ export interface PlanReviewCapsRequest {
 export interface PlanSettingsPut {
   diagrams?: 'on' | 'off' | 'inherit' | null
   chat_model_class?: string | null
+}
+
+export interface PlanThreadAnchor {
+  part: string
+  ref?: string | null
+}
+
+export interface PlatformScope {
+  kind: 'platform'
+  tenants: string[]
+  excluded: string[]
+  tenants_complete: boolean
 }
 
 /**
@@ -977,6 +1817,21 @@ export interface Pointer {
   anchor?: { [key: string]: unknown } | null
 }
 
+/** `pool_to_api` in codec.py: one capacity pool's ceiling and use. */
+export interface Pool {
+  name: string
+  hard_limit: number | null
+  adaptive_target: number | null
+  quota_derived_limit: number | null
+  effective_limit: number | null
+  active: number
+  available: number | null
+  enabled: boolean
+  updated_at: string
+  /** What lowered `effective_limit` below `hard_limit`, one entry per cause. */
+  lowered_by?: unknown[] | null
+}
+
 /**
  * The whole preference set; every field but `time_zone` is required, so a save
  * replaces rather than merges and a missing field is a 422, not a silent
@@ -990,14 +1845,57 @@ export interface PreferencesWrite {
   time_zone?: string | null
 }
 
+/** How many more agents of one runner profile fit now, and what binds it. */
+export interface ProfileAdmission {
+  units: number
+  headroom: number | null
+  basis: string
+  blockers: ProfileBlocker[]
+  binding: string[]
+  counterfactual: Counterfactual[]
+  complete: boolean
+  unread: string[]
+  uncapped: string[]
+}
+
+/**
+ * One pool that refuses a runner profile's next agent
+ * (`ProfileAdmission.blockers`).
+ */
+export interface ProfileBlocker {
+  pool: string
+  reason: string
+  limit: number | null
+  active: number
+  group: string | null
+}
+
 export interface ProviderEnableRequest {
   enabled: boolean
   reason?: string | null
 }
 
+/** One provider of `GET /v1/providers`. */
+export interface ProviderEntry {
+  provider: string
+  credential_registered: boolean
+  credential_source?: string | null
+  runnable_profiles?: string[] | null
+  runner_profiles: string[]
+  quota: QuotaState | null
+}
+
 export interface ProviderKeyWrite {
   api_key: string
   link_token?: string | null
+}
+
+/** `GET /v1/providers`. */
+export interface ProvidersPage {
+  tenant_id: string
+  providers: ProviderEntry[]
+  account_pool?: string | null
+  generated_at: string
 }
 
 /** One setting or both; a body with neither is refused 422. */
@@ -1008,6 +1906,54 @@ export interface QaSettingsPut {
 
 export interface QualityGatesPut {
   jev: boolean | 'on_request'
+}
+
+/** `GET /v1/admin/quota`. */
+export interface QuotaPage {
+  tenant_id: string | null
+  quota: QuotaState[]
+  truncated: boolean
+  generated_at: string
+}
+
+/** `quota_to_api` in codec.py: one provider's quota reading for one tenant. */
+export interface QuotaState {
+  provider: string
+  tenant_id: string
+  state: string
+  updated_at: string
+  configured_hard_max: number
+  adaptive_target: number | null
+  quota_derived_limit: number | null
+  requests_remaining: number | null
+  tokens_remaining: number | null
+  reset_at: string | null
+  cooldown_until: string | null
+  last_429_at: string | null
+  retry_after_seconds: number | null
+  success_count: number
+  rate_limit_count: number
+  effective_limit: number
+  /** The pool this reading lowers, if any. */
+  feeds_pool?: Pool | null
+}
+
+/** k succeeded of n decided, with its Wilson 95 % interval. Null when n = 0. */
+export interface Rate {
+  k: number
+  n: number
+  p: number
+  lo: number
+  hi: number
+}
+
+/**
+ * `redaction` on every read-time-redacted read: the masking ran when this
+ * response was built, with this many rules.
+ */
+export interface ReadRedaction {
+  applied_at_read_time: boolean
+  rules: number
 }
 
 export interface ReadRequest {
@@ -1041,6 +1987,16 @@ export interface RecordingsView {
   recordings: RecordingSegmentView[]
   segments: RecordingSegmentView[]
   truncated: boolean
+}
+
+/**
+ * Whether the broker's refresh sweep is still running; `readable: false` is
+ * unknown.
+ */
+export interface RefreshSweep {
+  last_completed_at: string | null
+  last_outcome: string | null
+  readable: boolean
 }
 
 export interface RenameProject {
@@ -1127,9 +2083,36 @@ export interface RequestLimits {
   quota_cpu?: number | null
 }
 
+/** A resource class's sizing, as `/v1/runtimes` joins it to each runtime. */
+export interface ResourceClassSpec {
+  name: string
+  cpu: number
+  cpu_request?: number | null
+  cpu_limit?: number | null
+  memory_gib: number
+  disk_gib: number
+  units: number
+  size_version?: number | null
+}
+
+export interface RetryTries {
+  attempts: string
+  tasks: number
+  succeeded: number
+  failed: number
+  dead_lettered: number
+  cancelled: number
+}
+
 export interface RouteBody {
   route_id: string
 }
+
+/**
+ * What a figure's rows may be (`swarm_api.outcomes.ROW_OUTCOMES`). Failed is
+ * FAILED + DEAD_LETTERED, the one definition the drawing uses.
+ */
+export type RowOutcome = 'failed' | 'cancelled' | 'succeeded'
 
 export interface RunBody {
   screens?: string[] | null
@@ -1170,6 +2153,25 @@ export interface RunnerKeyWrite {
   link_token?: string | null
 }
 
+/**
+ * One entry of `GET /v1/capacity`'s `runner_profiles`, keyed by the profile's
+ * name.
+ */
+export interface RunnerProfile {
+  resource_class: string
+  backend: string
+  provider: string | null
+  units: number
+  pools: string[]
+  /** Contract request 129: the units this profile takes from each of its pools. */
+  pool_units?: { [key: string]: number } | null
+  available?: boolean | null
+  disabled_reason?: string | null
+  admission?: ProfileAdmission | null
+  /** What the profile's input must carry. */
+  input_contract?: unknown
+}
+
 /** `POST /v1/admin/runner-sizes:preview`: the PUT's classes; nothing written. */
 export interface RunnerSizesPreviewRequest {
   classes?: { [key: string]: { [key: string]: unknown } }
@@ -1197,6 +2199,34 @@ export interface RunnerSizesRestoreRequest {
   version: number
   reason: string
   confirm_below_recent_peak?: boolean
+}
+
+/** One runner profile as `/v1/runtimes` publishes it, keyed by its name. */
+export interface Runtime {
+  name: string
+  available: boolean
+  disabled_reason: string
+  image: string
+  node_version?: string | null
+  backend: string
+  resolved_backend: string
+  provider: string | null
+  secrets: string[]
+  secrets_any_of: boolean
+  timeout_seconds: number
+  resource_class: string
+  model_classes?: string[] | null
+  default_model_class?: string | null
+  models?: { [key: string]: string } | null
+  resources: ResourceClassSpec
+  agent_memory_gib?: number | null
+  display_memory_gib?: number | null
+  pod_memory_gib?: number | null
+}
+
+/** `GET /v1/runtimes`. */
+export interface RuntimesPage {
+  runtimes: { [key: string]: Runtime }
 }
 
 export interface SaveLogin {
@@ -1246,6 +2276,11 @@ export interface SelectRequest {
   paths: string[]
 }
 
+export interface SeriesPoint {
+  k: number
+  n: number
+}
+
 export interface ServerCreate {
   name: string
   url: string
@@ -1273,6 +2308,16 @@ export interface SignInClient {
   client_secret: string
 }
 
+/** One file the worker wrote and did not upload. */
+export interface SkippedArtifact {
+  name: string
+  /**
+   * `cap`, `upload_error` or `refused` (archived issue 165); null for a bare
+   * name from an older summary.
+   */
+  cause: string | null
+}
+
 export interface SourceBody {
   kind: string
   repository: string
@@ -1285,6 +2330,37 @@ export interface StartSession {
   offer_sdp?: string | null
   project_id?: string | null
   session_id?: string | null
+}
+
+/** A latency distribution, in seconds. */
+export interface Stat {
+  n: number
+  p50_s: number
+  p95_s: number
+  max_s: number
+  /**
+   * Only when n < 5: the values themselves, because a percentile of four is a
+   * guess.
+   */
+  values_s: number[] | null
+}
+
+/**
+ * `GET /v1/stats`. `platform_tasks_by_state` is ABSENT, not empty, for a non-
+ * admin: an absent key is not a count of nothing.
+ */
+export interface Stats {
+  tenant_id: string
+  tasks_by_state: { [key: string]: number }
+  dispatch_paused: boolean
+  limits: { [key: string]: number }
+  generated_at: string
+  /** Served only to an admin who asks for `scope=platform`; absent otherwise. */
+  platform_tasks_by_state?: { [key: string]: number } | null
+  /** running, paused or unknown (U26). */
+  dispatch_state?: string | null
+  /** present or missing (U26). */
+  control_document?: string | null
 }
 
 /**
@@ -1343,6 +2419,13 @@ export interface StepVerdictGate {
 
 export interface StrandedSweepRequest {
   redrive?: boolean
+}
+
+/** `tail_window` on a live stream read from object offset 0. */
+export interface TailWindow {
+  object_offset: number
+  stream_size: number
+  published_at?: string | null
 }
 
 /**
@@ -1667,6 +2750,31 @@ export interface Task {
   budget?: unknown
 }
 
+/** `GET /v1/tasks/{id}/answer`: the agent's final answer, redacted. */
+export interface TaskAnswer {
+  task_id: string
+  tenant_id: string
+  attempt_id: string | null
+  attempt: LogAttempt
+  read_at: string
+  status: 'ok' | 'not_yet' | 'absent' | 'unreadable'
+  source: 'agent_result_event' | 'runner_summary' | null
+  object: AnswerObject | null
+  format: 'markdown' | 'text' | null
+  content: string | null
+  complete: boolean | null
+  is_error: boolean | null
+  subtype: string | null
+  stop_reason: string | null
+  terminal_reason: string | null
+  num_turns: number | null
+  bytes: number | null
+  redacted: boolean
+  redaction_count: number
+  capture_truncated?: boolean | null
+  detail: string | null
+}
+
 export interface TaskBatchCreate {
   tasks: TaskCreate[]
   idempotency_key?: string | null
@@ -1701,6 +2809,46 @@ export interface TaskEnvelope {
   task: Task
 }
 
+/** `event_to_api` in codec.py: one entry of a task's event log. */
+export interface TaskEvent {
+  event_id: string
+  task_id: string
+  type: string
+  at: string
+  attempt_id: string | null
+  lease_id: string | null
+  generation: number | null
+  detail: { [key: string]: unknown } | null
+  detail_redaction_count?: number | null
+}
+
+/** `GET /v1/tasks/{task_id}/events`. */
+export interface TaskEventPage {
+  task_id: string
+  events: TaskEvent[]
+  next_page_token: string | null
+}
+
+/**
+ * `GET /v1/tasks/{id}/input`: the task's input as a screen may draw it, masked
+ * at read time.
+ */
+export interface TaskInputCopy {
+  task_id: string
+  tenant_id: string
+  read_at: string
+  prompt_key: 'string' | 'missing' | 'other'
+  /** Null unless `input.prompt` is a string. */
+  prompt: MaskedText | null
+  rest: MaskedText | null
+  full: MaskedText
+  /** Optional and never null: an older API omits it. */
+  metadata?: MaskedMetadata
+  redacted: boolean
+  redaction_count: number
+  redaction: ReadRedaction
+}
+
 /** `links` on a task: its console page, for surfaces OUTSIDE the console. */
 export interface TaskLinks {
   /**
@@ -1710,13 +2858,85 @@ export interface TaskLinks {
   console: string | null
 }
 
+/**
+ * `GET /v1/tasks/{id}/logs`: an attempt's captured streams, redacted at read
+ * time.
+ */
+export interface TaskLogs {
+  task_id: string
+  tenant_id: string
+  attempt_id: string | null
+  attempt: LogAttempt
+  /** Optional and never null: an older API omits it. */
+  read_at?: string
+  streams: LogStream[]
+  prefix: string
+  redaction: ReadRedaction
+}
+
+/** `GET /v1/tasks`: one page of tasks. The paging key is `next_page_token`. */
+export interface TaskPage {
+  tasks: Task[]
+  /**
+   * Pass back as `page_token` for the next page; null on the last. This API has
+   * never sent `next_cursor`.
+   */
+  next_page_token?: string | null
+  tenant_id?: string | null
+}
+
 export type TaskState = 'SUBMITTED' | 'QUEUED' | 'PARKED' | 'READY' | 'LEASED' | 'DISPATCHED' | 'STARTING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | 'DEAD_LETTERED'
+
+/** `GET /v1/tasks/{id}/transcript`: the agent's own stdout, parsed into steps. */
+export interface TaskTranscript {
+  task_id: string
+  tenant_id: string
+  attempt_id: string | null
+  attempt: LogAttempt
+  read_at: string
+  stream: TranscriptStream
+  format: 'claude-stream-json' | 'claude-json' | 'codex-exec-json' | 'ndjson' | 'text' | null
+  /** Null for `text`; `[]` for an empty object. */
+  steps: TranscriptStep[] | null
+  complete: boolean
+  window_starts_mid_stream: boolean
+  skipped_lines: number
+  answer_in_window: boolean
+  /**
+   * True when the capture was cut at its cap, so the transcript is not the whole
+   * run.
+   */
+  capture_truncated?: boolean | null
+  redaction: ReadRedaction
+  redaction_count: number
+}
 
 export interface TeamCreate {
   group: string
   display_name?: string | null
   first_admin?: string | null
   invites?: string[]
+}
+
+/** `tenant_to_api` in codec.py. */
+export interface Tenant {
+  tenant_id: string
+  kind: string
+  principal: string
+  display_name: string | null
+  created_at: string
+  max_active: number
+  capacity_units: number
+  monthly_budget_usd: number | null
+  enabled: boolean
+  credentials: string[]
+  service_account: string | null
+  gcs_prefix: string | null
+  namespace: string | null
+  /** The workspace record's kind; null for a Terraform tenant (WK-ADMIN-LIST). */
+  workspace_kind?: string | null
+  /** The workspace record's w- id; null for a Terraform tenant (WK-ADMIN-LIST). */
+  workspace_id?: string | null
 }
 
 /**
@@ -1736,6 +2956,21 @@ export interface TenantLimitsRequest {
   capacity_units?: number | null
   enabled?: boolean | null
   monthly_budget_usd?: number | null
+}
+
+/** `GET /v1/admin/tenants`. */
+export interface TenantPage {
+  tenants: Tenant[]
+  /**
+   * Whether the workspace records could not be read, so `workspace_kind` and
+   * `workspace_id` read null for every row.
+   */
+  workspaces_unread: boolean
+}
+
+export interface TenantScope {
+  kind: 'tenant'
+  tenant_id: string
 }
 
 export interface TerritoryRequest {
@@ -1758,9 +2993,87 @@ export interface ToWork {
   title?: string | null
 }
 
+export interface TotalsCost {
+  /** null when no attempt reported a cost: an absence, never $0.00. */
+  sum_usd: number | null
+  attempts: number
+  reporting: number
+  by_outcome: CostByOutcome
+  per_succeeded_task: PerSucceededTask
+  retries: CostCell
+  declared: DeclaredCost
+}
+
+/** One step of the parsed transcript (`transcript._step`). */
+export interface TranscriptStep {
+  id: string | null
+  line_offset: number
+  block: number
+  kind: 'init' | 'text' | 'thinking' | 'tool_call' | 'tool_result' | 'result' | 'rate_limit' | 'system' | 'usage' | 'error' | 'other'
+  role: 'assistant' | 'user' | 'system' | null
+  parent_tool_use_id: string | null
+  text: string | null
+  tool: TranscriptTool | null
+  tool_result: TranscriptToolResult | null
+  meta: { [key: string]: unknown } | null
+  truncated_fields: string[]
+  /** The redacted source event; only with `include_raw=true`. */
+  raw: string | null
+}
+
+/**
+ * `stream` on the transcript: the agent stdout object the steps were parsed
+ * from.
+ */
+export interface TranscriptStream {
+  stream: 'agent_stdout'
+  source: 'final' | 'live' | 'artifact' | null
+  status: 'ok' | 'absent' | 'unreadable' | 'not_applicable'
+  detail: string | null
+  uri: string | null
+  object_updated_at: string | null
+  age_seconds: number | null
+  total_bytes: number | null
+  offset: number
+  returned_bytes: number
+  next_offset: number | null
+  truncated: boolean
+  tail_window: TailWindow | null
+}
+
+/**
+ * `tool` on a `tool_call` step. Each may be null on the wire
+ * (`_Scrubber.text`).
+ */
+export interface TranscriptTool {
+  id: string | null
+  name: string | null
+  input: string | null
+}
+
+/**
+ * `tool_result` on a `tool_result` step; `tool_use_id` and `is_error` may be
+ * null.
+ */
+export interface TranscriptToolResult {
+  tool_use_id: string | null
+  is_error: boolean | null
+  content: string | null
+  images: number
+}
+
 export interface UndoPreferences {
   revision?: number | null
 }
+
+export interface UnreadDay {
+  tenant_id: string
+  day: string
+  reason: UnreadReason
+}
+
+/** Why a bucket or a tenant-day was not read. */
+export type UnreadReason = 'derive_budget' | 'read_failed' | 'too_large'
 
 export interface UpdateBody {
   ref?: string | null
@@ -1827,6 +3140,56 @@ export interface WorkReport {
   budget?: true | null
 }
 
+/**
+ * `GET /v1/workflows/{workflow_id}`: the workflow, its steps and its derived
+ * state.
+ */
+export interface Workflow {
+  workflow_id: string
+  state: string
+  tenant_id: string
+  stored_state: string
+  state_source: string
+  rollup?: unknown
+  drift?: unknown
+  created_at: string
+  updated_at: string
+  submitted_by: string | null
+  submitted_by_name?: string | null
+  /** True while a person has paused the workflow (docs/design/workflow-pause.md). */
+  paused?: boolean
+  paused_at?: string | null
+  paused_by?: string | null
+  priority: number
+  on_step_failure: string
+  cancel_requested: boolean
+  steps: unknown[]
+  pull_request?: unknown
+  /**
+   * The Claude Code session that submitted it (SC-SESSION-SCOPE); read by the sc
+   * plugin.
+   */
+  claude_session?: unknown
+  /**
+   * The console link, for surfaces OUTSIDE the console (MCP, sc, plugin, PR
+   * bodies).
+   */
+  links?: unknown
+  /** The workflow's repository, masked as a task's. */
+  repository_url?: string | null
+  title?: string | null
+  /** The submitter's plain-text description. */
+  description?: string | null
+  /** Who wrote the description. */
+  description_source?: string | null
+  /** {purpose, goals, output}: the description in three parts. */
+  about?: unknown
+  /** {title, url?} of the feature it builds. */
+  feature?: unknown
+  /** schedule, quality_check, issue_run, claude_code or console. */
+  started_from?: string | null
+}
+
 export interface WorkflowCreate {
   steps: WorkflowStepCreate[]
   idempotency_key?: string | null
@@ -1845,6 +3208,31 @@ export interface WorkflowCreate {
   after?: AfterPullRequest[] | null
   mcp_credentials?: { [key: string]: McpCredentialCreate } | null
   additional_repositories?: AdditionalRepositoryCreate[] | null
+}
+
+/**
+ * `GET /v1/workflows/{workflow_id}`: the workflow, its step tasks and its
+ * dispatch.
+ */
+export interface WorkflowEnvelope {
+  workflow: Workflow
+  tasks: Task[]
+  dispatch: unknown
+}
+
+export interface WorkflowFailedRow {
+  workflow_id: string
+  tenant_id: string
+  /**
+   * `''` as well as null when no submitter was recorded: both are an absence,
+   * never a name.
+   */
+  submitted_by: string | null
+  first_failed: FirstFailed | null
+  cascade_cancelled: number
+  last_ended_at: string
+  state: string
+  steps: WorkflowSteps | null
 }
 
 export interface WorkflowStepCreate {
@@ -1870,6 +3258,29 @@ export interface WorkflowStepCreate {
   await_input?: unknown
   fix_loop?: unknown
   additional_repositories?: AdditionalRepositoryCreate[] | null
+}
+
+export interface WorkflowSteps {
+  total: number
+  succeeded: number
+  failed: number
+  dead_lettered: number
+  cancelled: number
+  open: number
+  unreadable: number
+}
+
+export interface WorkflowsFailed {
+  applicable: boolean
+  /**
+   * null when `applicable` is false (kind=standalone): nothing was counted, so
+   * no count is a zero.
+   */
+  with_ended_steps: number | null
+  with_failed_steps: number | null
+  rows_total: number | null
+  rows: WorkflowFailedRow[]
+  failing_steps: FailingStep[]
 }
 
 export interface WorkspaceRequest {

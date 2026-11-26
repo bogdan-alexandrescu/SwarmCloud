@@ -25,6 +25,7 @@ import type { AccountsBoard } from '../api'
 import type { Result } from '../fetch'
 import type { Account, AccountsPage } from '../types'
 import { accountPaceOf, slotsLine, type PoolAccount } from '../accountsPool'
+import { around } from './proseruns'
 
 const api = vi.hoisted(() => ({
   loadAccountsBoard: vi.fn(),
@@ -189,7 +190,8 @@ describe('the agent cap and its Change (owner only, 1 to 50)', () => {
   it('gives a borrower the number and no control', async () => {
     await open([account({ owner_tenant: 'eng' })], 'eng:devops-team', 'smoke')
     expect(screen.queryByRole('button', { name: 'Change the cap' })).toBeNull()
-    expect(screen.getByText(/At most/).textContent).toContain('Its owner sets it.')
+    const cap = around(screen.getByText(/At most/), '.acct-cap')!
+    expect(cap.textContent).toContain('Its owner sets it.')
   })
 })
 

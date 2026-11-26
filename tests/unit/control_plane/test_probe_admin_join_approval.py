@@ -17,6 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from swarm_api import roles
+from swarm_api.admins import AUDIT_COLLECTION
 from swarm_api.auth import StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
 from swarm_api.deps import build_context
@@ -45,6 +46,8 @@ from .test_join_requests_routes import (
 )
 from .test_people_admin import FakePool, FakePublisher
 
+#: The row a probe admin's refused change leaves (`roles.AUDIT_PROBE_ADMIN_REFUSED`).
+PROBE_REFUSED = "workspace_probe_admin_refused"
 #: Built at runtime, like every identity here.
 PROBE = "roles-probe@" + "example-project.iam.gserviceaccount.com"
 GROUPS = {
@@ -139,6 +142,23 @@ def _grant(client, tenant: str, who: str) -> dict:
     return {p["email"]: p["role"] for p in response.json()["people"]}.get(who)
 
 
+def _refusal_rows(db) -> list[dict]:
+    return [d for p, d in db.dump(f"{AUDIT_COLLECTION}/").items()
+            if d.get("action") == PROBE_REFUSED]
+
+
+def _unrefused(db) -> dict:
+    """`written`, less a probe-admin refusal's own row (asserted apart)."""
+    return {k: v for k, v in written(db).items() if v.get("action") != PROBE_REFUSED}
+
+
+def _one_refusal(db, route: str, target: str, *, refused: str = "role_admin_required",
+                 **detail) -> None:
+    (row,) = _refusal_rows(db)
+    assert (row["by"], row["target_email"], row["target_tenant_id"]) == (PROBE, target, "eng")
+    assert row["detail"] == dict(detail, route=route, via="probe_admin", refused=refused)
+
+
 def test_an_approval_never_clears_an_admin_override_stored_ahead(db) -> None:
     """A platform admin names kim eng's admin before kim joins; the probe
     admin's approval with the default role would CLEAR that override
@@ -148,11 +168,12 @@ def test_an_approval_never_clears_an_admin_override_stored_ahead(db) -> None:
                           json={"email": "kim@example.com", "role": "admin"})
     assert response.status_code == 200, response.text
     ref = ask(client, "kim", link_on(client, "roles-probe", "eng"))["ref"]
-    before = written(db)
+    before = _unrefused(db)
     response = approve(client, "roles-probe", ref)
     assert response.status_code == 403, response.text
     assert response.json()["code"] == "role_admin_required"
-    assert written(db) == before
+    assert _unrefused(db) == before
+    _one_refusal(db, "join_approved", "kim@example.com", to="member")
     assert _grant(client, "eng", "kim@example.com") == "admin"
     # A platform admin's approval still decides it, as before.
     assert approve(client, "ops", ref).status_code == 200
@@ -184,13 +205,14 @@ def test_it_lists_members_and_never_removes_one(db) -> None:
     listed = client.get("/v1/workspace/members", headers=h("roles-probe", "eng"))
     assert listed.status_code == 200, listed.text
     assert [m["email"] for m in listed.json()["members"]] == ["lee@example.com"]
-    before = written(db)
+    before = _unrefused(db)
     response = client.request("DELETE", "/v1/workspace/members/person",
                               headers=h("roles-probe", "eng"),
                               json={"email": "lee@example.com", "reason": "probe"})
     assert response.status_code == 403, response.text
     assert response.json()["code"] == "probe_admin_not_permitted"
-    assert written(db) == before
+    assert _unrefused(db) == before
+    _one_refusal(db, "member_removed", "lee@example.com", refused="probe_admin_not_permitted")
 
 
 def test_an_admin_grant_stored_between_its_check_and_its_write_is_never_cleared(db, monkeypatch):
@@ -210,7 +232,7 @@ def test_an_admin_grant_stored_between_its_check_and_its_write_is_never_cleared(
         response = client.put("/v1/admin/workspaces/eng/roles/person", headers=h("ops"),
                               json={"email": "kim@example.com", "role": "admin"})
         raced.append(response.status_code)
-        before.append(written(db))
+        before.append(_unrefused(db))
 
     monkeypatch.setattr(roles, "probe_admin_admin_target", check_then_race)
     response = approve(client, "roles-probe", ref)
@@ -219,7 +241,10 @@ def test_an_admin_grant_stored_between_its_check_and_its_write_is_never_cleared(
     assert response.status_code == 403, response.text
     assert response.json()["code"] == "role_admin_required"
     assert decisions(db) == []
-    assert written(db) == before[0]
+    assert _unrefused(db) == before[0]
+    # Refused inside the transaction: one row, written after it rolled back.
+    # MUTATION: drop the row from the approval's refusal -> none here.
+    _one_refusal(db, "join_approved", "kim@example.com", to="member")
     assert _grant(client, "eng", "kim@example.com") == "admin"
 
 

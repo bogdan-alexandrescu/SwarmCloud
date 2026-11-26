@@ -166,7 +166,7 @@ describe('admin-shell-14: a family that does not add up to global says where the
       [...document.querySelectorAll<HTMLElement>('.adm-family')].find((f) => f.querySelector('h2')?.textContent === title)!
     // MUTATION: drop the note -> nothing says where the 2 units are and this fails.
     expect(family('Resource classes').querySelector('.adm-family-note')?.textContent).toBe(
-      "These pools add up to 5 of global's 7 units in use: 2 are outside any class.",
+      "pools sum to 5 of global's 7 in use · 2 outside any class",
     )
     // Workspaces add up (7 + 0): no line.
     expect(family('Workspaces').querySelector('.adm-family-note')).toBeNull()
@@ -177,16 +177,16 @@ describe('admin-shell-14: a family that does not add up to global says where the
   it('says nothing when the listing was cut short, or when there is no global pool', () => {
     const pools = FIXTURE.pools
     const global = pools.find((p) => p.name === 'global')
-    expect(familyNote('resource', pools, global, true)).toMatch(/2 are outside any class/)
+    expect(familyNote('resource', pools, global, true)).toMatch(/2 outside any class/)
     // MUTATION: ignore `pools_complete` -> a guess about pools nobody served and this fails.
     expect(familyNote('resource', pools, global, false)).toBeNull()
     expect(familyNote('resource', pools, undefined, true)).toBeNull()
     expect(familyNote('provider', pools, global, true)).toBeNull()
     expect(familyNote('runner', [pool('global', 3, 10), pool('runner:a', 2, 5)], pool('global', 3, 10), true)).toBe(
-      "These pools add up to 2 of global's 3 units in use: 1 is outside any runner profile.",
+      "pools sum to 2 of global's 3 in use · 1 outside any runner profile",
     )
     expect(familyNote('backend', [pool('backend:a', 5, 5)], pool('global', 3, 10), true)).toBe(
-      "These pools add up to 5 units in use, more than global's 3.",
+      "pools sum to 5 in use · more than global's 3",
     )
   })
 })

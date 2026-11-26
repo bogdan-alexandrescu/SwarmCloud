@@ -226,7 +226,7 @@ def issue(cfg: Any, key: Any, api: Any, *, now: float) -> dict[str, Any] | None:
     try:
         headers = sign_headers(key, QA_TARGET_PURPOSE, "POST", path, body, now=now)
         status, payload = api.call("POST", path, body=body, headers=headers)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         code = str(getattr(exc, "code", "") or "")
         if code in _PERMANENT:
             raise IssueRefused(code) from None
@@ -279,6 +279,9 @@ def handoff_args(answer: Mapping[str, Any]) -> dict[str, Any]:
     if answer.get("idp_token_path") is not None:
         # QA-IDP-POST: a platform admin's approval; the gate checks it again.
         args["idp_token_path"] = answer["idp_token_path"]
+    if answer.get("idp_token_origin") is not None:
+        # Epic 21: the origin the path is on, by name; the gate checks it is a served extra origin.
+        args["idp_token_origin"] = answer["idp_token_origin"]
     bypass = answer.get("challenge_bypass")
     if bypass is not None:
         # §2.5: the gate checks its kind, name and value again; here only its shape.
@@ -360,7 +363,7 @@ class QaTargetSignIn:
             else:
                 self._ask(gate, key, api)
                 self._await_first(gate)
-        except Exception as exc:  # the QA target never crashes the attempt
+        except Exception as exc:  # the QA target never crashes the attempt  # noqa: BLE001
             self.log.warning("qa target start failed", error=type(exc).__name__)
         self._write_notice(root)
 
@@ -372,7 +375,7 @@ class QaTargetSignIn:
             if self.state != SIGNING_IN:
                 self._answer_pending(root)
             self._answer_requests(gate, key, api, root)
-        except Exception as exc:  # nor on a poll
+        except Exception as exc:  # nor on a poll  # noqa: BLE001
             self.log.warning("qa target upkeep failed", error=type(exc).__name__)
         self._write_notice(root)
 
@@ -408,12 +411,12 @@ class QaTargetSignIn:
         for value in held if self._register_secret is not None else []:
             try:
                 self._register_secret(value)
-            except Exception:  # redaction is a second guard; nothing logs the value anyway
+            except Exception:  # redaction is a second guard; nothing logs the value anyway  # noqa: BLE001, S110
                 pass
         held = []
         try:
             result = gate.call(CTL_OP, args)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # The exception's class only: a message could quote what was sent.
             refused = type(exc).__name__ == "GateRefused"
             self._fail(GATE_REFUSED if refused else GATE_UNREACHABLE)
@@ -445,7 +448,7 @@ class QaTargetSignIn:
     def _poll(self, gate: Any) -> None:
         try:
             result = gate.call(CTL_OP, {"poll": True})
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning("the gate did not say how the qa sign-in went", error=type(exc).__name__,
                              target_id=self.target_id)
             return

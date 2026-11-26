@@ -636,7 +636,7 @@ class DeviceController:
     async def _attach_quietly(self, target_id: str) -> None:
         try:
             await self.attach_page(target_id)
-        except Exception as exc:  # a page that closed before the attach answered
+        except Exception as exc:  # a page that closed before the attach answered  # noqa: BLE001
             log.info("live device: page attach failed (%s)", type(exc).__name__)
 
     async def _attach(self, target_id: str, *, fit: bool = True) -> None:

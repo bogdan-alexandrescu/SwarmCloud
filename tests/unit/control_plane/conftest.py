@@ -117,6 +117,37 @@ def plan_lint_on(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _cost_hold_and_readiness_prepass_off(monkeypatch):
+    """The plan cost hold and the readiness pre-pass (owner, 2026-11-24) are
+    on in every deployment; they are off here because the issue-run fixtures
+    predate them (their planner is the run's first task, and their auto
+    plans start whatever they cost). Their own tests switch them on."""
+    monkeypatch.setenv("SWARM_PLAN_COST_HOLD_USD", "off")
+    monkeypatch.setenv("SWARM_READINESS_PREPASS", "off")
+
+
+@pytest.fixture(autouse=True)
+def _plan_diagrams_off(request, monkeypatch):
+    """Diagrams in plans (plans-pipeline.md §6) are on by default in every
+    deployment; off here because the issue-run fixtures' plans predate them
+    (no `diagrams`, no `no_diagram`). Their own tests ask for
+    `plan_diagrams_on`, which leaves the shipped reading in place."""
+    if "plan_diagrams_on" in request.fixturenames:
+        return
+    from swarm_api.routes import runs
+
+    monkeypatch.setattr(
+        runs, "planning_settings",
+        lambda ctx, tenant_id, schedule: {"diagrams": False, "from": "platform",
+                                          "read_at": ctx.now().isoformat()})
+
+
+@pytest.fixture
+def plan_diagrams_on():
+    """The shipped reading of the plan-diagram setting in plans (§6.4)."""
+
+
+@pytest.fixture(autouse=True)
 def _rendered_deny_list(monkeypatch):
     monkeypatch.setenv("SWARM_SHARED_DENY_LIST", json.dumps(list(RENDERED_DENY_LIST)))
     monkeypatch.setenv("SWARM_SHARED_DENY_LIST_SET", "1")

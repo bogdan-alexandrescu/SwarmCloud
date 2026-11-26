@@ -206,6 +206,47 @@ def test_a_three_line_diff_on_a_risk_path_runs(db, make_scheduler, dispatcher, c
     assert _review_doc(db)["metadata"]["control_publish"]["code"] == "review_runs"
 
 
+#: The files that switch a security check off or narrow it (issue 430).
+SCAN_SWITCHES = (
+    ".trivyignore.yaml", ".trivyignore", "trivy.yaml", "trivy.yml", ".gitleaks.toml",
+    ".gitleaksignore", ".github/secret_scanning.yml", ".github/codeql/codeql-config.yml",
+    ".checkov.yaml", ".checkov.yml", ".semgrepignore",
+)
+
+
+def test_a_small_change_to_the_image_scans_accept_list_runs_the_review(
+    db, make_scheduler, dispatcher, client, waker
+):
+    """Issue 430: a 27-line edit of `.trivyignore.yaml` was skipped as a small
+    change, its SKIPPED verdict written, and the pull request labelled ready."""
+    _base(db)
+    _parent(db, _git(".trivyignore.yaml", insertions=25, deletions=2))
+    _review(db, gate=dict(validation.REVIEW_GATE_DEFAULT_BLOCK))
+
+    # MUTATION: drop `.trivyignore*` from `DEFAULT_RISK_PATHS` and the gate
+    # skips it as a 27-line change, writing a SKIPPED verdict.
+    _runs_after_decline(db, make_scheduler, dispatcher, client, waker)
+    doc = _review_doc(db)
+    assert doc["metadata"]["control_publish"]["code"] == "review_runs"
+    assert doc["state"] != "SUCCEEDED"
+    summary = doc.get("result_summary") or {}
+    assert reviewgate.REVIEW_SKIPPED_KEY not in summary
+    # No SKIPPED verdict exists for any reader to take as a MERGE.
+    assert not any(entry.get("name") == reviewgate.VERDICT_FILE
+                   and reviewgate.INLINE_ARTIFACT_KEY in entry
+                   for entry in summary.get("artifacts") or [])
+
+
+@pytest.mark.parametrize("path", SCAN_SWITCHES)
+def test_a_one_line_change_to_a_scan_switch_is_a_risk_whatever_the_line_count(path):
+    docs = {"p": {"result_summary": _git(path, insertions=1), "metadata": None}}
+    decision = reviewgate.resolve(
+        ["p"], reviewgate.Gate(validation.REVIEW_GATE_MAX_MIN_LINES,
+                               reviewgate.DEFAULT_RISK_PATHS), docs.get)
+    assert decision.run and decision.reason == reviewgate.REASON_RISK, decision
+    assert decision.risk_hits == (path,)
+
+
 @pytest.mark.parametrize("lines, runs", [(301, True), (300, False)])
 def test_more_than_min_lines_runs_and_exactly_min_lines_skips(db, client, lines, runs):
     _base(db)
@@ -281,6 +322,22 @@ def test_a_chain_sums_its_lines_and_reads_risk_along_builds_on():
     ("apps/scheduler/scheduler/loop.py", False),
     ("docs/workflows.md", False),
     ("apps/swarm-ui/src/pages/Agents.tsx", False),
+    # The security checks' own switches (issue 430): the files that switch a
+    # scan off or narrow it, anchored at the repository root.
+    (".trivyignore.yaml", True),
+    (".trivyignore", True),
+    ("trivy.yaml", True),
+    (".gitleaks.toml", True),
+    (".gitleaksignore", True),
+    (".github/secret_scanning.yml", True),
+    (".github/codeql/codeql-config.yml", True),
+    (".checkov.yaml", True),
+    (".checkov.yml", True),
+    (".semgrepignore", True),
+    (".gitignore", False),
+    (".dockerignore", False),
+    ("docs/trivy.yaml.md", False),
+    ("apps/swarm-ui/.gitignore", False),
 ])
 def test_the_default_risk_paths_are_bgds_list(path, risky):
     assert any(reviewgate.matches(path, g) for g in reviewgate.DEFAULT_RISK_PATHS) is risky

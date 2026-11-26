@@ -27,6 +27,9 @@ end of ctl.sock is `agent_worker.livegate.ctl` (lane L3).
       browser.json         the runner's: the browser tools it registered for the
                            task's `browser_tool`, which this worker forwards to the
                            gate (`browser_tools` on ctl.sock; browser_tools.py)
+      live-browser.json    this worker's: whether the live browser's Chromium is
+                           running, restarting or crashed, its restarts and last
+                           exit (`HandoffPath.note_browser`; part of issue 272)
       browser-tabs.json    this worker's: the tabs a park kept, reopened by the
                            next attempt before its agent starts (browser_resume.py)
       README.md            this worker's: the guide the agent reads
@@ -324,6 +327,22 @@ GATE_REASON_TEXT = {
     GATE_NOT_ENABLED: "this attempt has no live browser path",
 }
 
+#: THE LIVE BROWSER'S OWN STATE, FOR THE AGENT (part of issue 272).
+#: MEASURED 2026-11-23: two review tasks on the browser runner profile lost the
+#: hosted browser; the agent saw only "connect_over_cdp: Connection closed" and
+#: could not tell a Chromium being started again (BROWSER-RELAUNCH) from one
+#: that never would be. The worker writes what the gate's `status` says to
+#: this file in the spool, on its control poll, only when it changes.
+#: NOT `browser.json`: that name is the runner's (browser_tools.STATE_NAME,
+#: BSTATUS-API), forwarded to the gate on every poll; two writers on one file
+#: would lose one of them.
+BROWSER_STATE_NAME = "live-browser.json"
+BROWSER_RUNNING = "running"
+BROWSER_RESTARTING = "restarting"
+BROWSER_CRASHED = "crashed"
+#: A cause or signal word from the gate (livegate `exit_cause`): kept only in this shape.
+_EXIT_WORD = re.compile(r"^[A-Za-z0-9_]{1,40}$")
+
 #: NOLIVE-GUARD (part of archived issue 1366): why the HUMAN's view has not opened, while the
 #: agent's browser runs. The gate refused `tunnel_ticket`: its relay did not
 #: answer (`tunnel_refused {"cause": "relay unreachable: gaierror"}` in the
@@ -363,6 +382,18 @@ RELAY_PROBE_SECONDS = 3.0
 #: and capacity released, as an unreachable forge does. The next attempt is a
 #: new pod with a new sidecar. Bounded by `max_attempts`, like every retry.
 LIVE_GATE_UNAVAILABLE = "live_gate_unavailable"
+#: Issue 272: the same reasoning WHILE the agent runs. The gate's relaunch
+#: budget is spent (or its channel to this worker closed), so the attempt's
+#: live browser is gone for good (`HandoffPath.browser_gone`). Left alone the
+#: agent carried on, reported its review "not rendered" and the task ended as
+#: if nothing had failed. `Worker._live_browser_after_tick` stops the agent,
+#: checkpoints and fails the attempt retryably with this cause instead: only a
+#: new attempt brings a new sidecar, and the task then names the browser as
+#: what failed. Waits LIVE_GATE_RETRY_DELAY_SECONDS, bounded by `max_attempts`.
+LIVE_BROWSER_CRASHED = "live_browser_crashed"
+#: The mark on the task's events for each restart the gate made (issue 272):
+#: the operator reads why Chromium exited there, the attempt goes on.
+LIVE_BROWSER_RESTARTED = "live_browser_restarted"
 #: How long that task waits before it is eligible again: long enough for the
 #: burst of pod starts that broke this one to have passed, short enough that a
 #: retried attempt does not look stuck.
@@ -486,6 +517,15 @@ works. If either answers `gate_unavailable`, its `reason` says why: `starting`
 or `restarting` (the worker already waited, and says how long; try again in a
 minute), `unresponsive` (try again), `crashed` or `not_enabled` (carry on
 without the live browser, and say so).
+
+A CDP connection to the live browser that closes or is refused means its
+Chromium exited. $SWARM_HANDOFF/live-browser.json says what became of it:
+`restarting` (wait, then connect again: its tabs and pages are gone, the
+profile's sign-ins are kept), `running` with `restarts` counted (connect
+again), or `crashed` (gone for this attempt: carry on without it, and say so).
+Its `message` says why, and `last_exit` how Chromium ended. The file is written
+on the worker's control poll, so it can be some seconds behind; `live()` in
+swarm_browser already waits out a `restarting` browser.
 
 A flow as a GIF, a mockup beside the app, and a render against its frame (one line each):
 
@@ -724,7 +764,7 @@ class Gate:
     def register(self) -> None:
         try:
             self._client.register()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             raise self._translate(exc) from None
         self.registered = True
 
@@ -736,13 +776,13 @@ class Gate:
         try:
             with self._lock:
                 return dict(self._client.call(op, dict(args)) or {})
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             raise self._translate(exc) from None
 
     def close(self) -> None:
         try:
             self._client.close()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
         self.registered = False
 
@@ -807,7 +847,7 @@ def _probe_cdp(endpoint: str, timeout: float) -> bool:
         opener = build_opener(ProxyHandler({}))
         with opener.open(request, timeout=timeout) as response:  # noqa: S310 -- the dispatcher's loopback
             body = json.loads(response.read(64 * 1024).decode("utf-8"))
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
     return isinstance(body, dict) and isinstance(body.get("webSocketDebuggerUrl"), str)
 
@@ -868,6 +908,42 @@ def public_url(value: Any) -> str | None:
         return None
     host = parts.hostname + (f":{parts.port}" if parts.port else "")
     return redact_text(f"{parts.scheme}://{host}{parts.path or '/'}").text
+
+
+def _browser_exit(value: Any) -> dict[str, Any] | None:
+    """The gate's `browser_exit` (livegate LiveGate.browser_exit) in the file's
+    shape, each field checked: the status crosses a process boundary."""
+    if not isinstance(value, Mapping):
+        return None
+
+    def word(key: str) -> str | None:
+        found = value.get(key)
+        return found if isinstance(found, str) and _EXIT_WORD.match(found) else None
+
+    def number(key: str) -> int | None:
+        found = value.get(key)
+        return found if isinstance(found, int) and not isinstance(found, bool) else None
+
+    at = value.get("at")
+    when = None
+    if isinstance(at, (int, float)) and not isinstance(at, bool):
+        try:
+            when = datetime.fromtimestamp(float(at), tz=timezone.utc).isoformat()
+        except (OverflowError, OSError, ValueError):
+            when = None
+    return {"cause": word("exit_cause"), "signal": word("signal"), "exit_code": number("exit_code"),
+            "oom_kills": number("oom_kills"), "at": when}
+
+
+def _exit_words(last_exit: Mapping[str, Any] | None) -> str:
+    """How Chromium's last exit is said in the file's `message`."""
+    if not last_exit or not last_exit.get("cause"):
+        return "cause not known"
+    words = str(last_exit["cause"])
+    oom = last_exit.get("oom_kills")
+    if isinstance(oom, int) and oom > 0:
+        words += f"; the browser sidecar's memory limit killed a process {oom} time(s)"
+    return words
 
 
 def _write_atomic(path: Path, document: Mapping[str, Any] | list[Any]) -> None:
@@ -1023,8 +1099,27 @@ class HandoffPath:
         )
         #: What this attempt's browser got back, once `prepare` has asked.
         self.restored: Restored | None = None
+        #: The live browser's state as last derived from the gate's `status`,
+        #: and as last written to BROWSER_STATE_NAME (part of issue 272).
+        self._browser_seen: dict[str, Any] | None = None
+        self._browser_written: dict[str, Any] | None = None
+        #: One entry per change worth an event on the task -- a restart
+        #: counted, or the browser gone for good -- handed over once by
+        #: `drain_browser_notes`.
+        self.browser_notes: list[dict[str, Any]] = []
+        #: None, or the `crashed` document once the browser is gone for good
+        #: this attempt (the relaunch budget spent, or the gate's channel lost).
+        #: `tick` does not return it: every value `tick` returns parks the
+        #: attempt for a person; the lifecycle reads this instead.
+        self.browser_gone: dict[str, Any] | None = None
 
     # -- what the lifecycle asks ---------------------------------------------
+
+    @property
+    def wiped(self) -> bool:
+        """Whether this attempt's browser was wiped (§5.5): it is ending, so a
+        closed browser then is not a crash (LIVE_BROWSER_CRASHED)."""
+        return self._wiped
 
     @property
     def offered(self) -> bool:
@@ -1196,7 +1291,7 @@ class HandoffPath:
                 try:
                     # Looked up per call, so the unit suite's conftest stands in.
                     answered = bool(_probe_cdp(endpoint, CDP_PROBE_SECONDS))
-                except Exception:
+                except Exception:  # noqa: BLE001
                     answered = False
                 if answered:
                     if tries > 1:
@@ -1219,7 +1314,7 @@ class HandoffPath:
             note({"phase": "live_browser", "live_path": self._cdp_missing, "reason": self._cdp_missing,
                   "message": f"live browser unavailable: {self._cdp_missing}; the agent was not "
                              "started, and the attempt is retried"})
-        except Exception:  # a note must never stop the attempt
+        except Exception:  # a note must never stop the attempt  # noqa: BLE001, S110
             pass
 
     def _view_unavailable(self, note: Callable[[dict[str, Any]], Any] | None, code: str) -> None:
@@ -1231,7 +1326,7 @@ class HandoffPath:
             note({"phase": "live_view", "live_path": "view_unavailable", "reason": code,
                   "message": f"live view unavailable: {code}{lookup}; the agent's browser runs, "
                              "and the view is retried"})
-        except Exception:  # a note must never stop the attempt
+        except Exception:  # a note must never stop the attempt  # noqa: BLE001, S110
             pass
 
     def _open_first_tunnel(self, gate: Gate, key: Any, api: Any) -> None:
@@ -1287,7 +1382,7 @@ class HandoffPath:
         def probe() -> None:
             try:
                 resolve(host, port)
-            except Exception as exc:  # anything but a gaierror is not a lookup failure
+            except Exception as exc:  # anything but a gaierror is not a lookup failure  # noqa: BLE001
                 found.append(resolver_class(exc))
             else:
                 found.append(None)
@@ -1322,7 +1417,7 @@ class HandoffPath:
         try:
             headers = sign_headers(key, LIVE_SESSION_PURPOSE, "POST", path, body, now=self._wall())
             _, payload = api.call("POST", path, body=body, headers=headers)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             raise NoTunnelTicket(str(getattr(exc, "code", None) or type(exc).__name__)) from None
         ticket = payload.get("ticket") if isinstance(payload, dict) else None
         session_id = payload.get("session_id") if isinstance(payload, dict) else None
@@ -1342,7 +1437,7 @@ class HandoffPath:
         try:
             note({"phase": "browser_egress", "live_path": "egress_failed_closed",
                   "reason": f"browser egress {cause}: pages do not load, and there is no direct fallback"})
-        except Exception:  # a note must never stop the attempt
+        except Exception:  # a note must never stop the attempt  # noqa: BLE001, S110
             pass
 
     def give_cf_access(self, items: list[dict[str, Any]]) -> str:
@@ -1377,7 +1472,7 @@ class HandoffPath:
             key = getattr(self._children, "_key", None)
             api = getattr(self._children, "_api", None)
             fails = self.qa.start(gate, key, api, identity, unavailable)
-        except Exception as exc:  # the QA identity never crashes the attempt
+        except Exception as exc:  # the QA identity never crashes the attempt  # noqa: BLE001
             self.log.warning("qa identity start failed", error=type(exc).__name__)
             return None
         self._qa_failed(self._note, self.qa.cause if self.qa.state == "failed" else None)
@@ -1390,7 +1485,7 @@ class HandoffPath:
         try:
             note({"phase": "qa_identity", "live_path": "qa_identity_signed_out",
                   "reason": f"qa identity {cause}: the browser is signed out of the console"})
-        except Exception:  # a note must never stop the attempt
+        except Exception:  # a note must never stop the attempt  # noqa: BLE001, S110
             pass
 
     def _qa_target_channel(self) -> tuple[Any, Any, Any, str | None]:
@@ -1535,7 +1630,7 @@ class HandoffPath:
         if note is not None:
             try:
                 note({"phase": "live_session", "live_path": code, "reason": why})
-            except Exception:  # a note must never stop the attempt
+            except Exception:  # a note must never stop the attempt  # noqa: BLE001, S110
                 pass
 
     def spool(self, work: Path) -> Path:
@@ -1582,7 +1677,7 @@ class HandoffPath:
             return
         try:
             self.browser.capture(self.spool(work))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning("could not keep the browser for the resumed attempt", error=type(exc).__name__)
 
     def _restore_browser(self, root: Path) -> Restored | None:
@@ -1591,7 +1686,7 @@ class HandoffPath:
             return None
         try:
             return self.browser.restore(root)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning("could not put the earlier attempt's browser back", error=type(exc).__name__)
             return None
 
@@ -1672,7 +1767,7 @@ class HandoffPath:
             if summary is not None:
                 self.log.info("resumed attempt told of earlier hand-offs",
                               handoffs=sum(1 for e in entries if e["attempt_id"] != self.cfg.attempt_id))
-        except Exception as exc:  # never costs the attempt
+        except Exception as exc:  # never costs the attempt  # noqa: BLE001
             self.log.warning("could not prepare the resume summary", error=type(exc).__name__)
 
     def _record(self, root: Path, request_id: str, fields: Mapping[str, Any]) -> None:
@@ -1695,7 +1790,7 @@ class HandoffPath:
                 {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in fields.items()}
             )
             _write_atomic(root / HISTORY_NAME, entries[-MAX_HISTORY:])
-        except Exception as exc:  # the ledger never costs the attempt
+        except Exception as exc:  # the ledger never costs the attempt  # noqa: BLE001
             self.log.warning("could not record the hand-off in the ledger", error=type(exc).__name__)
 
     # -- the poll --------------------------------------------------------------
@@ -1714,11 +1809,11 @@ class HandoffPath:
         self._answer_switches(root)
         try:
             self._keep_egress(root)
-        except Exception as exc:  # egress upkeep never crashes the attempt
+        except Exception as exc:  # egress upkeep never crashes the attempt  # noqa: BLE001
             self.log.warning("browser egress upkeep failed", error=type(exc).__name__)
         try:
             self._keep_qa_identity(root)
-        except Exception as exc:  # nor does the QA identity's
+        except Exception as exc:  # nor does the QA identity's  # noqa: BLE001
             self.log.warning("qa identity upkeep failed", error=type(exc).__name__)
         # VQ-4: a running sign-in followed, `swarm-handoff sign-in` answered. Never raises.
         self.qa_target.keep(*self._qa_target_channel()[:3], root)
@@ -1733,8 +1828,8 @@ class HandoffPath:
             if self.offered:
                 self._raise_for_gate(root, self._note_last_episode(root))
             else:
-                self._poll_startup()
-        except Exception as exc:  # the hand-off never crashes the attempt
+                self._poll_startup(root)
+        except Exception as exc:  # the hand-off never crashes the attempt  # noqa: BLE001
             self.log.warning("hand-off poll failed", error=type(exc).__name__)
         return None
 
@@ -1877,7 +1972,7 @@ class HandoffPath:
             fields["origin"] = GATE_ORIGIN
         try:
             _, payload = self._route(f"/v1/tasks/{quote(self.cfg.task_id, safe='')}/handoff", fields)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             code = str(getattr(exc, "code", None) or type(exc).__name__)
             self._resume_quietly()
             return self._refusal(root, request_id, code, "swarm-api did not record the request")
@@ -1928,13 +2023,15 @@ class HandoffPath:
             status = self.gate.call("status", {})
         except GateRefused:
             pass
-        except GateLost:
+        except GateLost as exc:
             # §5.4.2: the channel dropped (a restarted gate refuses us for
             # good). The live path is over; the open hand-off ends as if the
             # hold had expired.
+            self.note_browser(root, None, lost=exc)
             self.unavailable = GATE_UNAVAILABLE
             return GATE_LOST
         self.note_startup(status)
+        self.note_browser(root, status)
         # A person is being waited for: exactly when the view must be there.
         self._keep_tunnel(status)
         task = fetch_task() or {}
@@ -1984,11 +2081,13 @@ class HandoffPath:
             return {}
         try:
             result = self.gate.call("status", {})
-        except GateLost:
+        except GateLost as exc:
+            self.note_browser(root, None, lost=exc)
             return {}
         if not isinstance(result, Mapping):
             return {}
         self.note_startup(result)
+        self.note_browser(root, result)
         self._keep_tunnel(result)
         episode = result.get("last_episode")
         if not isinstance(episode, dict):
@@ -2012,15 +2111,30 @@ class HandoffPath:
         wanted = GATE_STARTUP_STEPS if self.offered else GATE_STARTUP_STEPS[:2]
         return [step for step in wanted if step not in self.startup_noted]
 
-    def _poll_startup(self) -> None:
-        """One `status` read for the start-up steps, on a gate with no live
-        path (whose tick reads no status otherwise). Stops once they are settled."""
-        if self.gate is None or self._progress is None or not self._startup_outstanding():
+    def _poll_startup(self, root: Path) -> None:
+        """One `status` read per tick on a gate with no live path (whose tick
+        reads no status otherwise), for the start-up steps and the browser's
+        state (`note_browser`) from the same read.
+
+        Once the steps are settled the read goes on while the agent has its
+        browser (`browser_ready`) and it is not gone for good: without it a
+        Chromium exit mid-task on an attempt with no hand-off offered was
+        never noticed, and the task ended as if it worked (part of issue
+        272). The read is a local ctl.sock call."""
+        if self.gate is None:
+            return
+        starting = self._progress is not None and bool(self._startup_outstanding())
+        watching = self.browser_ready and self.browser_gone is None
+        if not starting and not watching:
             return
         try:
-            self.note_startup(self.gate.call("status", {}))
-        except GateLost:
+            status = self.gate.call("status", {})
+        except GateLost as exc:
+            self.note_browser(root, None, lost=exc)
             return
+        if starting:
+            self.note_startup(status)
+        self.note_browser(root, status)
 
     def note_startup(self, status: Any) -> None:
         """Write each start-up step the gate's `status` dates, once per attempt. Never raises.
@@ -2044,12 +2158,100 @@ class HandoffPath:
                 continue
             try:
                 settled = self._progress(step, at)
-            except Exception as exc:  # a progress mark never costs the attempt
+            except Exception as exc:  # a progress mark never costs the attempt  # noqa: BLE001
                 self.log.warning("could not record a start-up step", step=step, error=type(exc).__name__)
                 return
             if not settled:
                 return
             self.startup_noted.add(step)
+
+    # -- the live browser's own state (part of issue 272) ------------------------
+
+    def note_browser(self, root: Path, status: Any, *, lost: BaseException | None = None) -> None:
+        """Write what the gate's `status` says of Chromium to BROWSER_STATE_NAME. Never raises.
+
+        Called wherever the tick already holds a `status` read (or the
+        `GateLost` that read raised), so it costs no gate call. The file is
+        written only when its content changes; a write that fails is tried
+        again on the next tick. A restart counted, or the browser gone for
+        good, also leaves one entry in `browser_notes`, and the latter sets
+        `browser_gone`. A `wiped` browser (the attempt is ending) is neither.
+        """
+        try:
+            document = self._browser_document(status, lost)
+            if document is None:
+                return
+            self._note_browser_change(document)
+            if document != self._browser_written:
+                _write_atomic(root / BROWSER_STATE_NAME, document)
+                self._browser_written = document
+        except Exception as exc:  # the browser's note never costs the attempt  # noqa: BLE001
+            self.log.warning("could not note the live browser's state", error=type(exc).__name__)
+
+    def drain_browser_notes(self) -> list[dict[str, Any]]:
+        """The browser's changes since the last call, each handed over once."""
+        notes, self.browser_notes = self.browser_notes, []
+        return notes
+
+    def _browser_document(self, status: Any, lost: BaseException | None) -> dict[str, Any] | None:
+        """The file's content for this read, or None when it says nothing new to write."""
+        if self.browser_gone is not None:
+            return self.browser_gone  # gone for good: it does not come back this attempt
+        seen = self._browser_seen or {}
+        if lost is not None:
+            # A call the gate did not answer in time leaves the channel open: not a loss.
+            if not isinstance(lost, GateLost) or isinstance(lost, GateRefused) or lost.reason != GATE_CRASHED:
+                return None
+            return {"state": BROWSER_CRASHED, "restarts": int(seen.get("restarts") or 0),
+                    "last_exit": seen.get("last_exit"),
+                    "message": "the live browser is gone for this attempt: the gate restarted and its "
+                               "channel to this worker closed (a restarted gate never takes it back); "
+                               "carry on without it, and say so"}
+        if not isinstance(status, Mapping):
+            return None
+        browser = status.get("browser")
+        restarts = status.get("browser_restarts")
+        restarts = restarts if isinstance(restarts, int) and not isinstance(restarts, bool) and restarts >= 0 else 0
+        last_exit = _browser_exit(status.get("browser_exit"))
+        if browser == "running":
+            state = BROWSER_RUNNING
+            if restarts:
+                message = (f"the live browser is running again: Chromium exited ({_exit_words(last_exit)}) and "
+                           f"was started again ({restarts} so far); connect again -- open tabs and pages are "
+                           "gone, the profile's sign-ins are kept")
+            else:
+                message = "the live browser is running"
+        elif browser == "restarting":
+            state = BROWSER_RESTARTING
+            message = (f"{GATE_REASON_TEXT[GATE_RESTARTING]} ({_exit_words(last_exit)}); "
+                       "open tabs and pages are gone, the profile's sign-ins are kept")
+        elif browser == "closed":
+            startup = status.get("startup")
+            started = isinstance(startup, Mapping) and startup.get("browser_ready") is not None
+            if last_exit is None and not restarts and not started:
+                return None  # not launched yet: starting, not gone
+            state = BROWSER_CRASHED
+            message = (f"the live browser is gone for this attempt: Chromium exited ({_exit_words(last_exit)}) "
+                       f"and could not be started again after {restarts} restart(s); carry on without it, "
+                       "and say so")
+        else:
+            return None  # `wiped` (the attempt is ending), or a status with no browser
+        return {"state": state, "restarts": restarts, "last_exit": last_exit, "message": message}
+
+    def _note_browser_change(self, document: dict[str, Any]) -> None:
+        seen = self._browser_seen
+        self._browser_seen = document
+        before = int((seen or {}).get("restarts") or 0)
+        if document["restarts"] > before:
+            self.browser_notes.append({"event": "browser_restarted", "restarts": document["restarts"],
+                                       "last_exit": document["last_exit"]})
+            self.log.warning("the live browser was started again", restarts=document["restarts"],
+                             cause=(document["last_exit"] or {}).get("cause"))
+        if document["state"] == BROWSER_CRASHED and self.browser_gone is None:
+            self.browser_gone = document
+            self.browser_notes.append({"event": "browser_gone", **document})
+            self.log.warning("the live browser is gone for this attempt", restarts=document["restarts"],
+                             cause=(document["last_exit"] or {}).get("cause"))
 
     def _forward_browser_tools(self, root: Path) -> None:
         """The runner's `browser.json`, to the gate, once per change (BSTATUS-API).
@@ -2099,7 +2301,7 @@ class HandoffPath:
             for answer in (self._answer_devices, self._answer_themes):
                 try:
                     answer(root)
-                except Exception as exc:  # a switch never crashes the attempt
+                except Exception as exc:  # a switch never crashes the attempt  # noqa: BLE001
                     self.log.warning("hand-off switch failed", error=type(exc).__name__)
 
     def _answer_devices(self, root: Path) -> None:
@@ -2258,7 +2460,7 @@ class HandoffPath:
         try:
             _, payload = self._route(
                 f"/v1/tasks/{quote(self.cfg.task_id, safe='')}/handoff/resolve", fields)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning("the hand-off's expiry was not resolved at swarm-api",
                              error=str(getattr(exc, "code", None) or type(exc).__name__))
         else:
@@ -2295,7 +2497,7 @@ class HandoffPath:
                         f"/v1/tasks/{quote(self.cfg.task_id, safe='')}/handoff/resolve",
                         {"request_id": active["request_id"], "outcome": outcome},
                     )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 # swarm-api clears a stale wait itself when the task moves on;
                 # the park or the cancel below still happens.
                 self.log.warning("the hand-off was not resolved at swarm-api",
@@ -2516,6 +2718,6 @@ def park_human_required(
             control._record_parked_uploads(txn, index, uploads, at=now)
         return refund, state, written
 
-    refunded, state, written = control._run_transaction(_apply)
+    refunded, state, written = control._park_transaction(_apply, reason=reason)
     control._ended(state, written)
     return HumanPark(refunded, returned.get("by"))

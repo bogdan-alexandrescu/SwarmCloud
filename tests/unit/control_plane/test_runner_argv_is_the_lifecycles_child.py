@@ -1,3 +1,4 @@
+# source-text: contract - the `#:` comment on RunnerProfile.runner_argv in profiles.py must say it is the lifecycle's child and never a container command
 """`RunnerProfile.runner_argv` is the argv the worker lifecycle starts as its CHILD.
 
 Contract request 18 in docs/contract-change-requests.md (filed from incident

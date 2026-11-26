@@ -1,3 +1,4 @@
+# source-text: contract - the docs' statements must match what dispatch.py, the worker config and the API routes they cite actually say
 """What the docs of B18a and later lanes describe, held on the code alone.
 
 These tests began as doc-accuracy pins (owner decisions of 2026-10-02 on): each
@@ -119,7 +120,7 @@ def test_worker_default_checkpoint_interval_matches_the_catalogue():
 def test_dispatch_routes_serve_runtimes_and_resource_classes():
     """GET /v1/runtimes and GET /v1/resource-classes are real routes."""
     platform = "apps/swarm-api/swarm_api/routes/platform.py"
-    assert _cited_symbol(platform, "runtimes").startswith('@router.get("/runtimes")')
+    assert _cited_symbol(platform, "runtimes").startswith('@router.get("/runtimes"')
     assert _cited_symbol(platform, "resource_classes").startswith('@router.get("/resource-classes")')
 
 
@@ -411,13 +412,10 @@ def test_model_class_signing_format_is_5_and_below_the_current_format():
     assert signing_format({"model_class": "haiku"}) == 5 < SPEC_FORMAT
 
 
-def test_no_model_classes_enabled_flag_exists_anywhere():
-    """R4: model classes ship with no feature flag; nothing under apps/ or
-    terraform/ reads MODEL_CLASSES_ENABLED."""
-    for root in ("apps", "terraform"):
-        for path in (REPO / root).rglob("*"):
-            if path.suffix in (".py", ".tf", ".ts", ".tsx") and "node_modules" not in path.parts:
-                assert "MODEL_CLASSES_ENABLED" not in path.read_text(encoding="utf-8"), path
+# R4: model classes ship with no feature flag; that nothing under apps/ or
+# terraform/ reads MODEL_CLASSES_ENABLED is the rule
+# `no-model-classes-enabled-flag` of scripts/source_text_rules/scripts_tree.py,
+# over the .py, .tf, .ts and .tsx files this test walked.
 
 
 def test_model_classes_frozen_count_and_dispatch_pin_the_model():

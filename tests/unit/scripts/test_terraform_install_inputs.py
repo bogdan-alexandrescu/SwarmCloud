@@ -1,3 +1,4 @@
+# source-text: fixture - reads only terraform .tf files and the deployment pattern list; the checker selects it through a variable name that elsewhere in the file holds a .py path (deployment_values.py, imported, not read)
 """A new deployment's Terraform inputs are inputs: no live literal, no
 hand-copied value, one Terraform version (lane DAYONE-TF-1, part of archived issue 2688;
 docs/design/day-one-install.md §5.2 and §14 Q8, docs/design/day-one-plan.md R9).

@@ -36,7 +36,6 @@ CI's install step asks the REAL `uv tool run` install the same question
 
 from __future__ import annotations
 
-import ast
 import importlib.metadata
 import json
 import re
@@ -52,7 +51,6 @@ from swarm_mcp.auth import Tier
 from swarm_mcp.config import Deployment
 
 _REPO = Path(__file__).resolve().parents[3]
-_PACKAGE = _REPO / "apps" / "swarm-mcp" / "swarm_mcp"
 _MANIFEST = _REPO / "plugin" / ".claude-plugin" / "plugin.json"
 _SKILL = _REPO / "plugin" / "skills" / "delegate" / "SKILL.md"
 
@@ -322,39 +320,11 @@ def test_nothing_to_follow_is_still_nothing():
 # -- one place ------------------------------------------------------------------
 
 
-def _string_literals(path: Path) -> list[str]:
-    """Every string constant in a module that is not a docstring."""
-    tree = ast.parse(path.read_text())
-    docstrings = {
-        id(node.body[0].value)
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.body
-        and isinstance(node.body[0], ast.Expr)
-        and isinstance(node.body[0].value, ast.Constant)
-        and isinstance(node.body[0].value.value, str)
-    }
-    return [
-        node.value
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings
-    ]
-
-
-def test_only_one_module_spells_a_launcher():
-    """`follow.RUN_PREFIX` was one constant, and one constant was still the
-    defect: it was right for one install of three. The spelling is DECIDED in
-    `swarm_mcp.invocation`, and no other module writes `uv run ` or `uv tool
-    run` into a string it prints."""
-    modules = sorted(_PACKAGE.glob("*.py"))
-    assert len(modules) > 5, f"found nothing to read under {_PACKAGE}"
-    offenders = {
-        path.name: [s for s in _string_literals(path) if "uv run " in s or "uv tool run" in s]
-        for path in modules
-        if path.name != "invocation.py"
-    }
-    offenders = {name: found for name, found in offenders.items() if found}
-    assert not offenders, f"a launcher is spelled outside swarm_mcp.invocation: {offenders}"
+# `follow.RUN_PREFIX` was one constant, and one constant was still the defect:
+# it was right for one install of three. The spelling is DECIDED in
+# `swarm_mcp.invocation`, and no other module writes `uv run ` or `uv tool run`
+# into a string it prints: the rule mcp-launcher-spelled-only-in-invocation in
+# scripts/source_text_rules/services.py.
 
 
 def test_the_delegate_skill_says_to_run_the_command_as_handed_back():
@@ -371,32 +341,12 @@ def test_the_delegate_skill_says_to_run_the_command_as_handed_back():
 # -- review of archived pull request 201: the three places the one spelling did not yet reach -------
 
 
-#: A backticked `swarm <subcommand>` or `sc <subcommand>` in a string the bridge
-#: prints: a command handed to a reader, spelled by hand. A bare program name
-#: (`sc`, `swarm`) is a name, not a command, and is not matched.
-_HAND_SPELLED = re.compile(r"`(?:swarm|sc) [a-z<-][^`]*`")
-
-
-def test_no_module_hands_back_a_command_it_did_not_spell():
-    """`test_only_one_module_spells_a_launcher` finds a module that writes `uv
-    run` itself; it does not find one that writes NO launcher. `sc.py` printed
-    the remedy "see `swarm doctor`" -- `command not found` on a plugin-only
-    install -- and `config.py` told a reader "`sc context add` writes a fresh
-    one", both bare, beside commands the same functions spell through
-    `terminal_command`. So: no printed string outside `swarm_mcp.invocation`
-    carries a backticked command at all. Every one is built by the function
-    that knows the install."""
-    modules = sorted(_PACKAGE.glob("*.py"))
-    assert len(modules) > 5, f"found nothing to read under {_PACKAGE}"
-    offenders = {
-        path.name: sorted({m for s in _string_literals(path) for m in _HAND_SPELLED.findall(s)})
-        for path in modules
-        if path.name != "invocation.py"
-    }
-    offenders = {name: found for name, found in offenders.items() if found}
-    assert not offenders, (
-        "a command is spelled by hand, not by invocation.terminal_command: " f"{offenders}"
-    )
+# `sc.py` printed the remedy "see `swarm doctor`" -- `command not found` on a
+# plugin-only install -- and `config.py` told a reader "`sc context add` writes a
+# fresh one", both bare, beside commands the same functions spell through
+# `terminal_command`. So no printed string outside `swarm_mcp.invocation`
+# carries a backticked command at all: the rule mcp-no-hand-spelled-command in
+# scripts/source_text_rules/services.py.
 
 
 def test_the_outranked_warning_spells_doctor_for_this_install(monkeypatch, tmp_path):

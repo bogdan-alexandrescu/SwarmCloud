@@ -913,6 +913,25 @@ def _pause(facts: dict[str, Any], park: TaskEvent | None) -> dict[str, Any]:
             "since": None}
 
 
+def _workflow_pause(task: Task, facts: dict[str, Any]) -> dict[str, Any]:
+    """A step parked because its workflow is paused (docs/design/workflow-pause.md
+    sections 4.4 and 9). Its own branch, not `_pause`: a tenant's or a pool's
+    pause clears on its own and the pause sweep returns the step, where this
+    one waits for a person to resume the workflow (section 4.3).
+
+    The facts are the park's record: the scheduler's park names the workflow,
+    who paused it and when; the worker's park names when only. What was not
+    recorded is null, never the read time or the workflow document (this
+    module reads nothing).
+    """
+    by = _str(facts.get("paused_by"))
+    detail = {"workflow_id": _str(facts.get("workflow_id")) or task.workflow_id,
+              "paused_by": by, "paused_at": _as_dt(facts.get("paused_at"))}
+    summary = "Workflow paused" + (f" by {by}" if by else "")
+    return {"detail": detail, "summary": summary,
+            "resumes_when": "the workflow is resumed", "since": None}
+
+
 # --------------------------------------------------------------------------
 # History
 # --------------------------------------------------------------------------
@@ -1085,6 +1104,8 @@ def build_waiting(
         part = _budget(facts)
     elif reason == ParkReason.MANUAL_PAUSE.value:
         part = _pause(facts, park)
+    elif reason == ParkReason.WORKFLOW_PAUSED.value:
+        part = _workflow_pause(task, facts)
     else:
         part = {"detail": {}, "summary": f"Parked: {reason}",
                 "resumes_when": "the scheduler's sweep for this reason returns it", "since": None}
@@ -1204,7 +1225,7 @@ def place_in_line(db: Any, task: Task, waiting_for: Mapping[str, Any] | None) ->
         # Firestore's answer for an index that is missing or still building.
         log.warning("waiting: place-in-line count refused: %s", type(exc).__name__)
         return _no_line("the count's Firestore index is missing or still building", basis)
-    except Exception as exc:  # the task itself was read; only this count failed
+    except Exception as exc:  # the task itself was read; only this count failed  # noqa: BLE001
         log.warning("waiting: place-in-line count failed: %s", type(exc).__name__)
         return _no_line(f"the count query failed ({type(exc).__name__})", basis)
     return {"place_in_line": ahead + 1, "place_in_line_unavailable": None, "place_in_line_basis": basis}
@@ -1225,7 +1246,7 @@ def read_inputs(store: Any, task: Task, *, waiting_for: Mapping[str, Any] | None
     try:
         page = store.list_events(task.tenant_id, task.id, limit=EVENTS_READ, descending=True)
         events = list(page.items)
-    except Exception as exc:  # the task itself was read; only this reading failed
+    except Exception as exc:  # the task itself was read; only this reading failed  # noqa: BLE001
         log.warning("waiting: event read failed: %s", type(exc).__name__)
         events = None
     related: dict[str, Task] | None = None
@@ -1239,7 +1260,7 @@ def read_inputs(store: Any, task: Task, *, waiting_for: Mapping[str, Any] | None
             page = store.list_tasks(task.tenant_id, parent_task_id=task.id, limit=CHILDREN_READ,
                                     submitted_by=None)
             related = {t.id: t for t in page.items if t.tenant_id == task.tenant_id}
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         log.warning("waiting: related task read failed: %s", type(exc).__name__)
         related = None
     ready = task.state is TaskState.READY

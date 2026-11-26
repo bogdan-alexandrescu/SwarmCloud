@@ -489,7 +489,7 @@ def issue_run_for(db: Any, tenant_id: str, pull: OpenPull, repo: str) -> IssueRu
             continue
         try:
             run = IssueRun.from_firestore(data)
-        except Exception:  # noqa: BLE001 -- an unreadable run is no run
+        except Exception:  # noqa: BLE001, S112 -- an unreadable run is no run
             continue
         if run.issue.repository.lower() != repo.lower():
             continue

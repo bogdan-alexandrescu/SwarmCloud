@@ -1541,6 +1541,40 @@ def test_the_alert_policy_matches_the_lines_the_reconciler_writes():
         assert pairs == {f: f"EXTRACT(jsonPayload.{f})" for f in fields}, (metric, pairs)
 
 
+def test_the_pass_duration_metric_reads_the_line_every_pass_writes():
+    """The pass-duration alert's metric counts a line a real pass writes.
+
+    The message and the field are read off a pass the production Reconciler
+    runs, not restated: the filter's `jsonPayload.message` literal must be the
+    message of a line the pass logged, and the value the metric extracts must
+    be a top-level number of seconds on that same line.
+    """
+    alerts = (REPO / "terraform" / "modules" / "monitoring" / "alerts.tf").read_text()
+    body = hcl_block(hcl_tokens(alerts), "resource", "google_logging_metric", "reconciler_pass_duration")
+    filter_value = hcl_attribute(body, "filter")
+    assert ("IDENT", "local.reconciler_log_filter") in filter_value
+    messages = [
+        lit[len('jsonPayload.message="'):-1]
+        for lit in hcl_literals(filter_value)
+        if lit.startswith('jsonPayload.message="') and lit.endswith('"')
+    ]
+    assert len(messages) == 1, hcl_literals(filter_value)
+    (extractor,) = hcl_literals(hcl_attribute(body, "value_extractor"))
+    m = re.fullmatch(r"EXTRACT\(jsonPayload\.([a-z_]+)\)", extractor)
+    assert m, extractor
+
+    rec, stream = reconciler(FakeFirestore(), FlatBackend(CLOUD_RUN))
+    rec.run_once()
+
+    lines = [line for line in log_lines(stream) if line["message"] == messages[0]]
+    assert len(lines) == 1, [line["message"] for line in log_lines(stream)]
+    (line,) = lines
+    assert line["component"] == "reconciler"
+    value = line[m.group(1)]
+    assert isinstance(value, (int, float)) and not isinstance(value, bool), value
+    assert value >= 0
+
+
 # ---------------------------------------------------------------------------
 # GC: one backend's failure does not stop another's collection
 # ---------------------------------------------------------------------------

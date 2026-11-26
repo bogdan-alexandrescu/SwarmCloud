@@ -1,3 +1,4 @@
+# source-text: contract - the TERMINAL_EVENTS set of swarm-ui's events.ts and tuple of scripts/benchstat.py must restate the API's terminal events exactly
 """A cancel that is only requested is recorded as a request, never as `cancelled`.
 
 Contract request 17 in docs/contract-change-requests.md (filed from incident
@@ -22,8 +23,9 @@ WHAT IS PINNED HERE, each through the real route over the in-memory Firestore:
   4. history written before the change (`type: cancelled, phase:
      cancel_requested`) is SERVED as `cancel_requested`, so no reader of the API
      has to know the old shape existed. Nothing stored is rewritten;
-  5. every restatement of "the terminal events" outside Python agrees with the
-     frozen states, and none of them counts a request as an ending.
+  5. the terminal events are the frozen states' and a request is not one of
+     them; benchstat's restatement agrees. The console's is held to the
+     generated constants by its own `contract.constants.test.ts` (part of #72).
 """
 
 from __future__ import annotations
@@ -32,7 +34,9 @@ import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from swarm_common.states import TERMINAL_STATES, EventType
+import pytest
+
+from swarm_common.states import TERMINAL_STATES, EventType, TaskState
 
 from .conftest import auth_header, seed_task, seed_tenant
 from .test_reconciler_gke_namespaced import CLOUD_RUN, FlatBackend, reconciler, seed_stranded
@@ -101,6 +105,19 @@ def test_a_cancel_of_a_task_holding_nothing_is_still_recorded_as_cancelled(clien
     assert [e["type"] for e in events] == ["cancelled"]
     assert events[0]["detail"]["phase"] == "cancelled"
     assert events[0]["detail"]["from_state"] == "QUEUED"
+
+
+@pytest.mark.parametrize("state", sorted(s.value for s in TaskState))
+def test_the_cancel_route_refuses_exactly_the_terminal_states(client, db, state) -> None:
+    """The console offers its stop on the states outside TERMINAL_STATES; this
+    is the server's half of that agreement."""
+    seed_tenant(db, "eng")
+    seed_task(db, task_id="task_any", tenant_id="eng", state=state)
+
+    response = client.post("/v1/tasks/task_any/cancel", headers=auth_header("alice"))
+
+    refused = TaskState(state) in TERMINAL_STATES
+    assert response.status_code == (409 if refused else 200), response.text
 
 
 # --------------------------------------------------------------------------
@@ -230,13 +247,6 @@ def test_a_stored_legacy_request_is_served_as_a_request_and_real_cancels_are_not
 # 5: the restatements of "a terminal event"
 # --------------------------------------------------------------------------
 
-def _set_literal(path: Path, name: str) -> set[str]:
-    source = path.read_text()
-    match = re.search(r"%s\b[^=]*=\s*new Set(?:<[^>]*>)?\(\[(.*?)\]\)" % name, source, re.S)
-    assert match is not None, f"no `{name} = new Set([...])` in {path.relative_to(REPO)}"
-    return set(re.findall(r"'([^']+)'", match.group(1)))
-
-
 def _tuple_literal(path: Path, name: str) -> set[str]:
     source = path.read_text()
     match = re.search(r"^%s\b[^=]*=\s*\((.*?)\)" % name, source, re.S | re.M)
@@ -244,26 +254,29 @@ def _tuple_literal(path: Path, name: str) -> set[str]:
     return set(re.findall(r"\"([^\"]+)\"", match.group(1)))
 
 
-def test_every_restatement_of_the_terminal_events_matches_the_frozen_states() -> None:
-    """The UI and the benchmark engine each copy the terminal-event set.
+def test_a_cancel_request_is_an_event_and_not_an_ending() -> None:
+    """The event each TERMINAL state is announced with (`control.finish`'s map).
 
-    They must: the browser cannot import Python, and benchstat runs in an image
-    with no swarm_common. The set they copy is the event each TERMINAL state is
-    announced with (`control.finish`'s map), so it is derived from the frozen
-    states here, and `cancel_requested` must be in none of them -- a request is
-    not an ending, and a copy that counted it as one would read a task whose
-    real ending is off the page as complete.
+    `terminal_events` in the generated constants is this set, and the console
+    is held to it by its own `contract.constants.test.ts`.
     """
-    frozen = {EventType[state.name].value for state in TERMINAL_STATES}
+    terminal = {EventType[state.name].value for state in TERMINAL_STATES}
     assert CANCEL_REQUESTED in {e.value for e in EventType}, (
         "EventType has no cancel_requested member"
     )
-    copies = {
-        "apps/swarm-ui/src/events.ts": _set_literal(
-            REPO / "apps/swarm-ui/src/events.ts", "TERMINAL_EVENTS"
-        ),
-        "scripts/benchstat.py": _tuple_literal(REPO / "scripts/benchstat.py", "TERMINAL_EVENTS"),
-    }
-    for where, copy in copies.items():
-        assert copy == frozen, f"{where} restates {sorted(copy)}; the frozen states give {sorted(frozen)}"
-        assert CANCEL_REQUESTED not in copy, f"{where} counts a cancel REQUEST as a terminal event"
+    assert CANCEL_REQUESTED not in terminal, "a cancel REQUEST is a terminal event"
+
+
+def test_the_benchmark_engine_restates_the_terminal_events_of_the_frozen_states() -> None:
+    """benchstat runs in an image with no swarm_common, so it copies the set.
+
+    `cancel_requested` must not be in the copy -- a request is not an ending,
+    and a copy that counted it as one would read a task whose real ending is
+    off the page as complete.
+    """
+    frozen = {EventType[state.name].value for state in TERMINAL_STATES}
+    copy = _tuple_literal(REPO / "scripts/benchstat.py", "TERMINAL_EVENTS")
+    assert copy == frozen, (
+        f"scripts/benchstat.py restates {sorted(copy)}; the frozen states give {sorted(frozen)}"
+    )
+    assert CANCEL_REQUESTED not in copy, "benchstat counts a cancel REQUEST as a terminal event"

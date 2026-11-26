@@ -185,7 +185,7 @@ def decode_push_envelope(body: dict[str, Any]) -> dict[str, Any]:
     if raw:
         try:
             payload = json.loads(base64.b64decode(raw).decode("utf-8"))
-        except Exception:
+        except Exception:  # noqa: BLE001
             payload = {}
     return {
         "reason": payload.get("reason") or attributes.get("reason") or "pubsub",
@@ -258,7 +258,7 @@ def create_app(scheduler: Scheduler | None = None) -> FastAPI:
     def readyz(response: Response, request: Request) -> dict[str, Any]:
         try:
             paused = request.app.state.scheduler.store.dispatch_paused()
-        except Exception as exc:  # pragma: no cover - depends on live Firestore
+        except Exception as exc:  # pragma: no cover - depends on live Firestore  # noqa: BLE001
             response.status_code = 503
             return {"status": "not-ready", "detail": type(exc).__name__}
         return {"status": "ready", "dispatch_paused": paused}

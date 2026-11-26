@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, type ReactNode } from 'react'
 import { USE_FIXTURES, fixtureRead } from './api'
 import { read, route, type Result } from './fetch'
 import { helpAnchor, type TopicId } from './help'
+import { InfoTip } from './InfoTip'
 import {
   CARRIER_NOTE,
   DEFAULT_CARRIER,
@@ -240,7 +241,10 @@ export function DispatchChoice({
                 {/* THE CONSEQUENCE, on the option, in numbers. It is the only
                     place it is said: the box under the options no longer
                     repeats it (TS-20). */}
-                <span className={`dsp-count${c.pushes ? '' : ' is-none'}`}>{c.headline}</span>
+                {/* The consequence in one sentence; its detail behind the (i) (issue 81). */}
+                <span className={`dsp-count${c.pushes ? '' : ' is-none'}`}>
+                  {c.headline} <InfoTip about={strategyLabel(s, scale)} tip={c.detail} />
+                </span>
               </span>
             </label>
           )

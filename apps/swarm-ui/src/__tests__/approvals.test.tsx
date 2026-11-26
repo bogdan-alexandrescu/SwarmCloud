@@ -36,6 +36,7 @@ import { SECTIONS, canonical, fromAddress } from '../App'
 import { addressToPath, pathToAddress } from '../paths'
 import { PANEL_PAGES } from '../Spine'
 import { APPROVAL_KIND } from '../ApprovalDecision'
+import { BOARD_KINDS } from '../approvalPaths'
 
 const WAIT = { timeout: 4000 }
 const PHONE: CascadeEnv = { width: 390 }
@@ -61,6 +62,12 @@ function item(id: string, over: Json = {}): Json {
     ...over,
   }
 }
+
+/** Two kinds the list keeps (plans-pipeline §2.2): a firing waiting to run and a spec. */
+const KEPT_INBOX = [
+  item('apr_run1', { kind: 'run', summary: 'sch_a wants to run', requested_at: hoursFromNow(-3) }),
+  item('apr_spec1', { kind: 'spec', summary: 'a custom-prompt spec' }),
+]
 
 const PLAN = { summary: 'Tighten the retry loop and add a test.', files: ['app/retry.py', 'tests/test_retry.py'] }
 
@@ -119,12 +126,14 @@ afterEach(() => {
 describe('the Approvals page', () => {
   it('is Automate’s second tab at /automate/approvals, one item at /automate/approvals/<id>, and a panel page', () => {
     const automate = SECTIONS.find((s) => s.id === 'automate')!
-    expect(automate.tabs.map((t) => t.id)).toEqual(['schedules', 'approvals'])
+    // plans-pipeline §2.1: the Pipeline board sits between Schedules and Approvals;
+    // §6.4: Settings follows Approvals.
+    expect(automate.tabs.map((t) => t.id)).toEqual(['schedules', 'pipeline', 'approvals', 'settings'])
     expect(addressToPath('automate/approvals')).toBe('/automate/approvals')
     expect(pathToAddress('/automate/approvals')?.address).toBe('automate/approvals')
     expect(addressToPath('automate/approvals?approval=run%3Arun_8f2a')).toBe('/automate/approvals/run%3Arun_8f2a')
     expect(pathToAddress('/automate/approvals/run%3Arun_8f2a')?.address).toBe('automate/approvals?approval=run%3Arun_8f2a')
-    expect(PANEL_PAGES.automate.map((p) => p.key)).toEqual(['schedules', 'approvals'])
+    expect(PANEL_PAGES.automate.map((p) => p.key)).toEqual(['schedules', 'pipeline', 'approvals', 'settings'])
   })
 
   it('carries the inbox count on its panel page', async () => {
@@ -159,9 +168,14 @@ describe('the Approvals page', () => {
     // 2026-10-28: a kind with nothing waiting has no chip), so the words are
     // the chips' own table, the one the filter draws from.
     expect(within(screen.getByRole('group', { name: 'Kind' })).getAllByRole('button').map((b) => visible(b))).toEqual(['Every kind · 0'])
-    const chips = Object.values(APPROVAL_KIND)
+    // The kinds the list keeps (plans-pipeline §2.2): the board draws the others.
+    const chips = Object.entries(APPROVAL_KIND)
+      .filter(([k]) => !BOARD_KINDS.includes(k))
+      .map(([, w]) => w)
     expect(chips.length).toBeGreaterThan(3)
     const said = visible(document.body)
+    // MUTATION: name the board's kinds, which this list no longer draws.
+    for (const k of BOARD_KINDS) expect(said).not.toMatch(new RegExp(`\\b${APPROVAL_KIND[k]!.toLowerCase()}\\b`))
     // MUTATION: put back "No firing, plan, merge, proposal or spec ..." -- a
     // word no chip carries, and three chips the sentence leaves out.
     expect(said).not.toMatch(/firing/i)
@@ -172,15 +186,15 @@ describe('the Approvals page', () => {
     expect(said).toMatch(/, spec, answer or contract judgment waits for a person/)
   })
 
-  it('lists every kind oldest first, each row opening the item’s own page', async () => {
-    await mount('', routes(() => null))
+  it('lists every kind it keeps oldest first, each row opening the item’s own page', async () => {
+    await mount('', routes(() => null, KEPT_INBOX))
     await waitFor(() => expect(document.querySelectorAll('.apc-card[data-approval]')).toHaveLength(2), WAIT)
     const rows = [...document.querySelectorAll<HTMLElement>('.apc-card[data-approval]')]
-    expect(rows.map((r) => r.dataset.approval)).toEqual(['run:run_8f2a', 'apr_merge1'])
-    expect(visible(rows[1]!)).toContain('Merge')
+    expect(rows.map((r) => r.dataset.approval)).toEqual(['apr_run1', 'apr_spec1'])
+    expect(visible(rows[1]!)).toContain('Spec')
     // archived issue 2417: no pane beside the list; the card's Review is a link to the item's page.
     expect(document.querySelector('[data-testid="ap-detail"]')).toBeNull()
-    expect(rows[1]!.querySelector('a')!.getAttribute('href')).toBe('/automate/approvals/apr_merge1')
+    expect(rows[1]!.querySelector('a')!.getAttribute('href')).toBe('/automate/approvals/apr_spec1')
   })
 })
 
@@ -525,20 +539,20 @@ describe('live QA: automate, approvals', () => {
     expect(pathToAddress('/automate/approvals/apr_1', '?kind=merge')?.address).toBe('automate/approvals?approval=apr_1&kind=merge')
     // MUTATION: leave `kind` out of keptKeys and the filter is dropped from the URL.
     expect(canonical(fromAddress('automate/approvals?kind=merge'))).toBe('automate/approvals?kind=merge')
-    const { calls, go } = await mount('kind=merge', routes(() => null))
+    const { calls, go } = await mount('kind=spec', routes(() => null, KEPT_INBOX))
     // The list asks the inbox and its history (`state=all`, QA2-FIX-07 automate2-01).
-    await waitFor(() => expect(calls.some((c) => c.url === '/v1/approvals?kind=merge&state=all')).toBe(true), WAIT)
+    await waitFor(() => expect(calls.some((c) => c.url === '/v1/approvals?kind=spec&state=all')).toBe(true), WAIT)
     const group = screen.getByRole('group', { name: 'Kind' })
-    // The chosen chip carries its count ("Merge · 2", archived issue 2417 A4).
-    expect(within(group).getByRole('button', { name: /^Merge/ }).getAttribute('aria-pressed')).toBe('true')
+    // The chosen chip carries its count (archived issue 2417 A4).
+    expect(within(group).getByRole('button', { name: /^Spec/ }).getAttribute('aria-pressed')).toBe('true')
     // The other chips keep their counts from the whole inbox (automate-05).
-    fireEvent.click(within(group).getByRole('button', { name: 'Plan · 1' }))
-    expect(go).toHaveBeenLastCalledWith('automate/approvals?kind=plan')
+    fireEvent.click(within(group).getByRole('button', { name: 'Run · 1' }))
+    expect(go).toHaveBeenLastCalledWith('automate/approvals?kind=run')
     fireEvent.click(within(group).getByRole('button', { name: 'Every kind · 2' }))
     expect(go).toHaveBeenLastCalledWith('automate/approvals')
     // An item opened from a filtered list keeps the filter.
     await waitFor(() => expect(document.querySelectorAll('.apc-card[data-approval]').length).toBeGreaterThan(0), WAIT)
-    expect(document.querySelector('.apc-card[data-approval="apr_merge1"] a')!.getAttribute('href')).toBe('/automate/approvals/apr_merge1?kind=merge')
+    expect(document.querySelector('.apc-card[data-approval="apr_spec1"] a')!.getAttribute('href')).toBe('/automate/approvals/apr_spec1?kind=spec')
   })
 
   it('asks for the whole inbox when no kind is named', async () => {

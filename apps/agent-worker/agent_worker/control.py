@@ -73,6 +73,7 @@ from __future__ import annotations
 
 import functools
 import json
+import random
 import re
 import sys
 import time
@@ -187,6 +188,18 @@ RELEASE_WAIT_MAX_RESUMES = 4
 #: swarm-api's own value decides.
 QUOTA_PARK_RESUMES_METADATA_KEY = "quota_park_resumes"
 QUOTA_MAX_RESUMES = 5
+
+#: A WORKFLOW_PAUSED park (docs/design/workflow-pause.md section 5.4; the
+#: owner's decision Q1, 2026-11-24, "(a) refund both, bounded"): a pause is a
+#: person's choice, not a failed attempt, so the direct park refunds its
+#: attempt on its own counter while fewer than PAUSE_MAX_REFUNDS were. 5
+#: BECAUSE it is the quota park's number: without a refund two pauses of a
+#: running step exhaust a default three-attempt step, and the bound stops a step
+#: that only ever parks from looping on refunds. Restated from
+#: `swarm_api.attemptstate.PAUSE_REFUNDS` and `PAUSE_MAX_REFUNDS`, which decide
+#: on the routes' path; a test holds them equal.
+PAUSE_REFUNDS_METADATA_KEY = "pause_refunds"
+PAUSE_MAX_REFUNDS = 5
 
 #: A continuation at the time limit (the owner, 2026-11-02): a SCHEDULED_RETRY park
 #: whose detail carries a `TIME_LIMIT_DETAIL_KEY` block, written by
@@ -335,6 +348,12 @@ class ControlSignals:
     retry_after_seconds: int | None = None
     quota_reset_at: datetime | None = None
     observed_at: datetime | None = None
+    #: The step's workflow is paused (docs/design/workflow-pause.md 5.1): the
+    #: raw `pause_requested_at` mirror on the task, or swarm-api's fence view's
+    #: `pause_requested`. A signal, never the authority; it rides the read the
+    #: poll already makes. `Worker._apply_control_signals` honours it after
+    #: the fence and the cancel.
+    pause_requested: bool = False
 
     def is_fenced(self, generation: int) -> bool:
         """True when this worker no longer owns the task."""
@@ -698,6 +717,34 @@ _ABORT_BACKOFF_SECONDS = 0.25
 _abort_sleep: Callable[[float], None] = time.sleep
 _abort_clock: Callable[[], float] = time.monotonic
 
+#: Rounds of one PARK when the runner has spent its `TRANSACTION_ABORTED_RUNS`
+#: on contention (issue 313), each round being the runner's runs again, on
+#: fresh reads. The runs cover about 3.75 s of contention, and contention on
+#: the pools document every admission and release writes can outlast that:
+#: the same measure the terminal write's rounds were sized by
+#: (`lifecycle.TERMINAL_CONTENTION_ROUNDS`, archived issue 2650). FOUR, the
+#: terminal write's number, so a park and a finish ride out the same storm.
+PARK_CONTENTION_ROUNDS = 4
+
+#: The pause before a park's next round, times the round number and a jitter
+#: of 0.5-1.5 (`_park_contention_jitter`), as the terminal write's.
+#: WORST CASE, waiting only: the pauses 2 x (1 + 2 + 3) x 1.5 = 18 s, plus each
+#: round's own backoff between runs, 4 x 3.75 = 15 s: 33 s in all. The RPCs of
+#: each round are still bounded by that round's own call deadline
+#: (`_aborted_deadline`). Not a long wait (invariant 4): a park that cannot
+#: land in that raises, and the worker's crash path ends the attempt.
+PARK_CONTENTION_PAUSE_SECONDS = 2.0
+
+
+def _park_contention_jitter() -> float:
+    """The jitter of one pause between park rounds: so the writers that met
+    each other do not meet again on the same beat."""
+    return random.uniform(0.5, 1.5)
+
+
+#: Module seam, so a unit test does not sleep.
+_park_contention_sleep: Callable[[float], None] = time.sleep
+
 
 def _aborted_deadline(call_options: Mapping[str, Any] | None) -> float:
     """Seconds an aborted transaction may be run again for: the call's own deadline.
@@ -839,18 +886,45 @@ def _contention_exhausted(
     error can carry. `deadline` is the call's deadline when that, and not
     the bound on runs, is what stopped it.
     """
-    from google.api_core import exceptions as core_exceptions  # lazy: grpc
-
     why = (
         f"stopped at the call's {deadline:.1f} s deadline"
         if deadline is not None
         else f"its bound of {TRANSACTION_ABORTED_RUNS} runs reached"
     )
-    return core_exceptions.Aborted(
+    return _contention_types()[0](
         f"Firestore aborted this transaction on contention on each of {runs} runs "
         f"over {elapsed:.1f} s ({why}); nothing was committed. "
         f"Last: {type(last).__name__}: {last}"
     )
+
+
+@functools.lru_cache(maxsize=None)
+def _contention_types() -> tuple[type, type]:
+    """The two `Aborted`s contention ends in here, built once, lazily (grpc).
+
+    `RunsSpentOnContention` is what `_contention_exhausted` builds: the
+    runner's runs were all aborted, so nothing was committed. Its own class,
+    so a park's rounds (`ControlPlane._park_transaction`) recognise exactly
+    it -- by class, never by text or by anything in a cause chain -- and no
+    other `Aborted` is run again there. `ParkContentionExhausted` is what a
+    park raises once its rounds are spent too; a different class, so nothing
+    reads it as one more round's worth. Both are `Aborted`, so every caller
+    that already treats contention as contention goes on doing so.
+    """
+    from google.api_core import exceptions as core_exceptions  # lazy: grpc
+
+    class RunsSpentOnContention(core_exceptions.Aborted):
+        """The transaction runner's runs were each aborted on contention."""
+
+    class ParkContentionExhausted(core_exceptions.Aborted):
+        """A park's rounds were each the runner's runs spent on contention."""
+
+    return RunsSpentOnContention, ParkContentionExhausted
+
+
+def _runs_spent_on_contention(exc: BaseException) -> bool:
+    """Whether `exc` is the runner's own `_contention_exhausted`, and only that."""
+    return type(exc) is _contention_types()[0]
 
 
 def _commit_retry(retry: Any) -> Any:
@@ -1562,6 +1636,7 @@ class ControlPlane:
             lease_released=False,
             lease_expires_at=_as_datetime(lease.get("expires_at")),
             observed_at=utcnow(),
+            pause_requested=bool(task.get("pause_requested_at")),
         )
 
     def _fenced_task(self, txn: Any, *, write: str) -> dict[str, Any]:
@@ -1695,6 +1770,7 @@ class ControlPlane:
             retry_after_seconds=int(retry_after) if retry_after is not None else None,
             quota_reset_at=reset_at,
             observed_at=utcnow(),
+            pause_requested=bool(task.get("pause_requested_at")),
         )
 
     # -- events ------------------------------------------------------------
@@ -1773,7 +1849,7 @@ class ControlPlane:
 
         try:
             self._run_transaction(_apply, call="event")
-        except Exception as exc:  # the view never costs the event
+        except Exception as exc:  # the view never costs the event  # noqa: BLE001
             self._log.warning("current account not stored", error_type=type(exc).__name__)
             return False
         return True
@@ -1800,7 +1876,7 @@ class ControlPlane:
         when the attempts cannot be read, so nothing is stored short."""
         try:
             docs = self._attempt_docs()
-        except Exception as exc:  # a view never fails the write it rides on
+        except Exception as exc:  # a view never fails the write it rides on  # noqa: BLE001
             self._log.warning("attempt totals not stored", error_type=type(exc).__name__)
             return None
         return stored_attempt_totals(docs, attempt_id=self.attempt_id,
@@ -1834,7 +1910,7 @@ class ControlPlane:
 
         try:
             self._run_transaction(_apply, call="attempt")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._log.warning("attempt totals not stored", error_type=type(exc).__name__)
 
     def store_pending_attempt_totals(self) -> None:
@@ -1957,7 +2033,7 @@ class ControlPlane:
         """`cancel_end_cause` of the task as it is now. One read, on a cancel only."""
         try:
             return cancel_end_cause(self.fetch_task())
-        except Exception:  # the cause must never stop the cancel itself
+        except Exception:  # the cause must never stop the cancel itself  # noqa: BLE001
             return EndCause.CANCEL_REQUESTED
 
     def advance_to_running(self) -> None:
@@ -2391,7 +2467,7 @@ class ControlPlane:
             self._quota_reporter.report(
                 provider=provider, tenant_id=self.tenant_id, route=route, body=body
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._log.warning(
                 "could not report a provider outcome to the quota broker; carrying on",
                 provider=provider,
@@ -2448,7 +2524,7 @@ class ControlPlane:
             self._quota_reporter.report(
                 provider=provider, tenant_id=self.tenant_id, route="exhausted", body=body
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._log.warning(
                 "could not report a key's spent credit to the quota broker; carrying on",
                 provider=provider,
@@ -2479,7 +2555,7 @@ class ControlPlane:
             self._quota_reporter.report(
                 provider=provider, tenant_id=self.tenant_id, route="account-error", body=body
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._log.warning(
                 "could not report an account error to the quota broker; carrying on",
                 provider=provider,
@@ -2638,6 +2714,69 @@ class ControlPlane:
         for document in written:
             self._log.info("event", event_type=document["type"], detail=document["detail"])
 
+    def _park_transaction(self, fn: Callable[[Any], Any], *, reason: ParkReason) -> Any:
+        """A park's body through the runner, in up to `PARK_CONTENTION_ROUNDS`
+        rounds (issue 313). EVERY park of this control plane commits here:
+        `park`, `park_awaiting_children`, `park_release_wait`,
+        `park_ci_pending` and `handoff.park_human_required`.
+
+        Only contention is run again: the `Aborted` the runner raises once
+        its runs are spent (`_runs_spent_on_contention`, by class). A fence
+        (`FencedError`, `FencedWriteRefused`) and every other error, another
+        `Aborted` among them, go up as they are, on the round that met them.
+        Between two rounds, `PARK_CONTENTION_PAUSE_SECONDS` times the round
+        number times a jitter; one warning line per extra round, naming the
+        park's reason and the round, never its detail.
+
+        WHY A LATER ROUND CANNOT PARK TWICE, REFUND TWICE OR RELEASE TWICE.
+        A round that raised committed nothing: the runner raises its
+        contention `Aborted` only when EVERY run was aborted -- a read, the
+        begin, or each of the library's commits -- and Firestore applies a
+        transaction's writes all at once or not at all, ABORTED being the
+        "not at all". So the PARKED state, the refund, the release and the
+        pools coming down, the attempt's end and the events of that round
+        are nowhere. The next round is the whole body again, on new
+        transactions that read every document afresh: the body's own fence
+        comes first, so a task a newer attempt has taken meanwhile is
+        refused and nothing is written (invariant 5); the refund is computed
+        from the `attempt_count` and resume counter stored now, which no
+        earlier round changed; the release reads the lease and its pools
+        now, and releases what is still held. Of all the rounds, at most one
+        commits, and that one commit carries all of it once. The events'
+        ids are minted once, before the first round, so even their
+        documents are the same ones in every round.
+
+        When the rounds are spent, `ParkContentionExhausted` (an `Aborted`)
+        names the rounds and the seconds spent, with the last round's abort
+        as its cause. Bounded (`PARK_CONTENTION_PAUSE_SECONDS`): a park is
+        never a long wait (invariant 4).
+        """
+        started = _abort_clock()
+        rounds = 1
+        while True:
+            try:
+                return self._run_transaction(fn)
+            except Exception as exc:
+                if not _runs_spent_on_contention(exc):
+                    raise
+                last: BaseException = exc
+            if rounds >= PARK_CONTENTION_ROUNDS:
+                raise _contention_types()[1](
+                    f"the {reason.value} park met Firestore contention on each of "
+                    f"{rounds} rounds over {_abort_clock() - started:.1f} s; nothing "
+                    f"was committed. Last: {last}"
+                ) from last
+            self._log.warning(
+                "the park met Firestore contention past the transaction runner's "
+                "runs; running it again on fresh reads",
+                reason=reason.value,
+                round=rounds,
+            )
+            _park_contention_sleep(
+                PARK_CONTENTION_PAUSE_SECONDS * rounds * _park_contention_jitter()
+            )
+            rounds += 1
+
     # -- terminal outcomes -------------------------------------------------
     def park(
         self,
@@ -2655,8 +2794,10 @@ class ControlPlane:
         one and `metadata.quota_park_resumes` up by one while fewer than
         `QUOTA_MAX_RESUMES` have been. Past the bound the park spends an
         attempt as before, so a task that only ever parks still ends at
-        `max_attempts`. Every other reason refunds nothing. Returns whether the
-        attempt was refunded.
+        `max_attempts`. A WORKFLOW_PAUSED park refunds the same way, on its own
+        counter (`metadata.pause_refunds`, within `PAUSE_MAX_REFUNDS`; decision
+        Q1 of docs/design/workflow-pause.md). Every other reason refunds
+        nothing here. Returns whether the attempt was refunded.
 
         ONE FENCED TRANSACTION (archived issue 2064): the fence, PARKED, the lease release
         and the pools coming back down, the attempt's end, the uploads and the
@@ -2696,6 +2837,7 @@ class ControlPlane:
         uploads = uploads if isinstance(uploads, list) else None
         announced = [self._event_write(kind, d) for kind, d in announce]
         quota = reason is ParkReason.PROVIDER_QUOTA_EXHAUSTED
+        paused = reason is ParkReason.WORKFLOW_PAUSED
         time_limit = (reason is ParkReason.SCHEDULED_RETRY
                       and isinstance((detail or {}).get(TIME_LIMIT_DETAIL_KEY), Mapping))
         parked = self._event_write(
@@ -2742,6 +2884,29 @@ class ControlPlane:
                         **(detail or {}),
                     },
                 )
+            if paused:
+                # Decision Q1: refunded within PAUSE_MAX_REFUNDS, on its own
+                # counter (never another reason's); past it the park counts.
+                metadata = dict(task.get("metadata") or {})
+                used = _count(metadata.get(PAUSE_REFUNDS_METADATA_KEY))
+                attempt_count = _count(task.get("attempt_count"))
+                refund = used < PAUSE_MAX_REFUNDS and attempt_count > 0
+                if refund:
+                    metadata[PAUSE_REFUNDS_METADATA_KEY] = used + 1
+                    payload["metadata"] = metadata
+                    payload["attempt_count"] = attempt_count - 1
+                event = self._filled(
+                    parked,
+                    EventType.PARKED,
+                    {
+                        "reason": reason.value,
+                        "next_eligible_at": next_eligible_at,
+                        "attempt_refunded": refund,
+                        PAUSE_REFUNDS_METADATA_KEY: used + (1 if refund else 0),
+                        "max_refunds": PAUSE_MAX_REFUNDS,
+                        **(detail or {}),
+                    },
+                )
             if quota:
                 metadata = dict(task.get("metadata") or {})
                 used = _count(metadata.get(QUOTA_PARK_RESUMES_METADATA_KEY))
@@ -2777,7 +2942,7 @@ class ControlPlane:
                 self._record_parked_uploads(txn, index, uploads, at=now)
             return refund, written
 
-        refunded, written = self._run_transaction(_apply)
+        refunded, written = self._park_transaction(_apply, reason=reason)
         self._ended(TaskState.PARKED, written)
         return refunded
 
@@ -2870,7 +3035,7 @@ class ControlPlane:
                 self._record_parked_uploads(txn, index, uploads, at=now)
             return refund, written
 
-        refunded, written = self._run_transaction(_apply)
+        refunded, written = self._park_transaction(_apply, reason=reason)
         self._ended(TaskState.PARKED, written)
         return refunded
 
@@ -2959,7 +3124,7 @@ class ControlPlane:
                 self._record_parked_uploads(txn, index, uploads, at=now)
             return refund, written
 
-        refunded, written = self._run_transaction(_apply)
+        refunded, written = self._park_transaction(_apply, reason=reason)
         self._ended(TaskState.PARKED, written)
         return refunded
 
@@ -3146,7 +3311,7 @@ class ControlPlane:
             )
             return refund, written
 
-        refunded, written = self._run_transaction(_apply)
+        refunded, written = self._park_transaction(_apply, reason=reason)
         self._ended(TaskState.PARKED, written)
         return refunded
 
@@ -3252,7 +3417,7 @@ class ControlPlane:
                 )
             )
             outcome = "published" if published else "refused"
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # The type only: a transport error's text can name the request.
             outcome = f"error:{type(exc).__name__}"
         self._log.info("finish wake", state=state.value, outcome=outcome)
@@ -3651,6 +3816,9 @@ class RemoteControlPlane(ControlPlane):
             lease_released=False,
             lease_expires_at=_as_datetime(lease.get("expires_at")),
             observed_at=utcnow(),
+            # `state/open` serves the task document itself, so the raw mirror;
+            # its answer reached here only because the attempt owns the task.
+            pause_requested=bool(self._task.get("pause_requested_at")),
         )
 
     def _absorb_open(self, answer: Mapping[str, Any]) -> None:
@@ -3807,6 +3975,7 @@ class RemoteControlPlane(ControlPlane):
             lease_released=False,
             lease_expires_at=_as_datetime(lease.get("expires_at")),
             observed_at=utcnow(),
+            pause_requested=bool(view.get("pause_requested")),
         )
 
     def ensure_owner(self, *, write: str) -> None:
@@ -3876,6 +4045,9 @@ class RemoteControlPlane(ControlPlane):
             retry_after_seconds=retry_after,
             quota_reset_at=reset_at,
             observed_at=utcnow(),
+            # swarm-api's fence view answers False to an attempt it found
+            # fenced: a stale worker exits on the fence and never parks.
+            pause_requested=bool(view.get("pause_requested")),
         )
 
     # -- events ----------------------------------------------------------------
@@ -4034,7 +4206,7 @@ class RemoteControlPlane(ControlPlane):
             # and costs the spend nothing.
             try:
                 self._usage("credential", credential)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self._log.warning(
                     "could not record the attempt's credential; its spend is recorded",
                     error_type=type(exc).__name__,
@@ -4132,8 +4304,10 @@ class RemoteControlPlane(ControlPlane):
         announce: Sequence[tuple[EventType, dict[str, Any]]] = (),
     ) -> bool:
         """`ControlPlane.park` as one route call: whether the attempt was
-        refunded, which only a PROVIDER_QUOTA_EXHAUSTED park within
-        swarm-api's `attemptstate.QUOTA_MAX_RESUMES` is (archived issue 2350)."""
+        refunded, as swarm-api's `AttemptState.park` decides by reason: a
+        PROVIDER_QUOTA_EXHAUSTED park within `attemptstate.QUOTA_MAX_RESUMES`
+        (archived issue 2350), a WORKFLOW_PAUSED park within
+        `attemptstate.PAUSE_MAX_REFUNDS` (decision Q1), among others."""
         uploads = (detail or {}).get("artifacts")
         answer = self._park(reason, detail=detail,
                             uploads=uploads if isinstance(uploads, list) else None,

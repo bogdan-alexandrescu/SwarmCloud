@@ -115,6 +115,10 @@ SHORT_FORM_WORKFLOWS: dict[str, str] = {
         "pull request from this repository: never from a pull request, never "
         "for a fork's"
     ),
+    "refresh-weights.yml": (
+        "starts only on schedule or dispatch, on main (its job's `if:` and the "
+        "repo-secrets environment): never from any pull request"
+    ),
     "auto-merge.yml": (
         "runs on pull_request_target (the base branch's workflow file, with no "
         "checkout of the pull request: test_auto_merge_workflow.py), workflow_run, "
@@ -619,6 +623,7 @@ GUARDED_SECRETS: dict[str, tuple[frozenset[str], str]] = {
     "auto-merge.yml:disable": (frozenset({"MERGE_APP_PRIVATE_KEY"}), SECRETS_ON_VMS),
     "auto-merge.yml:ready-on-green": (frozenset({"MERGE_APP_PRIVATE_KEY"}), SECRETS_ON_VMS),
     "merge-train.yml:tick": (frozenset({"MERGE_APP_PRIVATE_KEY"}), SECRETS_ON_VMS),
+    "refresh-weights.yml:refresh": (frozenset({"MERGE_APP_PRIVATE_KEY"}), SECRETS_ON_VMS),
     "accept.yml:sandbox": (frozenset({"SWARM_SANDBOX_GITHUB_TOKEN"}), SECRETS_ON_VMS),
     "accept.yml:sandbox-results": (frozenset({"SWARM_SANDBOX_GITHUB_TOKEN"}), SECRETS_ON_VMS),
 }

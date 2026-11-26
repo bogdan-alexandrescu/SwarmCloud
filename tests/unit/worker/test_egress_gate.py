@@ -1,3 +1,4 @@
+# source-text: contract - the gate's default forwarder port must equal swarm_egress/main.py's PORT and the egress network policy's
 """The live browser's proxied egress, the gate's half (EGRESS-GATE; part of archived issue 1030).
 
 docs/browser-egress.md §2.2-§2.5 and the owner's decisions of 2026-10-13: the

@@ -55,6 +55,13 @@ const INBOX = [
   item('apr_run', { kind: 'run' }),
 ]
 
+/** The kinds the list keeps (plans-pipeline §2.2): a plan and a merge are the Pipeline board's. */
+const LIST = [
+  item('apr_spec', { kind: 'spec', requested_at: hoursFromNow(-30) }),
+  item('apr_input', { kind: 'input' }),
+  item('apr_run', { kind: 'run' }),
+]
+
 /** The inbox, filtered by `?kind=` as the route filters it. */
 function routes(inbox: Json[], detail: Json | null = null): Handler {
   return (m, url) => {
@@ -97,21 +104,21 @@ afterEach(() => {
 
 describe('the kind chips (automate-05, automate-22)', () => {
   it('keeps every chip’s count on a filtered list, read off the whole inbox', async () => {
-    await mount('kind=plan', routes(INBOX))
+    await mount('kind=spec', routes(LIST))
     await screen.findByTestId('apl-waiting', undefined, WAIT)
     // MUTATION: count only the filtered read, and every other chip loses its number.
-    await waitFor(() => expect(chipWords()).toEqual(['Every kind · 3', 'Run · 1', 'Plan · 1', 'Merge · 1']), WAIT)
+    await waitFor(() => expect(chipWords()).toEqual(['Every kind · 3', 'Run · 1', 'Spec · 1', 'Answer · 1']), WAIT)
   })
 
   it('draws no chip for a kind with nothing waiting, but keeps the chosen one', async () => {
-    await mount('', routes(INBOX))
+    await mount('', routes(LIST))
     await screen.findByTestId('apl-waiting', undefined, WAIT)
-    // MUTATION: draw all eight chips, five of them at 0.
-    expect(chipWords()).toEqual(['Every kind · 3', 'Run · 1', 'Plan · 1', 'Merge · 1'])
+    // MUTATION: draw every chip, one of them at 0.
+    expect(chipWords()).toEqual(['Every kind · 3', 'Run · 1', 'Spec · 1', 'Answer · 1'])
   })
 
   it('says on an empty kind how many wait under the other kinds, with a link to Every kind', async () => {
-    const { go } = await mount('kind=spec', routes(INBOX))
+    const { go } = await mount('kind=contract', routes(LIST))
     const empty = await screen.findByTestId('apl-elsewhere', undefined, WAIT)
     // MUTATION: say only "Nothing waiting" while three wait elsewhere.
     expect(visible(empty)).toContain('3 items under other kinds')
@@ -119,7 +126,7 @@ describe('the kind chips (automate-05, automate-22)', () => {
     expect(every.getAttribute('href')).toBe('/automate/approvals')
     every.click()
     expect(go).toHaveBeenCalledWith('automate/approvals')
-    await waitFor(() => expect(chipWords()).toEqual(['Every kind · 3', 'Run · 1', 'Plan · 1', 'Merge · 1', 'Spec · 0']), WAIT)
+    await waitFor(() => expect(chipWords()).toEqual(['Every kind · 3', 'Run · 1', 'Spec · 1', 'Answer · 1', 'Contract judgment · 0']), WAIT)
   })
 })
 

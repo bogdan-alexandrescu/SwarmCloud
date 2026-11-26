@@ -114,7 +114,7 @@ class GraphContextRoute:
         try:
             headers = key.headers("POST", route, body, now=self._wall())
             _, payload = api.call("POST", route, body=body, headers=headers)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             status = getattr(exc, "status", None)
             code = str(getattr(exc, "code", "") or type(exc).__name__)
             if status == 409:

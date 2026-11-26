@@ -7,7 +7,8 @@ import { GuideLink } from './GuideLink'
 import { WorkspaceStepDetail, waitingOf } from './OnboardingWorkspace'
 import { Icon } from './Spine'
 import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
-import { WorkspaceTabWords } from './workspaceName'
+import { useWorkspaceName, workspacePageWords } from './workspaceName'
+import { InfoTip } from './InfoTip'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import type { AppInstalledEvidence, OnboardingDoc, OnboardingIssue, OnboardingStep, OnboardingStepName, OnboardingStepState, WorkspaceView } from './types'
 import { timeAgo } from './types'
@@ -453,6 +454,7 @@ export function SetupCard() {
   const [hidden, setHidden] = useState(false)
   const [hiding, setHiding] = useState(false)
   const [refused, setRefused] = useState<ApiError | null>(null)
+  const workspace = useWorkspaceName()
   if (doc.state.status !== 'ok' && doc.state.status !== 'stale') return null
   const d = doc.state.data
   if (d.complete || !Array.isArray(d.steps) || hidden || d.dismissed === true) return null
@@ -499,9 +501,14 @@ export function SetupCard() {
       {refused !== null && <Refusal error={refused} title="The checklist could not be hidden" />}
       <StepBar doc={d} />
       <Checklist doc={d} reload={doc.reload} />
+      {/* ONE SHORT LINE, THE REST BEHIND THE (i) (issue 81): the two
+          sentences that were this hint are the tip, word for word. */}
       <p className="ur-hint">
-        This card leaves Overview by itself once every step is done. Hide keeps every step as it is, for you in every
-        browser; <WorkspaceTabWords tab="Setup" /> still shows them.
+        Leaves Overview once every step is done.{' '}
+        <InfoTip
+          about="this card"
+          tip={`This card leaves Overview by itself once every step is done. Hide keeps every step as it is, for you in every browser; ${workspacePageWords(workspace, 'Setup')} still shows them.`}
+        />
       </p>
     </Card>
   )

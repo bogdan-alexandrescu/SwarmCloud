@@ -507,7 +507,7 @@ class ChildService:
                 claims = self._verifier.verify(token)
             except AuthError:
                 continue
-            except Exception:  # a verifier fault is a refusal, never a pass
+            except Exception:  # a verifier fault is a refusal, never a pass  # noqa: BLE001, S112
                 continue
             if claims.get("email_verified") is not True:
                 continue
@@ -1192,7 +1192,7 @@ class ChildService:
             return "waiting"
         try:
             self._start(task_from_dict(parent_doc), {**row, "state": STARTING}, None)
-        except Exception as exc:  # one row's failure is that row's
+        except Exception as exc:  # one row's failure is that row's  # noqa: BLE001
             code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
             log.warning("held child run %s tenant=%s not started (%s)", row["child_id"], tenant_id, code)
             self._settle(row, FAILED, code, from_state=STARTING)

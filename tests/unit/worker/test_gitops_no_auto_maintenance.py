@@ -1,3 +1,4 @@
+# source-text: forbidden-pattern - every maintenance-starting git argv in gitops.py must carry *_NO_AUTO_MAINTENANCE; it stays a test because its _MEASURED table is re-measured under GIT_TRACE in this file
 """No git command `gitops` runs starts automatic maintenance in its repository
 (archived issue 2922): the whole-module guard.
 
@@ -82,6 +83,7 @@ _MEASURED: dict[tuple[str, ...], str] = {
     ("show",): NONE,
     ("status",): NONE,
     ("symbolic-ref",): NONE,
+    ("update-ref",): NONE,
     ("var",): NONE,
     ("write-tree",): NONE,
 }
@@ -329,6 +331,8 @@ def test_the_classification_holds_on_this_git(tmp_path: Path) -> None:
     step(("show",), work, "show", "-s", "--format=%H %ct", "HEAD")
     step(("var",), work, "var", "GIT_COMMITTER_IDENT")
     step(("symbolic-ref",), work, "symbolic-ref", "HEAD")
+    step(("update-ref",), work, "update-ref", "--no-deref", "refs/swarm/origin-have/0", "HEAD")
+    step(("update-ref",), work, "update-ref", "-d", "refs/swarm/origin-have/0")
     step(("count-objects",), work, "count-objects", "-v")
     step(("cherry-pick",), work, "cherry-pick", "--no-commit", "origin/side")
     step(("cherry-pick",), work, "cherry-pick", "--quit")

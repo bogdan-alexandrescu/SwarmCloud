@@ -1,3 +1,4 @@
+# source-text: contract - types.ts, api.ts and the blocker screens must render the server's blocker list and reason groups rather than compute their own in TypeScript
 """The browser renders the server's blocker list; it does not compute one.
 
 THE DEFECT THIS PINS. `evaluate_capacity` returns a LIST -- one entry per pool
@@ -16,14 +17,16 @@ has made work. A parity check can pin a TABLE of constants; the counterfactual
 is an algorithm, and no text comparison holds an algorithm to another one.
 
 So the rule moved to `swarm_api/headroom.py`, `/v1/capacity` serves it, and
-this file pins the two things a served value still needs:
+this file pins two things a served value still needs:
 
   1. the client CONSUMES it rather than recomputing it -- otherwise the
      restatement is still there, just better hidden;
-  2. the DEV FIXTURE is byte-for-byte what the analyser produces over the pool
-     rows beside it, so development cannot be done against a shape the API
-     never sends. `test_runtimes_screen.py` makes the same demand of the
-     runtime fixture, for the same reason.
+  2. the DEV FIXTURE still shows a ceiling that is pointless to raise alone.
+
+That the fixture is what the analyser produces over its pool rows, that its
+reason groups are the served ones and that no screen declares a grouping of its
+own are `contract.constants.test.ts`'s, against the generated constants (part
+of #72).
 
 The TypeScript is read as text. No node, no network, no credentials -- the same
 technique `test_dispatch_ui_surface.py` and `test_runtimes_screen.py` use, and
@@ -38,11 +41,6 @@ import re
 from pathlib import Path
 
 import pytest
-
-from swarm_common.models import SlotPool
-from swarm_common.states import BlockedReason
-
-from swarm_api.headroom import analyse_profile, blocked_reason_groups
 
 ROOT = Path(__file__).resolve().parents[3]
 UI = ROOT / "apps/swarm-ui/src"
@@ -118,67 +116,6 @@ def test_headroom_for_takes_no_pool_map():
     assert "Map" not in signature.group(1)
 
 
-def test_no_screen_declares_its_own_grouping_of_reasons():
-    """The split lives in Python and travels as data on the response.
-
-    What is forbidden is a GROUP -- several reason names collected together,
-    which is a copy of a decision nothing in this repository would compare to
-    the enum. What is allowed is a reason named on its own:
-
-      * `REASON_COPY` in types.ts is one prose sentence per reason, keyed by
-        it. That is a phrasebook, not a grouping, and it already falls back to
-        printing an unknown reason verbatim so the staleness is visible;
-      * a renderer tests for `MANUAL_PAUSE` alone to choose a purple "paused"
-        chip over a red "full" one. Those two have opposite remedies and the
-        group they share cannot say which, so the single name is load-bearing.
-
-    A line carrying two or more of them is the shape a grouping takes.
-    """
-    for name in ("types.ts", "Blockers.tsx", "Capacity.tsx", "Profiles.tsx"):
-        # The `ParkReason` union is cut out first. It is a DIFFERENT enum --
-        # `states.ParkReason`, why a task is durably ineligible -- that happens
-        # to spell two of its members the same way (`MANUAL_PAUSE`,
-        # `SCHEDULED_RETRY`). It is a type declaration this change does not
-        # touch, and reading it as a grouping of blocker reasons would be the
-        # test misunderstanding the file rather than the file being wrong.
-        text = re.sub(r"export type ParkReason =(?:\n\s*\|[^\n]*)+", "", src(name))
-        for number, line in enumerate(text.splitlines(), start=1):
-            # Comments are prose, not a grouping. types.ts documents at length
-            # WHICH members of the enum are never written as blockers and why
-            # its copy table omits them -- that reasoning is the kind of thing
-            # this repository keeps in the file on purpose, and deleting it to
-            # satisfy a lint would remove the record and keep nothing.
-            stripped = line.lstrip()
-            if stripped.startswith(("*", "//", "/*")):
-                continue
-            # Whole tokens. A substring test matches `PROVIDER_COOLDOWN` on
-            # `COOLDOWN` and `PROVIDER_QUOTA_EXHAUSTED` on `QUOTA_EXHAUSTED`,
-            # which would flag the pre-existing `ParkReason` union -- a
-            # different enum that this change does not touch.
-            hits = [
-                r.value
-                for r in BlockedReason
-                if re.search(rf"(?<![A-Z_]){re.escape(r.value)}(?![A-Z_])", line)
-            ]
-            # A ternary that PICKS one reason is not a grouping: `poolGroup`
-            # chooses the refusal a pool would give, pause before unset, in
-            # `evaluate_capacity`'s own order. That pair only became two
-            # members when request 38 made POOL_LIMIT_UNSET a BlockedReason.
-            # A list or a Set never puts each member right after a `?`.
-            if all(
-                re.search(rf"\?\s*'?(?<![A-Z_]){re.escape(hit)}(?![A-Z_])", line)
-                for hit in hits
-            ):
-                continue
-            assert len(hits) < 2, (
-                f"{name}:{number} lists {hits} together, which is a grouping. "
-                "The grouping is served as `blocked_reason_groups`; a copy "
-                "here drifts the first time the enum gains a member."
-            )
-        for literal in ("needs_action: [", "no_room: [", "needs_action = [", "no_room = ["):
-            assert literal not in text, f"{name} declares its own {literal!r}"
-
-
 def test_blocker_group_prefers_the_served_grouping():
     fn = body_of(src("types.ts"), "export function blockerGroup(")
     assert "blocker.group" in fn
@@ -248,81 +185,13 @@ def test_blocker_group_prefers_the_served_grouping():
 # does not re-derive something: a re-derivation that happens to agree with the
 # server produces identical pixels. That is a genuine static property of the
 # source, and it is the one that collapsed a list of blockers to a single pool.
-# Section 3 below holds the dev fixture to what `analyse_profile` really
-# produces, which is a Python-side comparison and could not move.
+# The comparison of the dev fixture with what `analyse_profile` produces moved
+# to `contract.constants.test.ts` (part of #72), which reads the analyser's own
+# answer from the generated constants.
 
 # --------------------------------------------------------------------------
-# 3. The dev fixture is the server's answer, not an invented one
+# 3. The dev fixture teaches the rule
 # --------------------------------------------------------------------------
-
-FIXTURE_PROFILES = {
-    "mock": (1, ["global", "tenant:u-owner", "resource:standard", "runner:mock",
-                 "backend:CLOUD_RUN_JOB"]),
-    "generic": (1, ["global", "tenant:u-owner", "resource:standard", "runner:generic",
-                    "backend:CLOUD_RUN_JOB"]),
-    "claude-code": (1, ["global", "tenant:u-owner", "resource:standard",
-                        "runner:claude-code", "backend:CLOUD_RUN_JOB",
-                        "provider:anthropic", "provider:anthropic:tenant:u-owner"]),
-    "codex": (1, ["global", "tenant:u-owner", "resource:standard", "runner:codex",
-                  "backend:CLOUD_RUN_JOB", "provider:openai", "provider:openai:tenant:u-owner"]),
-    "browser": (1, ["global", "tenant:u-owner", "resource:browser", "runner:browser",
-                    "backend:GKE_AUTOPILOT", "provider:anthropic",
-                    "provider:anthropic:tenant:u-owner"]),
-    # QAFIX4-FIXTURE-B F10: served, so its headroom is measured. Its runner
-    # pool has no row on the board, so the analyser calls it uncapped.
-    "claude-code-browser": (1, ["global", "tenant:u-owner", "resource:browser",
-                                "runner:claude-code-browser", "backend:GKE_AUTOPILOT",
-                                "provider:anthropic", "provider:anthropic:tenant:u-owner"]),
-}
-
-
-def fixture_pools() -> dict[str, SlotPool]:
-    """The pool rows in `fixtureCapacity`, read out of the TypeScript.
-
-    Parsed rather than copied: a second hand-written table here would drift
-    from the fixture exactly the way the fixture must not drift from the API.
-    """
-    text = src("api.ts")
-    start = text.index("async function fixtureCapacity(")
-    chunk = text[start : text.index("async function fixtureTasks(", start)]
-    pools: dict[str, SlotPool] = {}
-    for m in re.finditer(
-        r"pool\('([^']+)',\s*(\d+),\s*(\d+)(?:,\s*\{([^}]*)\})?\)", chunk
-    ):
-        name, hard, active, extra = m.group(1), int(m.group(2)), int(m.group(3)), m.group(4) or ""
-        enabled = "enabled: false" not in extra
-        adaptive = re.search(r"adaptive_target:\s*(\d+)", extra)
-        pools[name] = SlotPool(
-            name=name,
-            hard_limit=hard,
-            active=active,
-            enabled=enabled,
-            adaptive_target=int(adaptive.group(1)) if adaptive else None,
-        )
-    assert len(pools) >= 15, f"the fixture pool rows did not parse: {sorted(pools)}"
-    return pools
-
-
-def test_the_fixture_admission_block_is_what_the_analyser_produces():
-    """Development happens against the real shape or it proves nothing.
-
-    If this fails, the fixture's pool rows were edited without regenerating the
-    `admission` literal beside them. Regenerate it -- do not compute it in
-    TypeScript, which is the restatement the served block removed.
-    """
-    fixture = json_literal(src("api.ts"), "const FIXTURE_ADMISSION")
-    pools = fixture_pools()
-    assert set(fixture) == set(FIXTURE_PROFILES)
-    for name, (units, required) in FIXTURE_PROFILES.items():
-        readable = {n: pools[n] for n in required if n in pools}
-        expected = analyse_profile(required=required, pools=readable, units=units)
-        assert fixture[name] == expected, f"fixture for {name!r} is not what the server sends"
-
-
-def test_the_fixture_reason_groups_are_the_served_ones():
-    fixture = json_literal(src("api.ts"), "const FIXTURE_REASON_GROUPS")
-    assert fixture == blocked_reason_groups()
-
 
 def test_the_fixture_still_shows_a_ceiling_that_is_pointless_to_raise():
     """The zeros are the half of the counterfactual that teaches the rule.

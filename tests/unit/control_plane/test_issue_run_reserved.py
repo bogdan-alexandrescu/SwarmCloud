@@ -1,3 +1,4 @@
+# source-text: contract - routes/runs.py and issueci.py must each wrap their submissions in issueruns.submitting
 """`metadata.issue_run` is reserved: written only by the issue-run code
 (`issueruns`, `issueci`), refused from every caller (the owner, 2026-11-04).
 
@@ -151,19 +152,15 @@ def test_neither_mark_exempts_the_others_key():
 
 def test_only_the_issue_run_code_enters_the_exemption():
     """The scope: `issue_run_mark_allowed` is entered by `issueruns.submitting`
-    alone, which routes/runs.py and issueci.py wrap their own submissions in,
-    and by nothing else in swarm-api."""
+    alone, which routes/runs.py and issueci.py wrap their own submissions in.
+    That nothing else in swarm-api enters it is the lint rule
+    `issue-run-mark-entered-by-issueruns`
+    (scripts/source_text_rules/control_plane_am.py)."""
     import pathlib
 
     import swarm_api
 
     root = pathlib.Path(swarm_api.__file__).parent
-    entering = sorted(
-        str(path.relative_to(root)) for path in root.rglob("*.py")
-        if "issue_run_mark_allowed(" in path.read_text(encoding="utf-8")
-        and path.name != "validation.py"
-    )
-    assert entering == ["issueruns.py"]
     assert issueci.submitting is issueruns.submitting
     for rel in ("routes/runs.py", "issueci.py"):
         assert "submitting(" in (root / rel).read_text(encoding="utf-8"), rel

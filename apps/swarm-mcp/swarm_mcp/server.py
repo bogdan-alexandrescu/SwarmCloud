@@ -2112,6 +2112,55 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["workflow_id"],
         },
     },
+    {
+        "name": "swarm_workflow_pause",
+        "description": (
+            "Pause a workflow (docs/design/workflow-pause.md): it is marked "
+            "paused and every unfinished step is asked to park -- a READY step "
+            "is parked at admission, a running one at its next checkpoint, and "
+            "a parked step holds no capacity. Work already done stays "
+            "checkpointed; swarm_workflow_resume lets the steps run again. "
+            "Child tasks a step submitted are not paused. A repeat pause writes "
+            "nothing and answers `already_paused` with the first `paused_at`. "
+            "Refused 409 for a finished workflow (`workflow_terminal`) or one "
+            "being cancelled (`workflow_cancel_requested`), 404 for one outside "
+            "your tenant; a 503 `pause_contended` means the workflow IS paused "
+            "but `steps_contended` were not reached yet: calling again finishes "
+            "them and moves nothing, and is not done for you. WRITES: it stops "
+            "work the developer may be waiting on -- call it only on the "
+            "developer's word."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "workflow_id": {"type": "string"},
+                "reason": {
+                    "type": "string",
+                    "maxLength": 500,
+                    "description": "Optional: why, kept on the workflow.",
+                },
+            },
+            "required": ["workflow_id"],
+        },
+    },
+    {
+        "name": "swarm_workflow_resume",
+        "description": (
+            "Resume a paused workflow: the pause is lifted and each step's pause "
+            "signal cleared (`steps_cleared`); the scheduler promotes the parked "
+            "steps on its next pass, so they run again from their checkpoints. "
+            "A workflow that was not paused writes nothing and answers "
+            "`already_running`. The same refusals as swarm_workflow_pause, and a "
+            "503 `pause_contended` is likewise retried only by calling again. "
+            "WRITES: the steps spend the shared pool again -- call it only on "
+            "the developer's word."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"workflow_id": {"type": "string"}},
+            "required": ["workflow_id"],
+        },
+    },
     # -- issue runs (archived issue 454) -------------------------------------------------
     #
     # A run plans a GitHub issue with one planner task; the plan waits, holding
@@ -5674,7 +5723,7 @@ def _workflow_created(
             "submit", title=workflows.workflow_title(named, len(given) if given is not None else len(steps)),
             workflow_id=str(workflow_id), repository=repository.get("url"), name=named,
         )
-    except Exception:  # noqa: BLE001 - the workflow is in SwarmCloud; a lost record line never fails its answer
+    except Exception:  # noqa: BLE001, S110 - the workflow is in SwarmCloud; a lost record line never fails its answer
         pass
     created: dict[str, Any] = with_console({"workflow_id": workflow_id}, workflow)
     created.update({
@@ -6681,6 +6730,14 @@ def _call(
     if name == "swarm_workflow_cancel":
         return json.dumps(workflows.cancel(client, args["workflow_id"]), indent=2)
 
+    if name == "swarm_workflow_pause":
+        return json.dumps(
+            workflows.pause(client, args["workflow_id"], args.get("reason")), indent=2
+        )
+
+    if name == "swarm_workflow_resume":
+        return json.dumps(workflows.resume(client, args["workflow_id"]), indent=2)
+
     if name in _RUN_TOOLS:
         return _run_tool(client, name, args)
 
@@ -7185,7 +7242,7 @@ def serve(stdin=None, stdout=None) -> int:
                 {"content": [{"type": "text", "text": _with_plugin_files_missing(_tool_error_text(exc))}],
                  "isError": True},
             )
-        except Exception as exc:  # pragma: no cover - defensive
+        except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
             _respond(
                 message_id,
                 {"content": [{"type": "text",

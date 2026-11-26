@@ -18,6 +18,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 import { serve, visible } from './repofixture'
+import { helpIn } from './proseruns'
 import { changeLine, clientRefusals, PoolsTable } from '../RunnerSizes'
 import type { RunnerSizesDoc } from '../types'
 
@@ -215,7 +216,9 @@ describe('admin2-10 and admin2-14: the History foot and the Cloud Run note', () 
     await mount()
     const fixed = card('standard')!.querySelector<HTMLElement>('.rs-fixed')
     // MUTATION: restore 'Cloud Run, does not follow: …'.
-    expect(visible(fixed)).toContain('These Cloud Run profiles do not follow this size: mock, generic.')
+    // Issue 81: the sentence is behind the (i), the profiles named on the surface.
+    expect(helpIn(fixed)).toContain('These Cloud Run profiles do not follow this size: mock, generic.')
+    expect(visible(fixed)).toContain('Fixed size (Cloud Run): mock, generic')
     expect(visible(fixed)).not.toContain('Cloud Run, does not follow')
   })
 })

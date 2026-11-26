@@ -1142,24 +1142,11 @@ def test_the_three_routes_are_published(client):
         assert "get" in paths[path]
 
 
-def test_the_ui_calls_exactly_the_paths_this_router_serves(client):
-    """The seam check `test_runtimes_screen.py` runs over api.ts, run over the
-    component that calls these routes -- CheckpointBrowser.tsx keeps its own
-    loaders, so that check would not see them."""
-    import re
-    from pathlib import Path
-
-    source = (
-        Path(__file__).resolve().parents[3] / "apps/swarm-ui/src/CheckpointBrowser.tsx"
-    ).read_text()
-    called = {
-        re.sub(r"(\$\{[^}]*\}|\{[^}]*\})", "{}", raw.split("?")[0])
-        for raw in re.findall(r"""['"`](/v1/[^'"`]*)['"`]""", source)
-    }
-    assert len(called) >= 3, f"the scan found {called}; this check would compare nothing"
-    served = {re.sub(r"\{[^}]*\}", "{}", p) for p in client.app.openapi()["paths"]}
-    missing = sorted(called - served)
-    assert not missing, f"CheckpointBrowser calls paths the API does not serve: {missing}"
+# The console's side of these routes -- CheckpointBrowser's listing, file
+# read and download link -- is held to this app's OpenAPI document by
+# apps/swarm-ui/src/__tests__/contract.routes.test.ts, which renders the
+# browser over a stubbed fetch and matches every request against the
+# generated route list (part of #72).
 
 
 def test_the_archive_builder_here_matches_the_workers_format():

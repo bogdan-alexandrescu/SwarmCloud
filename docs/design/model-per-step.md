@@ -891,6 +891,7 @@ ROLE, applied only when the caller named no class:
 | re-review | `sonnet` |
 | CI-fix round, conflict-fix round | `sonnet` |
 | fix-loop rounds | re-review rounds `sonnet`, fix rounds `opus` |
+| readiness pre-pass before an issue run's planner (owner, 2026-11-24) | `sonnet` |
 
 **One table, one function.** The table is data,
 `apps/swarm-api/swarm_api/stepclass.py::ROLE_CLASSES`, and every site calls

@@ -1,3 +1,4 @@
+# source-text: contract - server.py's swarm_dispatch and _dispatch_batch replies must carry awaitchange.FIELD built by await_command
 """`sc await`: the push path from the bridge (plan wave 2).
 
 A session that attaches no follower rows heard of a finished task only at its

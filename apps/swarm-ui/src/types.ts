@@ -1,16 +1,82 @@
-// Shapes returned by swarm-api. `Task` is GENERATED from the API's OpenAPI
-// document (./generated/api-types.ts, `scripts/gen_api_types.py`; part of
-// #72), and a unit test fails when that file is stale. Every other shape here
-// is still copied by hand from apps/swarm-api/swarm_api/codec.py and held to
-// the API by regex tests until a later slice generates it too. Keep the
-// comment references so the next person can find the source.
+// Shapes returned by swarm-api. `Task`, and the shapes imported below as
+// `Api*` (pools, runner profiles, capacity, task page, attempts, leases,
+// heartbeats, quota, tenants, stats, `me`, the dispatch switch, workflow,
+// providers, events, the runtimes catalogue and its resource classes, the
+// account listing, and the Artifacts tab's reads: the artifact listing and
+// content, logs, transcript, answer and the masked input), are GENERATED
+// from the API's OpenAPI document (./generated/api-types.ts,
+// `scripts/gen_api_types.py`, from `swarm_api/wire_types.py`; part of #72). A drift check (`gen_api_types.py
+// --check`, in CI and the unit suite) fails when that file is stale, and the
+// API's unit suite holds each model to what its routes serve, both
+// directions. Each interface here extends its generated shape and keeps only
+// the console's own narrowing and doc comments, which `tsc` holds to it;
+// change a field in wire_types.py and regenerate. The outcome ledger's shapes
+// are generated the same way and aliased in ./outcomes.ts. Every other shape
+// is still copied by hand from apps/swarm-api/swarm_api/codec.py and the
+// routes; keep the comment references so the next person can find the source.
 
-import type { Task as ApiTask } from './generated/api-types'
+import type {
+  Account as ApiAccount,
+  AccountsPage as ApiAccountsPage,
+  AccountWindow as ApiAccountWindow,
+  ArtifactContent as ApiArtifactContent,
+  ArtifactEntry as ApiArtifactEntry,
+  ArtifactListing as ApiArtifactListing,
+  AttemptRow as ApiAttemptRow,
+  Capacity as ApiCapacity,
+  Counterfactual as ApiCounterfactual,
+  DispatchControl as ApiDispatchControl,
+  LeaseHeartbeat as ApiLeaseHeartbeat,
+  LeaseHeartbeatPage as ApiLeaseHeartbeatPage,
+  LeasePage as ApiLeasePage,
+  LeaseRow as ApiLeaseRow,
+  LogAttempt as ApiLogAttempt,
+  LogStream as ApiLogStream,
+  MaskedMetadata as ApiMaskedMetadata,
+  MaskedText as ApiMaskedText,
+  Me as ApiMe,
+  Pool as ApiPool,
+  ProfileAdmission as ApiProfileAdmission,
+  ProfileBlocker as ApiProfileBlocker,
+  ProviderEntry as ApiProviderEntry,
+  ProvidersPage as ApiProvidersPage,
+  QuotaState as ApiQuotaState,
+  ResourceClassSpec as ApiResourceClassSpec,
+  RunnerProfile as ApiRunnerProfile,
+  Runtime as ApiRuntime,
+  Stats as ApiStats,
+  Task as ApiTask,
+  TaskAnswer as ApiTaskAnswer,
+  TaskEvent as ApiTaskEvent,
+  TaskInputCopy as ApiTaskInputCopy,
+  TaskLogs as ApiTaskLogs,
+  TaskPage as ApiTaskPage,
+  TaskTranscript as ApiTaskTranscript,
+  Tenant as ApiTenant,
+  TranscriptStep as ApiTranscriptStep,
+  TranscriptStream as ApiTranscriptStream,
+  Workflow as ApiWorkflow,
+} from './generated/api-types'
 import { currentZone, formatClock, formatDateTime, isToday } from './timezone'
 
+/**
+ * A schedule's own "Diagrams in plans" (`schedules.SchedulePatch.plan_diagrams`,
+ * docs/design/plans-pipeline.md §6.4). `inherit` follows the workspace, which
+ * follows the platform.
+ */
+export type PlanDiagrams = 'inherit' | 'on' | 'off'
+
+/**
+ * `plan_diagrams` on a schedule, as `GET /v1/schedules/{id}` serves it and its
+ * `PATCH` takes it. Absent on a stored schedule means `inherit`; absent from a
+ * PATCH means unchanged, so going back to the workspace's sends `inherit`.
+ */
+export interface SchedulePlanDiagrams {
+  plan_diagrams?: PlanDiagrams
+}
+
 /** `pool_to_api` in codec.py. */
-export interface Pool {
-  name: string
+export interface Pool extends ApiPool {
   /**
    * null when the pool document carries no `hard_limit` at all (archived issue 374): the
    * ceiling was never set, which is not the same as set to 0. Everything
@@ -31,9 +97,6 @@ export interface Pool {
    * Never label this "agents".
    */
   active: number
-  available: number | null
-  enabled: boolean
-  updated_at: string
   /**
    * Which input holds `effective_limit` (the applied value) below `hard_limit`
    * (the ceiling), and what dates it (archived issue 3047). Empty when the ceiling applies.
@@ -85,7 +148,7 @@ export interface AdminPool extends Pool {
 }
 
 /** `service.capacity()`. */
-export interface Capacity {
+export interface Capacity extends ApiCapacity {
   pools: Pool[]
   runner_profiles: Record<string, RunnerProfile>
   /** Present since the admission block was added. The caller's own tenant. */
@@ -104,12 +167,7 @@ export interface Capacity {
   generated_at: string
 }
 
-export interface RunnerProfile {
-  resource_class: string
-  backend: string
-  provider: string | null
-  units: number
-  pools: string[]
+export interface RunnerProfile extends ApiRunnerProfile {
   /**
    * What one agent of this profile takes in each of `pools`: `units` in a
    * compute pool, 1 in a provider pool (contract request 129, archived issue 2950). Read
@@ -182,12 +240,9 @@ export function requiredInputKeys(profile: RunnerProfile | undefined): string[] 
 export type HeadroomBasis = 'measured' | 'uncapped' | 'unknown'
 
 /** One pool refusing a profile. `evaluate_capacity` + the remedy group. */
-export interface ProfileBlocker {
-  pool: string
-  reason: string
+export interface ProfileBlocker extends ApiProfileBlocker {
   /** null for `POOL_LIMIT_UNSET` (archived issue 374): the pool has no limit set, which is not 0. */
   limit: number | null
-  active: number
   /** 'needs_action' | 'no_room' | null when the reason is in neither. */
   group: string | null
 }
@@ -197,11 +252,9 @@ export interface ProfileBlocker {
  * names. A prediction, and the place a screen like this most easily starts
  * lying: a lease can be released between the read and the render.
  */
-export interface Counterfactual {
-  pool: string
+export interface Counterfactual extends ApiCounterfactual {
   /** 'resume' for a paused pool, 'raise' for one at its ceiling. */
   action: 'resume' | 'raise' | string
-  headroom_after: number | null
   basis_after: HeadroomBasis
   /** null when either side is unbounded: that is not a delta. */
   delta: number | null
@@ -210,8 +263,7 @@ export interface Counterfactual {
 }
 
 /** `analyse_profile` in `swarm_api/headroom.py`. */
-export interface ProfileAdmission {
-  units: number
+export interface ProfileAdmission extends ApiProfileAdmission {
   /** null means NOT MEASURED. Read `basis` to learn which kind. */
   headroom: number | null
   basis: HeadroomBasis
@@ -1108,8 +1160,10 @@ export function consequenceOf(
           pullRequests: 0,
           atMost: false,
           pushes: false,
-          headline: 'No pull request. Nothing is pushed.',
+          // ONE SENTENCE ON THE OPTION (issue 81): it was two, a long run.
+          headline: 'Nothing is pushed; no pull request.',
           detail:
+            'No pull request. Nothing is pushed. ' +
             `Each of the ${plural(n, 'step')} harvests its patch into the agent's own GCS ` +
             'prefix and the run ends there. Nothing reaches the repository, so this is ' +
             'the only strategy that works with a read-only token.',
@@ -1126,8 +1180,11 @@ export function consequenceOf(
             pullRequests: 1,
             atMost: true,
             pushes: true,
-            headline: 'One pull request, from this agent’s branch — none if it changed nothing.',
+            // UNDER NINE WORDS (issue 81); "none if it changed nothing" is the
+            // detail, which the option's (i) carries.
+            headline: 'One pull request, from this agent’s branch.',
             detail:
+              'One pull request, from this agent’s branch — none if it changed nothing. ' +
               'The agent pushes its own branch and opens one pull request from it. An agent that ' +
               'changed nothing opens none, which is why this is a ceiling and not a count.',
           },
@@ -1213,17 +1270,9 @@ export const CARRIER_DETAIL: Readonly<Record<DispatchCarrier, string>> = {
 }
 
 /** `_event_to_api`, routes/tasks.py. */
-export interface TaskEvent {
-  event_id: string
-  task_id: string
-  type: string
-  at: string
-  attempt_id: string | null
-  lease_id: string | null
-  generation: number | null
+export interface TaskEvent extends ApiTaskEvent {
   /** Every string in it masked by the task's masker (the archived pull request 229 review); keys as written. */
   detail: Record<string, unknown> | null
-  detail_redaction_count?: number | null
 }
 
 /**
@@ -1624,7 +1673,7 @@ export function modelMismatch(pinned: string | null | undefined, task: Task): st
 }
 
 /** `GET /v1/tenants/me`, routes/tenants.py:24-38. */
-export interface Me {
+export interface Me extends ApiMe {
   tenant: Tenant
   principal: {
     email: string
@@ -1720,14 +1769,7 @@ export function hasUsage(task: Task): boolean {
  * lease only to heartbeat -- so a column labelled "state" would show
  * DISPATCHED for an agent that has been running for an hour.
  */
-export interface LeaseRow {
-  lease_id: string
-  task_id: string
-  attempt_id: string
-  tenant_id: string
-  generation: number
-  pools: string[]
-  units: number
+export interface LeaseRow extends ApiLeaseRow {
   /**
    * What the lease holds in each of `pools` (contract request 129, archived issue 2950):
    * what release gives back, the provider pools at 1 for a lease reserved
@@ -1737,18 +1779,8 @@ export interface LeaseRow {
    */
   pool_units?: Record<string, number>
   dispatch_state: 'LEASED' | 'DISPATCHED' | string
-  created_at: string
-  dispatch_deadline: string
-  expires_at: string
-  heartbeat_at: string | null
-  released_at: string | null
-  release_reason: string | null
-  released: boolean
-  expired: boolean
-  dispatch_overdue: boolean
   /** Computed server-side. Falls back to created_at when never beaten. */
   silent_seconds: number
-  heartbeat_ever: boolean
   /** Denormalised from the task, so this is not an N+1. */
   last_error: string | null
 }
@@ -1762,14 +1794,11 @@ export interface LeaseRow {
  * further out, and it would colour a row amber at a threshold the reconciler
  * does not act on.
  */
-export interface LeasePage {
+export interface LeasePage extends ApiLeasePage {
   leases: LeaseRow[]
   /** The next page's token, or null on the last page (archived issue 632 F8: leases page past 200). */
   next_page_token?: string | null
   thresholds: { heartbeat_grace_seconds: number; lease_timeout_seconds: number }
-  evaluated_at: string
-  active_only: boolean
-  tenant_id: string | null
   /** Weighted units, not agents. Summed over `leases` -- the rows served. */
   units_held: number
   /**
@@ -1866,19 +1895,11 @@ export function leaseLiveliness(
  * different facts, and a booting agent is not a silent one. Before the first
  * beat the reconciler judges the lease by `dispatch_overdue` alone.
  */
-export interface LeaseHeartbeat {
-  task_id: string
-  lease_id: string
-  attempt_id: string
-  generation: number
+export interface LeaseHeartbeat extends ApiLeaseHeartbeat {
   /** LEASED, DISPATCHED, STARTING or RUNNING -- a row exists for no other. */
   task_state: TaskState
   /** The LEASE's state, only ever LEASED or DISPATCHED; see `LeaseRow`. */
   dispatch_state: 'LEASED' | 'DISPATCHED' | string
-  created_at: string
-  dispatch_deadline: string
-  expires_at: string
-  heartbeat_at: string | null
   /** Seconds since `heartbeat_at`, at the page's `read_at`; null if never beaten. */
   silent_seconds: number | null
   /**
@@ -1886,8 +1907,6 @@ export interface LeaseHeartbeat {
    * for longer than `thresholds.heartbeat_grace_seconds`.
    */
   silent: boolean
-  expired: boolean
-  dispatch_overdue: boolean
 }
 
 /**
@@ -1895,8 +1914,7 @@ export interface LeaseHeartbeat {
  * `LeasePage` says: the grace is the reconciler's, resolved server-side, and
  * a constant here would warn at a boundary the reconciler does not act on.
  */
-export interface LeaseHeartbeatPage {
-  tenant_id: string
+export interface LeaseHeartbeatPage extends ApiLeaseHeartbeatPage {
   /** The clock each row's `silent_seconds` was taken against. */
   read_at: string
   thresholds: { heartbeat_grace_seconds: number; lease_timeout_seconds: number }
@@ -1931,30 +1949,9 @@ export interface SizedContainer {
 export type CredentialTier = 'plan' | 'api_key'
 
 /** `attempt_to_api`. The per-attempt record result_summary cannot give you. */
-export interface AttemptRow {
-  attempt_id: string
-  task_id: string
-  tenant_id: string
-  generation: number
-  lease_id: string
-  backend: string
-  execution_name: string | null
-  created_at: string
-  started_at: string | null
-  completed_at: string | null
-  exit_code: number | null
+export interface AttemptRow extends ApiAttemptRow {
   /** The stderr tail `last_error` is, masked by the task's masker (the archived pull request 229 review). */
   error: string | null
-  error_redaction_count?: number | null
-  peak_rss_bytes: number | null
-  peak_disk_bytes: number | null
-  oom_near_miss: boolean
-  checkpoints: string[]
-  input_tokens: number | null
-  output_tokens: number | null
-  cache_read_input_tokens: number | null
-  cache_creation_input_tokens: number | null
-  cost_usd: number | null
   /**
    * THE ATTEMPT'S CPU, typed on its document (contract request #15, accepted
    * on #184 on 2026-09-25) and served on every row. Every runner the attempt
@@ -1977,9 +1974,6 @@ export interface AttemptRow {
    * which read the figures off HEARTBEAT events; that block is not read.
    */
   cpu_seconds?: number | null
-  peak_cpu_cores?: number | null
-  mean_cpu_cores?: number | null
-  cpu_limit_cores?: number | null
   /**
    * WHEN AND FROM WHERE (contract request #26, accepted on #184, 2026-09-26):
    *
@@ -1994,8 +1988,6 @@ export interface AttemptRow {
    * missing key is an API older than the fields.
    */
   cpu_measured_at?: string | null
-  cpu_limit_source?: string | null
-  cpu_reading_age_seconds?: number | null
   /**
    * Contract request 103 (archived issue 1435): the model ID this attempt's agent was
    * started with. Null: no model, or not recorded. Absent: an older API.
@@ -2010,10 +2002,6 @@ export interface AttemptRow {
    * API.
    */
   size_version?: number | null
-  sized_cpu_request?: number | null
-  sized_cpu_limit?: number | null
-  sized_memory_gib?: number | null
-  sized_disk_gib?: number | null
   sized_live_split?: Record<string, SizedContainer> | null
   /**
    * Contract request 152 (docs/design/llm-providers.md section 8.2): the
@@ -2083,7 +2071,7 @@ export interface TaskEventsPage {
  * provider unions, the pool families. That is the second-best answer, used where
  * a route is not available. It is not a reason to start copying.)
  */
-export interface ResourceClassSpec {
+export interface ResourceClassSpec extends ApiResourceClassSpec {
   name: string
   /** The CPU REQUEST: guaranteed, charged and billed. The old name of `cpu_request`. */
   cpu: number
@@ -2220,7 +2208,7 @@ export type RunnerSizeChanges = Record<string, Record<string, number | Record<st
  * route that serves the value is the only remedy this repository has actually
  * made work". Nothing below is a value; every field is a hole the API fills.
  */
-export interface Runtime {
+export interface Runtime extends ApiRuntime {
   /** The exact string to send as `runner_profile`. */
   name: string
   /**
@@ -2528,28 +2516,19 @@ export function attemptRan(a: AttemptRow, now: number): string {
 }
 
 /** `SubmissionService.stats`, service.py:271-288. */
-export interface Stats {
-  tenant_id: string
+export interface Stats extends ApiStats {
   /** One key per TaskState -- count_tasks_by_state iterates the whole enum. */
   tasks_by_state: Record<string, number>
-  dispatch_paused: boolean
   limits: Record<string, number>
-  generated_at: string
   /** ADMIN ONLY. Absent for everyone else -- absent is not zero. */
   platform_tasks_by_state?: Record<string, number>
 }
 
 /** `GET /v1/admin/dispatch`, routes/admin.py:70-75. Admin-gated. */
-export interface DispatchControl {
-  dispatch_paused: boolean
-  updated_at: string | null
-  updated_by: string | null
-  reason: string | null
-}
+export type DispatchControl = ApiDispatchControl
 
 /** `SubmissionService.providers`, service.py:334-350. */
-export interface ProviderEntry {
-  provider: string
+export interface ProviderEntry extends ApiProviderEntry {
   /**
    * True when the tenant's own key OR a pool account it owns or is lent
    * serves this provider -- admission's rule (archived issue 76). Never key material.
@@ -2565,20 +2544,17 @@ export interface ProviderEntry {
    * that takes a subscription token, so it can be fewer than runner_profiles.
    */
   runnable_profiles?: string[]
-  runner_profiles: string[]
   /** null when no quota document exists for this tenant yet. Not zeros. */
   quota: QuotaState | null
 }
 
-export interface ProvidersPage {
-  tenant_id: string
+export interface ProvidersPage extends ApiProvidersPage {
   providers: ProviderEntry[]
   /**
    * How the account pool was read for this page: `unreadable` means a false
    * credential_registered may still be served by a lent account.
    */
   account_pool?: 'read' | 'not_asked' | 'not_configured' | 'unreadable'
-  generated_at: string
 }
 
 /**
@@ -2626,16 +2602,8 @@ export const PRE_CAPACITY_REASONS: ReadonlySet<string> = new Set([
 ])
 
 /** `tenant_to_api`, codec.py:283. Thirteen fields, all of them. */
-export interface Tenant {
-  tenant_id: string
+export interface Tenant extends ApiTenant {
   kind: 'group' | 'user' | string
-  principal: string
-  display_name: string | null
-  created_at: string
-  max_active: number
-  capacity_units: number
-  monthly_budget_usd: number | null
-  enabled: boolean
   /** Providers this tenant has registered a key for. */
   credentials: string[]
   /**
@@ -2643,8 +2611,6 @@ export interface Tenant {
    * cell here reads as "fine" and it is the opposite.
    */
   service_account: string | null
-  gcs_prefix: string | null
-  namespace: string | null
 }
 
 /**
@@ -2663,23 +2629,8 @@ export interface Tenant {
  * asserts `ProviderStateName` against the frozen enum, so there is one
  * restatement left and something watching it.
  */
-export interface QuotaState {
-  provider: string
-  tenant_id: string
+export interface QuotaState extends ApiQuotaState {
   state: ProviderStateName | string
-  updated_at: string
-  configured_hard_max: number
-  adaptive_target: number | null
-  quota_derived_limit: number | null
-  requests_remaining: number | null
-  tokens_remaining: number | null
-  reset_at: string | null
-  cooldown_until: string | null
-  last_429_at: string | null
-  retry_after_seconds: number | null
-  success_count: number
-  rate_limit_count: number
-  effective_limit: number
   /**
    * The pool this row's cap feeds, `provider:<provider>:tenant:<tenant>`, as
    * `/v1/capacity` serves it, read in the same request (G5-02). Its
@@ -3011,10 +2962,10 @@ export type ParkReason =
   | 'SCHEDULED_RETRY' | 'DEPENDENCY_INCOMPLETE' | 'MANUAL_PAUSE'
   | 'BUDGET_EXHAUSTED' | 'CREDENTIAL_MISSING' | 'CHILDREN_INCOMPLETE'
   | 'CI_PENDING' | 'HUMAN_REQUIRED' | 'AWAITING_INPUT'
-  | 'FIX_ROUNDS_RUNNING' | 'PLATFORM_REFUSED'
+  | 'FIX_ROUNDS_RUNNING' | 'PLATFORM_REFUSED' | 'WORKFLOW_PAUSED'
 
 /**
- * The same fourteen as a value, so a test can compare the list against
+ * The same fifteen as a value, so a test can compare the list against
  * `swarm_common.states.ParkReason` and the three sets below can be checked for
  * covering it. A union type erases at build time and can be checked against
  * nothing.
@@ -3040,6 +2991,7 @@ export const PARK_REASONS = [
   'AWAITING_INPUT',
   'FIX_ROUNDS_RUNNING',
   'PLATFORM_REFUSED',
+  'WORKFLOW_PAUSED',
 ] as const
 
 /**
@@ -3065,6 +3017,8 @@ export const PARK_NEEDS_A_PERSON: ReadonlySet<string> = new Set<ParkReason>([
   'CREDENTIAL_MISSING',
   'BUDGET_EXHAUSTED',
   'MANUAL_PAUSE',
+  // A step of a paused workflow: only a resume by a person lifts it.
+  'WORKFLOW_PAUSED',
   // A live-browser hand-off nobody answered within the hold (contract request
   // 68). Only a person promotes it, from the console, when they are ready to
   // sign in; no sweep or timer does, and past a day it is dead-lettered.
@@ -3165,6 +3119,7 @@ export const REASON_COPY: Readonly<Record<string, string>> = {
   AWAITING_INPUT: 'A workflow step waits for a member of its workspace to answer. Holds no capacity; it ends on the first answer or at its declared expiry.',
   FIX_ROUNDS_RUNNING: 'A fix loop waits while its review and fix rounds run as steps of their own. Holds no capacity.',
   PLATFORM_REFUSED: 'The cluster refused to start it (its job quota is full, or a policy said no). Holds no capacity; retried automatically, at most ten minutes apart.',
+  WORKFLOW_PAUSED: 'The workflow is paused. This step waits, holding no capacity, until a person resumes the workflow.',
   POOL_LIMIT_UNSET: 'This pool has no limit set, so it admits nothing. Nobody set it to 0: somebody has to set a limit.',
 }
 
@@ -3360,9 +3315,8 @@ export function whyNotRunning(task: Task): string | null {
  * own tenant, so the scope belongs in the page header once rather than in a
  * column on every row.
  */
-export interface TaskPage {
+export interface TaskPage extends ApiTaskPage {
   tasks: Task[]
-  next_page_token?: string | null
   tenant_id?: string
 }
 
@@ -3770,15 +3724,13 @@ export interface WorkflowDrift {
 }
 
 /** `workflow_to_api`, codec.py. Every field it actually sends. */
-export interface Workflow {
-  workflow_id: string
+export interface Workflow extends ApiWorkflow {
   /**
    * The DERIVED state -- what the steps say, not what the document holds. Safe
    * to render directly; it is 'UNKNOWN' when a step could not be read, which is
    * why this is `string` rather than `TaskState`.
    */
   state: string
-  tenant_id: string
   /** The value in Firestore. Present so the cache can be audited. */
   stored_state: string
   /** 'derived' on a read route, 'stored' on the create response. */
@@ -3786,7 +3738,6 @@ export interface Workflow {
   /** Absent only where `state_source` is 'stored'. */
   rollup?: WorkflowRollup
   drift?: WorkflowDrift
-  created_at: string
   /**
    * WHEN THE DOCUMENT LAST CHANGED, which on a workflow means WHEN ITS DERIVED
    * STATE LAST CHANGED -- and that is a stronger fact than it looks.
@@ -3806,12 +3757,8 @@ export interface Workflow {
    * moved" must ask the workflow, never the step.
    */
   updated_at: string
-  submitted_by: string | null
   /** The submitter's display name (`people.add_names`); null when none is set. */
   submitted_by_name?: string | null
-  priority: number
-  on_step_failure: string
-  cancel_requested: boolean
   steps: WorkflowStep[]
   /**
    * The pull requests this workflow waits for before any step starts (lane
@@ -4276,7 +4223,7 @@ export type AccountStateName = 'AVAILABLE' | 'PAUSED' | 'DRAINING' | 'REAUTH_REQ
  * `utilization` is 0-1, NOT a percentage -- 0.87 is 87%. Multiplying is this
  * file's job precisely once, in `readingOf`, so no component can forget.
  */
-export interface AccountWindow {
+export interface AccountWindow extends ApiAccountWindow {
   utilization: number
   resets_at: string
   /**
@@ -4288,7 +4235,18 @@ export interface AccountWindow {
   reset: boolean
 }
 
-export interface Account {
+/**
+ * The generated `Account` declares every field the listing serves; the fields
+ * the broker's pool and caps add (`can_take_new_agent`, `blocked_by`, `lends`,
+ * ...) are still typed by hand in accountsPool.ts and api.ts (`PoolFields`,
+ * `PlanCaps`), so this interface takes only the fields it has always read.
+ */
+type AccountCoreField =
+  | 'account_id' | 'owner_tenant' | 'label' | 'display_name' | 'provider' | 'state' | 'reason'
+  | 'lend_to' | 'assigned' | 'windows' | 'observed_at' | 'stale' | 'unreadable_by'
+  | 'unreadable_now' | 'last_assigned_at'
+
+export interface Account extends Pick<ApiAccount, AccountCoreField> {
   /** `<owner_tenant>:<label>`. Opaque; never split for display. */
   account_id: string
   owner_tenant: string
@@ -4352,7 +4310,7 @@ export interface Account {
 }
 
 /** `GET /v1/accounts`. `tenant_id` is the scope the server actually applied. */
-export interface AccountsPage {
+export interface AccountsPage extends ApiAccountsPage {
   accounts: Account[]
   /** null when a platform caller asked for every tenant. */
   tenant_id: string | null
@@ -5121,7 +5079,7 @@ export type LogStatus = 'ok' | 'absent' | 'unreadable' | 'not_applicable'
  */
 export type LogStreamName = 'stdout' | 'stderr' | 'agent_stdout' | 'agent_stderr'
 
-export interface LogStream {
+export interface LogStream extends ApiLogStream {
   stream: LogStreamName
   source: LogSource | null
   status: LogStatus
@@ -5161,7 +5119,7 @@ export interface LogStream {
 }
 
 /** Which attempt a log, transcript or answer read describes. */
-export interface LogAttempt {
+export interface LogAttempt extends ApiLogAttempt {
   status: 'latest' | 'requested' | 'unknown_attempt' | 'no_attempt_yet'
   known: boolean
   generation: number | null
@@ -5170,7 +5128,7 @@ export interface LogAttempt {
   exit_code: number | null
 }
 
-export interface TaskLogs {
+export interface TaskLogs extends ApiTaskLogs {
   task_id: string
   tenant_id: string
   attempt_id: string | null
@@ -5205,7 +5163,11 @@ export type AgentStreamRole = 'agent_stdout' | 'agent_stderr' | 'agent_transcrip
  * OPTIONAL: an API older than that change serves `{name, bytes, uri}` only, and
  * the viewer then falls back to the name rule it always used (`artifactKind`).
  */
-export interface ArtifactEntry extends ArtifactRef {
+export interface ArtifactEntry extends ArtifactRef, ApiArtifactEntry {
+  // Redeclared: ArtifactRef's manifest reading narrows the generated entry's.
+  name: string
+  bytes: number
+  uri: string
   /** Null when the stored uri is not under this task. */
   attempt_id?: string | null
   kind?: ArtifactKindName | null
@@ -5225,7 +5187,7 @@ export interface SkippedArtifact {
  * uploaded then, never live, so an empty incomplete list is "not yet", never
  * "none".
  */
-export interface ArtifactListing {
+export interface ArtifactListing extends ApiArtifactListing {
   task_id: string
   artifacts: ArtifactEntry[]
   /**
@@ -5299,7 +5261,7 @@ export type TranscriptStepKind =
  * decoding and capped at 16 KiB; a capped field is named in
  * `truncated_fields`. `raw` is present only when the read asked for it.
  */
-export interface TranscriptStep {
+export interface TranscriptStep extends ApiTranscriptStep {
   id: string
   line_offset: number
   block: number
@@ -5325,7 +5287,7 @@ export interface TranscriptStep {
 export type TranscriptFormat = 'claude-stream-json' | 'claude-json' | 'codex-exec-json' | 'ndjson' | 'text'
 
 /** The object a transcript read parsed: the same one `/logs?stream=agent_stdout` would choose. */
-export interface TranscriptStream {
+export interface TranscriptStream extends ApiTranscriptStream {
   stream: 'agent_stdout'
   source: LogSource | null
   status: LogStatus
@@ -5341,7 +5303,7 @@ export interface TranscriptStream {
   tail_window: { object_offset: number; stream_size: number; published_at?: string | null } | null
 }
 
-export interface TaskTranscript {
+export interface TaskTranscript extends ApiTaskTranscript {
   task_id: string
   tenant_id: string
   attempt_id: string | null
@@ -5384,7 +5346,7 @@ export interface TaskTranscript {
  */
 export type AnswerStatus = 'ok' | 'not_yet' | 'absent' | 'unreadable'
 
-export interface TaskAnswer {
+export interface TaskAnswer extends ApiTaskAnswer {
   task_id: string
   tenant_id: string
   attempt_id: string | null
@@ -5429,7 +5391,7 @@ export interface TaskAnswer {
 // ---------------------------------------------------------------------------
 
 /** One text of the copy: what `redaction.redact` made of it, and how many masks that took. */
-export interface MaskedText {
+export interface MaskedText extends ApiMaskedText {
   text: string
   redaction_count: number
 }
@@ -5451,7 +5413,7 @@ export interface MaskedText {
  * a convention of the CLI and mock runners), or `other` (not text).
  * `redaction_count` is `full`'s: every mask in the input, counted once.
  */
-export interface TaskInputCopy {
+export interface TaskInputCopy extends ApiTaskInputCopy {
   task_id: string
   tenant_id: string
   read_at: string
@@ -5477,7 +5439,7 @@ export interface TaskInputCopy {
  * because only the platform writes them (`dispatch`, `input_from`,
  * `expected_outputs`: submission refuses them from every caller).
  */
-export interface MaskedMetadata {
+export interface MaskedMetadata extends ApiMaskedMetadata {
   value: Record<string, unknown>
   redaction_count: number
   platform_keys: string[]
@@ -5501,7 +5463,7 @@ export interface MaskedMetadata {
  */
 export type ArtifactContentStatus = 'ok' | 'absent' | 'unreadable' | 'binary'
 
-export interface ArtifactContent {
+export interface ArtifactContent extends ApiArtifactContent {
   task_id: string
   tenant_id: string
   attempt_id: string
@@ -5795,6 +5757,15 @@ export interface PlanLintRecord {
   replan_error: string | null
 }
 
+/** `issueruns.served_readiness`: the readiness pre-pass (owner, 2026-11-24). */
+export interface RunReadiness {
+  task_id: string | null
+  /** Null while it runs. `unreadable`: no valid answer, so the planner ran. */
+  outcome: 'ready' | 'not_ready' | 'unreadable' | null
+  reason: string | null
+  cost_usd: number | null
+}
+
 /** `IssueRun.to_api()`. */
 export interface IssueRun {
   id: string
@@ -5815,6 +5786,8 @@ export interface IssueRun {
    *  person after a re-plan that failed too, the findings (code and sentence).
    *  Null on a run whose plan was never refused. */
   plan_lint?: PlanLintRecord | null
+  /** `issueruns.served_readiness`; null on a run that started its planner at once. */
+  readiness?: RunReadiness | null
   /** `issueruns.plan_shape`: `8 steps in 4 stages (1 → 3 → 3 → 1), then review and fix`; null without a plan. */
   plan_shape?: string | null
   /** Null until approval creates the workflow. */

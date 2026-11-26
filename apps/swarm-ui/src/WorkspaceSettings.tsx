@@ -559,9 +559,13 @@ function QaFlowsPerStep({ read }: { read: QaSettings }) {
   }
   return (
     <>
+      {/* ISSUE 81: one short line; the sentences it was are behind the (i), word for word. */}
       <p className="ur-hint">
-        A QA run&rsquo;s read-only flows run in batches, one live-browser step each. This is the batch size a run
-        uses unless it names its own; a run may pick another beside Run on the QA targets page.
+        The batch size a QA run uses.{' '}
+        <InfoTip
+          about="QA flows per step"
+          tip="A QA run’s read-only flows run in batches, one live-browser step each. This is the batch size a run uses unless it names its own; a run may pick another beside Run on the QA targets page."
+        />
       </p>
       {/* ONE LABELLED FIGURE (visual QA pass 1, config-30; part of archived issue 2596): for someone who may edit it, the field
           below is the figure and its hint notes the default, so the read-out above it said both twice. It is
@@ -603,7 +607,8 @@ function QaFlowsPerStep({ read }: { read: QaSettings }) {
               onChange={(e) => setTyped(e.target.value)}
             />
           </label>
-          <p className="ur-hint">{`A whole number, ${bound}. The default is ${d.default_flows_per_step}.`}</p>
+          {/* ISSUE 81: one fact list, not two sentences. */}
+          <p className="ur-hint">{`A whole number, ${bound} · default ${d.default_flows_per_step}`}</p>
           {/* Its own line: .ur-hint is declared after .ur-bad, so a hint carrying both stays grey. */}
           {!inBounds && (
             <small className="ur-bad" role="alert">{`QA flows per step is a whole number, ${bound}.`}</small>
@@ -701,9 +706,14 @@ function WorkspaceBudgetCard() {
   const budget = useUrRead(loadWorkspaceBudget, 'workspace-budget')
   return (
     <Card title="Per-agent budget" action={servedRefresh(budget)}>
+      {/* ISSUE 81: the cost disclosure stays as one short line; the sentences
+          it was, the 80% and 100% steps among them, are behind the (i), word for word. */}
       <p className="pk-lead">
-        The most one agent may spend on a step in this workspace. {BUDGET_DOES} A step may set a lower budget, never a
-        higher one.
+        An agent stops at its budget.{' '}
+        <InfoTip
+          about="the per-agent budget"
+          tip={`The most one agent may spend on a step in this workspace. ${BUDGET_DOES} A step may set a lower budget, never a higher one.`}
+        />
       </p>
       <UrRegion state={budget.state} route="GET /v1/budget" what="the Per-agent budget setting" onRetry={budget.reload}>
         {(d) => (d.can_edit ? <BudgetForm read={d} /> : <BudgetReadOnly read={d} />)}

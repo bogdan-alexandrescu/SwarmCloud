@@ -1,7 +1,11 @@
+# source-text: contract - each corrected docstring or comment must state the fact the code beside it enforces; prose has no behaviour to call
 """Comments that contradicted the code next to them, held corrected (archived issue 177).
 
 Each case names a sentence the 2026-09-25 audit verified as false and checks
-that it is gone and that the replacement states the fact the code enforces. A
+that the replacement states the fact the code enforces. That the false sentence
+is gone is checked here for the Terraform and shell files; for the Python ones
+it is the lint rule `corrected-comment-stays-corrected`
+(scripts/source_text_rules/control_plane_am.py). A
 comment is read with its line breaks and comment markers folded away, so a
 sentence that wraps is still one sentence.
 
@@ -16,8 +20,6 @@ from __future__ import annotations
 import ast
 import re
 from pathlib import Path
-
-import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -54,20 +56,17 @@ def _tf_description(rel: str, variable: str) -> str:
 
 def test_broker_credentials_states_the_per_token_write_count():
     text = _docstring("apps/quota-broker/quota_broker/credentials.py", "")
-    assert "~1,700 times per token" not in text
     assert "about 60 times per token" in text
 
 
 def test_broker_secret_name_says_its_rename_orphaned_accounts():
     text = _docstring("apps/quota-broker/quota_broker/accounts.py", "secret_name")
-    assert "the only moment it was free" not in text
     assert "orphaned three" in text
     assert "secret_ref" in text
 
 
 def test_broker_sweep_cites_the_incident_figures_instead_of_restating_them():
     text = _source("apps/quota-broker/quota_broker/main.py")
-    assert "1,741 and 1,698" not in text
     assert "quota_broker.credentials" in text
 
 
@@ -97,18 +96,14 @@ def test_plan_guard_success_line_claims_only_what_was_checked():
 
 def test_reconciler_record_pass_docstring_says_it_raises():
     text = _docstring("apps/reconciler/reconciler/store.py", "record_pass")
-    assert "Returns None rather than raising" not in text
     assert "Raises on a failed write" in text
 
 
 def test_reconciler_once_exit_code_is_report_errors():
     text = _docstring("apps/reconciler/reconciler/__main__.py", "")
-    assert "when any repair failed" not in text
     assert "`report.errors` is non-empty" in text
 
 
-@pytest.mark.parametrize("stale", ["unrecognised host", "no credential at all"])
-def test_forge_probe_repository_none_means_an_unparseable_url(stale):
+def test_forge_probe_repository_none_means_an_unparseable_url():
     text = _docstring("apps/agent-worker/agent_worker/forge.py", "probe_repository")
-    assert stale not in text
     assert "does not parse as a forge repository URL" in text

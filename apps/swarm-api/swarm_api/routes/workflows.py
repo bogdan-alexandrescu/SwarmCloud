@@ -33,8 +33,9 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, Query, Response, status
 from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, ConfigDict
 from swarm_common.models import Task
 from swarm_common.states import TERMINAL_STATES
@@ -86,9 +87,10 @@ from ..schemas import (
 )
 from ..stalls import stalled_workflows
 from ..steprerun import RERUN_OF_METADATA_KEY
-from ..store import CancelContended, workflow_listing_token
+from ..store import CancelContended, PauseContended, workflow_listing_token
 from ..validation import ISSUE_RUN_METADATA_KEY, QA_TARGET_METADATA_KEY, SCHEDULE_METADATA_KEY
 from ..waker import ring
+from ..wire_types import WorkflowEnvelope
 
 log = logging.getLogger(__name__)
 
@@ -717,7 +719,7 @@ def _without_rerun_replaced(workflow: Any, tasks: list[Task]) -> list[Task]:
     ]
 
 
-@router.get("/{workflow_id}")
+@router.get("/{workflow_id}", responses={200: {"model": WorkflowEnvelope}})
 @route_scope.reachable_by(route_scope.CONTINUATION)
 def get_workflow(
     workflow_id: str,
@@ -873,6 +875,129 @@ def cancel_workflow(
             content=refused.to_payload(),
             headers={"Retry-After": str(max(1, int(refused.retry_after_seconds) + 1))},
         )
+    return result
+
+
+#: The longest pause reason kept (docs/design/workflow-pause.md section 3): a
+#: sentence for the waiting line, not a document.
+PAUSE_REASON_MAX_CHARS = 500
+
+
+def _pause_body(body: Any, *, allowed: tuple[str, ...]) -> dict[str, Any]:
+    """The pause or resume body, checked by hand: an object naming only
+    `allowed` keys, its `reason` a string of at most PAUSE_REASON_MAX_CHARS.
+    Free text only: no image, command, resource or backend field is accepted
+    (invariant 10). Not a pydantic model, so the console's generated API types
+    (apps/swarm-ui/src/generated) need no change for these routes until the
+    console lane adds its buttons."""
+    if body is None:
+        return {}
+    if not isinstance(body, dict):
+        raise ValidationFailed("the body must be a JSON object")
+    unknown = sorted(set(body) - set(allowed))
+    if unknown:
+        raise ValidationFailed(
+            f"unknown field(s) {unknown}; this route takes only {list(allowed)}",
+            detail={"unknown": unknown},
+        )
+    reason = body.get("reason", "")
+    if reason is None:
+        reason = ""
+    if not isinstance(reason, str) or len(reason) > PAUSE_REASON_MAX_CHARS:
+        raise ValidationFailed(
+            f"reason must be a string of at most {PAUSE_REASON_MAX_CHARS} characters"
+        )
+    return {"reason": reason.strip()} if "reason" in allowed else {}
+
+
+def _contended(refused: PauseContended) -> JSONResponse:
+    # The shape and header `main.api_error_handler` gives a raised
+    # `RateLimited`, returned so the waker ring below still runs for what the
+    # call did write (the workflow's own record is already committed).
+    return JSONResponse(
+        status_code=refused.status_code,
+        content=jsonable_encoder(refused.to_payload()),
+        headers={"Retry-After": str(max(1, int(refused.retry_after_seconds) + 1))},
+    )
+
+
+@router.post("/{workflow_id}/pause")
+def pause_workflow(
+    workflow_id: str,
+    background: BackgroundTasks,
+    body: Any = Body(default=None),
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> Any:
+    """Pause a workflow (docs/design/workflow-pause.md section 3.1).
+
+    Any `member` of the tenant, as cancel (owner decision Q3, 2026-11-24); a
+    `viewer` is refused 403 `role_member_required` before anything is read.
+    Another tenant's workflow is 404. A finished workflow is 409
+    `workflow_terminal`, one being cancelled 409 `workflow_cancel_requested`.
+    Idempotent: a repeat pause writes nothing and answers `already_paused`
+    with the first `paused_at`. Each non-terminal step gets the
+    `pause_requested_at` mirror and one PAUSE_REQUESTED event; the scheduler
+    parks READY steps `WORKFLOW_PAUSED` at admission, rung here. Child tasks
+    are not paused (owner decision Q4: no cascade in the first build).
+    """
+    require_member(ctx, auth)
+    reason = _pause_body(body, allowed=("reason",)).get("reason", "")
+    refused: PauseContended | None = None
+    try:
+        result = ctx.store.pause_workflow(
+            tenant_id, workflow_id, by=auth.email,
+            reason=reason,
+            tenant_member=auth.tenant_member,
+        )
+    except PauseContended as exc:
+        refused = exc
+        result = exc.result
+    if not result.get("already_paused") or refused is not None:
+        background.add_task(
+            ring, ctx.waker, ctx.metrics, "workflow_paused",
+            tenant_id=tenant_id, workflow_id=workflow_id,
+        )
+    if refused is not None:
+        return _contended(refused)
+    return result
+
+
+@router.post("/{workflow_id}/resume")
+def resume_workflow(
+    workflow_id: str,
+    background: BackgroundTasks,
+    body: Any = Body(default=None),
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> Any:
+    """Resume a paused workflow (docs/design/workflow-pause.md section 3.2).
+
+    The same gate and refusals as pause (409 `workflow_cancel_requested`
+    first, then `workflow_terminal`). Idempotent: a workflow that is not
+    paused is not written and answers `already_running`. The parked steps are
+    promoted by the scheduler's workflow-pause sweep, the one writer of that
+    edge, which this rings.
+    """
+    require_member(ctx, auth)
+    _pause_body(body, allowed=())
+    refused: PauseContended | None = None
+    try:
+        result = ctx.store.resume_workflow(
+            tenant_id, workflow_id, by=auth.email, tenant_member=auth.tenant_member,
+        )
+    except PauseContended as exc:
+        refused = exc
+        result = exc.result
+    if not result.get("already_running") or refused is not None:
+        background.add_task(
+            ring, ctx.waker, ctx.metrics, "workflow_resumed",
+            tenant_id=tenant_id, workflow_id=workflow_id,
+        )
+    if refused is not None:
+        return _contended(refused)
     return result
 
 

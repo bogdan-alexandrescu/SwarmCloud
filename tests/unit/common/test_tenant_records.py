@@ -1,3 +1,4 @@
+# source-text: contract - Tenant's service_account, gcs_prefix and namespace lines must carry the RECORD ONLY comment, which no call can observe
 """Contract request 87: `Tenant.service_account`, `.namespace` and `.gcs_prefix` are records, not authority.
 
 Accepted by the owner 2026-10-17 on PR 1464 (docs/design/tenant-settings-integrity.md

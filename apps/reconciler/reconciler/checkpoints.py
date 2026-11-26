@@ -368,7 +368,7 @@ def manifest_age_seconds(raw: bytes, *, now: datetime) -> float | None:
     try:
         data = json.loads(raw.decode("utf-8"))
         stamp = datetime.fromisoformat(str(data["created_at"]).replace("Z", "+00:00"))
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     if stamp.tzinfo is None:
         # A manifest without an offset was written by `datetime.now(timezone.utc)`
@@ -453,7 +453,7 @@ class CheckpointCollector:
         report = SweepReport(ran=True)
         try:
             keys = self._objects.list_keys(TENANTS_ROOT)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # A bucket we cannot list is a bucket we must not act on -- the same
             # rule the reconciliation pass applies to an unreadable backend.
             report.ran = False
@@ -497,7 +497,7 @@ class CheckpointCollector:
         for (_tenant, task_id), prefixes in sorted(by_task.items()):
             try:
                 task, attempts = self._reader.task_and_attempts(task_id)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 # "I could not read the task" must never look like "the task is
                 # gone": one keeps the checkpoints, the other deletes them.
                 report.errors.append(f"task {task_id}: {exc}")
@@ -598,7 +598,7 @@ class CheckpointCollector:
             return self._hold_by_object_age(ref, keys, now=now)
         try:
             raw = self._objects.download_bytes(ref.manifest_key)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._log.warning(
                 "keeping an unreferenced checkpoint whose manifest could not be read",
                 prefix=ref.prefix,
@@ -627,7 +627,7 @@ class CheckpointCollector:
         for key in keys:
             try:
                 stamp = self._objects.created_at(key)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self._log.warning(
                     "keeping an unreferenced checkpoint whose objects could not be dated",
                     prefix=ref.prefix,

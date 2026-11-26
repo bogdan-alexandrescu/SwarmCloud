@@ -1,0 +1,66 @@
+/* The plan as a document on its decision page (PlanDocument.tsx,
+   docs/design/plans-pipeline.md §2.3). Every colour is a console token, so
+   light and dark follow the theme; at 640px and under each part's margin
+   folds under it (D:P7b) and nothing scrolls sideways. */
+
+.pd-doc { display: grid; gap: 0; min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.pd-dim { color: var(--text-dim); }
+.pd-mono { font-family: var(--mono); font-size: var(--t-micro); line-height: var(--lh-micro); overflow-wrap: anywhere; }
+.pd-k { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); font-weight: 600; }
+.pd-h { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; }
+
+/* ---- one part beside its margin ---------------------------------------- */
+.pd-part { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 18rem); min-width: 0; border-top: 1px solid var(--line-soft); }
+.pd-part:first-of-type { border-top: 0; }
+.pd-main { display: grid; gap: 8px; padding: 14px 18px; min-width: 0; }
+.pd-margin { display: grid; align-content: start; gap: 8px; padding: 14px 16px; min-width: 0; background: var(--surface-2); border-left: 1px solid var(--line-soft); }
+.pd-reason { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); overflow-wrap: anywhere; }
+
+.pd-summary { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); max-width: 80ch; overflow-wrap: anywhere; white-space: pre-wrap; }
+.pd-facts { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+.pd-est, .pd-cost { display: inline-flex; align-items: baseline; gap: 8px; margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.pd-reqs { margin: 0; padding-left: 1.4em; font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
+.pd-more > summary { cursor: pointer; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); font-weight: 600; }
+.pd-more[open] > summary { margin-bottom: 6px; }
+
+/* ---- a step --------------------------------------------------------------- */
+.pd-step-h { display: flex; align-items: baseline; gap: 8px; margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 650; min-width: 0; }
+.pd-step-t { min-width: 0; overflow-wrap: anywhere; }
+.pd-step-e { margin-left: auto; flex: none; font-size: var(--t-micro); font-weight: 500; }
+.pd-stepn {
+  flex: none; display: inline-grid; place-items: center; min-width: 1.6em; height: 1.6em;
+  border: 1px solid var(--line); border-radius: var(--r-pill); font-size: var(--t-micro); line-height: var(--lh-micro);
+}
+.pd-step-m { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); }
+.pd-kv { display: grid; gap: 2px; min-width: 0; }
+.pd-list { margin: 0; padding-left: 1.2em; font-size: var(--t-meta); line-height: var(--lh-meta); min-width: 0; overflow-wrap: anywhere; }
+.pd-prompt { margin: 0; padding: 10px 12px; max-height: 24em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); font-size: var(--t-micro); line-height: var(--lh-micro); background: var(--surface-2); border: 1px solid var(--line-soft); border-radius: 8px; }
+
+.pd-risk { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.pd-risk > li {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; padding: 4px 8px; min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--warn) 55%, transparent); border-radius: 8px;
+}
+.pd-stop { font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--warn-ink); }
+
+/* ---- the run read's state ------------------------------------------------ */
+.pd-state { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0; padding: 8px 18px; font-size: var(--t-meta); line-height: var(--lh-meta); border-bottom: 1px solid var(--line-soft); }
+.pd-state.is-error { color: var(--bad-ink); }
+.pd-doc[data-state='empty'] > .pd-dim { margin: 0; padding: 14px 18px; }
+
+/* ---- the bar's naming line ------------------------------------------------ */
+.pd-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; }
+.pd-bar > .apd-strip, .pd-bar > section { flex: 1 1 100%; min-width: 0; }
+.pd-bar-l { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.pd-names { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; min-width: 0; }
+.pd-digest { font-family: var(--mono); font-size: var(--t-micro); line-height: var(--lh-micro); padding: 1px 7px; border: 1px solid var(--line); border-radius: var(--r-pill); overflow-wrap: anywhere; }
+.pd-bar.is-newer { padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--warn) 55%, transparent); border-radius: 10px; }
+.pd-arrived { font-weight: 600; color: var(--warn-ink); }
+
+@media (max-width: 640px) {
+  .pd-part { grid-template-columns: minmax(0, 1fr); }
+  .pd-margin { border-left: 0; border-top: 1px dashed var(--line-soft); padding: 10px 14px; }
+  .pd-margin:empty { display: none; }
+  .pd-main { padding: 12px 14px; }
+  .pd-step-e { margin-left: 0; }
+}

@@ -50,6 +50,7 @@ Three reasons, in the order they cost the most:
 | `iam-refusal-probe.yml` | **manual dispatch on `main` only**, by the owner, once ([below](#the-deployers-refusal-is-proven-once-by-a-probe-the-owner-dispatches)) — never on a push, a pull request or a schedule | `deployer is refused an unlisted role` |
 | `publish-release.yml` | **manual dispatch on `main` only**, with a release name and a main commit whose `release` run succeeded ([the owner] 2026-10-30, "Move publishing into CI now"; [runbooks/release.md](runbooks/release.md)) — never on a push, a pull request or a schedule. `publish` waits in the GitHub environment `release` (a required reviewer) and authenticates as the deployer, which is why the file is on `wif.tf`'s `deployer_workflows`; in `swarmcloud-prod` that identity holds only the three roles `scripts/release-home.sh --ci-publisher` grants. It publishes; it never promotes | `check the version and the commit` · `publish <version> to the release home` |
 | `coverage.yml` | **once a day at 10:23 UTC** (`schedule`) and manual dispatch, **on `main` only** — never on a push, a pull request or a train, never a required check, and nothing on the merge path waits for it ([below](#coverage-floors)) | `plan the shards` · `unit tests with coverage (k/N)` · `swarm-ui component tests with coverage (k/N)` · `coverage floors` (combines and judges against `coverage-floors.json`) · `report the coverage` (the per-package summary; a red night opens or updates one `bug` issue, the next green night closes it) |
+| `refresh-weights.yml` | **Mondays 05:17 UTC** (`schedule`) and manual dispatch, **on `main` only** — never on a push, a pull request, a queue entry or a train, never a required check: it adds nothing to the merge path or a release ([below](#refreshing-the-shard-weights)) | `refresh the test weights` (runs `scripts/refresh-unit-weights.sh` and `scripts/refresh-ui-weights.sh` through `scripts/refresh-weights-pr.sh`; a change is one commit force-pushed to `maint/test-weights` and one pull request into `main`, opened or updated with the merge App's token; it never pushes `main`) |
 
 Three details in that table are easy to misread and each has bitten someone:
 
@@ -4014,10 +4015,19 @@ with no `unit-durations.json`, or a malformed one, exits 1 and writes nothing:
 an unread download is never "nothing to refresh". Only the weights' ratios
 matter, so CI's seconds replacing a container's is fine.
 
-Like `scripts/refresh-ui-weights.sh`, the script changes no workflow. A
-scheduled workflow that runs it and opens the pull request with the merge
-App's token lives under `.github/workflows/`, which only swarm-api can push,
-so it is proposed separately rather than here.
+Like `scripts/refresh-ui-weights.sh`, the script changes no workflow. The
+scheduled workflow that runs both is `.github/workflows/refresh-weights.yml`
+(Mondays, and by dispatch; never on the merge path). Its one job runs
+`scripts/refresh-weights-pr.sh refresh`, and when a weights file changed,
+`scripts/refresh-weights-pr.sh open` commits those two files alone, as one
+commit on `main`'s tip, force-pushes it to `maint/test-weights` and opens a
+pull request into `main` with the merge App's token, or leaves the open one
+updated by the push. The App token because a pull request opened with the
+workflow's `GITHUB_TOKEN` starts no workflow, so its checks would never run;
+one fixed branch so a refresh never piles up pull requests; not `swarm/`
+because a lane's pull request runs no checks. It is not labelled `ready`: a
+person reviews the figures, as the scripts ask. One refresh that cannot read
+its run turns the run red and the other's figures are still opened.
 
 ### Where pull-request CI time goes (2026-10-09)
 
@@ -4781,7 +4791,25 @@ or made slower) (`min_prs` and `max_wait_minutes` in
 [`scripts/merge-train.sh`](../scripts/merge-train.sh); the repository
 variables `MERGE_TRAIN_MIN_PRS`, `MERGE_TRAIN_MAX_WAIT_MINUTES` and
 `MERGE_TRAIN_MAX_PRS` still override them). A red train is bisected and the
-pull request that broke it ejected, so main never sees the failure.
+pull request that broke it ejected, so main never sees the failure. A train
+red on a code-scanning result skips the bisection when it can: the check's
+failure-level annotations name files (warning and notice annotations never
+eject anyone), the train maps each to the pull requests whose changed files
+hold it, and ejects those at once with the alert's rule, file and line
+(issue 377); a mapping that names no pull request, or every one on the train,
+bisects as before and still names the check. Check runs are read whole, every
+page compared with `total_count`; a read that is not whole is unreadable,
+never green. Every failing check is named with its title, whichever app
+made it, and rule 1 says a check that is not an Actions job is one no re-run
+changes. Rule 1 (retry once) re-runs a failed job at once, without waiting
+for unrelated jobs of the same run such as `build changed images without
+pushing` (issue 387): one job of a run still in progress through
+`actions/jobs/<id>/rerun`, a finished failed run through `rerun-failed-jobs`.
+If GitHub refuses a job's re-run while its run is in progress, the train waits
+for every run as before, says so on one log line, and spends no retry. Its log
+gives the seconds from the first failed job's end to the retry, and a train
+still lands only when every required check at its head is green.
+[The runbook](runbooks/merge-train.md#a-red-train) states the rules.
 
 **What a lane gives up.** A lane's pull request no longer catches a lint,
 format or contract slip before the train does: the lane's agent runs the
@@ -5669,31 +5697,45 @@ placeholder), never taste; widening it is a decision of its own, with its
 churn measured first. `apps/common/swarm_common/` is frozen, so its unused
 imports are ignored there rather than fixed.
 
-**Silent broad excepts: `BLE001`, `S110`, `S112`, with a baseline that may
-only shrink** (issue 54, 2026-11-21). Besides that set, the lint selects
-`BLE001` (a blind `except Exception` or `except BaseException`), `S110`
+**Silent broad excepts: `BLE001`, `S110`, `S112`, suppressed per site, with
+a marker count that may only go down** (issue 54, 2026-11-21; per site since
+issue 185). Besides that set, the lint selects `BLE001` (a blind
+`except Exception` or `except BaseException`), `S110`
 (`try`-`except`-`pass`) and `S112` (`try`-`except`-`continue`), because a
 handler that swallows every exception and hands back a default is a defect a
-caller reads as an answer. Selecting them made the 473 `# noqa: BLE001`
-markers in `apps/` take effect -- before, nothing checked them -- and found
-542 findings (470 BLE001, 63 S110, 9 S112) in 146 files. Those are
-**baselined, not fixed**: each file
-is one line in `[tool.ruff.lint.per-file-ignores]` between `# BEGIN` and
-`# END BLE001/S110/S112 BASELINE`, naming exactly the rules it broke then,
-generated from `uv run ruff check . --extend-select BLE001,S110,S112`. So a
-new silent broad except fails anywhere outside those files, and inside one of
-them for any rule it did not already break. A per-file entry was chosen over
-inline markers so the baseline is one reviewable block, not a diff across
-146 files; ruff has no separate suppressions file. **The baseline may only
-shrink**: never add a path or a rule, never widen a path to a glob -- fix
-the handler (log it, re-raise it, narrow the exception, or mark a deliberate
-best-effort catch `# noqa: BLE001` with the reason). When a file's handlers
-are fixed, delete its line and lower `BASELINE_CEILING`;
-`tests/unit/scripts/test_ruff_config.py` fails on a line that no longer
-suppresses anything, on a path that is gone or a glob, and on a baseline over
-its ceiling, and proves through ruff on standard input that a new silent
-except in an unlisted file is reported and a `# noqa: BLE001` still silences
-it. Reviewing the existing silent handlers is issue 54's second item.
+caller reads as an answer. When they were selected they found 542 sites in
+146 files, and those were first baselined **per file** in
+`[tool.ruff.lint.per-file-ignores]`. That let a NEW broad except through in
+any of those 146 files: a per-file ignore silences the rule for the whole
+file. Issue 185 replaced the block with an inline marker on each existing
+site, written by `uv run --frozen --only-dev ruff check . --select
+BLE001,S110,S112 --add-noqa` (508 directives added, each a trailing comment
+only), and deleted 31 `# noqa: BLE001` markers that suppressed nothing (a
+handler that logs the exception or re-raises is not a finding). No
+per-file ignore may name these rules again, so a new silent broad except
+fails in every file, old or new. **The count may only go down**:
+`tests/unit/scripts/test_ruff_config.py` counts ruff's own findings for the
+three rules under `--ignore-noqa` (1,050 when issue 185 landed: 978 BLE001,
+63 S110, 9 S112) and fails when that count is above
+`SUPPRESSED_SITE_CEILING` -- fix the new handler (log it, re-raise it,
+narrow the exception) instead -- and also when it is below, telling you to
+lower the constant to the new count, so the ceiling never goes slack. To
+shrink it: fix a handler, delete its marker, lower `SUPPRESSED_SITE_CEILING`.
+Counting ruff's findings rather than grepping comments is deliberate: a
+regex would count markers inside strings and miss a blanket `# noqa`. The
+same test fails when ruff reports an unmarked site, and proves through ruff
+on standard input that a new silent except under a formerly baselined path
+(`lifecycle.py`, `attemptstate.py`, `ci_reuse.py`) is reported and a
+`# noqa: BLE001` still silences one. **A stale marker is caught by a scoped
+`RUF100` run**: the test runs `--select BLE001,S110,S112,RUF100` and fails
+on any finding that names one of the three codes as `unused`. `RUF100` is
+deliberately NOT in `lint.select`: selected repository-wide it reported 920
+findings in 309 files -- about 570 markers for rules this repository never
+selected (`ANN001`, `SLF001`, `ARG001` ...), 310 `F811` markers under
+`tests/`, and one inside the frozen `apps/common/swarm_common/` -- churn
+that would conflict with every open lane and edit the frozen contract.
+Never run `ruff check --fix` with `RUF100` for the same reason. Reviewing
+the existing silent handlers is issue 54's second item.
 
 **`ruff format` is NOT adopted**:
 a repository-wide reformat would conflict with every open lane, so
@@ -5926,7 +5968,7 @@ a bisection. So the pre-publish gate runs both, ahead of the guard script
 
 | Check | Command | Runs when the change touches | Budget |
 |---|---|---|---|
-| `api-types` | `uv run python scripts/gen_api_types.py --check` | a file the generator reads, as the generator itself prints them with `python3 scripts/gen_api_types.py --inputs` (the script, the repository packages building the document imports, `uv.lock`, the generated file) | 45 s |
+| `api-types` | `uv run python scripts/gen_api_types.py --check` | a file the generator reads, as the generator itself prints them with `python3 scripts/gen_api_types.py --inputs` (the script, the repository packages building the document imports, `uv.lock`, the generated file, and every constants group's inputs and file) | 45 s |
 | `test-pointers` | `python3 scripts/check_test_pointers.py --root .` (the whole tree, as the train runs it) | anything under `apps/` or `tests/` (a new test's name can turn a comment nobody touched into a pointer) | 15 s |
 
 **The trigger list is the generator's, not the gate's.** `INPUTS` in
@@ -5936,6 +5978,64 @@ modules that building the document actually loads, in a fresh interpreter;
 `--inputs` prints the list with the standard library only, so the trigger
 costs one interpreter start. A generator that cannot print it is checked on
 every change.
+
+**The same command writes and checks the constants files** (part of #72).
+Beside `api-types.ts`, `scripts/gen_api_types.py` writes one JSON file per
+*constants group* under `apps/swarm-ui/src/generated/constants/`: the API's
+codes and enums -- task states, park and blocked reasons, event types, end
+causes, credential tiers, resource-class units -- for the console to read
+instead of restating them. The reason is the same as for the types: a
+TypeScript list copied by hand from a Python enum compiles and passes its own
+tests after Python gains a member, and the console then shows the new state
+as unknown, or refuses it, with nothing failing. Read from the live objects,
+the copy cannot disagree without `--check` saying so. `--check` exits 1
+naming every stale or missing file and every JSON file there that no group
+writes (a removed group's leftover); a plain run writes them all and removes
+such a leftover. CI runs the same `--check` in `quick-checks` (the step
+`the console's generated API types and constants are current`, under the
+`lock / contract / format / bridge install` name-keeper, which `ci-gate`
+needs), and `tests/unit/scripts/test_api_constants.py` holds each committed
+file equal to what its group builds.
+
+**A group** is a module `scripts/api_constants/<group>.py`, discovered in
+sorted order, with two names:
+
+* `INPUTS`, a tuple of the repository paths its output is a function of (a
+  directory ends in `/`). `--inputs` prints them with the generator's own,
+  so the gate's trigger covers them; the module therefore imports only the
+  standard library at module level, and the test fails if importing a group
+  imports an application package.
+* `build()`, returning a JSON-serialisable dict. It imports application code
+  inside the function and reads live Python objects -- enum members,
+  constants, a parser's actions, a function's return value -- never source
+  text: a regex over a `.py` file is the drift this replaces.
+
+The file is written with sorted keys, sets as sorted lists, a trailing
+newline and a first key `_generated` naming the regenerate command. **To add
+a group**: write the module, run `uv run python scripts/gen_api_types.py` from
+the repository root, commit the module and the JSON it writes together, and
+add a test beside the group's code that compares the file with the objects
+it reads (the `states` group's is in `test_api_constants.py`; the `routes`
+group's -- every API method and path, the codec's console links, the outcome
+sections, which `apps/swarm-ui/src/__tests__/contract.routes.test.ts` holds
+the console's requests and router to -- in `test_api_constants_routes.py`). Never edit a
+file under `generated/` by hand.
+
+**The `server` group** (`scripts/api_constants/server.py`, tested by
+`tests/unit/scripts/test_api_constants_server.py`) holds the server values the
+console restates and its tests compare against: the workspace-secret host
+rule and its refusals, the accepted repository URL prefixes, the worker's
+merge cap, the installer's doctor keys and statuses and `swarm team add`
+flags, the plugin refusal tables, two request models' field names, whether
+the events route pages and whether the read scope checks the collision only,
+and the Cloud Scheduler jobs. It exists so that no console test opens a
+Python or Terraform file: such a test regexes source text, and a reworded
+assignment silently changes what it compares. Terraform is its one text
+source, because a `.tf` file has no live object: a small parser reads the
+job blocks from `terraform/modules/scheduler/jobs.tf`, and the group's test
+holds that parser to an inline sample and to the real file. Its values are
+limits, flag names, codes and refusal sentences, published to the console
+bundle; none names a deployment or carries a credential.
 
 **A failure goes to the fix turn with its fix.** A stale file is handed back
 with the one command that fixes it: run `uv run python scripts/gen_api_types.py`
@@ -5977,6 +6077,68 @@ run is never cut. `GUARDS_BUDGET_SECONDS` (600 s) is wall time from the guard
 check's own start, so nothing ahead of it shortens it; only the step's
 deadline is shared. None of this is on the merge path: it runs in the lane's
 own container before it publishes.
+
+### The source-text check
+
+A test that reads a repository `.py` or `.ts` file as text pins what the code
+*says*, not what it does. Sometimes that is the point -- there is no other
+observable form of the thing -- and sometimes it is a behaviour test written
+the cheap way; until issue 73 nothing in the file said which. And every test
+that swept a tree for a forbidden pattern walked and read that tree again, so
+a guard run read the same files once per sweep.
+`scripts/check_source_text.py` (standard library only, as ruff takes no
+custom rules) does three things in one pass:
+
+* **It finds the source-text tests**: any `.py` under `tests/` or
+  `apps/*/tests/` that globs `*.py`/`*.ts`/`*.tsx` (`*.ts*` too), calls
+  `ast.parse` or `inspect.getsource`, or reads (`read_text`, `read_bytes`,
+  `open`) a path built from a string ending in a source suffix or a module's
+  `__file__` -- followed through assignments and through a helper's parameter
+  to what its callers pass, because `def src(name): return (UI /
+  name).read_text()` called as `src("api.ts")` is the commonest shape.
+  `python3 scripts/check_source_text.py --list [PATH ...]` prints each with
+  its techniques and `marked <class>` or `UNMARKED`; a PATH may be a file or
+  a directory. A test that reads only
+  its own file, docs, YAML, JSON or shell is not one (issue 71).
+* **It holds their marker**, the file's first line (the second after a
+  shebang): `# source-text: <class> - <reason>`, the reason saying why
+  *this* file reads text. The classes:
+
+  | Class | When | Example |
+  |---|---|---|
+  | `contract` | the text is the contract: a name, a table or a call shape with no behaviour to observe | `tests/unit/common/test_specsign_covers.py`: every metadata key the worker reads, found by an AST scan of `agent_worker`, is a signed key |
+  | `forbidden-pattern` | a pattern must not appear, or only where allowed; the sweep itself belongs in a rule (below) | the sweep that no test module imports a bare `conftest`, which was a test until it became the `no-bare-conftest-import` rule |
+  | `fixture` | the source read is a sample the test writes or parses, not the repository's code | `tests/unit/scripts/test_check_source_text.py`, which parses planted snippets |
+
+  A malformed marker, an unknown class, a marker below the first line or a
+  marker on a file that reads no source fails, and so does a detected file
+  with no marker (`path:1: no source-text marker (reads source by ...)`):
+  every area was marked under issue 73, so the next source-text test is
+  classified in the pull request that adds it.
+* **It runs the forbidden-pattern rules** of `scripts/source_text_rules/`.
+  Each file under the union of the rules' roots is read once and parsed at
+  most once, then handed to every rule whose roots cover it, so a new sweep
+  costs a rule's check, not another walk of the tree. A hit prints
+  `path:line: rule-id: message`.
+
+**Adding a rule.** Add a module to `scripts/source_text_rules/` (any name not
+starting with `_`; modules are found by name, there is no list to edit) that
+defines `RULES`, a tuple of `Rule(id, why, roots, check, bad, good, exempt,
+requires)`: `why` is one line naming the decision or issue it holds; `roots`
+are directories or globs; `check(path, text, tree)` returns `(line, message)`
+hits, `tree` being the AST of a `.py` file; `bad` and `good` are `(path,
+source)` samples that must hit and must pass, which the check's test runs for
+every rule; `exempt` names exact paths allowed to match, and an exemption
+whose file is gone or no longer matches fails as stale; `requires`, a
+substring or pattern a file must hold before it is parsed for the rule, keeps
+the run fast. Move the sweep out of its test file in the same change.
+
+**Where it runs.** `make lint` (`==> source-text tests`), and
+`tests/unit/scripts/test_check_source_text.py`, which runs it over the whole
+tree and is in `GUARD_TESTS`, so every pull request runs it: a rule hit can
+sit in any file, and no diff names the check. Measured 2026-11-24 in a
+14-CPU lane container: about 10 s for the whole tree, most of it parsing the
+roughly 430 test files whose text could read source.
 
 ### The install manifest completeness test
 
@@ -6040,6 +6202,14 @@ agents' own runs hit their 10-minute command limit (about ten minutes a
 step), and the gate then ran the same guards again for 65-77 minutes. A
 runner without the gate (codex) keeps `scripts/changed-guards.sh` once at the
 end ([why](working-in-this-repository.md#swarmcloud-agent-tests)).
+
+**The worker count** (issue 422). The script passes pytest an explicit `-n`
+taken from `PYTEST_XDIST_AUTO_NUM_WORKERS`, the worker budget the platform sets
+from the container's memory, in the command it prints and in the run alike;
+without a positive integer there (CI, a laptop) it passes `-n auto`. `-n auto`
+read the same budget but hid it, and an agent copies the printed command and
+raises `-n`: six workers of `tests/unit/worker` OOM-killed an 8 GiB container
+twice ([the budget](agent-output.md#the-agent-is-told-its-memory-budget)).
 
 **What is related** (`scripts/lib/related_tests.py`, standard library only).
 Python: `select_unit_tests.py`'s rules, imported rather than restated -- the

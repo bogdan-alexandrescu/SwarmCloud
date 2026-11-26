@@ -1258,6 +1258,19 @@ jobs:
         if: ${{ !cancelled() && (needs.changes.outputs.python == 'all' || needs.changes.outputs.python == 'selected') && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'python-checks') }}
         run: uv sync --frozen --all-extras --dev
 
+      - name: lock / contract / format / bridge install · the console's generated API types and constants are current
+        id: python-checks-generated
+        # scripts/gen_api_types.py regenerates in memory and diffs: the
+        # console's api-types.ts from swarm-api's OpenAPI document, and every
+        # constants group's JSON under apps/swarm-ui/src/generated/constants/
+        # from the live enums and constants (part of #72). Exit 1 names each
+        # stale or missing file and any JSON no group writes. Offline: no
+        # credentials, no emulator. The unit tests hold the same files, but a
+        # step names the drift and its fix on its own, ahead of the shards
+        # (docs/ci.md "The generated-types and test-pointer checks").
+        if: ${{ !cancelled() && (needs.changes.outputs.python == 'all' || needs.changes.outputs.python == 'selected') && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'python-checks') }}
+        run: uv run python scripts/gen_api_types.py --check
+
       - name: lock / contract / format / bridge install · the frozen contract is unchanged, or its change is recorded as accepted
         id: python-checks-contract
         # apps/common/swarm_common is frozen by CONTRACT.md. Every other

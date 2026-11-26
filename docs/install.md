@@ -92,9 +92,12 @@ Agent runs are billed on top, by the minute they run
 Stage 1 also sets a monthly budget, with alerts at 50, 90 and 100 %. Stage 0's
 sizing proposes the amount:
 
-- one person: 500 USD;
-- a team: 300 USD plus the expected agents' run time, rounded up to the next
-  hundred.
+- 400 USD plus the expected agents' run time (each expected agent at
+  0.22 USD an hour for 176 working hours a month), rounded up to the next
+  hundred;
+- for one person, 3 expected agents, which makes 600 USD;
+- for a team, 3 agents for each active member (60 % of the members, rounded
+  up), so for example 700 USD for 2 members and 1100 USD for 10.
 
 You can type any other whole number of dollars above 0.
 
@@ -216,8 +219,10 @@ this order.
      Workspace or Cloud Identity admin who is installing. That account becomes
      the install's owner and the first platform admin.
    - If Google says the app is blocked, press Ctrl-C, or wait 5 minutes. The
-     installer then signs in with Cloud Platform alone, and stage 8 asks for
-     the Directory scopes later, through the deployment's own client.
+     installer then signs in with Cloud Platform alone, and stage 8 does its
+     Directory work without those scopes. It cannot ask for them again
+     through the deployment's Desktop client: that client is made only in
+     Admin › Setup's Sign-in client step, which stage 13 waits for.
 
 3. **The organisation.** If your account can see no organisation, the
    installer opens `https://workspace.google.com/signup/gcpidentity/welcome`.
@@ -344,8 +349,10 @@ this order.
      `https://console.cloud.google.com/`. Accept them there. It creates the
      project by itself once Google sees the acceptance: 1 to 5 minutes, for
      up to 30.
-   - **A taken project id.** Project ids are global, and a project deleted in
-     the last 30 days keeps its id. If the id is taken, the installer asks
+   - **A taken project id.** Project ids are global, and a deleted project's
+     id is never reusable: Google shuts the project down at once, deletes it
+     after 30 days, and never issues its id again. If the id is taken, the
+     installer asks
      `Project id <project> is taken: ... Type another project id to create (6-30 characters: lowercase letters, digits and hyphens, starting with a letter); every answer given so far is kept`.
    - **A missing right.** If you cannot create the project, the installer
      opens the parent's IAM page. If you cannot link billing, it opens the
@@ -369,29 +376,14 @@ this order.
 
 ### Stage 2: the front door
 
-1. **The OAuth brand and the Desktop client.** Google has no API for either.
-   - The installer opens `https://console.cloud.google.com/auth/branding?project=<project>`.
-     Set the App name to `SwarmCloud` and the support email to your own address
-     (or a group you manage; the install's own groups are created only at
-     stage 8), then save. The brand can never be deleted.
-   - It then opens `https://console.cloud.google.com/auth/audience?project=<project>`.
-     Choose **Internal**.
-   - Then, on Clients › Create client
-     (`https://console.cloud.google.com/auth/clients/create?project=<project>`),
-     create a client with the Application type **Desktop app**, named
-     `SwarmCloud sc`.
-   - Keep the dialog that shows the new client open. Give its id at the
-     prompt `The Desktop client's id (ends .apps.googleusercontent.com)`.
-   - Then give its secret at the hidden prompt
-     `The Desktop client's secret (input hidden):`. Google shows the secret
-     only now.
-
-   The secret is stored in Secret Manager, as
-   `swarm-iap-desktop-client-secret`. It is also stored in this machine's
-   `swarm` credential store, so verify never asks for it. If you resume from
-   another machine, that machine asks for the secret once more. A later run
-   that finds the id recorded but no secret opens the client's own page,
-   where you **Add secret**.
+1. **The Desktop client's secret container.** The installer creates the
+   secret `swarm-iap-desktop-client-secret`, empty, so that swarm-api may add
+   its versions later. Nothing is asked here. The OAuth brand and the Desktop
+   client are **not** made in this stage: Google has no API for either (it
+   shut the IAP OAuth Admin API down on 2026-03-19), so you make them in the
+   console's Admin › Setup step **Sign-in client**, after the hand-off at
+   stage 13 ([step 3](#step-3-admin--setup-in-the-console)). The terminal
+   asks for neither the client's id nor its secret.
 2. **Google-side setup.** The installer creates IAP's service agent and
    reserves the console's global IP address. Nothing is asked.
 3. **The DNS record.** The record is:
@@ -498,9 +490,19 @@ which workspace still comes from Google groups.
      where the certificate's status says whether DNS or provisioning is
      behind.
 
-2. **Directory sign-in, if needed.** If stage 0's sign-in went on without the
-   Directory scopes, the first call to the Directory opens Google's consent
-   page for the deployment's Desktop client.
+2. **Directory scopes, if deferred.** If stage 0's sign-in went on without the
+   Directory scopes, stage 8 asks for no other sign-in. The deployment's
+   Desktop client, the only one that could ask for them, does not exist yet
+   on a first install: it is made in Admin › Setup's Sign-in client step,
+   which stage 13 waits for.
+   - The groups (item 3) are created with stage 0's sign-in, under the
+     organisation's customer id that Cloud Resource Manager names.
+   - The Groups Reader role (item 4) cannot be assigned without those
+     scopes. After you type `ASSIGN`, the installer opens
+     `https://admin.google.com/ac/roles` and says so. Assign the role there;
+     the installer carries on once swarm-api reads the group.
+   - Only a later run, once the Desktop client exists, opens Google's consent
+     page for that client instead.
 
 3. **The groups.** The installer asks:
 
@@ -570,9 +572,17 @@ It checks again that the console answers behind IAP. Then it opens
 `https://<hostname>/admin/setup` and prints:
 
 ```
-Finish setup in the console's Admin › Setup (opening it now). Keep this terminal open: it turns the GitHub App on and runs verify when the console is done.
+Finish setup in the console's Admin › Setup (opening it now), then press its "Hand over to swarm install" button: that is what this terminal waits for, for up to 6 hours. Keep this terminal open: it turns the GitHub App on and runs verify once you hand over. Past 6 hours it pauses; run swarm install again to resume.
   https://<hostname>/admin/setup
 ```
+
+The first thing it waits for is the console's **Sign-in client** step: the
+OAuth brand and the Desktop client, which Google lets only a person make
+(`edge.brand` and `edge.desktop-client`, each bound 6 hours). Once the console
+has saved the client, the installer reads the secret's latest version with
+your own credentials into this machine's `swarm` credential store, so verify
+never asks for it, and applies the infrastructure pass that adds the client to
+IAP's programmatic clients. Nothing is typed in the terminal.
 
 The terminal then waits:
 
@@ -600,29 +610,50 @@ switches are on.
 ## Step 3: Admin › Setup in the console
 
 Sign in with your Workspace or Cloud Identity account. The page is titled
-**Setup**. A strip across the top shows six steps and which one is next, for
-example `Step 2 of 6 · next`. The strip does not count Add-ons, which are
-optional, so the checklist below has seven rows. The page reads its state again every 5 seconds.
-Nothing on it is marked done by hand: each row is done when the page sees it
-done.
+**Setup**. Across the top, one line says what `swarm install` is doing now
+and how many of the checklist's lines are done, for example `2 of 8 done`.
+The checklist has **eight lines**, plus an **optional ninth**, Add a plugin,
+which is never needed and never counted. The page reads its state again
+every 5 seconds. Nothing on it is marked done by hand: each line is done when
+the page sees it done.
 
-The left column holds:
-
-- the **Send to your team** card, locked until verify passes;
-- the **Capacity** card, with stage 0's sizing, including
-  `Accounts to add: <n> Claude subscription accounts`;
-- the **First run** checklist, with the rows below.
-
-The right column holds **The installer** card, which shows what
-`swarm install` is doing, and the **Health** card, which links to
+The left column holds the checklist: one line per step, with its mark, its
+name, who acts now (you, a teammate, Google, GitHub, swarm install or the
+console) and since when. Under **Add-ons: optional, off.** a tooltip says
+they are turned on from the terminal. The right column holds the selected
+step's panel, which follows the next step you can act on unless you pick
+another line, and **This install**: what stage 0 sized it for, the budget,
+the Claude accounts to add, the ceiling, the release, and a link to
 Admin › Setup › Health, the hourly doctor's checks once setup is done.
 
-1. **Project, infrastructure, identity, edge and secrets**, by
-   `swarm install`. This row is already done when the page opens:
-   `swarm install did the cloud part: stages 0-8, 10 and 13, ...`.
-   Nothing to click.
+1. **Cloud**, by `swarm install`: project, infrastructure, identity, edge
+   and secrets. This line is already done when the page opens, for example
+   `11 of 11 stages, by swarm install`. Nothing to click.
 
-2. **GitHub App.**
+2. **Sign-in client**: the OAuth brand and the Desktop client `sc` signs in
+   with. Google has no API for either, so you make them, and stage 13 waits
+   for this step (up to 6 hours). The panel links three Google pages, in
+   order:
+   - **Branding**
+     (`https://console.cloud.google.com/auth/branding?project=<project>`):
+     set the App name to `SwarmCloud` and the support email to your own
+     address, then save. The brand can never be deleted.
+   - **Audience**
+     (`https://console.cloud.google.com/auth/audience?project=<project>`):
+     choose **Internal**.
+   - **Create client**
+     (`https://console.cloud.google.com/auth/clients/create?project=<project>`):
+     the Application type **Desktop app**, named `SwarmCloud sc`. Keep the dialog that shows the new client open.
+
+   Then type the client's id and its secret into the panel's **Client id**
+   and **Client secret** fields and press **Save**. Google shows the secret
+   only in that dialog. It is stored in Secret Manager as a new version of
+   `swarm-iap-desktop-client-secret`, and is never shown again. The line is
+   in progress until `swarm install` has added the client to IAP's
+   programmatic clients, then done. **Replace the client** saves a new id
+   and a new secret version later.
+
+3. **GitHub App.**
    1. Press **Create the GitHub App**. GitHub opens on your organisation, with
       the App's permissions filled in from a manifest. Create the App there.
    2. GitHub sends you back to the console's **GitHub App created** page. Its
@@ -642,7 +673,7 @@ Admin › Setup › Health, the hourly doctor's checks once setup is done.
    The row ends `<app> · installed on <org> · self-check passed`. If the
    check fails, the row says what to fix and offers **Retry**.
 
-3. **First team**, for a team deployment.
+4. **First team**, for a team deployment.
    - **Workspace group** is filled in with `swarm-team@<domain>`, the group
      stage 8 created with you as its owner. Its members are the team.
    - **Workspace name** and **First workspace admin** are optional.
@@ -654,18 +685,13 @@ Admin › Setup › Health, the hourly doctor's checks once setup is done.
    - To invite people, use **Invite**. The console opens the group's members
      page in Google Admin, where you add them. Each one shows as
      `waiting for <email> to join` until the Groups API sees them.
-   - When the App's self-check has passed, swarm-api runs a small **smoke
-     agent** on the first granted repository. It runs as swarm-api's own
-     service account, with the App installation's token, and opens no pull
-     request. If it fails, the row offers **Retry the smoke**.
 
-   The row is done when the team exists and its smoke has succeeded.
+   The line is done when the team's workspace is ready.
 
-   **First workspace**, for a one-person deployment. There is no form and no
-   invites: `One-person install: your personal workspace is ready.` The
-   workspace's grant and its smoke agent show on this row instead.
+   **Your workspace**, for a one-person deployment. There is no form and no
+   invites: `One-person install: your personal workspace is ready.`
 
-4. **Claude accounts.** In a team deployment this row comes after the first
+5. **Claude accounts.** In a team deployment this row comes after the first
    team, because each pool account's owner must be in the team's group. Each
    subscription's owner signs in once, into the first workspace's pool.
    - Give an **Account label**, for example `ravi`, and **Its owner**. For one
@@ -680,11 +706,14 @@ Admin › Setup › Health, the hourly doctor's checks once setup is done.
    The row counts `Pool: <signed in> of <n> signed in`. The **Capacity** card
    shows how many accounts stage 0 proposed.
 
-5. **Add-ons**, optional. Each add-on is off by default, and SwarmCloud runs
-   without them. To turn one on, use `swarm addon enable <name>` in the
-   terminal ([add-ons](#add-ons)).
+6. **Smoke agent.** When the App's self-check has passed and a Claude
+   account is signed in, swarm-api runs a small smoke agent on the first
+   granted repository. It runs as swarm-api's own service account, with the
+   App installation's token, and opens no pull request. If it fails, the
+   line offers **Retry**. The hand-over is offered only once the smoke has
+   succeeded.
 
-6. **Verify, run by swarm install.** Once every console step above is done,
+7. **Verify, run by swarm install.** Once every console step above is done,
    the row says `Every console step is done: hand over, and swarm install
    checks ...`. Press **Hand over to swarm install**. There is no separate
    button to start the checks:
@@ -708,7 +737,7 @@ Admin › Setup › Health, the hourly doctor's checks once setup is done.
       printed and run `swarm install` again: it re-runs verify from the
       failed check.
 
-7. **Send to your team.** This row unlocks when verify passes. Until then it
+8. **Send to your team.** This row unlocks when verify passes. Until then it
    says:
    `Send to your team is unlocked when verify passes: the line below works only on a deployment verify has proven.`
    Once unlocked, it gives one line for a teammate's terminal, with a **Copy**
@@ -724,7 +753,29 @@ Admin › Setup › Health, the hourly doctor's checks once setup is done.
    next promotion and would hand a teammate a plugin newer than the
    deployment it talks to.
    The row also shows the console's URL and
-   `Then: sc login, then /sc:submit in Claude Code`.
+   `Then: each teammate runs sc login, then /sc run --issue owner/repo#N`.
+   `/sc run --issue` plans a GitHub issue and runs it to a pull request; a
+   teammate can equally ask Claude Code for the work in plain words, which
+   the plugin's `delegate` skill dispatches.
+
+   **`sc` must be on the teammate's `PATH` for `sc login`.** The plugin line
+   above installs the plugin only; its server runs the bridge through
+   `uv tool run` from the release's wheel and puts nothing on `PATH`, and a
+   SwarmCloud tool called before sign-in answers
+   `sign-in required for <context>: run sc login ...` all the same. On a
+   machine where `sc login` answers `sc: command not found`, install the
+   command line from the deployment's release first
+   ([step 1](#step-1-install-the-command-line)):
+   `curl -fsSL https://storage.googleapis.com/swarmcloud/install.sh | SWARMCLOUD_VERSION=<version> sh`,
+   or for a release candidate
+   `curl -fsSL https://storage.googleapis.com/swarmcloud/channels/rc.install.sh | SWARMCLOUD_VERSION=<version> SWARM_CHANNEL=rc sh`.
+
+9. **Add a plugin**, optional and last. It is drawn only when this
+   deployment's swarm-api serves the step. It is never needed: the count
+   stays at 8, the panel says `Step 9 · optional`, and the panel never moves
+   there by itself. Add-ons are not a line: each is off by default, and
+   SwarmCloud runs without them. To turn one on, use
+   `swarm addon enable <name>` in the terminal ([add-ons](#add-ons)).
 
 ### Stage 14: verify
 
@@ -751,7 +802,7 @@ shows on the console's verify row.
    installation token or your own GitHub App connection. A personal access
    token is refused. A failed run is started again, up to twice.
 
-The plugin's runs sign in through the context that stage 2 stored, so verify
+The plugin's runs sign in through the context that stage 13 stored, so verify
 never asks for the Desktop client secret. If that context is not signed in
 yet, it opens the browser once for you to sign in
 (`swarm --context <context> login`).
@@ -792,13 +843,13 @@ the console watches for the result.
 
 | Where | When | Why it is a page |
 |---|---|---|
-| Google sign-in | stage 0, and stage 8 if the Directory scopes were deferred | your own sign-in |
+| Google sign-in | stage 0 (stage 8 asks for none on a first install: the Desktop client is made only in Admin › Setup's Sign-in client step, which stage 13 waits for) | your own sign-in |
 | The deployment's own sign-in (`swarm --context <context> login`) | stage 14, only if that context is not signed in yet | your own sign-in |
 | GitHub: connect your own GitHub account through the App (`swarm sc setup`) | stage 14, only if your account is not connected yet | GitHub authorizes a person's connection only in the browser |
 | Cloud Identity Free sign-up, and creating a billing account | stage 0, only without an organisation or a billing account | sign-ups and payment methods have no API |
 | The Quotas page, or the billing page on a Free Trial | stage 0 or 1, only when a quota is too low | quota increases and account upgrades are requested by a person |
 | The Cloud console, to accept the Terms of Service | stage 1, only if Google asks | the Terms are accepted by a person |
-| The OAuth brand, its Audience, and the Desktop client | stage 2 | Google has no API for an Internal brand or a Desktop client, and shows the secret only on that page |
+| The OAuth brand, its Audience, and the Desktop client | Admin › Setup, Sign-in client (stage 13 waits for it) | Google has no API for an Internal brand or a Desktop client, and shows the secret only on that page |
 | Your DNS provider | stage 2, when the zone is not in the project's Cloud DNS (or you typed `manual`) | your registrar is outside Google Cloud |
 | Google Admin: groups, admin roles or domain-wide delegation | stage 8, only if Google refuses the API call or you choose to | a Workspace admin's own action |
 | GitHub: create and install the App | Admin › Setup | GitHub creates an App from a manifest only in the browser, and the installation is your choice of repositories |
@@ -924,13 +975,20 @@ swarm uninstall --project <project>
 The command lists what it will delete and asks you to type the project id. It
 then deletes, in order:
 
-1. the Scheduler jobs, after draining them;
-2. the workspace namespaces and the cluster policies;
-3. the infrastructure;
-4. the copied images;
-5. the install's secrets and IAM bindings;
-6. the bootstrap pass, which destroys the KMS key versions;
-7. the state buckets.
+1. the Scheduler jobs, paused after draining their running executions (up
+   to 30 minutes);
+2. the workspace namespaces, then the cluster policies;
+3. the infrastructure: deletion protection is lifted, the buckets are
+   emptied, then Terraform destroys only the labelled resources;
+4. the images in the project's registry;
+5. the secrets the installer and swarm-api created, the teams' forge tokens
+   included;
+6. the IAM bindings the installer made and the workspace worker accounts,
+   then your impersonation grant on the deployer;
+7. the Firestore database and the bootstrap pass, which destroys the KMS key
+   versions;
+8. the budget; then it writes and prints what remains, deletes the state
+   buckets, and offers to delete the project if the install created it.
 
 Some things Google keeps, or does not let anyone delete:
 
@@ -944,3 +1002,51 @@ Some things Google keeps, or does not let anyone delete:
 The uninstall writes this list to
 `~/.config/swarmcloud/install/<project>.remains.json`, so that you can remove
 these things by hand.
+
+#### See what the project still holds
+
+The remains record above is what the uninstall *expected* to leave. To see
+what the project actually holds, ask the product:
+
+```bash
+swarm doctor --project <project> --remains          # in words
+swarm doctor --project <project> --remains --json   # one JSON document
+```
+
+It reads the project and changes nothing: list calls only (HTTP GET), no
+create, enable, patch, delete or IAM change, and no `kubectl`
+(`swarm_install/inventory.py`). It needs the install state, which the
+uninstall keeps on your machine, for the region and the never-touch list.
+
+- It prints each resource it finds by kind and name: enabled APIs, clusters,
+  networks, subnets, firewall rules, addresses, buckets, service accounts made
+  in the project, custom roles, secrets, Cloud Run services and jobs,
+  Scheduler jobs, Pub/Sub topics and subscriptions, Artifact Registry
+  repositories, Firestore databases and backups, KMS key rings, Cloud DNS
+  zones, logging buckets you made, log metrics, alert policies, notification
+  channels and the OAuth brand. The kinds the uninstall leaves on purpose are
+  marked `expected`.
+- When every kind was read and none holds anything, it prints
+  `Nothing remains in <project>.` and exits 0.
+- A kind it could not read (a refused or failed list call) is printed as
+  `not read`, with the reason, and it exits 3. It then never says that nothing
+  remains: a listing that missed a kind is not offered as the whole one. A
+  kind whose API is off is `not read`, because turning an API off deletes
+  nothing (key rings, Firestore databases, secrets, topics and the rest
+  survive it). Only clusters count as empty, as `preflight.neighbours` argues.
+- A resource on the install's never-touch list is never named, only counted.
+- A project pending deletion is said plainly, and nothing in it is listed.
+
+Kinds outside that list are not read: a project you kept still carries its
+billing link and Google's own service agents, which the listing does not
+show.
+
+#### The engine stays in its own project
+
+Every Terraform plan the engine makes (each install pass, the uninstall's
+destroy and its deletion-protection pass, the upgrade's plan review) is
+checked before anything is applied with the same rule the operator scripts'
+plan guard runs, `scripts/lib/wrong-project.jq`: a plan that names a project
+other than the one the install state records is refused, naming each resource
+and the project it names, and nothing is applied. If the rule cannot run (no
+jq, or jq fails), the plan is refused too.

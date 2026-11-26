@@ -1,3 +1,4 @@
+# source-text: contract - dispatch.py's GKE_METADATA_SERVER_IP and lightpanda.py's CDP_PORT must agree with the worker templates, the egress policy and the runner test; docs/issue-runs.md's cited tests must still be defined
 """Code-only consistency checks and doc-citation link checks left after slice 1
 of issue #71 dropped the doc-prose assertions (wave 14, lane C4I).
 """

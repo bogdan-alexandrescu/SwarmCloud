@@ -1,3 +1,4 @@
+# source-text: fixture - compares the bytes of the index the test built before and after a path is dirtied
 """swarm-graph's tools, transport, freshness and paging on a small extracted repository
 (docs/design/knowledge-graph.md §4.2, §5.2, §7.6, §7.7; lane KG4).
 

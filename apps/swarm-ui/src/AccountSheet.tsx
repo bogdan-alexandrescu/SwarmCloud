@@ -48,6 +48,7 @@ import {
 } from './api'
 import { usePhoneTables } from './capacityPoll'
 import { Button } from './components'
+import { InfoTip, SaidLine, type Said } from './InfoTip'
 import { clearsOf, whyOf, WindowCell, ageOf } from './AccountsTable'
 import {
   AGED_AFTER_MIN,
@@ -92,7 +93,13 @@ export function SheetVerdict({
   return (
     <div className="acct-sv">
       <p className="acct-sv-chip">
-        <span className={`acct-chip ${tone}`}>{line ?? 'The broker does not say whether it can take a new agent'}</span>
+        <span className={`acct-chip ${tone}`}>{line ?? 'Not said whether it takes agents'}</span>
+        {line === null && (
+          <>
+            {' '}
+            <InfoTip about="whether it takes agents" tip="The broker does not say whether it can take a new agent" />
+          </>
+        )}
       </p>
       <p className="acct-sv-why">
         <span className="acct-sv-k">What blocks it:</span> {whyOf(a, scope, now, names)}
@@ -197,15 +204,26 @@ export function AgentCap({ a, owned, reload }: { a: PoolAccount; owned: boolean;
       <p className="acct-ss-note">
         {served === null ? (
           <>
-            At most <span className="acct-dash" title="This broker does not serve max_agents">&mdash;</span> agents at once:
-            this broker does not say, and the deployed default is {DEFAULT_MAX_AGENTS}.
+            <span>
+              At most <span className="acct-dash" title="This broker does not serve max_agents">&mdash;</span> agents at once &middot;
+              this broker does not say
+            </span>{' '}
+            <InfoTip
+              about="the cap"
+              tip={`At most — agents at once: this broker does not say, and the deployed default is ${DEFAULT_MAX_AGENTS}.`}
+            />
           </>
         ) : (
-          <>
+          <span>
             At most <b>{max}</b> agent{max === 1 ? '' : 's'} at once.
-          </>
+          </span>
         )}
-        {a.observed_at === null && ' Until its first reading it takes one.'}{' '}
+        {a.observed_at === null && (
+          <>
+            {' '}
+            <span>Until its first reading it takes one.</span>
+          </>
+        )}{' '}
         {owned ? (
           !editing && (
             <button
@@ -222,9 +240,14 @@ export function AgentCap({ a, owned, reload }: { a: PoolAccount; owned: boolean;
             </button>
           )
         ) : (
-          <>Its owner sets it.</>
+          <span>Its owner sets it.</span>
         )}
-        {owned && !editing && <> (1 to {MAX_AGENTS_LIMIT}, owner only)</>}
+        {owned && !editing && (
+          <>
+            {' '}
+            <span>(1 to {MAX_AGENTS_LIMIT}, owner only)</span>
+          </>
+        )}
       </p>
       {owned && editing && (
         <form
@@ -267,10 +290,16 @@ export function AgentCap({ a, owned, reload }: { a: PoolAccount; owned: boolean;
             Cancel
           </Button>
           <small id={`acct-cap-hint-${a.account_id}`} className={valid ? 'acct-dash' : 'warn-text'}>
-            {valid
-              ? 'Lowering it moves no agent already on it; the pool applies it at the next hand-out.'
-              : `A whole number from 1 to ${MAX_AGENTS_LIMIT}. To stop it taking agents, pause it.`}
-          </small>
+            {valid ? 'Lowering it moves no agent already on it.' : `A whole number from 1 to ${MAX_AGENTS_LIMIT}.`}
+          </small>{' '}
+          <InfoTip
+            about="the cap's value"
+            tip={
+              valid
+                ? 'Lowering it moves no agent already on it; the pool applies it at the next hand-out.'
+                : `A whole number from 1 to ${MAX_AGENTS_LIMIT}. To stop it taking agents, pause it.`
+            }
+          />
           {error !== null && (
             <p className="warn-text acct-cap-err" role="alert">
               Not saved: {error.message}
@@ -387,19 +416,28 @@ export function SheetDuplicate({
         {proven ? (
           withheld ? (
             <>
-              {x} was signed in to the same organisation as {where}. The pool hands out only {y ?? 'the other registration'}, so{' '}
-              {x} adds no capacity.
+              The pool hands out only {y ?? 'the other registration'}.{' '}
+              <InfoTip
+                about="the duplicate"
+                tip={`${x} was signed in to the same organisation as ${where}. The pool hands out only ${y ?? 'the other registration'}, so ${x} adds no capacity.`}
+              />
             </>
           ) : (
             <>
-              {where === y ? `${y} was` : 'Another workspace’s account was'} signed in to the same organisation later. The
-              pool keeps handing out {x} and withholds the other, which adds no capacity.
+              The pool keeps handing out {x}.{' '}
+              <InfoTip
+                about="the duplicate"
+                tip={`${where === y ? `${y} was` : 'Another workspace’s account was'} signed in to the same organisation later. The pool keeps handing out ${x} and withholds the other, which adds no capacity.`}
+              />
             </>
           )
         ) : (
           <>
-            {x} and {where} read identically on two polls. The pool still hands out both; if they are one subscription,
-            the second adds no capacity.
+            The pool still hands out both.{' '}
+            <InfoTip
+              about="the possible duplicate"
+              tip={`${x} and ${where} read identically on two polls. The pool still hands out both; if they are one subscription, the second adds no capacity.`}
+            />
           </>
         )}
       </p>
@@ -407,18 +445,24 @@ export function SheetDuplicate({
         {owned ? (
           proven && !withheld ? (
             <>
-              <b>What to do:</b> nothing here. {y !== null ? `Fix it on ${y}` : 'Its owner fixes it in their workspace'}.
+              <b>What to do:</b> <span>Nothing here.</span>{' '}
+              <span>{y !== null ? `Fix it on ${y}` : 'Its owner fixes it in their workspace'}.</span>
             </>
           ) : (
             <>
-              <b>What to do:</b> Replace the credential below, signed in to the organisation you meant from that
-              organisation&rsquo;s browser profile (one claude.ai login can hold two, and the sign-in takes the one that is
-              selected). Or remove {x}.
+              <b>What to do:</b> <span>Replace the credential below, or remove it.</span>{' '}
+              <InfoTip
+                about="what to do"
+                tip={`Replace the credential below, signed in to the organisation you meant from that organisation’s browser profile (one claude.ai login can hold two, and the sign-in takes the one that is selected). Or remove ${x}.`}
+              />
             </>
           )
         ) : (
           <>
-            <b>What to do:</b> {a.owner_tenant} owns {x} and can fix it.
+            <b>What to do:</b>{' '}
+            <span>
+              {a.owner_tenant} owns {x} and can fix it.
+            </span>
           </>
         )}
       </p>
@@ -443,34 +487,51 @@ export function SheetForecast({ a, now }: { a: PoolAccount; now: number }) {
   } else if (passed) {
     say = (
       <>
-        Its week should have reset: <b>reset {utcAt(p.resetsAt, now)} passed</b>, and nothing has been read since. The
-        forecast waits for a fresh reading.
+        Its week should have reset &middot; <b>due {utcAt(p.resetsAt, now)}</b> &middot; nothing has been read since{' '}
+        <InfoTip
+          about="the reset"
+          tip={`Its week should have reset: reset ${utcAt(p.resetsAt, now)} passed, and nothing has been read since. The forecast waits for a fresh reading.`}
+        />
       </>
     )
   } else if (p.underNow) {
     say = (
       <>
-        Its 7-day window is under its {pct(p.floor)} floor now, and its week resets <b>{utcAt(p.resetsAt, now)}</b>.
+        Under its {pct(p.floor)} floor now &middot; resets <b>{utcAt(p.resetsAt, now)}</b>{' '}
+        <InfoTip
+          about="the floor"
+          tip={`Its 7-day window is under its ${pct(p.floor)} floor now, and its week resets ${utcAt(p.resetsAt, now)}.`}
+        />
       </>
     )
   } else if (!p.read) {
     say = (
       <>
-        Its week reset and nothing has been read since, so there is no pace yet. The next reset is{' '}
-        <b>{utcAt(p.resetsAt, now)}</b>.
+        Nothing read since its week reset &middot; next reset <b>{utcAt(p.resetsAt, now)}</b>{' '}
+        <InfoTip
+          about="the pace"
+          tip={`Its week reset and nothing has been read since, so there is no pace yet. The next reset is ${utcAt(p.resetsAt, now)}.`}
+        />
       </>
     )
   } else if (p.floorAt === null) {
     say = (
       <>
-        At this pace it stays above its {pct(p.floor)} floor until its week resets <b>{utcAt(p.resetsAt, now)}</b>.
+        Stays above its {pct(p.floor)} floor &middot; resets <b>{utcAt(p.resetsAt, now)}</b>{' '}
+        <InfoTip
+          about="the forecast"
+          tip={`At this pace it stays above its ${pct(p.floor)} floor until its week resets ${utcAt(p.resetsAt, now)}.`}
+        />
       </>
     )
   } else {
     say = (
       <>
-        At this pace it reaches its {pct(p.floor)} floor near <b>{utcAt(p.floorAt, now)}</b>, and its week resets{' '}
-        <b>{utcAt(p.resetsAt, now)}</b>.
+        Reaches its {pct(p.floor)} floor near <b>{utcAt(p.floorAt, now)}</b> &middot; resets <b>{utcAt(p.resetsAt, now)}</b>{' '}
+        <InfoTip
+          about="the forecast"
+          tip={`At this pace it reaches its ${pct(p.floor)} floor near ${utcAt(p.floorAt, now)}, and its week resets ${utcAt(p.resetsAt, now)}.`}
+        />
       </>
     )
   }
@@ -480,10 +541,17 @@ export function SheetForecast({ a, now }: { a: PoolAccount; now: number }) {
       <p>{say}</p>
       {p !== null && p.read && !passed && (
         <p className="acct-ss-note">
-          Pace: {pct(p.perHour * 24)} of the week a day, its 7-day share used over the hours since its week opened.
+          Pace: {pct(p.perHour * 24)} of the week a day{' '}
+          <InfoTip
+            about="the pace"
+            tip={`Pace: ${pct(p.perHour * 24)} of the week a day, its 7-day share used over the hours since its week opened.`}
+          />
         </p>
       )}
-      <p className="acct-ss-note">Laptop sessions on this subscription spend the same window.</p>
+      <p className="acct-ss-note">
+        Laptop sessions spend the same window.{' '}
+        <InfoTip about="laptop sessions" tip="Laptop sessions on this subscription spend the same window." />
+      </p>
     </section>
   )
 }
@@ -539,8 +607,8 @@ function HealthWord({ status, extra }: { status: AccountHealthStatus | null; ext
   )
 }
 
-/** One sentence of why, from the record (mock-up A's `why`). */
-function healthWhy(h: AccountHealth, bands: LimitedBand[], now: number): string | null {
+/** Why, from the record (mock-up A's `why`): its facts on one line, its sentences behind the (i) (issue 81). */
+function healthWhy(h: AccountHealth, bands: LimitedBand[], now: number): Said | null {
   const c24 = h.counts.last_24h
   const c1 = h.counts.last_1h
   if (h.status === 'limited') {
@@ -548,21 +616,30 @@ function healthWhy(h: AccountHealth, bands: LimitedBand[], now: number): string 
     const band = bands.filter((b) => b.hits > 0).slice(-1)[0]
     const refusals = c24 === null ? null : c24.assign_refused
     const tail = refusals === null ? '' : `: ${plural(refusals, 'refusal')} at assignment in 24 h`
-    if (Number.isNaN(until)) return `The broker withholds it until its window resets${tail}.`
+    const said = refusals === null ? '' : ` · ${plural(refusals, 'refusal')} at assignment in 24 h`
+    if (Number.isNaN(until)) return { line: `Withheld until its window resets${said}`, tip: `The broker withholds it until its window resets${tail}.` }
+    const ofBand = band !== undefined && band.window !== null ? { word: windowWord(band.window), at: utcAt(band.from, now) } : null
     const head =
-      band !== undefined && band.window !== null
-        ? `Its ${windowWord(band.window)} window refused at ${utcAt(band.from, now)} and resets ${utcAt(until, now)} (${inTime(until, now)}).`
+      ofBand !== null
+        ? `Its ${ofBand.word} window refused at ${ofBand.at} and resets ${utcAt(until, now)} (${inTime(until, now)}).`
         : `It is limited until ${utcAt(until, now)} (${inTime(until, now)}).`
-    return `${head} The broker withholds it until then${tail}.`
+    const line =
+      ofBand !== null
+        ? `${ofBand.word} window refused at ${ofBand.at} · resets ${utcAt(until, now)} (${inTime(until, now)})`
+        : `Limited until ${utcAt(until, now)} (${inTime(until, now)})`
+    return { line: `${line}${said}`, tip: `${head} The broker withholds it until then${tail}.` }
   }
   if (h.status === 'erroring' && c1 !== null) {
     const errs = sumOf(c1, 'err')
-    return `${plural(errs, 'provider error')} in the last hour, ${c1.overloaded} of them 529 overloaded. It still takes work.`
+    return {
+      line: `${plural(errs, 'provider error')} in the last hour · ${c1.overloaded} of them 529 overloaded · still takes work`,
+      tip: `${plural(errs, 'provider error')} in the last hour, ${c1.overloaded} of them 529 overloaded. It still takes work.`,
+    }
   }
   if (h.status === 'healthy' && c24 !== null) {
     const n = sumOf(c24)
     if (n === 0) return null
-    return sumOf(c24, 'lim') === 0 ? `${plural(n, 'event')} in 24 h, none of them a limit.` : `${plural(n, 'event')} in 24 h.`
+    return { line: sumOf(c24, 'lim') === 0 ? `${plural(n, 'event')} in 24 h, none of them a limit.` : `${plural(n, 'event')} in 24 h.` }
   }
   return null
 }
@@ -645,7 +722,12 @@ export function HealthCounts({ h }: { h: AccountHealth }) {
           </tr>
         </tbody>
       </table>
-      {hidden.length > 0 && <p className="acct-ss-note">None in 7 days, so not drawn as rows: {hidden.join(', ')}.</p>}
+      {hidden.length > 0 && (
+        <p className="acct-ss-note">
+          None in 7 days: {hidden.join(', ')}.{' '}
+          <InfoTip about="the kinds not drawn" tip={`None in 7 days, so not drawn as rows: ${hidden.join(', ')}.`} />
+        </p>
+      )}
     </>
   )
 }
@@ -856,7 +938,13 @@ function HealthEventItem({ e, now }: { e: AccountHealthEvent; now: number }) {
       ) : (
         !e.own &&
         e.tenant_id === null && (
-          <div className="acct-ss-note">Another workspace&rsquo;s event: its tenant, task and message are not shown, and its time is to the hour.</div>
+          <div className="acct-ss-note">
+            Another workspace&rsquo;s event: details not shown.{' '}
+            <InfoTip
+              about="another workspace’s event"
+              tip="Another workspace’s event: its tenant, task and message are not shown, and its time is to the hour."
+            />
+          </div>
         )
       )}
       {(e.tenant_id !== null || e.task_id !== null) && (
@@ -881,13 +969,19 @@ function HealthEventItem({ e, now }: { e: AccountHealthEvent; now: number }) {
 }
 
 /** What the list holds against the record (mock-up A's `recordNote`). */
-function recordNote(h: AccountHealth): string {
+function recordNote(h: AccountHealth): Said {
   const shown = h.events.length
   const week = sumOf(h.counts.last_7d)
   if (h.counts.last_7d !== null && week > shown) {
-    return `The record keeps the last ${RECORD_KEEPS} events: drawn here are ${shown} of the ${week} in 7 days. The ${week - shown} older ones count in the hourly series and the 7 d column, and their messages are gone.`
+    return {
+      line: `The last ${shown} of ${week} in 7 days`,
+      tip: `The record keeps the last ${RECORD_KEEPS} events: drawn here are ${shown} of the ${week} in 7 days. The ${week - shown} older ones count in the hourly series and the 7 d column, and their messages are gone.`,
+    }
   }
-  return `All ${plural(shown, 'event')} of 7 days, newest first (the record keeps the last ${RECORD_KEEPS}).`
+  return {
+    line: `All ${plural(shown, 'event')} of 7 days, newest first`,
+    tip: `All ${plural(shown, 'event')} of 7 days, newest first (the record keeps the last ${RECORD_KEEPS}).`,
+  }
 }
 
 /** D's incident card: the open one expanded, a closed one folded to its latest message. */
@@ -1029,9 +1123,11 @@ export function SheetHealth({ a, owned }: { a: PoolAccount; owned: boolean }) {
       <section className="acct-ss acct-hs is-not-served" aria-label="Health">
         {head(<HealthWord status={null} />, null)}
         <p>
-          <span className="acct-dash">&mdash;</span> This deployment does not serve the account health record:{' '}
-          <code>{path}</code> answered 404. Its quota broker predates the record (ACCOUNT-429-SCOPE). Rate-limit hits,
-          errors and refusals are <b>unknown</b> here, not zero.
+          <span className="acct-dash">&mdash;</span> Not served here: <b>unknown</b>, not zero.{' '}
+          <InfoTip
+            about="the health record"
+            tip={`This deployment does not serve the account health record: ${path} answered 404. Its quota broker predates the record (ACCOUNT-429-SCOPE). Rate-limit hits, errors and refusals are unknown here, not zero.`}
+          />
         </p>
       </section>
     )
@@ -1045,8 +1141,14 @@ export function SheetHealth({ a, owned }: { a: PoolAccount; owned: boolean }) {
             `role="alert"`, and a read the reader did not just ask for is not
             one of them. */}
         <p className="acct-hs-unread">
-          <span className="acct-dash">&mdash;</span> The health record could not be read: {why}. Its counts and events are{' '}
-          <b>unknown</b> until a read succeeds, not zero.
+          <span>
+            <span className="acct-dash">&mdash;</span> Could not be read: <b>unknown</b>, not zero.
+          </span>{' '}
+          <span>{why}</span>{' '}
+          <InfoTip
+            about="the health record"
+            tip={`The health record could not be read: ${why}. Its counts and events are unknown until a read succeeds, not zero.`}
+          />
         </p>
       </section>
     )
@@ -1056,7 +1158,8 @@ export function SheetHealth({ a, owned }: { a: PoolAccount; owned: boolean }) {
   const bands = limitedBands(h.events, h.limited_until, now)
   const until = h.status === 'limited' && h.limited_until !== null ? h.limited_until : null
   const lastBand = bands.filter((b) => b.window !== null).slice(-1)[0]
-  const extra = until === null ? undefined : `${lastBand ? `${windowWord(lastBand.window)} ` : ''}until ${utcAt(until, now)}`
+  const lastWord = lastBand ? `${windowWord(lastBand.window)} ` : ''
+  const extra = until === null ? undefined : `${lastWord}until ${utcAt(until, now)}`
   const readAt = h.observed_at ?? new Date(res.fetchedAt).toISOString()
   const why = h.status === 'reauth_needed' ? null : healthWhy(h, bands, now)
   const nothing = h.events.length === 0 && h.counts.last_7d !== null && sumOf(h.counts.last_7d) === 0
@@ -1071,32 +1174,55 @@ export function SheetHealth({ a, owned }: { a: PoolAccount; owned: boolean }) {
       {head(<HealthWord status={h.status} extra={extra} />, `read ${utcAt(readAt, now)}`)}
       {res.status === 'stale' && (
         <p className="warn-text">
-          The last read failed ({res.error.message}); this is the record read at {utcAt(res.fetchedAt, now)}.
+          <span>
+            The last read failed &middot; read {utcAt(res.fetchedAt, now)}
+          </span>{' '}
+          <span>{res.error.message}</span>{' '}
+          <InfoTip
+            about="the failed read"
+            tip={`The last read failed (${res.error.message}); this is the record read at ${utcAt(res.fetchedAt, now)}.`}
+          />
         </p>
       )}
       {h.status === 'reauth_needed' && (
         <div className="acct-hs-callout" role="note">
           <b>Needs re-auth</b>
           <p>
-            The provider refused its credential. The broker assigns it nothing until someone signs in again; work that
-            would have used it waits for another account.{' '}
+            <span>Nothing is assigned until someone signs in.</span>{' '}
+            <InfoTip
+              about="re-auth"
+              tip="The provider refused its credential. The broker assigns it nothing until someone signs in again; work that would have used it waits for another account."
+            />{' '}
             {owned ? (
               <>
-                <b>Sign in again</b> is below, with this account&rsquo;s actions.
+                <span>
+                  <b>Sign in again</b> is below.
+                </span>{' '}
+                <InfoTip about="where it is" tip="Sign in again is below, with this account’s actions." />
               </>
             ) : (
-              <>
+              <span>
                 Its owner, <span className="mono">{a.owner_tenant}</span>, signs in again.
-              </>
+              </span>
             )}
           </p>
         </div>
       )}
-      {why !== null && <p>{why}</p>}
+      {why !== null && (
+        <p>
+          <SaidLine said={why} about="its health" />
+        </p>
+      )}
       {nothing ? (
         <>
-          <p className="acct-hs-zero">No events in 7 days: no limits, errors or credential trouble.</p>
-          <p className="acct-ss-note">The record was read and is empty. That is a measured zero, so no chart is drawn.</p>
+          <p className="acct-hs-zero">
+            No events in 7 days.{' '}
+            <InfoTip about="no events" tip="No events in 7 days: no limits, errors or credential trouble." />
+          </p>
+          <p className="acct-ss-note">
+            Read and empty: a measured zero.{' '}
+            <InfoTip about="the empty record" tip="The record was read and is empty. That is a measured zero, so no chart is drawn." />
+          </p>
         </>
       ) : phone ? (
         <>
@@ -1120,7 +1246,9 @@ export function SheetHealth({ a, owned }: { a: PoolAccount; owned: boolean }) {
           <HealthSeries h={h} now={now} width={width} />
           <div className="acct-hs-sub">
             <h5>Events</h5>
-            <span className="acct-ss-note">{recordNote(h)}</span>
+            <span className="acct-ss-note">
+              <SaidLine said={recordNote(h)} about="what the record keeps" />
+            </span>
           </div>
           {h.events.length > 0 && (
             <ul className="acct-hs-evs" aria-label="Events, newest first">

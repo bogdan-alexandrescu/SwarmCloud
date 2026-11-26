@@ -7,9 +7,11 @@ per terminal state per tenant, run one after another, and `previous`, a second
 read of the span before. Two changes, both held here through the real app over
 FakeFirestore, counting queries rather than timing them:
 
-  * the page's first read (`LEDGER_SECTIONS` in Activity.tsx) asks for neither,
-    and reads them in a second request after first paint
-    (`LEDGER_LATE_SECTIONS`), which the fold cache serves from the same scan;
+  * the page's first read (`HEADLINE_SECTIONS` here, `LEDGER_SECTIONS` in the
+    console) asks for neither, and reads them in a second request after first
+    paint (`LATE_SECTIONS`), which the fold cache serves from the same scan;
+    apps/swarm-ui/src/__tests__/contract.routes.test.ts holds the console's
+    two reads to that split and to the sections this API accepts (part of #72);
   * `coverage`'s terminal count is one count() per chunk of seven tenants, not
     one per terminal state per tenant -- the same number, as a reference
     implementation of the old loop shows on the same store.
@@ -21,8 +23,6 @@ coverage or previous span to another.
 from __future__ import annotations
 
 import math
-import re
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -38,7 +38,6 @@ from .conftest import auth_header, seed_tenant
 from .fakes import FakeFirestore, FakeQuery
 from .test_outcomes_route import Clock, _context, at, seed_week, task
 
-REPO = Path(__file__).resolve().parents[3]
 WEEK = {"tz": "UTC", "span": "7d", "compare": "previous"}
 TERMINAL = ("SUCCEEDED", "FAILED", "CANCELLED", "DEAD_LETTERED")
 
@@ -79,14 +78,18 @@ class Counts:
         return self.queries[before:]
 
 
+#: The Outcomes page's two reads: the headline's sections, then the two that
+#: cost reads of their own. The console's `LEDGER_SECTIONS` and
+#: `LEDGER_LATE_SECTIONS` are held to this split by contract.routes.test.ts.
+HEADLINE_SECTIONS = ["buckets", "totals"]
+LATE_SECTIONS = ["coverage", "previous"]
+
+
 def page_sections() -> tuple[list[str], list[str]]:
-    """LEDGER_SECTIONS and LEDGER_LATE_SECTIONS as Activity.tsx states them."""
-    source = (REPO / "apps/swarm-ui/src/Activity.tsx").read_text()
-    first = re.search(r"const LEDGER_SECTIONS = \[(.*?)\] as const", source, flags=re.DOTALL)
-    late = re.search(r"const LEDGER_LATE_SECTIONS = \[(.*?)\] as const", source, flags=re.DOTALL)
-    assert first, "LEDGER_SECTIONS moved; this check would be vacuous"
-    assert late, "the page has no second read for coverage and previous (LEDGER_LATE_SECTIONS)"
-    return re.findall(r"'(\w+)'", first.group(1)), re.findall(r"'(\w+)'", late.group(1))
+    """The headline's sections and the second read's, each one this API accepts."""
+    for name in (*HEADLINE_SECTIONS, *LATE_SECTIONS):
+        assert name in outcomes_module.SECTIONS, name
+    return list(HEADLINE_SECTIONS), list(LATE_SECTIONS)
 
 
 # --------------------------------------------------------------------------

@@ -1,3 +1,4 @@
+# source-text: fixture - reads main.py from the checkout restored out of the archive the test made
 """A SwarmCloud step behaves like a local Claude Code lane (archived issue 226).
 
 Owner decisions of 2026-09-26, after comparing a dispatched workflow with the
@@ -282,9 +283,13 @@ def test_the_prompt_names_staged_inputs_by_absolute_path_when_the_agent_starts_i
     assert "outside the repository" in prompt
 
 
-def test_a_task_with_no_repository_gets_the_prompt_it_got_before(tmp_path, recording_cli):
+def test_a_task_with_no_repository_gets_the_prompt_it_got_before(tmp_path, recording_cli, monkeypatch):
     """The staged file is in its working directory, where "read scan-01.md"
     already finds it; the owner said a task with no repository is unchanged."""
+    # A worker that runs inside a SwarmCloud step inherits `SWARM_CHILDREN`,
+    # which adds the child-task paragraph to every prompt; this test holds the
+    # prompt of a task given none.
+    monkeypatch.delenv("SWARM_CHILDREN", raising=False)
     staged = [{"task_id": "task_up1", "filename": "scan-01.md", "path": "scan-01.md", "bytes": 3}]
     ctx = _ctx(tmp_path, {"prompt": "merge the scans", "staged_inputs": staged}, repo=False)
 

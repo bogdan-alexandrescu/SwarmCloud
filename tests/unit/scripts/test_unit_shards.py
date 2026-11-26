@@ -1,3 +1,4 @@
+# source-text: contract - the unit shard plan must cover every test file pytest collects under tests/unit, sized by unit_shards.py's SHARD_TARGET_SECONDS and MAX_SHARDS
 """The unit suite and the vitest suite run in shards, under the check names they had.
 
 OWNER REQUEST, 2026-10-07. With strict up-to-date merging, one pull request
@@ -397,7 +398,7 @@ def test_weights_covering_most_files_print_no_warning(tmp_path):
                   "tests/unit/scripts/test_docs_spec_amendments.py",
                   "tests/unit/scripts/test_ci_gate.py"],
          ["tests/unit/scheduler/test_gke_browser_pod_dns.py"]),
-        ("swarm-ui", ["tests/unit/control_plane/test_runtimes_screen.py",
+        ("swarm-ui", ["tests/unit/control_plane/test_blocker_ui_surface.py",
                       "tests/unit/scripts/test_issue_forms.py",
                       "tests/unit/scripts/test_ui_node_line.py"],
          ["tests/unit/scheduler/test_gke_browser_pod_dns.py",

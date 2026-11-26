@@ -127,6 +127,8 @@ const InterviewRoute = lazy(() => import('./InterviewPage').then((m) => ({ defau
 const IssueSubmitScreen = lazy(() => import('./IssueSubmit').then((m) => ({ default: m.IssueSubmitScreen })))
 const RunsScreen = lazy(() => import('./Runs').then((m) => ({ default: m.RunsScreen })))
 const ApprovalsScreen = lazy(() => import('./Approvals').then((m) => ({ default: m.ApprovalsScreen })))
+const PipelineScreen = lazy(() => import('./Pipeline').then((m) => ({ default: m.PipelineScreen })))
+const AutomateSettingsScreen = lazy(() => import('./AutomateSettings').then((m) => ({ default: m.AutomateSettingsScreen })))
 const RepositoriesScreen = lazy(() => import('./Repositories').then((m) => ({ default: m.RepositoriesScreen })))
 const VoicePreferencesScreen = lazy(() => import('./voice/Section').then((m) => ({ default: m.VoicePreferencesScreen })))
 const VoiceProjectsScreen = lazy(() => import('./voice/Section').then((m) => ({ default: m.VoiceProjectsScreen })))
@@ -441,7 +443,13 @@ export const SECTIONS: SectionDef[] = [
     question: 'What runs here by itself, on a schedule, and what is waiting on me to approve?',
     tabs: [
       { id: 'schedules', label: 'Schedules' },
+      // plans-pipeline §2.1: the board of what automatic runs propose, from
+      // found to merged, between Schedules and Approvals.
+      { id: 'pipeline', label: 'Pipeline' },
       { id: 'approvals', label: 'Approvals' },
+      // plans-pipeline §6.4 (the owner's PD4 pick, B): the workspace's
+      // plan-review settings and the schedules that plan, after Approvals.
+      { id: 'settings', label: 'Settings' },
     ],
   },
   {
@@ -1420,12 +1428,17 @@ function keptKeys(sectionId: string, tab: string): readonly string[] {
   // One schedule rides on the list's address (`/automate/schedules/<id>`,
   // paths.ts), with its tab and its editor (AUT-11).
   // `scope=all` is the admin's All tenants view (SCHED-ONE-PAGE), linkable.
+  // `proposes` narrows the list to the sources that propose (`?proposes=1`).
   // `type` is New schedule's preselected type (a starter card's Use opens
   // `/automate/schedules/new?type=<name>`); without it the form opens bare.
-  if (sectionId === AUTOMATE && tab === 'schedules') return ['schedule', 'tab', 'edit', 'scope', 'type']
+  if (sectionId === AUTOMATE && tab === 'schedules') return ['schedule', 'tab', 'edit', 'scope', 'type', 'proposes']
   // One inbox item rides on the page's address (`/automate/approvals/<id>`, paths.ts),
   // and the inbox's kind filter beside it (AUT-15).
-  if (sectionId === AUTOMATE && tab === 'approvals') return ['approval', 'kind']
+  // And the Pipeline board it was opened from, with the board's filters
+  // (`from=pipeline&source=&state=&waits=`, plans-pipeline §2.1).
+  if (sectionId === AUTOMATE && tab === 'approvals') return ['approval', 'kind', 'from', 'source', 'state', 'waits']
+  // The Pipeline board's filters ride on its address (plans-pipeline §2.1).
+  if (sectionId === AUTOMATE && tab === 'pipeline') return ['source', 'state', 'waits']
   // GitHub access' Choose repositories tab (GA-MOVE-VIEWS): the page reads
   // `view` off the bar. People and roles' Members' GitHub was the other; it is
   // a fold of the workspace page's People tab now.
@@ -2736,8 +2749,12 @@ function SectionBody({
 
     case 'automate/schedules':
       return <SchedulesScreen view={view} go={go} />
+    case 'automate/pipeline':
+      return <PipelineScreen view={view} go={go} />
     case 'automate/approvals':
       return <ApprovalsScreen view={view} go={go} />
+    case 'automate/settings':
+      return <AutomateSettingsScreen />
 
     case 'capacity/pools':
       return <CapacityScreen />

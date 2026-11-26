@@ -1,10 +1,9 @@
 """The Voice it card catalogue (docs/design/voice-it.md §4, §10 phase 2).
 
 One schema in swarm-api (swarm_api/voice/cards.py) validates every card
-write, is served to the planner as strict tool schemas, and is held here to
-the console's list in apps/swarm-ui/src/voice/cards.ts, the way
-test_issue_forms.py holds the forms to SECTIONS: red until both sides name the
-same kinds, fields, states and actions. An unknown kind, or a state its kind
+write and is served to the planner as strict tool schemas. The console's own
+list is held to it by `contract.constants.test.ts`, through the generated
+constants (part of #72). An unknown kind, or a state its kind
 does not use, is refused on write and nothing is stored. A credential card has
 no field that can hold a value, and no card carries a credential-shaped string.
 Firestore is the in-memory fake; no network.
@@ -16,7 +15,6 @@ import json
 import re
 import secrets
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -29,9 +27,6 @@ from swarm_api.voice import store as vstore
 
 from .conftest import auth_header
 from .test_voice_sessions import FakeVoice, _client, _start
-
-ROOT = Path(__file__).resolve().parents[3]
-CARDS_TS = ROOT / "apps" / "swarm-ui" / "src" / "voice" / "cards.ts"
 
 #: §4's table, in its order: the kinds the brief names with §3.13.6's new
 #: wireframe, code, diff, document and test results after the mock-up; then
@@ -55,97 +50,6 @@ DESIGN_CONTENTS = {
 #: §3.13.6: every kind also takes these; Send posts the waiting comments now
 #: (question 19), and Open full size is the console's alone.
 DESIGN_COMMON_ACTIONS = ("open_full_size", "comment", "send_comments", "ask_about", "dismiss")
-
-
-# ---- reading the console's list ---------------------------------------------
-
-
-def _ts() -> str:
-    return CARDS_TS.read_text(encoding="utf-8")
-
-
-def _strings(block: str) -> list[str]:
-    return re.findall(r"'([^'\\]*)'", block)
-
-
-def _const_list(text: str, name: str) -> list[str]:
-    found = re.search(rf"export const {name}\b[^=]*=\s*\[(.*?)\]", text, re.S)
-    assert found, f"apps/swarm-ui/src/voice/cards.ts has no `export const {name} = [...]`"
-    return _strings(found.group(1))
-
-
-def _ts_kinds(text: str) -> dict[str, dict[str, Any]]:
-    found = re.search(r"export const CARD_KINDS\b[^=]*=\s*\[(.*)\n\]", text, re.S)
-    assert found, "apps/swarm-ui/src/voice/cards.ts has no `export const CARD_KINDS = [...]`"
-    kinds: dict[str, dict[str, Any]] = {}
-    for entry in re.findall(r"\{(.*?)\n  \}", found.group(1), re.S):
-        def one(key: str) -> str:
-            hit = re.search(rf"\b{key}:\s*'([^']*)'", entry)
-            assert hit, f"a CARD_KINDS entry has no {key}: {entry!r}"
-            return hit.group(1)
-
-        def many(key: str) -> list[str]:
-            hit = re.search(rf"\b{key}:\s*\[(.*?)\]", entry, re.S)
-            assert hit, f"a CARD_KINDS entry has no {key}: {entry!r}"
-            return _strings(hit.group(1))
-
-        kind = one("kind")
-        assert kind not in kinds, f"cards.ts lists {kind!r} twice"
-        kinds[kind] = {"label": one("label"), "content": one("content"),
-                       "fields": many("fields"), "states": many("states"),
-                       "actions": many("actions")}
-    return kinds
-
-
-def _ts_contents(text: str) -> list[tuple[str, str]]:
-    found = re.search(r"export const CARD_CONTENTS\b[^=]*=\s*\[(.*?)\n\]", text, re.S)
-    assert found, "apps/swarm-ui/src/voice/cards.ts has no `export const CARD_CONTENTS = [...]`"
-    return re.findall(r"\{\s*content:\s*'([^']*)',\s*renderer:\s*'([^']*)'\s*\}",
-                      found.group(1))
-
-
-def test_the_console_names_the_same_kinds_as_the_schema():
-    assert list(_ts_kinds(_ts())) == [k.kind for k in vcards.KINDS], (
-        "apps/swarm-ui/src/voice/cards.ts's CARD_KINDS and swarm_api/voice/cards.py's KINDS "
-        "name different kinds; change both sides together")
-
-
-def test_the_console_names_the_same_fields_states_and_actions():
-    ts = _ts_kinds(_ts())
-    for kind in vcards.KINDS:
-        assert ts[kind.kind] == {
-            "label": kind.label,
-            "content": kind.content,
-            "fields": [f.name for f in kind.fields],
-            "states": list(kind.states),
-            "actions": list(kind.actions),
-        }, kind.kind
-
-
-def test_the_console_names_the_common_fields_states_creators_and_references():
-    text = _ts()
-    assert _const_list(text, "CARD_FIELDS") == [f.name for f in vcards.ENVELOPE]
-    assert _const_list(text, "CARD_STATES") == list(vcards.STATES)
-    assert _const_list(text, "CARD_CREATORS") == list(vcards.CREATORS)
-    assert _const_list(text, "CARD_REFERENCES") == list(vcards.REFERENCES)
-
-
-def test_the_console_names_the_same_contents_renderers_and_common_actions():
-    text = _ts()
-    assert _ts_contents(text) == [(c.content, c.renderer) for c in vcards.CONTENTS], (
-        "apps/swarm-ui/src/voice/cards.ts's CARD_CONTENTS and swarm_api/voice/cards.py's "
-        "CONTENTS name different contents or renderers; change both sides together")
-    assert _const_list(text, "COMMON_ACTIONS") == list(vcards.COMMON_ACTIONS)
-
-
-def test_the_parser_reads_a_drifted_list_as_drifted():
-    # Guards the guard: a kind dropped from the console must not parse as equal.
-    text = _ts().replace("kind: 'rescue'", "kind: 'rescued'")
-    assert list(_ts_kinds(text)) != [k.kind for k in vcards.KINDS]
-    # And a content renamed on one side only.
-    text = _ts().replace("content: 'tests', renderer: 'tests'",
-                         "content: 'tests', renderer: 'table'")
-    assert _ts_contents(text) != [(c.content, c.renderer) for c in vcards.CONTENTS]
 
 
 # ---- the catalogue ----------------------------------------------------------

@@ -1,3 +1,4 @@
+# source-text: contract - the stop control and ArtifactViewer.tsx must offer cancel on the states the API accepts and render artifact content without HTML injection
 """The two console surfaces added for B28 and B29, held to what the API does.
 
 Read as TEXT, like `test_blocker_ui_surface.py` and `test_runtimes_screen.py`
@@ -10,12 +11,16 @@ preference:
 
   1. THE STOP CONTROL IS ACTUALLY WIRED. `POST /v1/tasks/{id}/cancel` worked
      for weeks with no caller. A component that exists and is rendered by
-     nothing is the same hole with a nicer filename.
-  2. THE STATES IT OFFERS ON MATCH THE STATES THE API ACCEPTS. `request_cancel`
-     409s the four terminal states; a button drawn on one is a button that
-     errors. This is a restatement of a server rule in TypeScript, which this
-     repository's own docs call out as the shape that drifts -- so it is
-     compared against the Python here rather than trusted.
+     nothing is the same hole with a nicer filename. That each cancel route
+     has one client function, called from one confirming file, is held by
+     the source-text rules `one-client-function-per-cancel-route`,
+     `cancel-task-only-from-stop-run` and `cancel-workflow-only-from-workflows`
+     (scripts/source_text_rules/control_plane_nz.py).
+  2. A STOP ALREADY REQUESTED IS NOT OFFERED AGAIN. That the control is offered
+     on exactly the states the API accepts is `contract.constants.test.ts`'s,
+     against the constants generated from the frozen states (part of #72); that
+     the API refuses those states and no other is
+     test_cancel_request_is_not_a_cancel.py's.
   3. THE VIEWER NEVER BUILDS A LOCATION. The content route's whole security
      argument is that a caller names an artifact and the server resolves it. A
      client that assembled a key or a `gs://` uri into a request would be
@@ -33,8 +38,6 @@ import re
 from pathlib import Path
 
 import pytest
-
-from swarm_common.states import TERMINAL_STATES
 
 ROOT = Path(__file__).resolve().parents[3]
 UI = ROOT / "apps/swarm-ui/src"
@@ -79,95 +82,9 @@ def test_the_stop_control_is_rendered_by_the_screens_that_need_it(screen) -> Non
     assert "<StopRun" in text, f"{screen} imports StopRun and never renders it."
 
 
-def test_only_the_stop_control_calls_the_cancel_route() -> None:
-    """One caller, so the confirmation cannot be bypassed by a second one.
-
-    `cancelTask` is the only function that posts to the route, and `StopRun` is
-    the only file that calls `cancelTask`. A second call site would be a stop
-    with no confirmation behind it.
-    """
-    # `write()` takes the value `route()` builds, never a bare string (CH-18,
-    # swarm-ui fetch.ts), so the target is `route('/v1/tasks/{id}/cancel', …)`;
-    # a bare template literal is still accepted in case one comes back.
-    #
-    # THE WORKFLOW'S CANCEL ROUTE IS A SECOND ROUTE, NOT A SECOND CALLER OF THIS
-    # ONE (Workflows V2, rebrand 2026-10-01): `POST /v1/workflows/{id}/cancel`
-    # has its own client function and its own confirmation (`CancelWorkflow`).
-    # The property is per route -- each cancel route has exactly one client
-    # function, called from exactly one confirming place -- so each is counted
-    # on its own, and a THIRD /cancel write still fails the total.
-    writes = re.findall(r"write\(\s*(?:route\(\s*)?['\"`][^'\"`]*?/cancel['\"`]", code("api.ts"))
-    task_writes = [w for w in writes if "/v1/tasks/" in w]
-    workflow_writes = [w for w in writes if "/v1/workflows/" in w]
-    assert len(task_writes) == 1, (
-        f"{len(task_writes)} write() calls in api.ts target the task /cancel path; the "
-        "cancel route should have exactly one client function."
-    )
-    assert len(workflow_writes) == 1, (
-        f"{len(workflow_writes)} write() calls in api.ts target the workflow /cancel path; "
-        "it should have exactly one client function."
-    )
-    assert len(writes) == 2, f"a /cancel route this test does not name is written to: {writes}"
-    wf_callers = [
-        path.name
-        for path in sorted(UI.glob("*.tsx"))
-        if "cancelWorkflow" in code(path.name) and path.name != "api.ts"
-    ]
-    assert wf_callers == ["Workflows.tsx"], (
-        f"cancelWorkflow is used from {wf_callers}; it must be used only from "
-        "Workflows.tsx, which owns the confirmation."
-    )
-    callers = [
-        path.name
-        for path in sorted(UI.glob("*.tsx"))
-        if "cancelTask(" in code(path.name)
-    ]
-    assert callers == ["StopRun.tsx"], (
-        f"cancelTask() is called from {callers}; it must be called only from "
-        "StopRun.tsx, which owns the confirmation."
-    )
-
-
 # --------------------------------------------------------------------------
-# 2. The states it offers on are the states the API accepts
+# 2. It is offered once
 # --------------------------------------------------------------------------
-
-def test_the_control_is_offered_on_exactly_the_states_cancel_accepts() -> None:
-    """`canBeStopped` versus `Store.request_cancel`'s refusal set.
-
-    The API raises `Conflict` for SUCCEEDED, FAILED, CANCELLED and
-    DEAD_LETTERED and accepts everything else. `canBeStopped` says the same
-    thing by excluding `TERMINAL_STATES`, so the check is that the set the
-    client excludes IS the frozen terminal set -- not a hand-written list
-    beside it that happens to agree today.
-    """
-    types_ts = src("types.ts")
-    match = re.search(
-        r"export function canBeStopped\([^)]*\)[^{]*\{(.*?)\n\}",
-        types_ts,
-        re.DOTALL,
-    )
-    assert match is not None, "canBeStopped is not in types.ts; this check is vacuous"
-    body = match.group(1)
-    assert "TERMINAL_STATES.has" in body, (
-        "canBeStopped does not go through TERMINAL_STATES. A second list of "
-        "terminal states in this file is the restatement that drifts."
-    )
-
-    declared = re.search(
-        r"export const TERMINAL_STATES:[^=]*=\s*new Set<TaskState>\(\[(.*?)\]\)",
-        types_ts,
-        re.DOTALL,
-    )
-    assert declared is not None, "TERMINAL_STATES is not declared in types.ts"
-    client_states = set(re.findall(r"'([A-Z_]+)'", declared.group(1)))
-    server_states = {s.value for s in TERMINAL_STATES}
-    assert client_states == server_states, (
-        f"the client's terminal states {sorted(client_states)} differ from the "
-        f"frozen contract's {sorted(server_states)}; the stop control would be "
-        "drawn on a state the API refuses, or withheld on one it accepts."
-    )
-
 
 def test_the_control_does_not_reappear_once_a_stop_is_requested() -> None:
     """A second press would imply the first had not taken.

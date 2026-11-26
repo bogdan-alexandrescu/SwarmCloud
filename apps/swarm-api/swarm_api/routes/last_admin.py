@@ -39,14 +39,18 @@ a 503, never an answer that lets the last admin go.
 
 A REFUSAL writes nothing the refused route would have written -- no grant,
 no membership, no guard -- and leaves one `workspace_last_admin_refused`
-`admin_audit` row, written after the transaction rolled back (`run`).
+`admin_audit` row, written after the transaction rolled back (`run`). A
+scoped probe admin refused on these routes -- its member removal, or a
+change of a person who holds `admin` -- leaves one
+`workspace_probe_admin_refused` row the same way (`probe_admin_refusals`).
 """
 
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 from fastapi import Request
 from google.api_core import exceptions as gexc
@@ -59,6 +63,8 @@ from ..admins import AUDIT_COLLECTION
 from ..deps import AppContext
 from ..errors import (
     MembershipUnavailable,
+    ProbeAdminNotPermitted,
+    RoleAdminRequired,
     UpstreamUnavailable,
     WorkspaceLeaveLastAdmin,
 )
@@ -217,19 +223,59 @@ def contended(exc: BaseException) -> bool:
 
 
 def audit_refusal(ctx: AppContext, *, tenant_id: str, subject: str, by: str,
-                   detail: Mapping[str, Any]) -> None:
-    """One row for a refused change. Written after the transaction rolled
-    back; a row that cannot be written is logged, and the refusal stands."""
+                  detail: Mapping[str, Any], action: str = AUDIT_REFUSED,
+                  refused: str = WorkspaceLeaveLastAdmin.code) -> None:
+    """One `action` row for a refused change, its code in `detail.refused`.
+    Written after the transaction rolled back, never inside it; a row that
+    cannot be written is logged, and the refusal stands unchanged."""
     try:
         ctx.db.collection(AUDIT_COLLECTION).document().set({
-            "action": AUDIT_REFUSED, "target_tenant_id": tenant_id,
+            "action": action, "target_tenant_id": tenant_id,
             "target_email": subject, "by": (by or "").strip().lower(),
             "at": datetime.now(timezone.utc),
-            "detail": dict(detail, refused=WorkspaceLeaveLastAdmin.code),
+            "detail": dict(detail, refused=refused),
         })
-    except Exception as exc:  # noqa: BLE001 - the 409 stands; the row is a report
-        log.warning("last-admin refusal row unwritten tenant=%s (%s)", tenant_id,
+    except Exception as exc:  # noqa: BLE001 - the refusal stands; the row is a report
+        log.warning("%s row unwritten tenant=%s (%s)", action, tenant_id,
                     type(exc).__name__)
+
+
+def _probe_admin_refused(exc: BaseException) -> bool:
+    """A refusal only a scoped probe admin meets: 403
+    `probe_admin_not_permitted`, or the `role_admin_required` that
+    `roles.refuse_probe_admin_admin_target` raises (its `source` says so). An
+    ordinary member's `role_admin_required` is none of these."""
+    if isinstance(exc, ProbeAdminNotPermitted):
+        return True
+    return (isinstance(exc, RoleAdminRequired)
+            and exc.detail.get("source") == roles.SOURCE_PROBE_ADMIN)
+
+
+@contextmanager
+def probe_admin_refusals(ctx: AppContext, *, tenant_id: str, by: str | None,
+                         target: Callable[[], str], detail: Mapping[str, Any],
+                         ) -> Iterator[None]:
+    """Around a route a scoped probe admin may be refused on -- its member
+    removal, or a change of a person who holds `admin` (the early check and
+    the transaction's own): such a refusal leaves one
+    `roles.AUDIT_PROBE_ADMIN_REFUSED` row, whichever check fired, and is
+    re-raised unchanged. The block holds the whole transaction, so the row
+    is written after it rolled back (`audit_refusal`). `target()` names the
+    person, read only on a refusal; a body too malformed to name one is
+    recorded with an empty `target_email`. Every other error passes through
+    and leaves no row."""
+    try:
+        yield
+    except (ProbeAdminNotPermitted, RoleAdminRequired) as exc:
+        if _probe_admin_refused(exc):
+            try:
+                subject = target()
+            except Exception:  # noqa: BLE001 - the refusal came first; the row still lands
+                subject = ""
+            audit_refusal(ctx, tenant_id=tenant_id, subject=subject, by=by or "",
+                          detail=dict(detail, via=roles.VIA_PROBE_ADMIN),
+                          action=roles.AUDIT_PROBE_ADMIN_REFUSED, refused=exc.code)
+        raise
 
 
 def run(ctx: AppContext, apply: Callable[[Any], Any], *, tenant_id: str, subject: str,
@@ -243,7 +289,7 @@ def run(ctx: AppContext, apply: Callable[[Any], Any], *, tenant_id: str, subject
     except WorkspaceLeaveLastAdmin:
         audit_refusal(ctx, tenant_id=tenant_id, subject=subject, by=by, detail=detail)
         raise
-    except Exception as exc:  # noqa: BLE001 - only contention is re-raised as a retry
+    except Exception as exc:  # only contention is re-raised as a retry
         if not contended(exc):
             raise
         log.warning("last-admin guard contended tenant=%s", tenant_id)

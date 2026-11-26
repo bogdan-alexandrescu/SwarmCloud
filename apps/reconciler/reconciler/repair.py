@@ -84,6 +84,7 @@ from .detect import (
     stuck_candidates,
 )
 from .model import (
+    PAUSE_REFUND_LIMIT,
     AttemptView,
     ControlSnapshot,
     ExecutionView,
@@ -647,6 +648,10 @@ class Reconciler:
         report = ReconcileReport(started_at=utcnow(), dry_run=self._config.dry_run)
         snapshot = self._snapshot(report)
         report.sweep = "full" if snapshot.full else "incremental"
+        if snapshot.paused_workflows_error:
+            # The pause-overdue rule stands down for this pass; every other
+            # rule runs (issue 7). Said here, so it never reads as "no pause".
+            report.errors.append(f"paused_workflows: {snapshot.paused_workflows_error}")
         report.tasks_examined = len(snapshot.tasks)
         report.leases_examined = len(snapshot.leases)
 
@@ -725,7 +730,7 @@ class Reconciler:
                 continue
             try:
                 outcome = self._repair(finding, snapshot, sight.handles)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 message = f"{finding.kind.value} {finding.task_id or finding.lease_id}: {exc}"
                 self._log.exception("repair failed", exc, finding=finding.kind.value)
                 report.errors.append(message)
@@ -755,7 +760,7 @@ class Reconciler:
 
         try:
             self._collect_checkpoints(report, now=snapshot.taken_at)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # Storage cleanup never fails a pass that has already terminated
             # executions and released leases: that work happened, and reporting
             # the pass as failed would send a retry over state that is now
@@ -765,7 +770,7 @@ class Reconciler:
 
         try:
             self._collect_plugins(report, now=snapshot.taken_at)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # Never fatal, for the checkpoint sweep's reason above.
             self._log.exception("plugin copy collection failed", exc)
             report.errors.append(f"plugin_gc: {exc}")
@@ -796,7 +801,7 @@ class Reconciler:
                 self._store.record_pass(
                     report.as_dict(), retain_hours=self._config.pass_retention_hours
                 )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._log.exception("could not persist the reconciliation pass", exc)
             report.errors.append(f"record_pass: {exc}")
 
@@ -845,7 +850,7 @@ class Reconciler:
         )
         try:
             return self._store.incremental_snapshot(changed_since=changed_since, due_by=due_by)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._log.exception("the incremental read failed; running a full sweep", exc)
             report.errors.append(f"incremental_snapshot: {exc}")
             return self._store.snapshot()
@@ -971,7 +976,7 @@ class Reconciler:
                         reason=problem.reason,
                         restarts=problem.restarts,
                     )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self._log.warning(
                     "could not read or record why a pod is not starting; nothing changed",
                     task_id=task.task_id,
@@ -1173,7 +1178,7 @@ class Reconciler:
             read = self._store.workflows_for_stall_check(
                 limit=self._config.workflow_scan_limit, after=self._workflow_cursor
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             message = f"{type(exc).__name__}: {exc}"
             check["read_error"] = message[:500]
             report.errors.append(f"workflow_stall_check: {message[:500]}")
@@ -1191,7 +1196,7 @@ class Reconciler:
         for stall in detect_stalled_workflows(read, snapshot.leases, self._config, now):
             try:
                 repaired, repair = self._repair_stall(stall)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 repaired, repair = False, f"repair failed: {type(exc).__name__}: {exc}"[:300]
                 report.errors.append(
                     f"workflow_stall_check {stall.kind.value} {stall.workflow_id}: {exc}"[:500]
@@ -1271,7 +1276,7 @@ class Reconciler:
                     counted = getattr(backend, "unattributed_finished", 0)
                     if isinstance(counted, int):
                         report.unattributed_finished += counted
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 # A backend we cannot see is a backend we must not act on: with
                 # no execution list, every task there looks like a missing
                 # execution, and repairing those would kill healthy work.
@@ -1340,7 +1345,7 @@ class Reconciler:
         """
         try:
             return self._store.tenant_namespaces()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._log.exception("could not read the registered tenants", exc)
             report.errors.append(f"tenants: {exc}")
             return {}
@@ -1390,7 +1395,7 @@ class Reconciler:
         for task_id in wanted:
             try:
                 task = self._store.task_by_id(task_id)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 snapshot.unreadable_tasks.add(task_id)
                 self._log.warning(
                     "could not read the task an active execution names; "
@@ -1457,7 +1462,7 @@ class Reconciler:
         for task_id in wanted:
             try:
                 task = self._store.task_for_lease(task_id)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 snapshot.lease_unreadable.add(task_id)
                 self._log.warning(
                     "could not read the task an unreleased lease names; "
@@ -1494,7 +1499,7 @@ class Reconciler:
             attempt_id = subject.lease.attempt_id
             try:
                 events = self._store.attempt_events(subject.task.task_id, attempt_id)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self._log.warning(
                     "could not read an attempt's progress; not judging it this pass",
                     task_id=subject.task.task_id,
@@ -1554,7 +1559,7 @@ class Reconciler:
                 since=since,
                 until=now - timedelta(seconds=self._config.lost_after_finish_grace_seconds),
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._log.exception("could not read finished tasks' unended attempts", exc)
             report.errors.append(f"lost_after_finish: reading finished attempts failed: {exc}")
             return []
@@ -1587,7 +1592,7 @@ class Reconciler:
             attempt_id = subject.lease.attempt_id
             try:
                 ended = read(execution)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self._log.warning(
                     "could not read how an execution ended; its lease is judged by "
                     "the usual rules this pass",
@@ -1758,7 +1763,7 @@ class Reconciler:
             return None
         try:
             return resolve_backend(profile).value
-        except Exception:
+        except Exception:  # noqa: BLE001
             return None
 
     def _everything_visible_for(
@@ -1942,7 +1947,7 @@ class Reconciler:
                     )
                 else:
                     result = probe(attempt.execution_name)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 result = Probe(ProbeOutcome.UNREADABLE, detail=f"{type(exc).__name__}: {exc}")
             sight.probes[key] = result
             self._log.info(
@@ -2152,11 +2157,16 @@ class Reconciler:
         # for a task that has left them since the snapshot (archived issue 198). Passed only
         # for that rule, so every other repair calls the store as it did.
         leaseless = finding.kind is FindingKind.LEASELESS_TASK
+        # A pause-overdue repair is refused, fence and requeue alike, for a
+        # step that has left the concurrency states since the snapshot: a
+        # worker that parked itself for the pause in the meantime has decided
+        # how it resumes, and READY would overrule it (issue 7, section 6.3).
+        pause_overdue = finding.kind is FindingKind.PAUSE_OVERDUE
         guard: dict[str, Any] = (
             {"only_from": ENDED_AT_STARTUP_STATES}
             if ended_at_startup
             else {"only_from": _LEASELESS_STATES}
-            if leaseless
+            if leaseless or pause_overdue
             else {}
         )
         # An orphan-lease finding may rest on a snapshot that missed its task
@@ -2337,6 +2347,11 @@ class Reconciler:
             backoff_after = (
                 task.never_started_requeues + 1 if never_started else task.attempt_count
             )
+            # The pause-overdue requeue (issue 7): no backoff, since a pause is
+            # not a failure, and the attempt refunded up to PAUSE_REFUND_LIMIT
+            # (owner decision Q1), decided against this transaction's own
+            # fence. The admission gate parks the READY step WORKFLOW_PAUSED.
+            pausing = pause_overdue and to_state is TaskState.READY
             plan = RepairPlan(
                 to_state=to_state,
                 # Only the task this finding is actually about. A snapshot is
@@ -2351,7 +2366,7 @@ class Reconciler:
                 # every attempt back to back (archived issue 1822). The wait creates no
                 # demand: a READY task holds nothing (invariant 1).
                 next_eligible_at=None
-                if cannot_start or out_of_memory is not None
+                if cannot_start or out_of_memory is not None or pausing
                 else utcnow() + timedelta(seconds=requeue_backoff_seconds(backoff_after)),
                 # Why it ends if it ends FAILED: the worker could not start,
                 # or (spent attempts on a requeue) its worker was lost.
@@ -2360,6 +2375,10 @@ class Reconciler:
                 disk_eviction=disk_eviction,
                 never_started_requeue_limit=(
                     self._config.never_started_requeue_limit if never_started else None
+                ),
+                pause_refund_limit=PAUSE_REFUND_LIMIT if pausing else None,
+                pause_workflow_id=(
+                    str(finding.detail.get("workflow_id") or "") or None if pausing else None
                 ),
             )
         fence_guard: dict[str, Any] = dict(guard)
@@ -2471,6 +2490,19 @@ class Reconciler:
                     f"never started: {done.never_started_requeues}/"
                     f"{self._config.never_started_requeue_limit} re-queue(s)"
                 )
+            if pause_overdue:
+                # What the scheduler's park and the console read: the finding,
+                # the pause it enforced, whether a resume landed between the
+                # kill and this repair (it changes nothing written above), and
+                # the pause refunds the step now holds.
+                detail.update(
+                    finding=finding.kind.value,
+                    paused_at=finding.detail.get("paused_at"),
+                    workflow_id=finding.detail.get("workflow_id"),
+                    pause_lifted=bool(done.pause_lifted),
+                    pause_refunds=done.pause_refunds,
+                    pause_refund_limit=PAUSE_REFUND_LIMIT,
+                )
             if repaired is TaskState.CANCELLED:
                 # The API's flag-only cancel wrote `cancel_requested`
                 # (before 2026-09-24: a `cancelled` with
@@ -2543,7 +2575,7 @@ class Reconciler:
             return None
         try:
             events = self._store.attempt_events(task.task_id, finding.attempt_id)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._log.warning(
                 "could not read an attempt's heartbeats; not judging its memory",
                 task_id=task.task_id,
@@ -2565,7 +2597,7 @@ class Reconciler:
             return None
         try:
             events = self._store.attempt_events(finding.task_id, finding.attempt_id)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._log.warning(
                 "could not read an attempt's heartbeats; not naming what filled its scratch",
                 task_id=finding.task_id,
@@ -2630,7 +2662,7 @@ class Reconciler:
                 self._finish.announce(task_id=task_id, tenant_id=tenant_id, state=state)
             )
             result = "published" if published else "refused"
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # The type only: a transport error's text can name the request.
             result = f"error:{type(exc).__name__}"
         outcome.actions.append(f"finish wake {result}")
@@ -2769,7 +2801,7 @@ class Reconciler:
                 return False
         try:
             outcome.terminated = bool(backend.terminate(finding.execution))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             if not held and cancel_refused_as_not_running(exc):
                 if self._back_off_wedged(finding, wedged, exc, snapshot.taken_at, outcome):
                     return False
@@ -2821,7 +2853,7 @@ class Reconciler:
         """
         try:
             return self._store.wedged_execution(name)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._log.warning(
                 "could not read the wedged-execution record; trying the kill",
                 execution=name,
@@ -2868,7 +2900,7 @@ class Reconciler:
                     "expires_at": next_try + WEDGED_RECORD_RETENTION,
                 },
             )
-        except Exception as write_exc:
+        except Exception as write_exc:  # noqa: BLE001
             self._log.warning(
                 "could not record a wedged execution; it will be tried again next pass",
                 execution=execution.name,
@@ -2903,7 +2935,7 @@ class Reconciler:
         """Drop the wedged record of an execution whose stop is now confirmed."""
         try:
             self._store.clear_wedged_execution(name)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # A leftover record only delays the next kill of an execution that
             # is already over; it holds no slot.
             self._log.warning(
@@ -3026,7 +3058,7 @@ class Reconciler:
             released = self._holds.release_attempt(
                 task_id=finding.task_id, attempt_id=finding.attempt_id
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._log.warning(
                 "could not release an ended attempt's account holds; the "
                 "broker's sweep or their TTL will",
@@ -3288,7 +3320,7 @@ class Reconciler:
             # deleted Job on the next dispatch, whereas nothing recreates a
             # namespace, its service account or its workload-identity binding.
             protected_namespaces = active | self._store.registered_tenants()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._log.exception("garbage collection failed", exc)
             report.errors.append(f"gc: {exc}")
             return
@@ -3301,7 +3333,7 @@ class Reconciler:
                         backend, snapshot, active=active, protected=protected_namespaces
                     )
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self._log.exception("garbage collection failed", exc, backend=backend.name)
                 report.errors.append(f"gc {backend.name}: {exc}")
 

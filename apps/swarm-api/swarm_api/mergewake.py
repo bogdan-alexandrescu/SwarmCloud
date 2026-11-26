@@ -423,7 +423,7 @@ from .redaction import redact
 from .repositories import parse_repository
 from .rollup import SKIPPED_SUMMARY_KEY, derived_state_write
 from .schemas import WorkflowCreate
-from . import sessiontag, stepclass
+from . import sessiontag, stepceiling, stepclass
 from .validation import (
     CONFLICT_ROUND_METADATA_KEY,
     DISPATCH_METADATA_KEY,
@@ -1234,7 +1234,7 @@ def _rerun_first(ctx: Any, db: Any, tenant_id: str, doc: Mapping[str, Any], ref:
             ctx.forge_writer.rerun_failed_jobs(ref, run_id, token)
         for job in alone:
             ctx.forge_writer.rerun_job(ref, job, token)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         reason = exc.message if isinstance(exc, ApiError) else (
             str(exc) if isinstance(exc, ForgeWriteError) else type(exc).__name__
         )
@@ -2024,7 +2024,7 @@ def _submit_round(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], head: 
         log.warning("merge wake %s tenant=%s: %s round waits: membership unresolved",
                     task_id, tenant_id, label)
         return _WAITING, None
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         refused = exc.message if isinstance(exc, ApiError) else type(exc).__name__
 
     round_no = _claim_round(db, tenant_id, task_id, head, seen=seen, now=now, key=key)
@@ -2042,7 +2042,7 @@ def _submit_round(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], head: 
     try:
         submission = ctx.submissions.submit_workflow(
             owner, build(target, round_no, resource_class))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         reason = exc.message if isinstance(exc, ApiError) else (
             str(exc) if isinstance(exc, ValueError) else type(exc).__name__
         )
@@ -2137,7 +2137,9 @@ def conflict_fix_continuation(
         "steps": [{
             "step_id": CONFLICT_FIX_STEP,
             "runner_profile": STEP_PROFILE,
-            "input": {"prompt": prompt},
+            # The conflict-fix role's session limits (contract request 158).
+            "input": stepceiling.stamp(stepclass.ROLE_CONFLICT_FIX, STEP_PROFILE,
+                                       {"prompt": prompt}),
             **({"resource_class": resource_class} if resource_class else {}),
             **choice.fields(),
             "metadata": choice.metadata(),
@@ -2423,7 +2425,7 @@ def wake_release_waits(ctx: Any, tenant: Any, tenant_id: str, *, limit: int,
                 if not token:
                     token = ctx.forge_tokens.token_for(tenant)
                 reading = release_reading(writer, ref, str(wait["sha"]), token)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
                 log.warning("release wait %s tenant=%s: release not read (%s)", task_id, tenant_id, code)
                 report.fail(task_id, code)
@@ -2569,7 +2571,7 @@ def wake_owner_holds(ctx: Any, tenant: Any, tenant_id: str, *, limit: int,
             if not token:
                 try:
                     token = ctx.forge_tokens.token_for(tenant)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
                     log.warning("merge wake tenant=%s: no forge token (%s)", tenant_id, code)
                     report.fail(task_id, code)
@@ -2591,7 +2593,7 @@ def wake_owner_holds(ctx: Any, tenant: Any, tenant_id: str, *, limit: int,
             try:
                 with forge_limits.acting_as(credential):
                     pull = writer.read_pull(ref, ref.number, reading_token)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
                 log.warning("merge wake %s tenant=%s: held pull request not read (%s)",
                             task_id, tenant_id, code)
@@ -2714,7 +2716,7 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
             if not token:
                 try:
                     token = ctx.forge_tokens.token_for(tenant)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     token_error = exc.code if isinstance(exc, ApiError) else type(exc).__name__
                     log.warning("merge wake tenant=%s: no forge token (%s)", tenant_id, token_error)
                     report.fail(task_id, token_error)
@@ -2808,7 +2810,7 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
                     pushed_by = _pushed_by(ctx, tenant_id, doc, read.pull.head_sha)
                     if pushed_by:
                         patch["head_pushed_by"] = pushed_by
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
                 log.warning("merge wake %s tenant=%s: checks not read (%s)",
                             task_id, tenant_id, code)

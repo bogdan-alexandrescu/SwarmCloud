@@ -120,7 +120,7 @@ const loadProfilesView = keepNoPools(() => loadCapacity())
 
 /**
  * The count note (archived issue 138): `36 profiles · 2 backends · the whole catalogue ·
- * counters last reported 2m ago, one pool at a time`.
+ * counters last reported 2m ago, pool by pool`.
  *
  * §8.4(4): PROVENANCE, ONCE, FOR THE WHOLE PAGE. Every figure on it is worked
  * out from pool counts read at one instant, and the instant is the server's
@@ -139,7 +139,7 @@ function CatalogueCount({ capacity }: { capacity: Capacity }) {
 }
 
 /**
- * `counters last reported 2m ago, one pool at a time`, on the age tick, so it
+ * `counters last reported 2m ago, pool by pool`, on the age tick, so it
  * moves while the page is open. The `<time>` carries the server's own instant.
  *
  * REPORTED, NOT READ (visual QA pass 2, cap2-12, 2026-10-29): 'counts read
@@ -159,7 +159,8 @@ function CountsAge({ generatedAt }: { generatedAt: string }) {
       >
         {timeAgo(generatedAt, now)}
       </time>
-      , one pool at a time
+      {/* ISSUE 81: "pool by pool", not "one pool at a time": with "just now" the line was nine words. */}
+      , pool by pool
     </>
   )
 }

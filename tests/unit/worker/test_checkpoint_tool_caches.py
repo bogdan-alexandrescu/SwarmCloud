@@ -1,3 +1,4 @@
+# source-text: fixture - reads a venv's site.py the test planted in a workspace and restored from its checkpoint
 """A resume survives an agent that ran uv or npm (archived issue 286).
 
 HOME is `work/` (`workspace.child_env`), and since archived pull request 261 an agent runs the

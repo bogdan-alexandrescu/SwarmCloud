@@ -25,6 +25,13 @@ with no `node_modules`. It covers what pydantic's JSON Schema emits: `$ref`,
 `prefixItems` as tuples) and objects (`properties`, `additionalProperties`); a
 schema it does not recognise is `unknown`, never a guess.
 
+THE CONSTANTS. Beside the types, one JSON file per constants group under
+`apps/swarm-ui/src/generated/constants/<group>.json`: the API's codes and
+enums, read from the live Python objects by `scripts/api_constants/<group>.py`
+(the package's docstring says what a group is). `--check` covers them too: a
+stale or missing file, and a file there that no group writes, each fail it;
+a plain run writes every file and removes such an orphan.
+
 Part of #72: the console's `Task` is the generated `Task` (see
 `apps/swarm-api/swarm_api/wire_types.py`).
 """
@@ -32,12 +39,14 @@ Part of #72: the console's `Task` is the generated `Task` (see
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import sys
 import textwrap
 import warnings
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 REPO = Path(__file__).resolve().parents[1]
@@ -63,6 +72,19 @@ INPUTS = (
     "apps/swarm-ui/src/generated/api-types.ts",
     "uv.lock",
 )
+
+#: The constants groups' package, and what every group's output depends on
+#: besides its own `INPUTS`: the package (a new group module is a new file)
+#: and the directory the files are written to (an orphan there fails
+#: `--check`). Kept apart from `INPUTS`, whose package entries the drift test
+#: holds equal to what building the OpenAPI document imports.
+CONSTANTS_PACKAGE = Path(__file__).resolve().parent / "api_constants"
+CONSTANTS_INPUTS = (
+    "scripts/api_constants/",
+    "apps/swarm-ui/src/generated/constants/",
+)
+#: The first key of every constants file (`_` sorts before every snake_case key).
+GENERATED_KEY = "_generated"
 
 HEADER = f"""\
 // GENERATED FILE -- DO NOT EDIT BY HAND.
@@ -283,31 +305,117 @@ def relpath(path: Path) -> str:
     return path.relative_to(REPO).as_posix()
 
 
+# --------------------------------------------------------------------------
+# Constants groups
+# --------------------------------------------------------------------------
+
+def constants_dir() -> Path:
+    """Where the constants files go: beside the generated types."""
+    return OUTPUT.parent / "constants"
+
+
+def _constants_package() -> ModuleType:
+    """`scripts/api_constants`, loaded by path: this script is also loaded by
+    path (the tests), so `scripts/` need not be on `sys.path`."""
+    init = CONSTANTS_PACKAGE / "__init__.py"
+    module = sys.modules.get("api_constants")
+    if module is not None and Path(getattr(module, "__file__", "") or "").resolve() == init:
+        return module
+    spec = importlib.util.spec_from_file_location(
+        "api_constants", init, submodule_search_locations=[str(CONSTANTS_PACKAGE)])
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["api_constants"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def constant_groups() -> list[tuple[str, Any]]:
+    """(name, module) for every constants group, sorted by name. Imports each
+    group's module, which imports only the standard library; runs no `build()`.
+
+    A tree without the package (a scratch copy of this script alone, as the
+    pre-publish gate's tests make) has no groups; a constants file left there
+    is then an orphan, so `--check` still fails on it rather than passing."""
+    if not (CONSTANTS_PACKAGE / "__init__.py").is_file():
+        return []
+    return _constants_package().groups()
+
+
+def constants_text(data: dict[str, Any]) -> str:
+    """A group's file: sorted keys, two-space indent, a trailing newline, and
+    `_generated` naming the command that rewrites it."""
+    if GENERATED_KEY in data:
+        raise SystemExit(f"a constants group may not export {GENERATED_KEY!r}")
+    payload = {GENERATED_KEY: f"GENERATED FILE -- DO NOT EDIT BY HAND. Regenerate: {REGENERATE}",
+               **data}
+    return json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+
+
+def all_inputs() -> list[str]:
+    """`INPUTS`, the constants package and directory, and every group's
+    `INPUTS` and output file, once each, in that order. No `build()` runs."""
+    seen: list[str] = []
+    paths: list[str] = [*INPUTS, *CONSTANTS_INPUTS]
+    for name, module in constant_groups():
+        paths.extend(module.INPUTS)
+        paths.append(relpath(constants_dir() / f"{name}.json"))
+    for path in paths:
+        if path not in seen:
+            seen.append(path)
+    return seen
+
+
+def outputs() -> dict[Path, str]:
+    """Every generated file and the text it should hold now."""
+    files = {OUTPUT: render(openapi_document())}
+    for name, module in constant_groups():
+        files[constants_dir() / f"{name}.json"] = constants_text(module.build())
+    return files
+
+
+def orphans(files: dict[Path, str]) -> list[Path]:
+    """JSON files in the constants directory that no group writes."""
+    if not constants_dir().is_dir():
+        return []
+    return sorted(p for p in constants_dir().glob("*.json") if p not in files)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     parser.add_argument("--check", action="store_true",
-                        help="write nothing; exit 1 if the committed file is stale")
+                        help="write nothing; exit 1 if a committed file is stale, missing or orphaned")
     parser.add_argument("--inputs", action="store_true",
                         help="print the files the output is a function of, one a line "
                              "(a directory ends in /), and build nothing")
     args = parser.parse_args(argv)
     if args.inputs:
-        print("\n".join(INPUTS))
+        print("\n".join(all_inputs()))
         return 0
-    text = render(openapi_document())
+    files = outputs()
     if args.check:
-        current = OUTPUT.read_text() if OUTPUT.is_file() else ""
-        if current != text:
-            print(f"{OUTPUT.relative_to(REPO)} is stale; regenerate it: {REGENERATE}",
-                  file=sys.stderr)
+        problems = []
+        for path, text in files.items():
+            if not path.is_file():
+                problems.append(f"{relpath(path)} is missing; generate it: {REGENERATE}")
+            elif path.read_text() != text:
+                problems.append(f"{relpath(path)} is stale; regenerate it: {REGENERATE}")
+        problems.extend(f"{relpath(path)} is written by no group; remove it or add its "
+                        f"group under scripts/api_constants/: {REGENERATE} removes it"
+                        for path in orphans(files))
+        if problems:
+            print("\n".join(problems), file=sys.stderr)
             return 1
-        print(f"{OUTPUT.relative_to(REPO)} is current")
+        for path in files:
+            print(f"{relpath(path)} is current")
         return 0
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT.write_text(text)
-    print(f"wrote {OUTPUT.relative_to(REPO)}")
+    for path in orphans(files):
+        path.unlink()
+        print(f"removed {relpath(path)}: no group writes it")
+    for path, text in files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        print(f"wrote {relpath(path)}")
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())

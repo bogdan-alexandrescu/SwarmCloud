@@ -723,17 +723,13 @@ def test_no_code_reads_a_persons_own_chatgpt_sign_in():
                  "SecretManagerStore", "SubscriptionCredential", "CredentialFactory", "TOKEN_URL"):
         assert not hasattr(cred, name), name
     package = _APP / "swarm_voice"
-    sources = {p.name: p.read_text() for p in package.glob("*.py")}
-    assert {"accountlease.py", "credential.py", "live.py", "main.py"} <= set(sources)
-    for name, text in sources.items():
-        # ... no module names an OpenAI secret, refreshes a ChatGPT token or adds a secret version ...
-        assert not re.search(r"swarm-tenant-[^\"'\s]*openai|-openai\b", text), name
-        assert "auth.openai.com" not in text and "refresh_token" not in text, name
-        assert ":addVersion" not in text, name
-        # ... and the session path touches no Secret Manager at all. The planner's own
-        # Anthropic key (planner.py) is the one Secret Manager read left in swarm-voice.
-        if name != "planner.py":
-            assert "secretmanager" not in text.lower() and "swarm-tenant-" not in text, name
+    assert all((package / name).is_file()
+               for name in ("accountlease.py", "credential.py", "live.py", "main.py"))
+    # ... no module names an OpenAI secret, refreshes a ChatGPT token or adds a
+    # secret version, and the session path touches no Secret Manager at all (the
+    # planner's own Anthropic key, planner.py, is the one Secret Manager read
+    # left in swarm-voice): the rule voice-reads-no-personal-chatgpt-sign-in in
+    # scripts/source_text_rules/services.py.
 
 
 def test_the_caller_check_refuses_to_run_without_an_audience_or_callers():
