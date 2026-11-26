@@ -14,6 +14,8 @@
 //   * a member below the edit level sees no Ask for a diagram (Q6) and no Pin;
 //   * a run planned with diagrams off shows the off line naming its level and
 //     no Ask for a diagram;
+//   * at 390 pixels the strip's tabs wrap inside the column and the diagram
+//     is drawn in its tall layout;
 //   * an ask posts the shown digest and the part's anchor, and its waiting
 //     entry says it is drawing; the cap's refusal disables the ask with the
 //     server's sentence.
@@ -21,6 +23,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { visible } from './repofixture'
+import { painted } from './marks'
+import type { CascadeEnv } from './cssgate'
 import { D1, D2, PLAN, REV1, WAIT, at, mount, routes, runRead, sent, RUN, type Handler, type Json } from './planthreadfixture'
 
 // Mermaid is not drawn here (diagram.view.test.tsx holds the renderer): the
@@ -243,5 +247,18 @@ describe('this run’s diagram setting', () => {
     expect(screen.queryByTestId('pp-strip')).toBeNull()
     await part('Step 1')
     expect(screen.queryAllByRole('button', { name: 'Ask for a diagram' })).toHaveLength(0)
+  })
+})
+
+describe('at 390 pixels', () => {
+  const PHONE: CascadeEnv = { width: 390 }
+  it('wraps the strip’s tabs inside the column and draws the diagram in its tall layout', async () => {
+    await page({ run: revisionOne({ ...PLAN, diagrams: [FLOW, SEQ] }) })
+    const strip = await screen.findByTestId('pp-strip', undefined, WAIT)
+    expect(painted(within(strip).getByRole('tablist'), 'flex-wrap', PHONE)).toBe('wrap')
+    const tab = within(strip).getAllByRole('tab')[0]!
+    expect(painted(tab, 'max-width', PHONE)).toBe('100%')
+    expect(painted(within(tab).getByText(FLOW.title), 'overflow-wrap', PHONE)).toBe('anywhere')
+    expect(painted(within(strip).getByRole('tabpanel'), 'max-width', PHONE)).toBe('100%')
   })
 })

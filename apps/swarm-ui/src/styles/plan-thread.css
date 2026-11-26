@@ -76,3 +76,13 @@
   .pt-when { margin-left: 0; }
 }
 .pt-rev { font-weight: 600; }
+
+/* ---- diagrams in the thread (PlanThread.tsx, §2.5, §6.5; DC:D2a, DC:D3a-DC:D3c) ---- */
+.pt-entry.is-diagram { border-color: color-mix(in srgb, var(--info) 45%, transparent); }
+.pt-ask { color: var(--text-dim); }
+.pt-nodiagram { color: var(--text); }
+.pt-diagrams { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; min-width: 0; }
+.pt-diagrams > li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; overflow-wrap: anywhere; }
+.pt-dname { font-weight: 600; overflow-wrap: anywhere; }
+.pt-op { font-family: var(--mono); color: var(--text-dim); }
+.pt-pinned { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin: 0; min-width: 0; overflow-wrap: anywhere; }
