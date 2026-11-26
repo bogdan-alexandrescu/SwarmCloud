@@ -120,10 +120,12 @@ export const API_RATE_LIMITED = 'rate_limited'
 /**
  * Every code swarm-api itself answers a 429 with: its token bucket, and the
  * per-run re-plan cap (`replan_cap`, docs/design/plans-pipeline.md §5.4), whose
- * sentence says why Request changes is refused and what to do instead. A 429
+ * sentence says why Request changes is refused and what to do instead, and the
+ * diagram-ask cap (`diagram_cap`, §6.5, §7.8), whose sentence disables Ask for
+ * a diagram. A 429
  * carrying any other body is Cloud Run's front end.
  */
-export const API_OWN_429_CODES: ReadonlySet<string> = new Set([API_RATE_LIMITED, 'replan_cap'])
+export const API_OWN_429_CODES: ReadonlySet<string> = new Set([API_RATE_LIMITED, 'replan_cap', 'diagram_cap'])
 
 /** What a 429 without that code says: Cloud Run's front end, not the API (archived issue 1816). */
 export const NO_INSTANCE_FREE = "SwarmCloud's API had no instance free (Cloud Run); retried when the pause ends."
