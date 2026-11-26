@@ -31,6 +31,20 @@
  * moved plan, the cap, a role floor) is shown in the server's own words; the
  * cap's and the role's disable Request changes.
  *
+ * DIAGRAMS IN THE THREAD (§2.5, §6.5; lane U8 DIAGRAMS-ON-PAGE, `DC:D2a`,
+ * `DC:D3a`-`DC:D3c`). The planner's opening message (the `planned` event)
+ * names each diagram of its revision with its `why` and a link to its tab on
+ * the strip (PinnedDiagrams.tsx), or carries the plan's "no diagram" line; a
+ * `revised` event names the diagrams its revision added or removed, and says
+ * "diagrams only" when that was all it changed. Ask for a diagram sits beside
+ * Comment in each part's composer, for the edit level only (Q6) and never
+ * when this run's setting turned diagrams off; its waiting entry says
+ * "drawing" with its elapsed time and its cost so far, and the run is re-read
+ * until it is answered. The answer is a `diagram` entry with the diagram
+ * drawn in it -- part of the conversation, not of the plan -- and Pin to the
+ * plan makes revision N+1 that holds it; the entry then names it and links to
+ * its tab. The cap's refusal disables the ask with the server's sentence.
+ *
  * COMMENT TEXT IS OTHER PEOPLE'S TEXT: every field is a React text child,
  * never HTML.
  */
@@ -40,6 +54,8 @@ import { cancelReplan, commentOnPlan, loadRun, resolvePlanComment, revisePlan, t
 import { Button } from './components'
 import { errorHeading, type ApiError } from './fetch'
 import { InfoTip } from './InfoTip'
+import DiagramView from './DiagramView'
+import { DiagramLink, askForDiagram, diagramOf, diagramSetting, diagramsOf, pinDiagram, sameDiagram, type DiagramAnchor, type PlanDiagram } from './PinnedDiagrams'
 import { PlanDiff, RevisionCost, diffPlans, useRevisionPlan, who } from './PlanRevisions'
 import { useRoleGate } from './roleGate'
 import { timeAgo } from './Shell'
@@ -64,6 +80,11 @@ const REPLAN_RUNNING = new Set(['submitting', 'running'])
 /** Refusals after which asking again is refused again: Request changes is disabled with the server's sentence. */
 const FINAL_REFUSALS = new Set(['replan_cap', 'edit_level_required', 'role_member_required'])
 
+/** A diagram ask's states whose agent is still awaited (issueruns `DIAGRAM_ACTIVE_STATES`). */
+const DIAGRAM_LIVE = new Set(['submitting', 'drawing'])
+/** Refusals after which asking for a diagram again is refused again: Ask is disabled with the server's sentence. */
+const FINAL_ASK_REFUSALS = new Set(['diagram_cap', 'diagrams_off', 'edit_level_required', 'role_member_required'])
+
 export const replanLive = (r: Json | null): boolean => r !== null && REPLAN_LIVE.has(String(r.state))
 export const replanRunning = (r: Json | null): boolean => r !== null && REPLAN_RUNNING.has(String(r.state))
 
@@ -79,8 +100,23 @@ export interface Conversation {
   complete: boolean
   replan: Json | null
   may: { comment: boolean; edit: boolean }
+  /** Whether Ask for a diagram and Pin to the plan are offered: the edit level, a PLANNED run, diagrams not off (§6.4, §6.5). */
+  mayDiagram: boolean
+  /** Whether this run planned with diagrams on (`run.plan_settings`, §6.4): only then is an older revision read for its diagrams. */
+  diagramsOn: boolean
+  /** The run's current digest: the one Pin to the plan replaces. */
+  current: string | null
+  /** The run Pin to the plan returned on this page (revision N+1), else null; the strip draws its diagrams. */
+  pinned: Json | null
+  /** The diagram the strip shows, by id; null: its first. */
+  tab: string | null
+  /** The refusal that ended asking for diagrams on this run (the cap's), in the server's words. */
+  capped: string | null
   addEntry: (entry: Json) => void
   setReplan: (replan: Json) => void
+  setPinned: (run: Json) => void
+  showTab: (diagramId: string) => void
+  setCapped: (sentence: string) => void
 }
 
 const idOf = (e: Json): string | null => text(e.entry_id)
@@ -115,12 +151,17 @@ export function usePlanConversation(runId: string | null, run: Json | null): Con
   const [served, setServed] = useState<Json | null>(run)
   const [local, setLocal] = useState<Json[]>([])
   const [ownReplan, setOwnReplan] = useState<Json | null>(null)
+  const [pinned, setPinnedRun] = useState<Json | null>(null)
+  const [tab, setTab] = useState<string | null>(null)
+  const [capped, setCappedSentence] = useState<string | null>(null)
   useEffect(() => {
     setServed(run)
   }, [run])
   const base = served ?? run
   const replan = ownReplan ?? obj(base?.plan_replan)
-  const live = replanLive(replan)
+  // Re-read while a re-plan runs, or while a diagram ask (served or just written) is being drawn.
+  const drawing = [...objs(base?.plan_thread), ...local].some((e) => e.kind === 'diagram' && DIAGRAM_LIVE.has(String(e.state)))
+  const live = replanLive(replan) || drawing
   useEffect(() => {
     if (runId === null || !live) return
     let alive = true
@@ -147,15 +188,31 @@ export function usePlanConversation(runId: string | null, run: Json | null): Con
   const thread = base === null || !Array.isArray(base.plan_thread) ? null : mergeEntries(objs(base.plan_thread), local)
   const addEntry = useCallback((entry: Json) => setLocal((l) => [...l.filter((e) => idOf(e) !== idOf(entry)), entry]), [])
   const setReplan = useCallback((r: Json) => setOwnReplan(r), [])
+  const setPinned = useCallback((r: Json) => {
+    setPinnedRun(r)
+    setServed(r)
+  }, [])
+  const showTab = useCallback((id: string) => setTab(id), [])
+  const setCapped = useCallback((sentence: string) => setCappedSentence(sentence), [])
+  const shownMay = thread === null ? { comment: false, edit: false } : may
   return {
     runId,
     thread,
     revisions: objs(base?.plan_revisions),
     complete: base?.plan_history_complete !== false,
     replan,
-    may: thread === null ? { comment: false, edit: false } : may,
+    may: shownMay,
+    mayDiagram: shownMay.edit && base?.state === 'PLANNED' && diagramSetting(base).state !== 'off',
+    diagramsOn: diagramSetting(base).state === 'on',
+    current: text(base?.plan_digest),
+    pinned,
+    tab,
+    capped,
     addEntry,
     setReplan,
+    setPinned,
+    showTab,
+    setCapped,
   }
 }
 
@@ -395,6 +452,160 @@ function eventWords(e: Json): ReactNode {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Diagrams in the thread (§2.5, §6.5)
+// ---------------------------------------------------------------------------
+
+/** The plan the strip draws: the revision Pin to the plan made on this page, else the one on screen. */
+const stripPlan = (c: Conversation, shownPlan: Json): Json => obj(c.pinned?.plan) ?? shownPlan
+
+/** A diagram a message names: a link to its tab when the strip holds it, else its title alone. */
+function Named({ d, c, shownPlan }: Readonly<{ d: PlanDiagram; c: Conversation; shownPlan: Json }>) {
+  const on = diagramsOf(stripPlan(c, shownPlan)).find((x) => sameDiagram(x, d)) ?? null
+  return on === null ? <span className="pt-dname">{d.title}</span> : <DiagramLink d={on} c={c} />
+}
+
+/**
+ * A revision's plan: the one on screen without a read, any other by `GET
+ * .../plan-revisions/{n}` -- and that only when this run planned with
+ * diagrams on, since a run planned without them has none to name.
+ */
+function useRevisionAt(ctx: EntryCtx, revision: number | null): Json | null {
+  const known = revision !== null && revision === ctx.shownRevision ? ctx.shownPlan : null
+  const read = revision !== null && (known !== null || ctx.c.diagramsOn)
+  const got = useRevisionPlan(read ? ctx.c.runId : null, read ? revision : null, known)
+  return got !== null && got.status === 'ok' ? got.plan : null
+}
+
+/** The planner's opening message (`DC:D1a`, `DC:D2a`): each diagram of its revision with its why, or the plan's no-diagram line. */
+function OpeningDiagrams({ revision, ctx }: Readonly<{ revision: number | null; ctx: EntryCtx }>) {
+  const plan = useRevisionAt(ctx, revision)
+  if (plan === null) return null
+  const drawn = diagramsOf(plan)
+  const none = text(plan.no_diagram)
+  if (drawn.length === 0)
+    return none === null ? null : (
+      <p className="pt-text pt-nodiagram" data-testid="pt-no-diagram">
+        <span className="pd-dim">no diagram:</span> {none}
+      </p>
+    )
+  return (
+    <ul className="pt-diagrams" aria-label="Diagrams" data-testid="pt-diagrams">
+      {drawn.map((d) => (
+        <li key={d.id}>
+          <Named d={d} c={ctx.c} shownPlan={ctx.shownPlan} />
+          {d.why !== null && <span className="pd-dim">{d.why}</span>}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+const isDiagramPath = (path: unknown): boolean => typeof path === 'string' && /^(diagrams|no_diagram)(\.|$)/.test(path)
+
+/** Whether a revision changed nothing but its diagrams (`changed[]`, §3.3), so its chip says "diagrams only". */
+export function diagramsOnly(revision: Json | null, madeBy: unknown): boolean {
+  if (madeBy === 'add_diagram') return true
+  const changed = objs(revision?.changed)
+  return changed.length > 0 && changed.every((ch) => isDiagramPath(ch.path))
+}
+
+/** The diagrams a revision added or removed (`DC:D3c`), read only when its `changed[]` names a diagram path. */
+function RevisedDiagrams({ revision, ctx }: Readonly<{ revision: number; ctx: EntryCtx }>) {
+  const after = useRevisionAt(ctx, revision)
+  const before = useRevisionAt(ctx, revision - 1)
+  if (after === null || before === null) return null
+  const was = diagramsOf(before)
+  const now = diagramsOf(after)
+  const added = now.filter((d) => !was.some((x) => sameDiagram(x, d)))
+  const removed = was.filter((d) => !now.some((x) => sameDiagram(x, d)))
+  if (added.length === 0 && removed.length === 0) return null
+  return (
+    <ul className="pt-diagrams" aria-label="Diagrams changed" data-testid="pt-diagrams-changed">
+      {added.map((d) => (
+        <li key={`+${d.id}`} data-op="add">
+          <span className="pt-op" aria-label="added">+</span>
+          <Named d={d} c={ctx.c} shownPlan={ctx.shownPlan} />
+        </li>
+      ))}
+      {removed.map((d) => (
+        <li key={`-${d.id}`} data-op="remove">
+          <span className="pt-op" aria-label="removed">−</span>
+          <span className="pt-dname">{d.title}</span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+/**
+ * A `diagram` entry (§3.4, §6.5): waiting, it says "drawing" with its elapsed
+ * time and cost so far; answered, it draws the diagram and offers Pin to the
+ * plan to the edit level; pinned, it names the diagram and links to its tab.
+ */
+function DiagramEntry({ e, ctx }: Readonly<{ e: Json; ctx: EntryCtx }>) {
+  const { c, shownRevision, shownPlan } = ctx
+  const [busy, setBusy] = useState(false)
+  const [refused, setRefused] = useState<ApiError | null>(null)
+  const id = text(e.entry_id)
+  const state = text(e.state) ?? 'drawn'
+  const drawn = diagramOf(e.diagram)
+  const onRev = num(e.on_revision)
+  const onStrip = drawn === null ? null : (diagramsOf(stripPlan(c, shownPlan)).find((d) => sameDiagram(d, drawn)) ?? null)
+  const pin = async () => {
+    if (c.runId === null || c.current === null || id === null) return
+    setBusy(true)
+    setRefused(null)
+    const r = await pinDiagram(c.runId, c.current, id)
+    setBusy(false)
+    if (r.status === 'ok' || r.status === 'stale') {
+      const next = obj(r.data.run)
+      if (next === null) return
+      c.setPinned(next)
+      const joined = drawn === null ? null : (diagramsOf(obj(next.plan)).find((d) => sameDiagram(d, drawn)) ?? null)
+      if (joined !== null) c.showTab(joined.id)
+    } else if (r.status === 'error') setRefused(r.error)
+  }
+  return (
+    <li className="pt-entry is-diagram" data-testid="pt-entry" data-kind="diagram" data-state={state} data-entry={id ?? undefined}>
+      <span className="pt-head">
+        <span className="pt-by">{who(e.by)}</span>
+        {DIAGRAM_LIVE.has(state) && <span className="pt-chip is-live">drawing</span>}
+        {state === 'failed' && <span className="pt-chip">failed</span>}
+        {onRev !== null && onRev !== shownRevision && <span className="pt-chip">r{onRev}</span>}
+        {e.cost !== undefined && e.cost !== null && <RevisionCost cost={e.cost} />}
+        <When at={e.at} />
+      </span>
+      {text(e.ask) !== null && <p className="pt-text pt-ask">{text(e.ask)}</p>}
+      {text(e.text) !== null && <p className="pt-text">{text(e.text)}</p>}
+      {drawn !== null && <DiagramView source={drawn.source} title={drawn.title} why={drawn.why ?? undefined} size="strip" />}
+      {onStrip !== null ? (
+        <p className="pt-pinned" data-testid="pt-pinned">
+          <span className="pt-chip is-ok">pinned</span>
+          <DiagramLink d={onStrip} c={c} />
+        </p>
+      ) : (
+        drawn !== null &&
+        state === 'drawn' &&
+        c.mayDiagram &&
+        c.current !== null &&
+        id !== null && (
+          <span className="pt-acts">
+            <Button kind="secondary" size="sm" busy={busy} aria-label="Pin to the plan" title="Pin to the plan: a new revision holding this diagram" onClick={() => void pin()}>
+              Pin
+            </Button>
+          </span>
+        )
+      )}
+      {refused !== null && (
+        <span className="pt-refused" role="alert" data-code={refused.code ?? undefined}>
+          {refused.message || errorHeading(refused)}
+        </span>
+      )}
+    </li>
+  )
+}
+
 /** A revision newer than the one on screen: its diff against the shown plan. */
 function NewerDiff({ runId, revision, shownPlan }: Readonly<{ runId: string; revision: number; shownPlan: Json }>) {
   const got = useRevisionPlan(runId, revision)
@@ -429,17 +640,22 @@ function Entry({ e, ctx }: Readonly<{ e: Json; ctx: EntryCtx }>) {
   const { c, shownRevision, shownPlan } = ctx
   const [busy, setBusy] = useState(false)
   const [refused, setRefused] = useState<ApiError | null>(null)
+  if (e.kind === 'diagram') return <DiagramEntry e={e} ctx={ctx} />
   if (e.kind === 'event') {
     const rev = num(e.revision)
     const revision = rev === null || (e.event !== 'planned' && e.event !== 'revised') ? null : (c.revisions.find((r) => num(r.revision) === rev) ?? null)
     const newer = e.event === 'revised' && rev !== null && shownRevision !== null && rev > shownRevision && c.runId !== null
+    const diagramsChanged = e.event === 'revised' && rev !== null && rev > 1 && (e.made_by === 'add_diagram' || objs(revision?.changed).some((ch) => isDiagramPath(ch.path)))
     return (
       <li className="pt-entry is-event" data-testid="pt-entry" data-kind="event" data-event={String(e.event)} data-revision={rev ?? undefined}>
         <span className="pt-head">
           {eventWords(e)}
+          {e.event === 'revised' && diagramsOnly(revision, e.made_by) && <span className="pt-chip">diagrams only</span>}
           {revision !== null && <RevisionCost cost={revision.cost} />}
           <When at={e.at} />
         </span>
+        {e.event === 'planned' && <OpeningDiagrams revision={rev} ctx={ctx} />}
+        {diagramsChanged && <RevisedDiagrams revision={rev} ctx={ctx} />}
         {newer && <NewerDiff runId={c.runId!} revision={rev} shownPlan={shownPlan} />}
       </li>
     )
@@ -482,8 +698,14 @@ function Entry({ e, ctx }: Readonly<{ e: Json; ctx: EntryCtx }>) {
   )
 }
 
+/** An ask's bound (§6.5, `MAX_DIAGRAM_ASK_CHARS`). */
+export const ASK_MAX = 1_000
+
 function Composer({ c, anchorKey: key, label, digest, requirements }: Readonly<{ c: Conversation; anchorKey: string; label: string; digest: string; requirements: number }>) {
-  const [open, setOpen] = useState(false)
+  // Closed, or open to write a comment or to ask for a diagram of this part.
+  const [mode, setMode] = useState<'comment' | 'diagram' | null>(null)
+  const open = mode !== null
+  const setOpen = (to: boolean) => setMode(to ? 'comment' : null)
   const [body, setBody] = useState('')
   const [req, setReq] = useState('1')
   const [busy, setBusy] = useState(false)
@@ -494,20 +716,32 @@ function Composer({ c, anchorKey: key, label, digest, requirements }: Readonly<{
         <Button kind="ghost" size="sm" onClick={() => setOpen(true)}>
           Comment
         </Button>
+        {/* Ask for a diagram (§6.5): the edit level only (Q6), never with diagrams off for this run. */}
+        {c.mayDiagram && (
+          <Button kind="ghost" size="sm" aria-label="Ask for a diagram" title={c.capped ?? 'Ask for a diagram of this part'} disabled={c.capped !== null} onClick={() => setMode('diagram')}>
+            Diagram
+          </Button>
+        )}
       </span>
     )
+  const asking = mode === 'diagram'
   const post = async () => {
     if (c.runId === null || body.trim() === '') return
     setBusy(true)
     setRefused(null)
-    const r = await commentOnPlan(c.runId, digest, anchorOf(key, req), body.trim())
+    const anchor = anchorOf(key, req)
+    // An ask answers 202 with its pending `diagram` entry, a comment 201 with the comment: both join the thread.
+    const r = asking ? await askForDiagram(c.runId, digest, anchor as DiagramAnchor, body.trim()) : await commentOnPlan(c.runId, digest, anchor, body.trim())
     setBusy(false)
-    if (r.status === 'ok') {
+    if (r.status === 'ok' || (asking && r.status === 'stale')) {
       const entry = obj(r.data.entry)
       if (entry !== null) c.addEntry(entry)
       setBody('')
-      setOpen(false)
-    } else if (r.status === 'error') setRefused(r.error)
+      setMode(null)
+    } else if (r.status === 'error') {
+      if (asking && r.error.code !== null && FINAL_ASK_REFUSALS.has(r.error.code)) c.setCapped(r.error.message || errorHeading(r.error))
+      setRefused(r.error)
+    }
   }
   return (
     <div className="pt-compose">
@@ -520,10 +754,17 @@ function Composer({ c, anchorKey: key, label, digest, requirements }: Readonly<{
           ))}
         </select>
       )}
-      <textarea className="pt-box" aria-label={`Comment on ${label}`} rows={3} maxLength={COMMENT_MAX} value={body} onChange={(ev) => setBody(ev.target.value)} />
+      <textarea
+        className="pt-box"
+        aria-label={asking ? `Ask for a diagram of ${label}` : `Comment on ${label}`}
+        rows={3}
+        maxLength={asking ? ASK_MAX : COMMENT_MAX}
+        value={body}
+        onChange={(ev) => setBody(ev.target.value)}
+      />
       <span className="pt-acts">
-        <Button kind="primary" size="sm" busy={busy} disabled={body.trim() === ''} onClick={() => void post()}>
-          Post
+        <Button kind="primary" size="sm" busy={busy} disabled={body.trim() === '' || (asking && c.capped !== null)} onClick={() => void post()}>
+          {asking ? 'Ask' : 'Post'}
         </Button>
         <Button
           kind="ghost"
