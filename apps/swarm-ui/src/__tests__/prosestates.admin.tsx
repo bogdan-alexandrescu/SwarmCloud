@@ -29,6 +29,10 @@ import {
   mountVoiceRefused,
   mountWorkingCard,
 } from './prosestates.admin.mounts'
+import { refuseRestoreAsCut } from './prosestates.opened.mounts'
+
+/** RunnerSizes.tsx's CUT_TIP: why a memory cut asks twice, behind the cut confirms' (i). */
+const CUT_TIP = 'Each class listed gets less memory than its 7-day max peak. Memory never bursts: an attempt that needs more is killed and goes back to its last checkpoint.'
 
 const ADMIN_P = 'platform-admin' as const
 const PEOPLE = 'admin/people'
@@ -565,5 +569,65 @@ export const ADMIN: readonly ProseState[] = [
     shows: 'Not downloaded',
     mount: mountSessionRecord,
     act: () => press('body', 'Download transcript'),
+  },
+  // ---------------------------------------------------------------- openers no state opened (review round 2)
+  {
+    key: 'admin/people-admins-grant',
+    group: 'admin',
+    files: ['People.tsx'],
+    shows: '.c-dlg',
+    lines: ['Full platform admin powers'],
+    moved: [GRANT_GIVES],
+    data: ['dana@example.com'],
+    walk: {
+      open: PEOPLE,
+      persona: ADMIN_P,
+      then: async () => {
+        await typeInto('.pp-grant input', 'dana@example.com')
+        await press('.pp-grant', 'Grant admin')
+      },
+    },
+  },
+  {
+    key: 'admin/runner-sizes-save-cut',
+    group: 'admin',
+    files: ['RunnerSizes.tsx'],
+    shows: '.c-dlg',
+    lines: ['An attempt over its memory is killed'],
+    moved: [CUT_TIP],
+    data: ['less memory for the standard lanes'],
+    walk: {
+      open: SIZES,
+      persona: ADMIN_P,
+      then: async () => {
+        await drawn('.rs-field')
+        // The standard class's memory, 8 GiB, cut to 4: under its 7-day max peak of 5.6 GiB.
+        const memory = [...document.querySelectorAll<HTMLElement>('.rs-field')].find((f) => /^standard memory/i.test(f.querySelector('label')?.textContent ?? ''))
+        if (memory === undefined) throw new Error('no memory field')
+        fireEvent.change(memory.querySelector('input') as HTMLInputElement, { target: { value: '4' } })
+        await settle()
+        await typeInto('.rs-save textarea', 'less memory for the standard lanes')
+        await press('.rs-save', 'Save')
+      },
+    },
+  },
+  {
+    key: 'admin/runner-sizes-restore-cut',
+    group: 'admin',
+    files: ['RunnerSizes.tsx'],
+    shows: '.c-dlg',
+    lines: ['An attempt over its memory is killed'],
+    moved: [`Restoring version 1 cuts memory for standard below the class’s 7-day max peak. ${CUT_TIP}`],
+    data: ['the old sizes were right'],
+    walk: {
+      open: SIZES,
+      persona: ADMIN_P,
+      then: async () => {
+        await refuseRestoreAsCut(['standard'])
+        await press('main', 'Restore version 1')
+        await typeInto('.c-dlg textarea', 'the old sizes were right')
+        await press('.c-dlg', 'Restore')
+      },
+    },
   },
 ]

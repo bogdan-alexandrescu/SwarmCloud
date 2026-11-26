@@ -42,6 +42,7 @@ import {
 } from './prosestates.workflows.runs'
 import { RUN_POLL_MS } from '../Runs'
 import { screenLoaded } from './screenLoaded'
+import { mountStepInspector } from './prosestates.workflows.mounts'
 
 /** The fixture workflow of five checks and a synthesis, one failed. */
 const CHECKS = '/workflows/wf_5e5ad3b6f7da4299a839'
@@ -594,5 +595,15 @@ export const WORKFLOWS: readonly ProseState[] = [
     act: async () => {
       await clickWhenDrawn('.rn-more button')
     },
+  },
+  // ---------------------------------------------------------------- openers no state opened (review round 2)
+  {
+    key: 'workflows/inspector-more-facts',
+    group: 'workflows',
+    files: ['WorkflowViews.tsx'],
+    shows: 'details.wf-inspect-more[open]',
+    moved: ['Raised by every new lease; a worker holding an older one exits without running.'],
+    mount: mountStepInspector,
+    act: () => click('details.wf-inspect-more > summary'),
   },
 ]

@@ -7,6 +7,7 @@ import type { ProseState } from './prosestates'
 import { click } from './prosestates.shell'
 import { clickDrawn, drawn, foldDrawn, hover, press } from './prosestates.overview'
 import { mountGroupRoles, mountPluginDetail, mountPluginSettings, mountPushTest, mountSetupStrip, mountStepPlugins, mountTokenCreated } from './prosestates.config.mounts'
+import { mountPhonePolicy } from './prosestates.opened.mounts'
 
 const WS = 'config/workspace'
 /** writeFailure's sentence for a route not there yet, behind a refusal's (i). */
@@ -290,5 +291,21 @@ export const CONFIG: readonly ProseState[] = [
       fireEvent.change(await drawn('input.plg-num'), { target: { value: '0.9' } })
       await press('body', 'Save')
     },
+  },
+  // ---------------------------------------------------------------- openers no state opened (review round 2)
+  {
+    key: 'config/workspace-extra-permissions',
+    group: 'config',
+    files: ['PermissionCards.tsx'],
+    shows: 'details.fp-extra[open]',
+    walk: { open: 'config/workspace?part=setup', then: () => clickDrawn('details.fp-extra > summary') },
+  },
+  {
+    key: 'config/github-policy-phone-rule',
+    group: 'config',
+    files: ['Access.tsx'],
+    shows: '.ac-rules details[open]',
+    mount: mountPhonePolicy,
+    act: () => click('.ac-rules details > summary'),
   },
 ]

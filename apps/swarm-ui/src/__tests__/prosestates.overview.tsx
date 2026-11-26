@@ -14,6 +14,7 @@ import { fold } from './prosestates.agent'
 import { click } from './prosestates.shell'
 import { screenLoaded } from './screenLoaded'
 import { mountApproval, mountDeleteRefused, mountFailures, mountInterviewDesign, mountMergeSwitch, mountRunningMore } from './prosestates.overview.mounts'
+import { mountDesignDoc, mountResolvedComment } from './prosestates.opened.mounts'
 
 /** Wait for `selector` to be drawn by the page's later reads; throws when it never is. */
 export async function drawn(selector: string): Promise<HTMLElement> {
@@ -387,5 +388,42 @@ export const OVERVIEW: readonly ProseState[] = [
     shows: '.iv-big',
     mount: mountInterviewDesign,
     act: () => clickDrawn('.iv-shot-big'),
+  },
+  // ---------------------------------------------------------------- openers no state opened (review round 2)
+  {
+    key: 'automate/approval-more-requirements',
+    group: 'overview',
+    files: ['PlanDocument.tsx'],
+    shows: '[data-testid="pd-doc"] details.pd-more[open]',
+    // The plan's requirements, as its planner wrote them.
+    data: ['A note with no zone is dated in UTC, as today'],
+    mount: mountApproval,
+    act: async () => {
+      for (let i = 0; i < 40 && document.querySelector('details.pd-more') === null; i++) await settle()
+      click('details.pd-more > summary')
+    },
+  },
+  {
+    key: 'automate/approval-resolved-comments',
+    group: 'overview',
+    files: ['PlanThread.tsx'],
+    shows: 'details.pt-resolved[open]',
+    data: ['Name the bucket.'],
+    mount: mountResolvedComment,
+    act: async () => {
+      for (let i = 0; i < 40 && document.querySelector('details.pt-resolved') === null; i++) await settle()
+      click('details.pt-resolved > summary')
+    },
+  },
+  {
+    key: 'automate/approval-design-doc',
+    group: 'overview',
+    files: ['ApprovalDecision.tsx'],
+    shows: 'details[data-testid="ab-design"][open]',
+    mount: mountDesignDoc,
+    act: async () => {
+      for (let i = 0; i < 40 && document.querySelector('details[data-testid="ab-design"]') === null; i++) await settle()
+      click('details[data-testid="ab-design"] > summary')
+    },
   },
 ]

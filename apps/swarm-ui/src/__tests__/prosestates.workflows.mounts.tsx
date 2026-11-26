@@ -18,7 +18,8 @@ import { absentCell, measuredCell } from '../measure'
 import { RunFiles, type CheckpointListing } from '../RunFiles'
 import { StepCard } from '../StepCard'
 import type { CheckpointRecord, CheckpointsPage, Task, Workflow, WorkflowStep } from '../types'
-import type { AttemptLoader, StepRowModel } from '../WorkflowViews'
+import { StepInspector, type AttemptLoader, type StepRowModel } from '../WorkflowViews'
+import { shapeOf } from '../dag'
 import { CancelWorkflow, PauseWorkflow } from '../Workflows'
 import { WorkflowFacts } from '../WorkflowFacts'
 import { serve } from './repofixture'
@@ -90,6 +91,27 @@ const attemptsLoader: AttemptLoader = () =>
     fetchedAt: 0,
     data: { attempts: [1, 2, 3].map((n) => attempt(n, { created_at: at(n), started_at: at(n), completed_at: at(n + 1), exit_code: 2 })) },
   } as Awaited<ReturnType<AttemptLoader>>)
+
+/** A failed step's inspector (the run list's side panel): its attempt facts, the generation folded under "More about this attempt". */
+export const mountStepInspector = (): ReactElement => {
+  const row = failedRow()
+  return (
+    <StepInspector
+      workflowId="wf_1"
+      row={row}
+      taskState="FAILED"
+      siblings={[{ workflowId: 'wf_1', mark: 'failed', hue: 'bad', word: 'failed' }]}
+      siblingIndex={0}
+      shape={shapeOf([row.step])}
+      onSibling={() => undefined}
+      focus={null}
+      onFocused={() => undefined}
+      onClose={() => undefined}
+      now={Date.parse(at(10))}
+      load={attemptsLoader}
+    />
+  )
+}
 
 /** A failed step with a five-line cause. Clicks: `details.sc-more > summary` opens `details.sc-more[open]`; `.sc-err button[aria-expanded]` ("Show all") sets it true. */
 export const mountStepCard = (): ReactElement => (

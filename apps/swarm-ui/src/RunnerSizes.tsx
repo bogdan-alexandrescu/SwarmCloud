@@ -272,6 +272,9 @@ export function pct(share: number | null | undefined): string {
   return typeof share === 'number' && Number.isFinite(share) ? `${Math.round(share * 100)}%` : 'no data'
 }
 
+/** Why a memory cut asks twice: the (i) behind the cut confirms' one visible line. */
+const CUT_TIP = 'Each class listed gets less memory than its 7-day max peak. Memory never bursts: an attempt that needs more is killed and goes back to its last checkpoint.'
+
 function gib(value: number | null | undefined): string {
   return typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(1)} GiB` : 'no data'
 }
@@ -705,11 +708,15 @@ function RunnerSizesBody({
           onClose={() => setConfirm(null)}
           error={failed === null ? undefined : `Not saved: ${failed}`}
         >
+          {/* One must-stay line; why it matters is behind its (i) (issue 439, the owner's prose rule). */}
+          <ul className="rs-cut-list">
+            {confirm.classes.map((c) => (
+              <li key={c}>{`${c}: ${changes[c]?.memory_gib ?? '—'} GiB, 7-day peak ${gib(recent[c]?.memory_peak_gib_max)}`}</li>
+            ))}
+          </ul>
           <p>
-            {confirm.classes
-              .map((c) => `${c}: memory ${changes[c]?.memory_gib ?? '—'} GiB, under its 7-day max peak of ${gib(recent[c]?.memory_peak_gib_max)}`)
-              .join('; ')}
-            . Memory never bursts: an attempt that needs more is killed and goes back to its last checkpoint.
+            An attempt over its memory is killed{' '}
+            <InfoTip about="the memory cut" tip={CUT_TIP} />
           </p>
         </TypedConfirm>
       )}
@@ -1143,7 +1150,11 @@ function RestoreDialog({ version, doc, onClose, reload }: { version: number; doc
         onClose={onClose}
         error={failed === null ? undefined : `Not restored: ${failed}`}
       >
-        <p>Restoring {what} cuts memory for {cut.join(', ')} below the class’s 7-day max peak. Memory never bursts: an attempt that needs more is killed.</p>
+        {/* One must-stay line; which classes and why are behind its (i) (issue 439, the owner's prose rule). */}
+        <p>
+          An attempt over its memory is killed{' '}
+          <InfoTip about="the memory cut" tip={`Restoring ${what} cuts memory for ${cut.join(', ')} below the class’s 7-day max peak. ${CUT_TIP}`} />
+        </p>
       </TypedConfirm>
     )
   }

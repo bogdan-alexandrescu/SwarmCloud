@@ -2,6 +2,7 @@
 import { afterEach, vi } from 'vitest'
 
 import { proseStateGroup } from './prosestates'
+import { restoreOpenedStubs } from './prosestates.opened.mounts'
 import { AGENT } from './prosestates.agent'
 import { refuse, restoreAgentStubs, served } from './prosestates.agent.mounts'
 
@@ -21,4 +22,5 @@ vi.mock('../api', async (importOriginal) => {
 })
 
 afterEach(restoreAgentStubs)
+afterEach(restoreOpenedStubs)
 proseStateGroup('agent', AGENT)

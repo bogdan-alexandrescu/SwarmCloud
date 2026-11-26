@@ -1457,10 +1457,18 @@ const FACT_LABEL: Readonly<Record<string, string>> = {
  * invariant 5).
  */
 const FACT_HINT: Readonly<Record<string, string>> = {
-  gen: 'raised by every new lease; a worker holding an older one exits without running',
   // THE STEP'S OWN (box 6343767840): the panel's '$0.253' beside the head's
   // '$1.21' read as a second figure for the workflow.
   cost: 'this step’s own, not the workflow’s total',
+}
+
+/**
+ * A fact's explanation too long for the surface (issue 439, the owner's prose
+ * rule): behind the fact's (i), word for word. The fencing generation's
+ * hint was printed after its figure, a 14-word run on the folded facts.
+ */
+const FACT_TIP: Readonly<Record<string, string>> = {
+  gen: 'Raised by every new lease; a worker holding an older one exits without running.',
 }
 
 /** `exit status 2: …`, the way a worker writes a non-zero exit into `error`. */
@@ -1560,6 +1568,12 @@ function FactItems({ facts }: { facts: readonly Fact[] }) {
             <b>{FACT_LABEL[f.key] ?? f.key}</b>
             {f.cell.text}
             {FACT_HINT[f.key] !== undefined && <span className="wf-fact-hint"> · {FACT_HINT[f.key]}</span>}
+            {FACT_TIP[f.key] !== undefined && (
+              <>
+                {' '}
+                <InfoTip about={FACT_LABEL[f.key] ?? f.key} tip={FACT_TIP[f.key]!} />
+              </>
+            )}
             {/* THE SAME NOTE THE TABLE PRINTS for the same figure (WF-5), so
                 the inspector and the table word one source one way. */}
             {f.from === 'result' && (

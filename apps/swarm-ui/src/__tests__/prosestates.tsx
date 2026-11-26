@@ -53,10 +53,13 @@ import type { ReactElement } from 'react'
 import { render } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
+import * as Overlay from '../components/Overlay'
 import { THEME_KEY } from '../theme'
 import { load, measure, openAt, proseDelta, settle, useBase, type Measure, type Persona } from './proseapp'
 import { holds } from './prose81states'
 import { longRuns } from './proseruns'
+import { openNow } from './prosestates.openers'
+import { OPENS } from './prosestates.opens'
 import { screenLoaded } from './screenLoaded'
 
 export const THEMES = ['light', 'dark'] as const
@@ -157,6 +160,26 @@ export function judge(state: ProseState, theme: Theme): Measure {
   return now
 }
 
+/** The overlay components components/Overlay.tsx exports: what its module says, not a list kept here. */
+export const OVERLAYS: readonly string[] = Object.entries(Overlay)
+  .filter(([name, v]) => /^[A-Z]/.test(name) && typeof v === 'function')
+  .map(([name]) => name)
+
+/**
+ * The openers (prosestates.openers.ts) the click opened: open now and not
+ * before it. Each id `state` lists in OPENS must be among them: a state that
+ * says it opens a dialog its click never opened FAILS, and the cover test
+ * fails an opener no state lists, so every opener is opened by some click.
+ */
+export function opensChecked(state: ProseState, theme: Theme, before: ReadonlySet<string>): string[] {
+  const opened = [...openNow(OVERLAYS)].filter((id) => !before.has(id)).sort()
+  console.log(`PROSE STATE OPENS ${state.key} (${theme}): ${JSON.stringify(opened)}`)
+  const missed = (OPENS[state.key] ?? []).filter((id) => !opened.includes(id))
+  if (missed.length > 0)
+    throw new Error(`${state.key} (${theme}): its click did not open ${missed.join(', ')} (it opened ${opened.length === 0 ? 'none' : opened.join(', ')})`)
+  return opened
+}
+
 function setTheme(theme: Theme): void {
   localStorage.setItem(THEME_KEY, theme)
   document.documentElement.setAttribute('data-theme', theme)
@@ -190,15 +213,19 @@ export async function visitMount(state: ProseState, theme: Theme): Promise<Measu
   try {
     await screenLoaded()
     await settle()
+    let before = new Set<string>()
     if (state.act !== undefined) {
       notYet(state)
+      before = openNow(OVERLAYS)
       // Not inside an outer act(): fireEvent acts on its own, and an act
       // around it would hold a two-click walk's first update back.
       await state.act()
       await screenLoaded()
       await settle()
     }
-    return judge(state, theme)
+    const now = judge(state, theme)
+    opensChecked(state, theme, before)
+    return now
   } finally {
     unmount()
     clearTheme()
@@ -227,6 +254,7 @@ async function visitWalk(src: string | null, state: ProseState, theme: Theme, ru
     await screenLoaded()
     await settle()
     if (rules) notYet(state)
+    const before = rules ? openNow(OVERLAYS) : new Set<string>()
     try {
       await walk.then()
     } catch (e) {
@@ -236,7 +264,11 @@ async function visitWalk(src: string | null, state: ProseState, theme: Theme, ru
     }
     await screenLoaded()
     await settle()
-    if (rules) return judge(state, theme)
+    if (rules) {
+      const now = judge(state, theme)
+      opensChecked(state, theme, before)
+      return now
+    }
     const el = found(state.shows)
     return el === null ? null : measureState(el)
   } finally {

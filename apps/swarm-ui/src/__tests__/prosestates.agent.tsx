@@ -30,6 +30,7 @@ import {
   releaseStop,
 } from './prosestates.agent.mounts'
 import { click } from './prosestates.shell'
+import { mountTheaterProtocol, mountTraceEdit } from './prosestates.opened.mounts'
 
 /** The ordinary running agent the QA capture opens (qa/routes.json). */
 const RUNNING = 'work/task/task_a073aff5'
@@ -466,5 +467,55 @@ export const AGENT: readonly ProseState[] = [
     moved: ['Waiting for the pull request checks to finish. Holds no capacity.'],
     mount: mountReChecks,
     act: () => click('details[data-ci-wait-earlier] > summary'),
+  },
+  // ---------------------------------------------------------------- openers no state opened (review round 2)
+  {
+    key: 'agent/stderr-empty-facts',
+    group: 'agent',
+    files: ['Artifacts.tsx'],
+    shows: 'details.ag-logmeta[open]',
+    walk: {
+      open: `${RUNNING}/logs`,
+      then: async () => {
+        clickText('.ag-split button', 'Agent stderr')
+        await drawn()
+        click('details.ag-logmeta > summary')
+      },
+    },
+  },
+  {
+    key: 'agent/json-deep-node',
+    group: 'agent',
+    files: ['ArtifactViewer.tsx'],
+    shows: '.art-json details[open] details[open] details[open]',
+    walk: {
+      open: `${DONE}/artifacts`,
+      then: async () => {
+        clickText('button.art-open', 'claude-transcript.json')
+        await drawn()
+        click('.art-json details:not([open]) > summary')
+      },
+    },
+  },
+  {
+    key: 'agent/trace-tool-reply',
+    group: 'agent',
+    files: ['trace/Trace.tsx'],
+    shows: 'details.trc-more[open]',
+    mount: mountTraceEdit,
+    act: async () => {
+      for (let i = 0; i < 20 && document.querySelector('button.trc-row.is-edit') === null; i++) await settle()
+      click('button.trc-row.is-edit')
+      await settle()
+      click('details.trc-more > summary')
+    },
+  },
+  {
+    key: 'agent/theater-protocol-calls',
+    group: 'agent',
+    files: ['TheaterTimeline.tsx'],
+    shows: 'details.th-proto[open]',
+    mount: mountTheaterProtocol,
+    act: () => click('details.th-proto > summary'),
   },
 ]

@@ -1,8 +1,11 @@
 // The states guard's own rules (prosestates.tsx), on hand-built states, and
-// THE COVER TEST: every screen file that draws an opener is named by a state,
-// or by issue 81's state tests; there is no pending allowance. A file is
-// named by at least as many states as it draws openers (`openerCount`), so a
-// second fold or dialog in a file one state already names is not covered by it.
+// THE COVER TEST: every opener a screen file draws (prosestates.openers.ts:
+// each `<details>`, `role="dialog"`/`role="menu"` and overlay component, by
+// id) is listed in OPENS (prosestates.opens.ts) by a registered state, and
+// judge() fails that state when its click did not open it: an opener is
+// covered by being opened, not by a state naming its file. Issue 81's own
+// state tests cover the files they name; there is no pending allowance.
+// A file is also named by at least as many states as it draws openers.
 
 import { useState, type ReactElement } from 'react'
 import { fireEvent } from '@testing-library/react'
@@ -10,7 +13,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import * as Overlay from '../components/Overlay'
 import { InfoTip } from '../InfoTip'
-import { visitMount, type ProseState, type Theme } from './prosestates'
+import { OVERLAYS as STATE_OVERLAYS, visitMount, type ProseState, type Theme } from './prosestates'
+import { allOpeners, scanOpeners, SOURCES } from './prosestates.openers'
+import { OPENS } from './prosestates.opens'
 import { ADMIN } from './prosestates.admin'
 import { AGENT } from './prosestates.agent'
 import { CONFIG } from './prosestates.config'
@@ -143,15 +148,6 @@ describe('the states guard holds a state to the rule', () => {
 
 // ---------------------------------------------------------------- the cover
 
-/** Every screen file under src, its source by its path from src (`components/Overlay.tsx`). */
-const SOURCES: Readonly<Record<string, string>> = Object.fromEntries(
-  Object.entries(import.meta.glob<string>('../**/*.tsx', { query: '?raw', import: 'default', eager: true }))
-    // The glob also answers this directory's own files as `./x.tsx`: tests, not screens.
-    .filter(([path]) => path.startsWith('../') && !path.startsWith('../__tests__/'))
-    .map(([path, raw]) => [path.slice('../'.length), raw] as const)
-    .filter(([path]) => !/\.test\.tsx$/.test(path) && !/(^|\/)generated[/.]/.test(path)),
-)
-
 /** `line` cut at its `//` comment; a `//` after a colon or a quote (`https://`, `'//'`) is code. */
 function lineCode(line: string): string {
   let at = line.indexOf('//')
@@ -172,10 +168,8 @@ export function stripComments(src: string): string {
     .join('\n')
 }
 
-/** The overlay components components/Overlay.tsx exports: what its module says, not a list kept here. */
-const OVERLAYS: readonly string[] = Object.entries(Overlay)
-  .filter(([name, v]) => /^[A-Z]/.test(name) && typeof v === 'function')
-  .map(([name]) => name)
+/** The overlay components components/Overlay.tsx exports (prosestates.tsx reads them from its module). */
+const OVERLAYS: readonly string[] = STATE_OVERLAYS
 
 /** Whether `src` draws something a click opens. */
 export function drawsOpener(src: string, overlays: readonly string[]): boolean {
@@ -194,10 +188,7 @@ export function drawsOpener(src: string, overlays: readonly string[]): boolean {
  * file drawing one makes it an opener file (drawsOpener) all the same.
  */
 export function openerCount(src: string, overlays: readonly string[]): number {
-  const code = stripComments(src)
-  const tags = overlays.filter((name) => name !== 'Tooltip').map((name) => `<${name}\\b`)
-  const re = new RegExp(['<details\\b', '(?<=\\s)role="(?:dialog|menu)"', ...tags].join('|'), 'g')
-  return (code.match(re) ?? []).length
+  return scanOpeners('x.tsx', src, overlays).length
 }
 
 /** The opener files nothing accounts for: no state names them and issue 81 did not name them. */
@@ -266,4 +257,46 @@ describe('the cover: every screen file that draws an opener is visited', () => {
     const lost81 = NAMED_BY_81.filter((f) => SOURCES[f] === undefined)
     expect(lost81, 'NAMED_BY_81 names a file that is gone').toEqual([])
   })
+
+  // ---------------------------------------------------------------- each opener opened
+  /** The opener ids no listed state opens: issue 81's files aside. */
+  const unopened = (opens: Readonly<Record<string, readonly string[]>>): string[] => {
+    const listed = new Set(Object.values(opens).flat())
+    return allOpeners(OVERLAYS)
+      .filter((o) => !NAMED_BY_81.includes(o.file) && !listed.has(o.id))
+      .map((o) => `${o.id} (line ${o.line})`)
+  }
+
+  it('lists every opener in a state that opens it, not only its file', () => {
+    const left = unopened(OPENS)
+    expect(left, `register a state whose click opens each, and list it in prosestates.opens.ts:\n${left.join('\n')}`).toEqual([])
+  })
+
+  it('lists only registered states and openers that exist', () => {
+    const keys = new Set(REGISTRY.map((s) => s.key))
+    expect(Object.keys(OPENS).filter((k) => !keys.has(k)), 'OPENS names a state that is not registered').toEqual([])
+    const ids = new Set(allOpeners(OVERLAYS).map((o) => o.id))
+    expect(Object.values(OPENS).flat().filter((id) => !ids.has(id)), 'OPENS lists an opener no screen file draws').toEqual([])
+    expect(REGISTRY.length, 'two states share a key').toBe(keys.size)
+  })
+
+  it('fails an opener when the state that opens it no longer lists it', () => {
+    const id = 'RunnerSizes.tsx <TypedConfirm>#1'
+    const without = Object.fromEntries(Object.entries(OPENS).map(([k, v]) => [k, v.filter((x) => x !== id)]))
+    expect(unopened(OPENS).some((x) => x.startsWith(id))).toBe(false)
+    expect(unopened(without).some((x) => x.startsWith(id))).toBe(true)
+  })
+
+  it('names each opener by its kind and order, at the line of its element', () => {
+    const src = ['<div>', '  <details>', '    <summary>a</summary>', '  </details>', '  <div', '    className="x"', '    role="dialog"', '  />', '  <TypedConfirm name="n" />', '  <details />', '</div>'].join('\n')
+    expect(scanOpeners('X.tsx', src, OVERLAYS).map((o) => `${o.id}@${o.line}`)).toEqual([
+      'X.tsx details#1@2',
+      'X.tsx role=dialog#1@5',
+      'X.tsx <TypedConfirm>#1@9',
+      'X.tsx details#2@10',
+    ])
+    // A block comment keeps the lines under it where they were.
+    expect(scanOpeners('X.tsx', '/* a\nb */\n<Dialog />', OVERLAYS).map((o) => o.line)).toEqual([3])
+  })
+
 })
