@@ -3173,8 +3173,8 @@ export function PlanReviewSettingsCard({ admin, fold = false }: { admin: boolean
           </p>
         )}
         <div className="as-field">
-          <Button type="submit" aria-label="Save plan review" kind="primary" size="sm" busy={busy} disabled={bad.length > 0 || nothing}>
-            Save
+          <Button type="submit" iconOnly icon={<CIcon name="save" />} kind="primary" size="sm" busy={busy} disabled={bad.length > 0 || nothing}>
+            Save plan review
           </Button>
           {saved && nothing && (
             <span role="status" aria-label="Saved" title={data.updated_by === null ? undefined : `Saved by ${data.updated_by}`}>
