@@ -41,6 +41,16 @@ async function mountServed(handler: Handler, view: string | null = `run=${RUN_ID
 const mountRun = (run: Json, extra: Handler = () => null): Promise<ReactElement> =>
   mountServed((m, url) => (url === `/v1/runs/${RUN_ID}` && m === 'GET' ? { status: 200, body: { run } } : extra(m, url)))
 
+/** A run held with no plan: the one PLANNED run this page still offers Edit and Reject for (a run with a plan is decided on its review page). */
+export const PLANLESS: Json = {
+  plan: null, plan_digest: null,
+  plan_lint: { replans: 1, held: true, replan_error: null, planner_task_ids: ['task_planner0001'],
+    findings: [{ code: 'plan_invalid', step: null, requirement: null, message: 'plan.json is not JSON.' }],
+    replan_findings: [] },
+}
+/** A run past PLANNED and rejected: this page draws the whole plan, unfolded. */
+const WHOLE: Json = { state: 'REJECTED', terminal: true, rejected_by: 'operator@example.com' }
+
 const SUMMARY = [
   'Sum each step\'s spend into the workflow read so the list can draw a cost column without a second request.',
   'The sum is taken in the route, not the store, because the store keeps no per-step total.',
@@ -48,13 +58,20 @@ const SUMMARY = [
   'A workflow with no priced step shows a dash, never a zero.',
 ].join(' ')
 
-/** A PLANNED run whose summary is longer than the lead. Click `.rn-more-btn` ("Read more"): it reads "Show less" with `aria-expanded="true"`, and `.rn-summary` holds the whole summary. */
+/** A run held with no plan: Edit and Reject are drawn. */
+export const mountRunPlanless = (): Promise<ReactElement> => mountRun(issueRun(PLANLESS))
+
+/** A rejected run: this page draws the whole plan, unfolded. Open `details.rn-raw` or `details.rn-prompt-d`. */
+export const mountRunWhole = (): Promise<ReactElement> => mountRun(issueRun(WHOLE))
+
+/** A rejected run whose summary is longer than the lead. Click `.rn-more-btn` ("Read more"): it reads "Show less" with `aria-expanded="true"`, and `.rn-summary` holds the whole summary. */
 export const mountRunLongSummary = (): Promise<ReactElement> =>
-  mountRun(issueRun({ plan: { ...FULL_PLAN, overlaps: [], summary: SUMMARY } }))
+  mountRun(issueRun({ ...WHOLE, plan: { ...FULL_PLAN, overlaps: [], summary: SUMMARY } }))
 
 /** A PLANNED run with two overlaps, one needing action. Click `details.rn-overlap > summary` (the first): `details.rn-overlap[open]` shows `.rn-overlap-note`. */
 export const mountRunOverlaps = (): Promise<ReactElement> =>
   mountRun(issueRun({
+    ...WHOLE,
     plan: {
       ...FULL_PLAN,
       overlaps: [
@@ -87,30 +104,23 @@ export const mountRunChecks = (): Promise<ReactElement> => {
   }))
 }
 
-/** A PLANNED run whose approval is refused (500). Click "Approve and run" in `.rn-actions`: `.rn-wait .state.failed` appears (the FailedPanel). */
-export const mountRunApproveRefused = (): Promise<ReactElement> =>
-  mountRun(issueRun(), (m, url) =>
-    url.endsWith('plan:approve') && m === 'POST'
-      ? { status: 500, body: { code: 'internal', message: 'the store refused the approval' } }
-      : null)
-
-/** A PLANNED run whose rejection is accepted. Acts: click "Reject" in `.rn-actions`; type a reason into `.rn-reject textarea`; click "Reject this plan" (submit): `.rn-decided` shows "Rejected.". */
+/** A run held with no plan whose rejection is accepted. Acts: click "Reject" in `.rn-actions`; type a reason into `.rn-reject textarea`; click "Reject this plan" (submit): `.rn-decided` shows "Rejected.". */
 export const mountRunRejected = (): Promise<ReactElement> =>
-  mountRun(issueRun(), (m, url) =>
+  mountRun(issueRun(PLANLESS), (m, url) =>
     url.endsWith('plan:reject') && m === 'POST'
       ? { status: 200, body: { run: issueRun({ state: 'REJECTED', terminal: true, rejected_by: 'operator@example.com', rejection_reason: 'Out of scope' }) } }
       : null)
 
-/** A PLANNED run whose rejection is refused (500). Acts: click "Reject"; type a reason; click "Reject this plan": `.state.failed` appears beside the form. */
+/** A run held with no plan whose rejection is refused (500). Acts: click "Reject"; type a reason; click "Reject this plan": `.state.failed` appears beside the form. */
 export const mountRunRejectRefused = (): Promise<ReactElement> =>
-  mountRun(issueRun(), (m, url) =>
+  mountRun(issueRun(PLANLESS), (m, url) =>
     url.endsWith('plan:reject') && m === 'POST'
       ? { status: 500, body: { code: 'internal', message: 'the store refused the rejection' } }
       : null)
 
-/** A PLANNED run whose plan edit is refused (500). Acts: click "Edit plan"; change the summary; click "Save the plan": `.state.failed` appears under the editor. */
+/** A run held with no plan whose plan edit is refused (500). Acts: click "Edit plan"; change the summary; click "Save the plan": `.state.failed` appears under the editor. */
 export const mountRunEditRefused = (): Promise<ReactElement> =>
-  mountRun(issueRun(), (m, url) =>
+  mountRun(issueRun(PLANLESS), (m, url) =>
     url.endsWith('plan:edit') && m === 'POST'
       ? { status: 500, body: { code: 'internal', message: 'the store refused the edit' } }
       : null)
@@ -136,20 +146,6 @@ function servedTwice(then: () => Json, extra: Handler): Handler {
   }
 }
 
-/** A PLANNED run whose approval is refused with 409 `plan_changed`. Click "Approve and run": the run is read again and `.rn-notice` says why. */
-export const mountRunPlanChanged = (): Promise<ReactElement> =>
-  mountServed(servedTwice(EDITED, (m, url) =>
-    url.endsWith('plan:approve') && m === 'POST'
-      ? { status: 409, body: { code: 'plan_changed', message: 'the plan has changed since it was shown', detail: { plan_digest: digest('b2') } } }
-      : null))
-
-/** A PLANNED run whose approval is refused with 409 `invalid_run_transition`. Click "Approve and run": the run is read again and `.rn-notice` says why. */
-export const mountRunMovedOn = (): Promise<ReactElement> =>
-  mountServed(servedTwice(() => issueRun({ state: 'REJECTED', terminal: true, rejected_by: 'operator@example.com', rejection_reason: 'Out of scope' }), (m, url) =>
-    url.endsWith('plan:approve') && m === 'POST'
-      ? { status: 409, body: { code: 'invalid_run_transition', message: 'the run is REJECTED' } }
-      : null))
-
 /** A PLANNED run whose next poll serves someone else's plan. Let the poll land: `.rn-held` offers it. */
 export const mountRunHeld = (): Promise<ReactElement> => mountServed(servedTwice(EDITED, () => null))
 
@@ -169,3 +165,33 @@ export const mountRunsOlder = (): Promise<ReactElement> =>
 /** The runs list whose older page is refused (500). Click "Show older runs": `.rn-list .state.failed` appears. */
 export const mountRunsOlderRefused = (): Promise<ReactElement> =>
   mountServed(listPages({ status: 500, body: { code: 'internal', message: 'the store refused the page' } }), null)
+
+/** The Automate settings tab, its Plan review card on a workspace whose save is refused (500). Click the card's "off" button in the group "Plan diagrams": `.as-card` shows the refusal ("Not saved"). */
+export async function mountPlanSettingsRefused(): Promise<ReactElement> {
+  const realFetch = globalThis.fetch
+  const settings = {
+    tenant_id: 'eng',
+    plans: { diagrams: null, chat_model_class: null },
+    effective: { diagrams: { value: true, from: 'platform' }, chat_model_class: { value: 'sonnet', from: 'platform', fell_through: null } },
+    caps: { replans: 5, diagram_asks: 20, chat_turns: 40, review_usd: 25, from: 'platform', set_by: null, set_at: null },
+    chat_model_classes: ['haiku', 'sonnet', 'opus'],
+    updated_at: null, updated_by: null, read_at: new Date().toISOString(), can_edit: true,
+  }
+  serve((m, url) => {
+    const path = url.split('?')[0]
+    if (path === '/v1/workspaces/eng/plan-settings')
+      return m === 'PUT' ? { status: 500, body: { code: 'internal', message: 'the store refused the setting' } } : { status: 200, body: settings }
+    if (path === '/v1/schedules') return { status: 200, body: { schedules: [], tenant_id: 'eng' } }
+    if (path === '/v1/schedule-types') return { status: 200, body: { types: [], tenant_id: 'eng' } }
+    return null
+  })
+  vi.stubEnv('VITE_LIVE', '1')
+  vi.resetModules()
+  restores.push(() => {
+    globalThis.fetch = realFetch
+    vi.unstubAllEnvs()
+    vi.resetModules()
+  })
+  const { AutomateSettingsScreen } = await import('../AutomateSettings')
+  return <AutomateSettingsScreen />
+}

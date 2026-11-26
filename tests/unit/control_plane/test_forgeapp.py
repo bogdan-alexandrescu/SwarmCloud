@@ -170,7 +170,7 @@ class FakeGitHub:
             head, claims, signature = jwt.split(".")
             self.app_public_key.verify(_unb64(signature), f"{head}.{claims}".encode(),
                                        padding.PKCS1v15(), hashes.SHA256())
-        except Exception:
+        except Exception:  # noqa: BLE001
             return _json(401, {"message": "A JSON web token could not be decoded",
                                "documentation_url": "https://docs.github.com/rest"})
         return _json(200, {"id": self.app_id, "slug": self.app_slug, "name": "SwarmCloud",

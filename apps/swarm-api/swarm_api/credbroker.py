@@ -433,7 +433,7 @@ class ForgeCredentialBroker:
             raise self._refuse(CredentialUnavailable(
                 f"{secret} holds no enabled version; its owner must connect GitHub again"),
                 body, secret) from None
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
             raise self._refuse(CredentialReadFailed(
                 f"{secret} could not be read ({code})"), body, secret) from None

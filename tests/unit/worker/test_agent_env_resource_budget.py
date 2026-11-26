@@ -11,8 +11,9 @@ What holds now, one test per property:
 
 1. the agent CLI's env carries SWARM_MEMORY_LIMIT_BYTES, the cgroup's
    `memory.max`, and PYTEST_XDIST_AUTO_NUM_WORKERS, max(1, min(floor(cpu),
-   (limit - 2 GiB) // 1 GiB)) -- 6 for 8 GiB/6 cpu, 2 for 5 GiB/2 cpu, 3 for
-   5 GiB/6 cpu;
+   (limit - 2 GiB) // 2 GiB)) -- 3 for 8 GiB/6 cpu, 1 for 5 GiB/2 or 6 cpu,
+   6 for 16 GiB/6 cpu (issue 422: 6 workers OOM-killed an 8 GiB container,
+   so 8 GiB gets at most 4, and the prompt's `-n` ceiling is the env's count);
 2. its stdin prompt carries one line naming the budget in GiB and the worker
    count, telling it to stop dev servers before tsc or the tests and never to
    set --max-old-space-size above the budget;
@@ -102,7 +103,9 @@ def _run(
 
 
 def _expected_workers(memory: int, cpu: float) -> str:
-    return str(max(1, min(math.floor(cpu), (memory - 2 * GIB) // GIB)))
+    # The constants are read from cliagent, never restated here.
+    share = (memory - cliagent.AGENT_MEMORY_HEADROOM_BYTES) // cliagent.XDIST_WORKER_BYTES
+    return str(max(1, min(math.floor(cpu), share)))
 
 
 def _budget_lines(stdin: str) -> list[str]:
@@ -111,7 +114,7 @@ def _budget_lines(stdin: str) -> list[str]:
 
 @pytest.mark.parametrize(
     ("memory", "cpu", "workers"),
-    [(8 * GIB, 6.0, "6"), (5 * GIB, 2.0, "2"), (5 * GIB, 6.0, "3")],
+    [(8 * GIB, 6.0, "3"), (5 * GIB, 2.0, "1"), (5 * GIB, 6.0, "1"), (16 * GIB, 6.0, "6")],
 )
 def test_the_env_carries_the_memory_limit_and_the_xdist_worker_count(
     tmp_path, monkeypatch, memory, cpu, workers
@@ -129,7 +132,7 @@ def test_the_env_carries_the_memory_limit_and_the_xdist_worker_count(
 
 @pytest.mark.parametrize(
     ("memory", "cpu", "gib", "workers"),
-    [(8 * GIB, 6.0, "8 GiB", "6"), (5 * GIB, 2.0, "5 GiB", "2")],
+    [(8 * GIB, 6.0, "8 GiB", "3"), (5 * GIB, 2.0, "5 GiB", "1")],
 )
 def test_the_prompt_names_the_budget_in_one_line(tmp_path, monkeypatch, memory, cpu, gib, workers):
     _limits(monkeypatch, memory, cpu)
@@ -141,7 +144,9 @@ def test_the_prompt_names_the_budget_in_one_line(tmp_path, monkeypatch, memory, 
     assert len(lines) == 1, seen["stdin"]
     line = lines[0]
     assert gib in line, line
-    assert f"-n {workers}" in line or f"-n above {workers}" in line, line
+    # The ceiling the line names is exactly the count the env carries.
+    assert seen["env"]["PYTEST_XDIST_AUTO_NUM_WORKERS"] == workers, seen["env"]
+    assert f"never pass pytest -n above {workers} (" in line, line
     for phrase in ("dev server", "tsc", "test", "next dev", "uvicorn", "postgres"):
         assert phrase in line, (phrase, line)
     assert line == cliagent.budget_line(memory, int(workers))
@@ -171,6 +176,24 @@ def test_a_tiny_container_still_gets_one_worker():
     assert budget["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "1"
 
 
+def test_an_8_gib_container_gets_at_most_four_workers():
+    # Issue 422: six workers of tests/unit/worker OOM-killed two attempts of one
+    # build at the 8 GiB limit.
+    budget = cliagent.agent_resource_budget(8 * GIB, 6.0)
+
+    assert int(budget["PYTEST_XDIST_AUTO_NUM_WORKERS"]) <= 4, budget
+
+
+@pytest.mark.parametrize("memory", [5 * GIB, 8 * GIB, 16 * GIB, 32 * GIB])
+def test_the_workers_and_the_headroom_fit_inside_the_limit(memory):
+    workers = int(cliagent.agent_resource_budget(memory, 64.0)["PYTEST_XDIST_AUTO_NUM_WORKERS"])
+
+    if workers > 1:
+        used = workers * cliagent.XDIST_WORKER_BYTES + cliagent.AGENT_MEMORY_HEADROOM_BYTES
+        assert used <= memory, (memory, workers)
+    assert str(workers) == _expected_workers(memory, 64.0)
+
+
 def test_a_resumed_session_is_not_told_again(tmp_path, monkeypatch):
     _limits(monkeypatch, 8 * GIB, 6.0)
 
@@ -181,7 +204,7 @@ def test_a_resumed_session_is_not_told_again(tmp_path, monkeypatch):
     assert _budget_lines(seen["stdin"]) == []
     # The process is new, so its env is told again.
     assert seen["env"]["SWARM_MEMORY_LIMIT_BYTES"] == str(8 * GIB)
-    assert seen["env"]["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "6"
+    assert seen["env"]["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "3"
 
 
 def test_no_caller_or_runner_value_replaces_the_budget(tmp_path, monkeypatch):
@@ -202,7 +225,7 @@ def test_no_caller_or_runner_value_replaces_the_budget(tmp_path, monkeypatch):
 
     assert seen["env"] == {
         "SWARM_MEMORY_LIMIT_BYTES": str(5 * GIB),
-        "PYTEST_XDIST_AUTO_NUM_WORKERS": "2",
+        "PYTEST_XDIST_AUTO_NUM_WORKERS": "1",
     }, seen["env"]
 
 

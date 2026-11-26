@@ -67,7 +67,7 @@ class PubSubWaker:
             # is durable would make the latency win imaginary.
             future.result(timeout=5)
             return True
-        except Exception as exc:  # pragma: no cover - transport level
+        except Exception as exc:  # pragma: no cover - transport level  # noqa: BLE001
             log.warning("scheduler wake failed reason=%s: %r", reason, exc)
             return False
 
@@ -100,7 +100,7 @@ def ring(waker: SchedulerWaker, metrics: Any, reason: str, **attributes: str) ->
     """
     try:
         woke = bool(waker.wake(reason, **attributes))
-    except Exception as exc:  # the transport's type only; its text can name the request
+    except Exception as exc:  # the transport's type only; its text can name the request  # noqa: BLE001
         log.warning("scheduler wake raised reason=%s: %s", reason, type(exc).__name__)
         woke = False
     if not woke and getattr(waker, "enabled", True):

@@ -445,7 +445,7 @@ class Phases:
         for stream in (sys.stdout, sys.stderr):
             try:
                 stream.flush()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass
         self.hard_exit(EXIT_INTERRUPTED)
 
@@ -470,7 +470,7 @@ def say_from_signal_handler(emit: Callable[[], Any], *, wait_seconds: float = 1.
     def _say() -> None:
         try:
             emit()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
 
     speaker = threading.Thread(target=_say, name="signal-log", daemon=True)
@@ -638,7 +638,7 @@ def dns_preflight(
             }
             if not addresses:
                 outcome["error"] = "resolver returned no addresses"
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             outcome = {
                 "host": host,
                 "ok": False,

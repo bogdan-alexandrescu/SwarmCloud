@@ -1317,7 +1317,7 @@ class VoiceSessions:
 
             try:
                 done = _apply(self._db.transaction())
-            except Exception:  # noqa: BLE001 -- one marker's failure never stops the sweep
+            except Exception:  # one marker's failure never stops the sweep
                 log.exception("voice sweep: marker %s failed", marker_snap.id)
                 continue
             if done is not None:

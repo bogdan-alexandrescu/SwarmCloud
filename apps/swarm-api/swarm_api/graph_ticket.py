@@ -432,7 +432,7 @@ class GraphTicketService:
 
         try:
             _apply(self._db.transaction())
-        except Exception:
+        except Exception:  # noqa: BLE001
             raise GraphTicketUnavailable(
                 "the graph version this ticket names could not be pinned for the workflow, so "
                 "index retention could sweep it; no graph ticket was minted") from None
@@ -451,7 +451,7 @@ class GraphTicketService:
              .collection(PINS_COLLECTION).document(pin_id(holder, holder_id, index_sha))
              .set({"commit_sha": index_sha, "holder": holder, "holder_id": holder_id,
                    "tenant_id": tenant_id, "task_id": task_id, "pinned_at": self._now()}))
-        except Exception as failed:  # the pin never stops a step reading its graph
+        except Exception as failed:  # the pin never stops a step reading its graph  # noqa: BLE001
             log.warning("graph ticket pin unrecorded tenant=%s repo_id=%s error=%s",
                         tenant_id, repo_id, type(failed).__name__)
 

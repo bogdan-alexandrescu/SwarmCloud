@@ -13,6 +13,10 @@
 # destroy aborts. Fail-closed is deliberate -- an unrecognised unlabelable type
 # is an offender until a human adds it to the allow-list in a reviewed change.
 
+# The wrong-project rule lives in one file beside this one, which the install
+# engine runs too (issue 344). `search: "./"` resolves beside THIS file.
+include "wrong-project" {search: "./"};
+
 def before: (.change.before // {});
 def after:  (.change.after  // {});
 
@@ -249,9 +253,9 @@ def summarise($deny; $allow_types; $project):
             name: ($r | name_of),
             reason: "no managed-by=swarm-terraform in either half, not a create, and its name does not begin with \(platform_prefix)" } ],
 
-      wrong_project: [ $deletions[]
-        | select((.change.before.project // $project) != $project)
-        | { address: .address, type: .type, project: .change.before.project } ],
+      # The rule is scripts/lib/wrong-project.jq, included above and shared
+      # with the install engine (issue 344); it reads both halves of a change.
+      wrong_project: plan_wrong_project($project; $deletions),
 
       offenders: [ $deletions[]
         | . as $r

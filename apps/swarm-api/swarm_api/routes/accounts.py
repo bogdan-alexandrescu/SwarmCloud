@@ -123,6 +123,7 @@ from ..schemas import (
     AccountStateChange,
     StrictModel,
 )
+from ..wire_types import AccountsPage
 
 router = APIRouter(prefix="/v1/accounts", tags=["accounts"])
 
@@ -280,7 +281,7 @@ def _own_answer(result: Any, tenant_id: str) -> Any:
     return result
 
 
-@router.get("")
+@router.get("", responses={200: {"model": AccountsPage}})
 def list_accounts(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),

@@ -126,13 +126,14 @@ afterEach(() => {
 describe('the Approvals page', () => {
   it('is Automate’s second tab at /automate/approvals, one item at /automate/approvals/<id>, and a panel page', () => {
     const automate = SECTIONS.find((s) => s.id === 'automate')!
-    // plans-pipeline §2.1: the Pipeline board sits between Schedules and Approvals.
-    expect(automate.tabs.map((t) => t.id)).toEqual(['schedules', 'pipeline', 'approvals'])
+    // plans-pipeline §2.1: the Pipeline board sits between Schedules and Approvals;
+    // §6.4: Settings follows Approvals.
+    expect(automate.tabs.map((t) => t.id)).toEqual(['schedules', 'pipeline', 'approvals', 'settings'])
     expect(addressToPath('automate/approvals')).toBe('/automate/approvals')
     expect(pathToAddress('/automate/approvals')?.address).toBe('automate/approvals')
     expect(addressToPath('automate/approvals?approval=run%3Arun_8f2a')).toBe('/automate/approvals/run%3Arun_8f2a')
     expect(pathToAddress('/automate/approvals/run%3Arun_8f2a')?.address).toBe('automate/approvals?approval=run%3Arun_8f2a')
-    expect(PANEL_PAGES.automate.map((p) => p.key)).toEqual(['schedules', 'pipeline', 'approvals'])
+    expect(PANEL_PAGES.automate.map((p) => p.key)).toEqual(['schedules', 'pipeline', 'approvals', 'settings'])
   })
 
   it('carries the inbox count on its panel page', async () => {

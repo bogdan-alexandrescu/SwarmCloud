@@ -78,6 +78,7 @@ from datetime import datetime
 from typing import Callable, Mapping
 
 from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi.responses import StreamingResponse
 from pydantic import Field, model_validator
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -90,7 +91,8 @@ from swarm_common.states import TaskState
 
 from ..auth import AuthContext
 from .. import issueruns as issueruns_module
-from .. import planfiles, planhistory, planlint, plansettings, refusals, roles, stepclass
+from .. import (planchat, planfiles, planhistory, planlint, plansettings, refusals, roles,
+               stepclass)
 from ..admins import AUDIT_COLLECTION
 from ..deps import AppContext, admin_auth, current_auth, get_context, paged_limit, tenant_scope
 from ..errors import (
@@ -1618,7 +1620,7 @@ def advance_tenant_runs(ctx: AppContext, tenant_id: str, *, limit: int) -> Advan
         report.visited += 1
         try:
             advanced = advance_run(ctx, tenant_id, run)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             report.failed += 1
             code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
             report.failures.append({"run_id": run.id, "error": code})
@@ -3039,6 +3041,215 @@ def add_diagram(
     log.info("issue run %s tenant=%s: a diagram joined the plan as revision %s by=%s", run.id,
              tenant_id, edited.plan_revision, auth.email)
     return {"run": sync_issue(ctx, edited).to_api()}
+
+
+# -- the plan review chat: ask, list, stream, pin (plans-pipeline.md §7) --------
+
+
+class PlanChatAsk(StrictModel):
+    """A question to the review agent. Text only: there is no field for a
+    profile, an image, a command, a resource or a model (invariant 10); the
+    class comes from the plan-review settings, and any other key is 422."""
+
+    plan_digest: str = Field(min_length=1, max_length=128)
+    ask: str = Field(min_length=1, max_length=planchat.MAX_ASK_CHARS, pattern=r"\S")
+    anchor: DiagramAnchor | None = None
+
+
+class PlanChatPin(StrictModel):
+    """Where in the thread a pinned answer is anchored."""
+
+    anchor: DiagramAnchor
+
+
+def _chat(ctx: AppContext) -> planchat.PlanChat:
+    return planchat.PlanChat(ctx.db, now=ctx.now)
+
+
+@router.post("/{run_id}/plan-chat")
+def ask_plan_chat(
+    run_id: str,
+    body: PlanChatAsk,
+    response: Response,
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Ask the review agent one question about the plan (plans-pipeline.md §7).
+
+    Who: the role floor every decision uses, read fresh (a viewer is
+    `role_member_required`), then the comment level on this open plan; a
+    member below the edit level is answered but may not draw (§6.5). Another
+    tenant's run is the same 404 as no run, before any other check. What: ONE
+    `claude-code` review agent in the run's tenant, as the asker, at the class
+    the settings resolve. One turn in flight per run (409 `chat_busy`) and the
+    caps (429 `chat_cap`) are checked in the transaction that records the turn,
+    before any task exists. Its answer never changes the plan."""
+    approvals.require_decider(ctx, auth)
+    runs, chat = _runs(ctx), _chat(ctx)
+    run = runs.get(tenant_id, run_id)  # 404 first: another tenant's run is not there
+    data = planchat.settle(ctx, chat, runs, run)
+    if run.state != RunState.PLANNED:
+        refusals.refuse(planchat.ChatClosed(
+            f"run {run_id!r} is {run.state.value}; its chat is read-only after the decision",
+            detail={"state": run.state.value}))
+    held = planchat.current_turn(data)
+    if held is not None:
+        raise planchat.busy(run, held)
+    if ctx.submissions.tenant_for(auth).tenant_id != tenant_id:
+        # The agent is the run's tenant's or none (invariant 9).
+        raise NotFound(f"run {run_id!r} not found")
+    levels = run_may_decide(ctx, auth, tenant_id, run) or {}
+    if levels.get("comment") is not True:
+        refusals.refuse(planchat.CommentLevelRequired(
+            f"you may not comment on run {run_id!r}'s plan, so you may not ask its review agent",
+            detail={"may_decide": {"comment": levels.get("comment")}}))
+    effective = _effective_plan_settings(ctx, tenant_id, run.schedule)
+    settings = plansettings.plan_settings_record(effective)
+    caps = effective["caps"]
+    refused = planchat.chat_cap(data, caps)
+    if refused is not None:
+        refusals.refuse(refused)
+    model = planchat.resolve_model(effective, data)
+    choice = issueruns_module.review_agent_class(model["class"], model["from"],
+                                                 stepclass.class_models_of(ctx))
+    no_draw = planchat.may_draw(edit=levels.get("edit") is True, settings=settings, data=data,
+                                caps=caps)
+    plan, revision = runs._plan_on(run, body.plan_digest)
+    anchor = (issueruns_module.thread_anchor(body.anchor.part, body.anchor.ref, plan)
+              if body.anchor is not None else None)
+    ask = planchat.masked_text(body.ask, planchat.MAX_ASK_CHARS)
+    thread_docs, _ = runs.plan_thread_documents(run)
+    context = read_plan_context(ctx, tenant_id, run.issue, run_id=run.id,
+                                issue=run.issue_read, open_work=run.open_work)
+    turn = planchat.turn_id()
+    nonce = issueruns_module.replan_nonce()
+    prompt = planchat.chat_prompt(
+        run, plan=plan, revision=revision,
+        revisions=planchat.prompt_revisions(run, runs.plan_revisions(run)),
+        thread=planchat.prompt_thread(run, thread_docs),
+        transcript=planchat.prompt_transcript(run, chat.turns(run)),
+        settings=settings, no_draw=no_draw, ask=ask, anchor=anchor,
+        index_section=planchat.index_sections(context.section, run.id, nonce),
+        nonce=nonce)
+    document = {
+        "tenant_id": run.tenant_id, "run_id": run.id, "turn_id": turn,
+        "asked_by": auth.email, "ask": ask, "anchor": anchor,
+        "on_digest": body.plan_digest, "on_revision": revision, "state": "starting",
+        "task_id": None, "answer": None, "error": None, "cost": None, "first_token_ms": None,
+        "plan_settings": settings, "no_draw": no_draw,
+        "model": {**model, "model_id": None, "why_none": None,
+                  "submitted_as": choice.model_class},
+        "caps": None, "pinned_as": None, "at": ctx.now(), "answered_at": None,
+    }
+    chat.claim(run, document, digest=body.plan_digest, caps=caps)
+    try:
+        spec = planchat.chat_task(run, turn=turn, prompt=prompt, choice=choice)
+        with issueruns_module.submitting(spec):
+            submission = ctx.submissions.submit_tasks(auth, [spec])
+    except ApiError as refusal:
+        # A refusal comes before the task is stored: the turn ends `failed`
+        # and is not counted. Any other exception may have come after the
+        # store write: the claim stays and a later read adopts its task.
+        try:
+            chat.move(run, turn, states={"starting"}, ended=True, count_back=True, fields={
+                "state": "failed", "answered_at": ctx.now(), "error": failure_text(
+                    f"The review agent could not be submitted: {refusal.message}")})
+        except ApiError:
+            log.warning("issue run %s: chat turn %s's refused submission could not be recorded",
+                        run.id, turn)
+        raise
+    task_id = submission.tasks[0].id
+    try:
+        chat.move(run, turn, states={"starting"}, fields={}, task_id=task_id)
+    except Conflict:
+        _stop_replan_task(ctx, auth, tenant_id, task_id, by=auth.email)
+        raise
+    log.info("issue run %s tenant=%s: chat turn %s submitted as task %s by=%s", run.id,
+             tenant_id, turn, task_id, auth.email)
+    response.status_code = status.HTTP_202_ACCEPTED
+    return {"turn": planchat.served_turn({**(chat.turn(run, turn) or document),
+                                          "task_id": task_id})}
+
+
+@router.get("/{run_id}/plan-chat")
+def list_plan_chat(
+    run_id: str,
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The run's chat transcript, oldest first, bounded at the highest cap:
+    every member of the workspace reads it, viewers included (Q10). Another
+    tenant's run is the same 404 as no run."""
+    runs, chat = _runs(ctx), _chat(ctx)
+    run = runs.get(tenant_id, run_id)
+    data = planchat.settle(ctx, chat, runs, run)
+    caps = _effective_plan_settings(ctx, tenant_id, run.schedule)["caps"]
+    return {"run_id": run.id, "turns": [planchat.served_turn(t) for t in chat.turns(run)],
+            "open": run.state == RunState.PLANNED, "usage": planchat.usage(data, caps)}
+
+
+@router.get("/{run_id}/plan-chat/{turn_id}/stream")
+def stream_plan_chat(
+    run_id: str,
+    turn_id: str,
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> StreamingResponse:
+    """One turn as server-sent events (§7.1): the assistant's text deltas
+    only, each redacted, never a tool call, a tool result, a file's contents
+    or a system line; then the turn's final answer. Any member reads it.
+    Another tenant's run, or another run's turn, is the same 404 as none."""
+    runs, chat = _runs(ctx), _chat(ctx)
+    run = runs.get(tenant_id, run_id)
+    if chat.turn(run, turn_id) is None:
+        raise NotFound(f"run {run_id!r} has no chat turn {turn_id[:64]!r}")
+    return StreamingResponse(planchat.stream(ctx, chat, runs, run, turn_id),
+                             media_type="text/event-stream",
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
+@router.post("/{run_id}/plan-chat/{turn_id}:pin")
+def pin_plan_chat(
+    run_id: str,
+    turn_id: str,
+    body: PlanChatPin,
+    response: Response,
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Copy an answered turn into the thread as a `chat_pin` entry, by the
+    person pinning, quoting the agent (§7.5): the comment level, once per
+    turn. It is then a comment like any other; nothing in it changes the
+    plan."""
+    approvals.require_decider(ctx, auth)
+    runs, chat = _runs(ctx), _chat(ctx)
+    run = runs.get(tenant_id, run_id)
+    turn = chat.turn(run, turn_id)
+    if turn is None:
+        raise NotFound(f"run {run_id!r} has no chat turn {turn_id[:64]!r}")
+    if run.state not in issueruns_module.THREAD_OPEN_STATES:
+        refusals.refuse(issueruns_module.PlanThreadClosed(
+            f"run {run_id!r} is {run.state.value}; its plan takes no comment",
+            detail={"state": run.state.value}))
+    if turn.get("state") != "answered" or not isinstance(turn.get("answer"), Mapping):
+        raise planchat.TurnNotAnswered(
+            f"chat turn {turn_id!r} of run {run_id!r} has no answer to pin "
+            f"({turn.get('state')})", detail={"state": turn.get("state")})
+    digest = str(turn.get("on_digest") or run.plan_digest or "")
+    plan, revision = runs._plan_on(run, digest)
+    anchor = issueruns_module.thread_anchor(body.anchor.part, body.anchor.ref, plan)
+    entry = planchat.pin_entry(run, turn, anchor=anchor, by=auth.email,
+                               entry_id=issueruns_module.thread_entry_id(), on_digest=digest,
+                               on_revision=revision, at=ctx.now())
+    chat.pin(run, turn_id, entry)
+    log.info("issue run %s tenant=%s: chat turn %s pinned as %s by=%s", run.id, tenant_id,
+             turn_id, entry["entry_id"], auth.email)
+    response.status_code = status.HTTP_201_CREATED
+    return {"entry": issueruns_module.served_thread_entry(entry)}
 
 
 class RunEnd(StrictModel):

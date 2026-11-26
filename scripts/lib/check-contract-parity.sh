@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Assert that every shell, jq or TypeScript restatement of the frozen contract
+# Assert that every shell, jq or Terraform restatement of the frozen contract
 # still matches it.
 #
 # CONTRACT.md says "Import from it; do not redefine its types". A bash script
@@ -12,12 +12,19 @@
 #
 # docs/architecture.md permits exactly one other restatement -- Terraform's copy
 # of the runner catalogue -- and permits it *because* a test asserts the copy
-# still matches. This is the equivalent test for the other two surfaces: the
-# shell and jq copies in scripts/lib/common.sh (sections 1-4), and the copies
-# apps/swarm-ui/src/types.ts has to keep because a browser cannot import
-# Python (section 5). The TypeScript side reads the .ts as text and needs no
-# node toolchain, here or in CI. Section 12 holds the shell redaction filter to
-# the API's, over one fixture file both are run on.
+# still matches. This is the equivalent test for the shell and jq copies in
+# scripts/lib/common.sh (sections 1-4) and the other scripts, and for the
+# values Terraform states that Python also states (section 5 onwards).
+# Section 12 holds the shell redaction filter to the API's, over one fixture
+# file both are run on.
+#
+# IT READS NO CONSOLE TYPESCRIPT. The console restatements (unit weights, task
+# states, park reasons, end causes, credential tiers, pool names, the Submit
+# form inputs) are held by console tests on the constants
+# scripts/gen_api_types.py generates from the Python objects
+# (the console's contract.parity and contract.profiles tests), and
+# `gen_api_types.py --check` fails CI while a generated file is stale (part
+# of #72). docs/mirrored-values.md names the files.
 #
 # Run by `make test` and by the `shell` job in .github/workflows/application.yml.
 # It needs no cloud credentials and no emulator.
@@ -235,371 +242,54 @@ PY
 fi
 
 # --------------------------------------------------------------------------
-# 5. The frozen catalogue and the task lifecycle, restated in TypeScript.
+# 5. The quota broker sweep interval, stated in Python, against Terraform.
 # --------------------------------------------------------------------------
-# `apps/swarm-ui/src/types.ts` hand-copies the unit weights, the twelve task
-# states, the park reasons, the six provider states, the end causes and
-# the pool families, and the child-task fields and cancel class (requests 14,
-# 40, 41, item 9), and the credential an attempt ran on (request 152, item 10).
-# It has to: the browser cannot import Python, and the alternative to a bundled
-# copy of a three-entry frozen catalogue is a request per render to learn
-# something that cannot change without a contract change.
+# The console draws a quota reading older than twice the broker sweep
+# interval as stale. The interval is Terraform configuration, not frozen
+# contract: the quota-refresh Cloud Scheduler job, which calls
+# QuotaService.sweep, and whose cron is the scheduler module default
+# quota_refresh_schedule, which the root does not override. It is a SWEEP, not
+# a report: the sweep rewrites a quota document only when its state or derived
+# cap changes, and updated_at moves when a worker reports.
 #
-# Until now nothing asserted any of it, and this file's own header records why
-# that matters -- three shell restatements had already drifted before anyone
-# looked. TypeScript was simply the side nobody had got to. Nothing here
-# typechecks the UI; `make lint` runs no `tsc` and this must keep working on a
-# machine with no node toolchain, so the literals are read out of the source the
-# same way section 4 reads GSA_PREFIX out of register-tenant.sh.
+# Terraform cannot be imported, so the interval is stated once in Python,
+# QUOTA_SWEEP_INTERVAL_SECONDS in scripts/api_constants/states.py, and this
+# holds it to the cron: a changed schedule with the old constant would call
+# current readings stale, or stale current. scripts/gen_api_types.py publishes
+# the constant in the generated states.json, and the console test
+# contract.parity.test.ts holds the console copy to that file.
 #
-# NO APOSTROPHES IN THE PYTHON BELOW. The probe is a heredoc inside a command
-# substitution, and bash scans that body for quote characters while it looks for
-# the closing paren -- so one unpaired `'` anywhere in it, including in a comment
-# ("the file's own..."), swallows the rest of the script. The report is
+# This section used to read the console TypeScript as text, and with it the
+# unit weights, task states, park reasons, provider states, end causes, pool
+# families, credential tiers and served shapes the console restates. Those
+# comparisons are console tests on the generated constants now (part of #72):
+# a value changed in Python reaches states.json on regeneration, the drift
+# check fails until it does, and the console test fails until the console
+# follows.
 #
-#     check-contract-parity.sh: line NNN: unexpected EOF while looking for matching `''
-#
-# with NNN pointing at the closing `)"` and nothing at the apostrophe, which is
-# why this is written down rather than left to be rediscovered. `bash -n` catches
-# it; write "the partition the UI makes", not "the UI's partition".
-#
-# WHAT IS DELIBERATELY NOT CHECKED. `REASON_COPY` is a documented SUBSET of
-# BlockedReason -- five members are never written as a blocker and the table
-# omits them on purpose -- so asserting equality there would fail on correct
-# code. `ResourceClassSpec` carries no numbers at all: cpu/memory/disk are
-# served by `/v1/resource-classes` precisely so they cannot drift, and that is
-# the pattern the rest of this file argues for.
-TS_TYPES="${REPO_ROOT}/apps/swarm-ui/src/types.ts"
-
-if [[ ! -f "${TS_TYPES}" ]]; then
-  # Refuse rather than skip, for the reason section 4 gives: a parity check that
-  # passes because it could not find the thing it compares reports an agreement
-  # it never established.
-  err "apps/swarm-ui/src/types.ts is missing; the TypeScript restatements cannot be checked"
-  err "If the UI moved, point this section at it -- do not let it skip."
-  FAILED=1
-elif ! TS_PARITY="$(python3 - "${REPO_ROOT}" "${TS_TYPES}" 2>&1 <<'PY'
-import dataclasses
-import json
+# NO APOSTROPHES, BACKTICKS OR DOLLAR SIGNS IN THE PYTHON BELOW: it is a
+# heredoc inside a command substitution, and bash scans that body for quote
+# characters while it looks for the closing paren.
+if ! QUOTA_PARITY="$(python3 - "${REPO_ROOT}" 2>&1 <<'PY'
+import importlib.util
 import re
 import sys
 from pathlib import Path
 
-repo_root, types_path = sys.argv[1], sys.argv[2]
-sys.path.insert(0, str(Path(repo_root) / "apps" / "common"))
+repo_root = Path(sys.argv[1])
+states_py = repo_root / "scripts" / "api_constants" / "states.py"
+tf_vars = repo_root / "terraform" / "modules" / "scheduler" / "variables.tf"
 
-from swarm_common import states as S                      # noqa: E402
-from swarm_common.models import EndCause, ProviderState, WorkflowStep, pool_names_for  # noqa: E402
-from swarm_common.profiles import default_sizes           # noqa: E402
+interval = None
+if states_py.is_file():
+    spec = importlib.util.spec_from_file_location("parity_states_group", states_py)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    interval = getattr(module, "QUOTA_SWEEP_INTERVAL_SECONDS", None)
 
-SRC = Path(types_path).read_text()
-REPORT = []
-
-
-def emit(status, name, detail):
-    # One line per assertion, '|'-separated, because the shell reads it with
-    # `IFS='|' read`. Nothing here may contain a '|' -- every value printed is a
-    # sorted list of identifiers or a small integer.
-    REPORT.append("%s|%s|%s" % (status, name, detail))
-
-
-# -- readers ---------------------------------------------------------------
-# Each returns None when the literal is not where it was, which becomes a
-# MISSING (a failure), never a silent pass.
-
-def ts_union(name):
-    """`export type N = 'a' | 'b'`, one line or continued with leading `|`."""
-    m = re.search(r"export type %s\s*=([^\n]*(?:\n\s*\|[^\n]*)*)" % name, SRC)
-    return None if m is None else re.findall(r"'([^']+)'", m.group(1))
-
-
-def ts_set(name):
-    """`export const N: ReadonlySet<T> = new Set<T>([...])`."""
-    m = re.search(
-        r"export const %s\b[^=]*=\s*new Set<[^>]*>\(\[(.*?)\]\)" % name, SRC, re.S
-    )
-    return None if m is None else re.findall(r"'([^']+)'", m.group(1))
-
-
-def ts_array(name):
-    """`export const N: readonly T[] = [...]`."""
-    m = re.search(r"export const %s\b[^=]*=\s*\[(.*?)\]" % name, SRC, re.S)
-    return None if m is None else re.findall(r"'([^']+)'", m.group(1))
-
-
-def ts_number_map(name):
-    """`export const N: Readonly<Record<string, number>> = { k: 1, ... }`."""
-    m = re.search(r"export const %s\b[^=]*=\s*\{(.*?)\n\}" % name, SRC, re.S)
-    if m is None:
-        return None
-    return dict(
-        (k, int(v)) for k, v in re.findall(r"(\w+)\s*:\s*(\d+)", m.group(1))
-    )
-
-
-def ts_pool_kind_cases():
-    """The `case 'x':` labels inside `poolKind`."""
-    m = re.search(r"export function poolKind\(.*?\n\}", SRC, re.S)
-    return None if m is None else re.findall(r"case '([^']+)':", m.group(0))
-
-
-def compare_set(name, from_ts, from_py, shape):
-    if from_ts is None:
-        emit("MISSING", name, "no %s found" % shape)
-        return
-    got, want = sorted(set(from_ts)), sorted(set(from_py))
-    if len(from_ts) != len(set(from_ts)):
-        emit("DRIFT", name, "the TypeScript list repeats a member: %s" % " ".join(from_ts))
-    elif got == want:
-        emit("OK", name, "%d member(s) match the frozen contract" % len(want))
-    else:
-        emit(
-            "DRIFT",
-            name,
-            "frozen %s  //  types.ts %s" % (" ".join(want), " ".join(got)),
-        )
-
-
-# -- 1. the unit weights, against the CODE DEFAULTS --------------------------
-# The one place the UI copies a NUMBER out of the frozen catalogue. Admission
-# counts weighted units, so a wrong weight here misreports how much of the
-# budget a task will cost before anyone submits it.
-#
-# Since contract requests 109-111 (runner sizes, #1689) an admin may resize a
-# class, and the units follow the size, so the live weights are served by
-# GET /v1/resource-classes and can differ from this bundled copy. What this
-# holds is the copy against the code DEFAULTS (version 0, default_sizes),
-# which is all a bundled fallback can be; it is named so in the report.
-units_ts = ts_number_map("RESOURCE_UNITS")
-units_py = dict((name, size.units) for name, size in default_sizes().items())
-if units_ts is None:
-    emit("MISSING", "RESOURCE_UNITS (code defaults)", "no `export const RESOURCE_UNITS = {...}` found")
-elif units_ts == units_py:
-    emit(
-        "OK",
-        "RESOURCE_UNITS (code defaults)",
-        "%s match swarm_common.profiles.default_sizes"
-        % " ".join("%s=%d" % kv for kv in sorted(units_py.items())),
-    )
-else:
-    emit(
-        "DRIFT",
-        "RESOURCE_UNITS (code defaults)",
-        "frozen %s  //  types.ts %s"
-        % (json.dumps(units_py, sort_keys=True), json.dumps(units_ts, sort_keys=True)),
-    )
-
-# -- 2. the task lifecycle -------------------------------------------------
-compare_set("TaskState", ts_union("TaskState"), [s.value for s in S.TaskState], "union")
-compare_set(
-    "CONCURRENCY_STATES",
-    ts_set("CONCURRENCY_STATES"),
-    [s.value for s in S.CONCURRENCY_STATES],
-    "Set literal",
-)
-compare_set(
-    "TERMINAL_STATES",
-    ts_set("TERMINAL_STATES"),
-    [s.value for s in S.TERMINAL_STATES],
-    "Set literal",
-)
-
-# REAL_STATES is a partition the UI makes of TaskState -- the nine a task document
-# can hold -- and NEVER_WRITTEN is the rest. It is not a restatement of the
-# frozen enum, so it is checked against the partition instead: a state added to
-# the enum and to neither list is a state whose tasks appear in no filter, no
-# legend and no histogram, which reads as "there are none".
-real_states = ts_array("REAL_STATES")
-never_written = ts_set("NEVER_WRITTEN")
-all_states = set(s.value for s in S.TaskState)
-if real_states is None or never_written is None:
-    emit("MISSING", "REAL_STATES/NEVER_WRITTEN", "one of the two literals is not there")
-else:
-    overlap = sorted(set(real_states) & set(never_written))
-    missed = sorted(all_states - set(real_states) - set(never_written))
-    unknown = sorted((set(real_states) | set(never_written)) - all_states)
-    if overlap:
-        emit("DRIFT", "REAL_STATES/NEVER_WRITTEN", "in both lists: %s" % " ".join(overlap))
-    elif missed:
-        emit(
-            "DRIFT",
-            "REAL_STATES/NEVER_WRITTEN",
-            "in neither list, so no filter or legend can show them: %s" % " ".join(missed),
-        )
-    elif unknown:
-        emit("DRIFT", "REAL_STATES/NEVER_WRITTEN", "not a TaskState: %s" % " ".join(unknown))
-    else:
-        emit(
-            "OK",
-            "REAL_STATES/NEVER_WRITTEN",
-            "partition the %d frozen states exactly" % len(all_states),
-        )
-
-# -- 3. the reason and provider enums --------------------------------------
-compare_set("ParkReason", ts_union("ParkReason"), [p.value for p in S.ParkReason], "union")
-compare_set(
-    "ProviderStateName",
-    ts_union("ProviderStateName"),
-    [p.value for p in ProviderState],
-    "union",
-)
-# EndCause: the union and the ordered list. Contract request 29 added
-# publish_refused on 2026-10-02; a value the frozen enum gains and these do
-# not is a task end the UI has no word for. The list is compared in ORDER as
-# well, because the frozen order is the order a reader is shown.
-compare_set("EndCause", ts_union("EndCause"), [c.value for c in EndCause], "union")
-compare_set("END_CAUSES", ts_array("END_CAUSES"), [c.value for c in EndCause], "array literal")
-end_causes_ts = ts_array("END_CAUSES")
-if end_causes_ts is not None and end_causes_ts != [c.value for c in EndCause]:
-    emit(
-        "DRIFT",
-        "END_CAUSES order",
-        "frozen %s  //  types.ts %s"
-        % (" ".join(c.value for c in EndCause), " ".join(end_causes_ts)),
-    )
-
-# -- 4. the pool naming rules ----------------------------------------------
-# Derived from `pool_names_for` rather than written down: it is the function
-# that decides what a pool is called, so its output is the authority. Every
-# name is `<family>:<...>` except `global`.
-families_py = set()
-for pool in pool_names_for(
-    tenant_id="parity",
-    provider="anthropic",
-    resource_class="standard",
-    runner_profile="claude-code",
-    backend="CLOUD_RUN_JOB",
-):
-    families_py.add(pool.split(":")[0] if ":" in pool else pool)
-
-compare_set("PoolKind", ts_union("PoolKind"), families_py, "union")
-compare_set("POOL_FAMILY_ORDER", ts_array("POOL_FAMILY_ORDER"), families_py, "array literal")
-
-# `poolKind` parses the family off the name with a switch whose `default` is
-# `global`. A family added to `pool_names_for` and not to the switch is not a
-# parse error -- it is silently reported as the global pool, and `poolScope`
-# then calls a per-tenant number platform-wide. That is a scope error dressed
-# as a comparison, which the neighbouring comment in types.ts calls Trap E.
-cases = ts_pool_kind_cases()
-compare_set("poolKind cases", cases, families_py - set(["global"]), "switch")
-
-# -- 5. WorkflowStep.input_from, a SHAPE rather than a value ---------------
-# `codec.workflow_to_api` serves this field exactly as the frozen dataclass
-# holds it, so the TypeScript declaration is a restatement of the frozen
-# annotation. It was `string | null` against a `dict[str, str]` that is never a
-# string and never null, and the fixtures supplied a string too -- so the screen
-# was right in development and would have been wrong against every real
-# response, which is the signature defect of this repository. One field, so the
-# mapping from a Python annotation to its TypeScript spelling is a literal.
-PY_TO_TS = {"dict[str, str]": "Record<string, string>"}
-
-step_field = re.search(
-    r"export interface WorkflowStep \{(.*?)\n\}", SRC, re.S
-)
-if step_field is None:
-    emit("MISSING", "WorkflowStep", "no `export interface WorkflowStep` found")
-else:
-    declared = re.search(r"\n  input_from(\?)?:\s*([^\n]+)", step_field.group(1))
-    frozen = None
-    for field in dataclasses.fields(WorkflowStep):
-        if field.name == "input_from":
-            frozen = str(field.type)
-    if declared is None:
-        emit("MISSING", "WorkflowStep.input_from", "the field is not in the interface")
-    elif frozen is None:
-        emit("MISSING", "WorkflowStep.input_from", "the frozen dataclass no longer has it")
-    elif frozen not in PY_TO_TS:
-        emit(
-            "MISSING",
-            "WorkflowStep.input_from",
-            "the frozen annotation is now %r and this probe has no TypeScript "
-            "spelling for it; add one" % frozen,
-        )
-    else:
-        want, got = PY_TO_TS[frozen], declared.group(2).strip()
-        if declared.group(1):
-            emit(
-                "DRIFT",
-                "WorkflowStep.input_from",
-                "declared optional; the frozen field has a default_factory and is "
-                "always served, so it is never absent",
-            )
-        elif got == want:
-            emit("OK", "WorkflowStep.input_from", "%s matches %s" % (got, frozen))
-        else:
-            emit(
-                "DRIFT",
-                "WorkflowStep.input_from",
-                "frozen %s means %s  //  types.ts says %s" % (frozen, want, got),
-            )
-
-# -- 6. the provider pool a quota document feeds (CP-8, #85) ---------------
-# Provider quota names, on every row, the pool its cap feeds, and a helper in
-# types.ts spells that name. pool_names_for is the function that decides what
-# the pool is called, so the spelling is read out of the helper and compared
-# with what the frozen function produces for the same provider and tenant. A
-# rename on either side would otherwise leave the screen linking to a pool
-# name nobody has.
-#
-# NO BACKTICK AND NO DOLLAR SIGN BELOW, for the reason the apostrophe note at
-# the top of this section gives: the probe is a heredoc inside a command
-# substitution. The template literal is matched with the escapes \x60 and \x24.
-TICK = "\x60"
-DOLLAR = "\x24"
-helper = re.search(
-    r"export function providerTenantPool\(provider: string, tenant: string\): string \{\s*return "
-    + TICK + r"([^" + TICK + r"]*)" + TICK,
-    SRC,
-)
-if helper is None:
-    emit(
-        "MISSING",
-        "providerTenantPool",
-        "no helper returning a template literal over (provider, tenant) found",
-    )
-else:
-    got = (
-        helper.group(1)
-        .replace(DOLLAR + "{provider}", "anthropic")
-        .replace(DOLLAR + "{tenant}", "parity")
-    )
-    want = [
-        p
-        for p in pool_names_for(
-            tenant_id="parity",
-            provider="anthropic",
-            resource_class="standard",
-            runner_profile="claude-code",
-            backend="CLOUD_RUN_JOB",
-        )
-        if p.startswith("provider:") and "parity" in p
-    ]
-    if want == [got]:
-        emit("OK", "providerTenantPool", "spells %s as pool_names_for does" % got)
-    else:
-        emit(
-            "DRIFT",
-            "providerTenantPool",
-            "frozen %s  //  types.ts %s" % (" ".join(want), got),
-        )
-
-# -- 7. the quota broker tick the staleness rule is twice of (CP-9, #85) ---
-# Provider quota draws a reading older than twice the broker's sweep interval
-# as stale. The interval is Terraform configuration, not frozen contract: the
-# quota-refresh Cloud Scheduler job, which calls QuotaService.sweep, and whose
-# cron is the scheduler module default quota_refresh_schedule, which the root
-# does not override. It is a SWEEP, not a report: the sweep rewrites a quota
-# document only when its state or derived cap changes, and updated_at moves
-# when a worker reports. #159's review found the constant named
-# QUOTA_REPORT_INTERVAL_SECONDS and the screen calling it a reporting
-# interval, which no such report has; it is QUOTA_SWEEP_INTERVAL_SECONDS now.
-# types.ts states it once, and this holds it to the cron: a changed schedule
-# with the old constant would call current readings stale, or stale current.
-tf_vars = Path(repo_root) / "terraform" / "modules" / "scheduler" / "variables.tf"
-ts_interval = re.search(r"export const QUOTA_SWEEP_INTERVAL_SECONDS = (\d+)\b", SRC)
 tf_block = None
 if tf_vars.is_file():
-    # \x22 is the double quote, written as an escape for the same reason.
+    # \x22 is the double quote, written as an escape for the reason above.
     tf_block = re.search(
         r"variable \x22quota_refresh_schedule\x22 \{.*?default\s*=\s*\x22([^\x22]+)\x22",
         tf_vars.read_text(),
@@ -607,146 +297,58 @@ if tf_vars.is_file():
     )
 overrides = sorted(
     str(p.relative_to(repo_root))
-    for p in (Path(repo_root) / "terraform").rglob("*")
+    for p in (repo_root / "terraform").rglob("*")
     if p.is_file()
     and p.suffix in (".tf", ".tfvars")
     and "modules/scheduler" not in p.as_posix()
     and "quota_refresh_schedule" in p.read_text(errors="replace")
 )
-if ts_interval is None:
-    emit("MISSING", "QUOTA_SWEEP_INTERVAL_SECONDS", "no numeric export const found")
+if not isinstance(interval, int):
+    print("MISSING|no integer QUOTA_SWEEP_INTERVAL_SECONDS in scripts/api_constants/states.py")
 elif tf_block is None:
-    emit("MISSING", "QUOTA_SWEEP_INTERVAL_SECONDS", "no quota_refresh_schedule default in %s" % tf_vars)
+    print("MISSING|no quota_refresh_schedule default in %s" % tf_vars)
 elif overrides:
-    emit(
-        "MISSING",
-        "QUOTA_SWEEP_INTERVAL_SECONDS",
-        "quota_refresh_schedule is set outside the module (%s); read that value instead" % " ".join(overrides),
-    )
+    print("MISSING|quota_refresh_schedule is set outside the module (%s); read that value instead"
+          % " ".join(overrides))
 else:
     cron = tf_block.group(1).split()
     step = re.fullmatch(r"\*/(\d+)", cron[0]) if len(cron) == 5 else None
     if step is None or cron[1:] != ["*", "*", "*", "*"]:
-        emit(
-            "MISSING",
-            "QUOTA_SWEEP_INTERVAL_SECONDS",
-            "quota_refresh_schedule %s is not an every-N-minutes cron this probe reads" % tf_block.group(1),
-        )
+        print("MISSING|quota_refresh_schedule %s is not an every-N-minutes cron this probe reads"
+              % tf_block.group(1))
     else:
         seconds = int(step.group(1)) * 60
-        if seconds == int(ts_interval.group(1)):
-            emit(
-                "OK",
-                "QUOTA_SWEEP_INTERVAL_SECONDS",
-                "%ss matches quota_refresh_schedule %s" % (seconds, tf_block.group(1)),
-            )
+        if seconds == interval:
+            print("OK|%ss matches quota_refresh_schedule %s" % (seconds, tf_block.group(1)))
         else:
-            emit(
-                "DRIFT",
-                "QUOTA_SWEEP_INTERVAL_SECONDS",
-                "terraform quota_refresh_schedule %s is %ss  //  types.ts %ss"
-                % (tf_block.group(1), seconds, ts_interval.group(1)),
-            )
-
-# -- 9. the child-task restatements (contract requests 14, 40 and 41) ------
-# The two Task fields the API serves on every task, and the end cause the
-# outcome ledger counts as its own cancel class. The park reason is in the
-# ParkReason comparison above. Read as text, like everything in this section.
-from swarm_common.models import EndCause, Task             # noqa: E402
-
-frozen_fields = set(f.name for f in dataclasses.fields(Task))
-# The console's Task extends the type GENERATED from swarm-api's OpenAPI
-# document (scripts/gen_api_types.py, part of #72), so its fields are declared
-# in that file, not in types.ts.
-GENERATED_TS = Path(repo_root) / "apps/swarm-ui/src/generated/api-types.ts"
-iface = re.search(r"export interface Task \{(.*?)\n\}",
-                  GENERATED_TS.read_text() if GENERATED_TS.is_file() else "", re.S)
-wanted = ["parent_attempt_id", "parent_task_id"]
-if iface is None:
-    emit("MISSING", "Task.parent_*", "no export interface Task block in the generated api-types.ts")
-elif not set(wanted) <= frozen_fields:
-    emit("DRIFT", "Task.parent_*", "the frozen Task lacks %s" % " ".join(sorted(set(wanted) - frozen_fields)))
-else:
-    declared = [w for w in wanted if re.search(r"\n\s*%s\??\s*:" % w, iface.group(1))]
-    if declared == wanted:
-        emit("OK", "Task.parent_*", "the generated Task declares %s" % " ".join(wanted))
-    else:
-        emit("DRIFT", "Task.parent_*", "the generated Task declares %s of %s" % (" ".join(declared) or "none", " ".join(wanted)))
-
-# -- 10. the credential an attempt ran on (contract request 152) ----------
-# Attempt.account_id, credential_source and credential_tier, restated on
-# AttemptRow, and the two tiers restated as the CredentialTier union, which
-# the field must be typed with: a field typed as a bare string would take a
-# tier the frozen module refuses.
-from swarm_common import models as frozen_models          # noqa: E402
-
-attempt_fields = set(f.name for f in dataclasses.fields(frozen_models.Attempt))
-run_on = ["account_id", "credential_source", "credential_tier"]
-row = re.search(r"export interface AttemptRow \{(.*?)\n\}", SRC, re.S)
-if row is None:
-    emit("MISSING", "AttemptRow.credential_*", "no export interface AttemptRow block")
-elif not set(run_on) <= attempt_fields:
-    emit("DRIFT", "AttemptRow.credential_*",
-         "the frozen Attempt lacks %s" % " ".join(sorted(set(run_on) - attempt_fields)))
-else:
-    declared = [c for c in run_on if re.search(r"\n\s*%s\??\s*:" % c, row.group(1))]
-    tier_typed = re.search(r"\n\s*credential_tier\??\s*:\s*CredentialTier\s*\|\s*null\s*\n", row.group(1))
-    if declared != run_on:
-        missing = [c for c in run_on if c not in declared]
-        emit("DRIFT", "AttemptRow.credential_*",
-             "types.ts declares %s of %s, missing %s"
-             % (" ".join(declared) or "none", " ".join(run_on), " ".join(missing)))
-    elif tier_typed is None:
-        emit("DRIFT", "AttemptRow.credential_*",
-             "credential_tier is not typed CredentialTier or null")
-    else:
-        emit("OK", "AttemptRow.credential_*", "types.ts declares %s" % " ".join(run_on))
-
-compare_set("CredentialTier", ts_union("CredentialTier"),
-            getattr(frozen_models, "CREDENTIAL_TIERS", ()), "export type union")
-
-outcomes_ts = Path(types_path).with_name("outcomes.ts")
-cause_union = None
-if outcomes_ts.is_file():
-    m = re.search(r"export type CancelCauseKey\s*=([^\n]*(?:\n\s*\|[^\n]*)*)", outcomes_ts.read_text())
-    cause_union = None if m is None else re.findall(r"'([^']+)'", m.group(1))
-if cause_union is None:
-    emit("MISSING", "CancelCauseKey", "no CancelCauseKey union in outcomes.ts")
-elif EndCause.CHILD_CASCADE.value in cause_union:
-    emit("OK", "CancelCauseKey", "outcomes.ts counts %s" % EndCause.CHILD_CASCADE.value)
-else:
-    emit("DRIFT", "CancelCauseKey", "outcomes.ts has no %s class" % EndCause.CHILD_CASCADE.value)
-
-print("\n".join(REPORT))
+            print("DRIFT|terraform quota_refresh_schedule %s is %ss  //  states.py %ss"
+                  % (tf_block.group(1), seconds, interval))
 PY
 )"; then
-  err "the TypeScript parity probe failed to run:"
-  printf '%s\n' "${TS_PARITY}" | sed 's/^/     /' >&2
+  err "the quota sweep interval probe failed to run:"
+  printf '%s\n' "${QUOTA_PARITY}" | sed 's/^/     /' >&2
   FAILED=1
 else
-  while IFS='|' read -r TS_STATUS TS_NAME TS_DETAIL; do
-    [[ -n "${TS_STATUS}" ]] || continue
-    case "${TS_STATUS}" in
-      OK)
-        ok "types.ts ${TS_NAME}: ${TS_DETAIL}"
-        ;;
-      MISSING)
-        err "could not read ${TS_NAME} out of apps/swarm-ui/src/types.ts: ${TS_DETAIL}"
-        err "The restatement moved or changed shape; update the probe so this keeps checking it."
-        FAILED=1
-        ;;
-      DRIFT)
-        err "types.ts ${TS_NAME} has DRIFTED from the frozen contract:"
-        err "    ${TS_DETAIL}"
-        err "Fix apps/swarm-ui/src/types.ts; the frozen module is the authority."
-        FAILED=1
-        ;;
-      *)
-        err "unexpected TypeScript parity output: ${TS_STATUS}|${TS_NAME}|${TS_DETAIL}"
-        FAILED=1
-        ;;
-    esac
-  done <<<"${TS_PARITY}"
+  case "${QUOTA_PARITY%%|*}" in
+    OK)
+      ok "QUOTA_SWEEP_INTERVAL_SECONDS (states.py): ${QUOTA_PARITY#*|}"
+      ;;
+    MISSING)
+      err "could not compare QUOTA_SWEEP_INTERVAL_SECONDS: ${QUOTA_PARITY#*|}"
+      err "The value moved or changed shape; update the probe so this keeps checking it."
+      FAILED=1
+      ;;
+    DRIFT)
+      err "QUOTA_SWEEP_INTERVAL_SECONDS has DRIFTED from the quota-refresh cron:"
+      err "    ${QUOTA_PARITY#*|}"
+      err "Fix scripts/api_constants/states.py and regenerate: uv run python scripts/gen_api_types.py"
+      FAILED=1
+      ;;
+    *)
+      err "unexpected quota sweep interval output: ${QUOTA_PARITY}"
+      FAILED=1
+      ;;
+  esac
 fi
 
 # --------------------------------------------------------------------------
@@ -1592,22 +1194,20 @@ else:
                  "%d terraform validation(s) accept exactly the [%s] the frozen "
                  "resolver slugs to" % (len(classes), FROZEN_CLASS.group(1)))
 
-# -- 13. the runner inputs the scripts send and the Submit form offers -----
+# -- 13. the runner inputs the scripts send ---------------------------------
 # Contract request 25 (accepted by the owner on #142, 2026-09-25) put each
 # runner profile inputs in the frozen catalogue, `RunnerProfile.inputs`, and
 # the API now refuses any key of `input` that a declared profile does not
-# declare, with 422 `invalid_input`, from every caller. That turned two lists
-# nobody compared into restatements of the catalogue:
+# declare, with 422 `invalid_input`, from every caller. That turned THE TASK
+# INPUTS THE OPERATIONAL SCRIPTS SEND into a restatement of the catalogue:
+# smoke, concurrency, race, load, both benches, quota and failure all sent
+# `message`, and several `index` or `run_id`, which every runner ignored.
+# Against a deployment of this change each of those submissions is a 422, and
+# nothing offline said so: the scripts run against a live platform, never in CI.
 #
-#   * THE TASK INPUTS THE OPERATIONAL SCRIPTS SEND. smoke, concurrency, race,
-#     load, both benches, quota and failure all sent `message`, and several
-#     `index` or `run_id`, which every runner ignored. Against a deployment of
-#     this change each of those submissions is a 422, and nothing offline said
-#     so: the scripts run against a live platform, never in CI.
-#   * `SUGGESTED` IN apps/swarm-ui/src/Submit.tsx, the keys the Submit form
-#     OFFERS per profile. Its comment called a stale suggestion harmless -- it
-#     "never refuses valid work" -- and that stopped being true: an offer the
-#     catalogue does not declare is a refusal the form invites.
+# The keys the Submit form OFFERS per profile were compared here too, by
+# reading Submit.tsx as text. They are a console test now, on the generated
+# profiles.json (contract.profiles.test.tsx, part of #72).
 #
 # `prompt` is every profile input. Every profile declares since contract
 # request 32 (#218): browser and generic were `inputs is None` until then,
@@ -1728,7 +1328,7 @@ def sibling_runner_profile(text, pos):
 if "inputs" not in getattr(frozen_profiles.RunnerProfile, "__dataclass_fields__", {}):
     emit("MISSING", "RunnerProfile.inputs",
          "the frozen catalogue declares no runner inputs, so there is nothing "
-         "for the scripts or the Submit form to be compared against")
+         "for the scripts to be compared against")
 else:
     CATALOGUE = frozen_profiles.RUNNER_PROFILES
     DECLARING = [set(p.inputs) for p in CATALOGUE.values()]
@@ -1864,39 +1464,6 @@ else:
              "%d submission site(s), %d compared with a declaration; every key is declared"
              % (len(sites), compared))
 
-    # The Submit form: `SUGGESTED` per profile, plus `ANY_PROFILE` for all.
-    SUBMIT = TEXT.get("apps/swarm-ui/src/Submit.tsx", "")
-    table = re.search(r"const SUGGESTED\b[^=]*=\s*[{]\n(.*?)\n[}]\n", SUBMIT, re.S)
-    every = re.search(r"const ANY_PROFILE\b[^=]*=\s*\[(.*?)\n\]", SUBMIT, re.S)
-    NAME = re.compile(r"name:\s*" + Q + "([A-Za-z_]+)" + Q)
-    for_all = NAME.findall(every.group(1)) if every else []
-    offered = {}
-    if table:
-        for block in re.finditer(
-                r"^  (" + Q + r"?)([a-z][a-z0-9-]*)\1:\s*\[(.*?)^  \],?$",
-                table.group(1), re.M | re.S):
-            offered[block.group(2)] = NAME.findall(block.group(3)) + for_all
-    if len(offered) < len(CATALOGUE):
-        emit("MISSING", "Submit.tsx SUGGESTED",
-             "read suggestions for %d profile(s) of the %d in the catalogue; the "
-             "table moved or changed shape" % (len(offered), len(CATALOGUE)))
-    else:
-        wrong = []
-        for name, keys in sorted(offered.items()):
-            if name not in CATALOGUE:
-                wrong.append("%s is not a profile in the catalogue" % name)
-                continue
-            allowed = accepted(name)
-            extra = sorted(set(keys) - allowed) if allowed is not None else []
-            if extra:
-                wrong.append("%s offers %s, which it does not declare" % (name, " ".join(extra)))
-        if wrong:
-            for line in wrong:
-                emit("DRIFT", "Submit.tsx SUGGESTED",
-                     line + " -- the form invites a submission the API refuses")
-        else:
-            emit("OK", "Submit.tsx SUGGESTED",
-                 "every key the form offers a declared profile is one it declares")
 
 # -- 14. the listed service-account shape (contract request 30) ------------
 # A tenant may list service accounts that resolve to it by exact email and

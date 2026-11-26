@@ -345,7 +345,7 @@ def run_runner(body: Callable[[RunnerContext], dict[str, Any]], *, name: str) ->
         )
         print(f"[{name}] failed: {exc}", file=sys.stderr)
         return EXIT_FAILED
-    except Exception as exc:  # unexpected: still leave a readable result behind
+    except Exception as exc:  # unexpected: still leave a readable result behind  # noqa: BLE001
         ctx.write_result(
             status="failed",
             summary=f"{type(exc).__name__}: {exc}",

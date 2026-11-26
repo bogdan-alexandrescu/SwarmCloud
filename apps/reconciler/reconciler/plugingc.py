@@ -439,14 +439,14 @@ class PluginCollector:
         try:
             for prefix in PREFIXES:
                 listed.extend(self._objects.list_objects(prefix))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             report.errors.append(f"plugin_gc listing {self._config.bucket}: {type(exc).__name__}: {exc}")
             self._log.error("plugin sweep skipped: the plugins bucket could not be listed",
                             error=type(exc).__name__)
             return report
         try:
             refs = self._references.read(now=now, retention=retention)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             report.errors.append(f"plugin_gc references: {type(exc).__name__}: {exc}")
             self._log.error("plugin sweep skipped: who names a plugin copy could not be read",
                             error=type(exc).__name__)
@@ -471,7 +471,7 @@ class PluginCollector:
             # listed and read keeps its bytes.
             try:
                 refs = self._references.read(now=now, retention=retention)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 report.errors.append(f"plugin_gc references: {type(exc).__name__}: {exc}")
                 self._log.error("plugin sweep stopped: the second reference read failed",
                                 error=type(exc).__name__)
@@ -490,7 +490,7 @@ class PluginCollector:
                 continue
             try:
                 outcome = self._objects.delete(pinned.object.name, generation=pinned.object.generation)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 report.errors.append(f"plugin_gc delete {pinned.object.name}: {type(exc).__name__}: {exc}")
                 self._log.error("plugin copy could not be deleted", object=pinned.object.name,
                                 error=type(exc).__name__)
@@ -505,7 +505,7 @@ class PluginCollector:
             try:
                 self._audit(deletion, pinned, now=now, retention=retention)
                 deletion.audited = True
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 report.errors.append(f"plugin_gc audit {pinned.object.name}: {type(exc).__name__}: {exc}")
                 self._log.error("plugin sweep stopped: a deletion could not be audited",
                                 object=pinned.object.name, error=type(exc).__name__)

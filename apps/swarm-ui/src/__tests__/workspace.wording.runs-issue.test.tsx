@@ -123,13 +123,13 @@ describe('a run\'s approval banner names the workspace', () => {
   it('says "Anyone in workspace <name>", never tenant', async () => {
     const { container } = await mount(run('run_a1'), ME_GROUP)
     const line = () => visible(container.querySelector('.rn-wait-t'))
-    await waitFor(() => expect(line()).toContain('Anyone in workspace Engineering may approve, edit or reject.'), WAIT)
+    await waitFor(() => expect(line()).toContain('Anyone in workspace Engineering may approve, edit or reject it on its decision page.'), WAIT)
     expect(line()).not.toMatch(/tenant/i)
   })
 
   it('says "your workspace" for the person\'s own, on an automatic approval too', async () => {
     const { container } = await mount(run('run_a1', { tenant_id: 'u-owner', plan_approval: 'auto' }), ME_OWN)
-    await waitFor(() => expect(visible(container.querySelector('.rn-wait-t'))).toContain('Anyone in your workspace may act on it first.'), WAIT)
+    await waitFor(() => expect(visible(container.querySelector('.rn-wait-t'))).toContain('Anyone in your workspace may act on it first, on its decision page.'), WAIT)
   })
 })
 

@@ -5647,31 +5647,45 @@ placeholder), never taste; widening it is a decision of its own, with its
 churn measured first. `apps/common/swarm_common/` is frozen, so its unused
 imports are ignored there rather than fixed.
 
-**Silent broad excepts: `BLE001`, `S110`, `S112`, with a baseline that may
-only shrink** (issue 54, 2026-11-21). Besides that set, the lint selects
-`BLE001` (a blind `except Exception` or `except BaseException`), `S110`
+**Silent broad excepts: `BLE001`, `S110`, `S112`, suppressed per site, with
+a marker count that may only go down** (issue 54, 2026-11-21; per site since
+issue 185). Besides that set, the lint selects `BLE001` (a blind
+`except Exception` or `except BaseException`), `S110`
 (`try`-`except`-`pass`) and `S112` (`try`-`except`-`continue`), because a
 handler that swallows every exception and hands back a default is a defect a
-caller reads as an answer. Selecting them made the 473 `# noqa: BLE001`
-markers in `apps/` take effect -- before, nothing checked them -- and found
-542 findings (470 BLE001, 63 S110, 9 S112) in 146 files. Those are
-**baselined, not fixed**: each file
-is one line in `[tool.ruff.lint.per-file-ignores]` between `# BEGIN` and
-`# END BLE001/S110/S112 BASELINE`, naming exactly the rules it broke then,
-generated from `uv run ruff check . --extend-select BLE001,S110,S112`. So a
-new silent broad except fails anywhere outside those files, and inside one of
-them for any rule it did not already break. A per-file entry was chosen over
-inline markers so the baseline is one reviewable block, not a diff across
-146 files; ruff has no separate suppressions file. **The baseline may only
-shrink**: never add a path or a rule, never widen a path to a glob -- fix
-the handler (log it, re-raise it, narrow the exception, or mark a deliberate
-best-effort catch `# noqa: BLE001` with the reason). When a file's handlers
-are fixed, delete its line and lower `BASELINE_CEILING`;
-`tests/unit/scripts/test_ruff_config.py` fails on a line that no longer
-suppresses anything, on a path that is gone or a glob, and on a baseline over
-its ceiling, and proves through ruff on standard input that a new silent
-except in an unlisted file is reported and a `# noqa: BLE001` still silences
-it. Reviewing the existing silent handlers is issue 54's second item.
+caller reads as an answer. When they were selected they found 542 sites in
+146 files, and those were first baselined **per file** in
+`[tool.ruff.lint.per-file-ignores]`. That let a NEW broad except through in
+any of those 146 files: a per-file ignore silences the rule for the whole
+file. Issue 185 replaced the block with an inline marker on each existing
+site, written by `uv run --frozen --only-dev ruff check . --select
+BLE001,S110,S112 --add-noqa` (508 directives added, each a trailing comment
+only), and deleted 31 `# noqa: BLE001` markers that suppressed nothing (a
+handler that logs the exception or re-raises is not a finding). No
+per-file ignore may name these rules again, so a new silent broad except
+fails in every file, old or new. **The count may only go down**:
+`tests/unit/scripts/test_ruff_config.py` counts ruff's own findings for the
+three rules under `--ignore-noqa` (1,050 when issue 185 landed: 978 BLE001,
+63 S110, 9 S112) and fails when that count is above
+`SUPPRESSED_SITE_CEILING` -- fix the new handler (log it, re-raise it,
+narrow the exception) instead -- and also when it is below, telling you to
+lower the constant to the new count, so the ceiling never goes slack. To
+shrink it: fix a handler, delete its marker, lower `SUPPRESSED_SITE_CEILING`.
+Counting ruff's findings rather than grepping comments is deliberate: a
+regex would count markers inside strings and miss a blanket `# noqa`. The
+same test fails when ruff reports an unmarked site, and proves through ruff
+on standard input that a new silent except under a formerly baselined path
+(`lifecycle.py`, `attemptstate.py`, `ci_reuse.py`) is reported and a
+`# noqa: BLE001` still silences one. **A stale marker is caught by a scoped
+`RUF100` run**: the test runs `--select BLE001,S110,S112,RUF100` and fails
+on any finding that names one of the three codes as `unused`. `RUF100` is
+deliberately NOT in `lint.select`: selected repository-wide it reported 920
+findings in 309 files -- about 570 markers for rules this repository never
+selected (`ANN001`, `SLF001`, `ARG001` ...), 310 `F811` markers under
+`tests/`, and one inside the frozen `apps/common/swarm_common/` -- churn
+that would conflict with every open lane and edit the frozen contract.
+Never run `ruff check --fix` with `RUF100` for the same reason. Reviewing
+the existing silent handlers is issue 54's second item.
 
 **`ruff format` is NOT adopted**:
 a repository-wide reformat would conflict with every open lane, so
@@ -5904,7 +5918,7 @@ a bisection. So the pre-publish gate runs both, ahead of the guard script
 
 | Check | Command | Runs when the change touches | Budget |
 |---|---|---|---|
-| `api-types` | `uv run python scripts/gen_api_types.py --check` | a file the generator reads, as the generator itself prints them with `python3 scripts/gen_api_types.py --inputs` (the script, the repository packages building the document imports, `uv.lock`, the generated file) | 45 s |
+| `api-types` | `uv run python scripts/gen_api_types.py --check` | a file the generator reads, as the generator itself prints them with `python3 scripts/gen_api_types.py --inputs` (the script, the repository packages building the document imports, `uv.lock`, the generated file, and every constants group's inputs and file) | 45 s |
 | `test-pointers` | `python3 scripts/check_test_pointers.py --root .` (the whole tree, as the train runs it) | anything under `apps/` or `tests/` (a new test's name can turn a comment nobody touched into a pointer) | 15 s |
 
 **The trigger list is the generator's, not the gate's.** `INPUTS` in
@@ -5914,6 +5928,64 @@ modules that building the document actually loads, in a fresh interpreter;
 `--inputs` prints the list with the standard library only, so the trigger
 costs one interpreter start. A generator that cannot print it is checked on
 every change.
+
+**The same command writes and checks the constants files** (part of #72).
+Beside `api-types.ts`, `scripts/gen_api_types.py` writes one JSON file per
+*constants group* under `apps/swarm-ui/src/generated/constants/`: the API's
+codes and enums -- task states, park and blocked reasons, event types, end
+causes, credential tiers, resource-class units -- for the console to read
+instead of restating them. The reason is the same as for the types: a
+TypeScript list copied by hand from a Python enum compiles and passes its own
+tests after Python gains a member, and the console then shows the new state
+as unknown, or refuses it, with nothing failing. Read from the live objects,
+the copy cannot disagree without `--check` saying so. `--check` exits 1
+naming every stale or missing file and every JSON file there that no group
+writes (a removed group's leftover); a plain run writes them all and removes
+such a leftover. CI runs the same `--check` in `quick-checks` (the step
+`the console's generated API types and constants are current`, under the
+`lock / contract / format / bridge install` name-keeper, which `ci-gate`
+needs), and `tests/unit/scripts/test_api_constants.py` holds each committed
+file equal to what its group builds.
+
+**A group** is a module `scripts/api_constants/<group>.py`, discovered in
+sorted order, with two names:
+
+* `INPUTS`, a tuple of the repository paths its output is a function of (a
+  directory ends in `/`). `--inputs` prints them with the generator's own,
+  so the gate's trigger covers them; the module therefore imports only the
+  standard library at module level, and the test fails if importing a group
+  imports an application package.
+* `build()`, returning a JSON-serialisable dict. It imports application code
+  inside the function and reads live Python objects -- enum members,
+  constants, a parser's actions, a function's return value -- never source
+  text: a regex over a `.py` file is the drift this replaces.
+
+The file is written with sorted keys, sets as sorted lists, a trailing
+newline and a first key `_generated` naming the regenerate command. **To add
+a group**: write the module, run `uv run python scripts/gen_api_types.py` from
+the repository root, commit the module and the JSON it writes together, and
+add a test beside the group's code that compares the file with the objects
+it reads (the `states` group's is in `test_api_constants.py`; the `routes`
+group's -- every API method and path, the codec's console links, the outcome
+sections, which `apps/swarm-ui/src/__tests__/contract.routes.test.ts` holds
+the console's requests and router to -- in `test_api_constants_routes.py`). Never edit a
+file under `generated/` by hand.
+
+**The `server` group** (`scripts/api_constants/server.py`, tested by
+`tests/unit/scripts/test_api_constants_server.py`) holds the server values the
+console restates and its tests compare against: the workspace-secret host
+rule and its refusals, the accepted repository URL prefixes, the worker's
+merge cap, the installer's doctor keys and statuses and `swarm team add`
+flags, the plugin refusal tables, two request models' field names, whether
+the events route pages and whether the read scope checks the collision only,
+and the Cloud Scheduler jobs. It exists so that no console test opens a
+Python or Terraform file: such a test regexes source text, and a reworded
+assignment silently changes what it compares. Terraform is its one text
+source, because a `.tf` file has no live object: a small parser reads the
+job blocks from `terraform/modules/scheduler/jobs.tf`, and the group's test
+holds that parser to an inline sample and to the real file. Its values are
+limits, flag names, codes and refusal sentences, published to the console
+bundle; none names a deployment or carries a credential.
 
 **A failure goes to the fix turn with its fix.** A stale file is handed back
 with the one command that fixes it: run `uv run python scripts/gen_api_types.py`
@@ -6080,6 +6152,14 @@ agents' own runs hit their 10-minute command limit (about ten minutes a
 step), and the gate then ran the same guards again for 65-77 minutes. A
 runner without the gate (codex) keeps `scripts/changed-guards.sh` once at the
 end ([why](working-in-this-repository.md#swarmcloud-agent-tests)).
+
+**The worker count** (issue 422). The script passes pytest an explicit `-n`
+taken from `PYTEST_XDIST_AUTO_NUM_WORKERS`, the worker budget the platform sets
+from the container's memory, in the command it prints and in the run alike;
+without a positive integer there (CI, a laptop) it passes `-n auto`. `-n auto`
+read the same budget but hid it, and an agent copies the printed command and
+raises `-n`: six workers of `tests/unit/worker` OOM-killed an 8 GiB container
+twice ([the budget](agent-output.md#the-agent-is-told-its-memory-budget)).
 
 **What is related** (`scripts/lib/related_tests.py`, standard library only).
 Python: `select_unit_tests.py`'s rules, imported rather than restated -- the

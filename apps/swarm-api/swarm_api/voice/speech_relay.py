@@ -338,7 +338,7 @@ class SpeechRelay:
     async def _tell(self, frame: dict[str, Any] | str) -> None:
         try:
             await self._browser.send(frame if isinstance(frame, str) else json.dumps(frame))
-        except Exception:  # noqa: BLE001 -- the browser went; its pump sees it
+        except Exception:  # noqa: BLE001, S110 -- the browser went; its pump sees it
             pass
 
     async def _to_vm(self, data: str | bytes) -> bool:
@@ -490,7 +490,7 @@ class SpeechRelay:
     async def _close_vm(vm: Socket) -> None:
         try:
             await vm.close()
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110
             pass
 
     # -- the pumps
@@ -566,7 +566,7 @@ class SpeechRelay:
     async def _tell_bytes(self, data: bytes) -> None:
         try:
             await self._browser.send(data)
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110
             pass
 
     async def _from_vm(self, message: dict[str, Any]) -> None:

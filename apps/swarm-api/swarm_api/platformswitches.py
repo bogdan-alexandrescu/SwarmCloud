@@ -248,7 +248,7 @@ class PlatformSwitches:
                 return cached[1].get(name)
         try:
             values = self.trusted(self.document())
-        except Exception:  # noqa: BLE001 - a store outage must never decide a switch
+        except Exception:  # a store outage must never decide a switch
             logger.exception("platform_switch_read_failed: every switch reads as its Terraform value")
             values = {n: None for n in OPTIONS}
         with self._lock:

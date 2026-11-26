@@ -416,13 +416,13 @@ class SecretManagerForgeTokens:
             raise IssueReadFailed(
                 f"swarm-api may not read {secret_id}: {grant_hint(tenant.tenant_id, provider)}"
             ) from None
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             raise IssueReadFailed(
                 f"the tenant's forge credential could not be read ({type(exc).__name__})"
             ) from None
         try:
             token = bytes(version.payload.data).decode("utf-8").strip()
-        except Exception:
+        except Exception:  # noqa: BLE001
             token = ""
         if not token:
             raise NoForgeCredential(
@@ -528,7 +528,7 @@ def _urllib_send(url: str, headers: dict[str, str], timeout: float) -> tuple[int
     except urllib.error.HTTPError as answer:
         try:
             body = answer.read(MAX_RESPONSE_BYTES + 1)
-        except Exception:
+        except Exception:  # noqa: BLE001
             body = b""
         return answer.code, body
 
@@ -605,7 +605,7 @@ def urllib_probe_send(url: str, headers: dict[str, str], timeout: float) -> Prob
     except urllib.error.HTTPError as answer:
         try:
             body = answer.read(MAX_RESPONSE_BYTES + 1)
-        except Exception:
+        except Exception:  # noqa: BLE001
             body = b""
         answer_headers = answer.headers.items() if answer.headers is not None else ()
         return ProbeResponse(
@@ -813,7 +813,7 @@ class GitHubIssues:
             sent = self._send(url, self._headers(token), self._timeout)
         except ForgeReadError:
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # The type only. A transport's message can quote the request.
             raise IssueReadFailed(
                 f"{what} could not be read from GitHub ({type(exc).__name__})"
@@ -854,7 +854,7 @@ class GitHubIssues:
             raise IssueReadFailed(f"GitHub's answer for {ref.short} is larger than an issue")
         try:
             data = json.loads(raw.decode("utf-8"))
-        except Exception:
+        except Exception:  # noqa: BLE001
             data = None
         if not isinstance(data, dict):
             raise IssueReadFailed(f"GitHub's answer for {ref.short} is not an issue")
@@ -897,7 +897,7 @@ class GitHubIssues:
             raise IssueReadFailed(f"GitHub's answer for {what} is larger than a repository")
         try:
             data = json.loads(raw.decode("utf-8"))
-        except Exception:
+        except Exception:  # noqa: BLE001
             data = None
         read = repository_from(data)
         if read is None or (read.owner.lower(), read.repo.lower()) != (owner.lower(), repo.lower()):
@@ -935,7 +935,7 @@ class GitHubIssues:
             raise IssueReadFailed(f"GitHub's answer for {what} is larger than this read holds")
         try:
             data = json.loads(raw.decode("utf-8"))
-        except Exception:
+        except Exception:  # noqa: BLE001
             data = None
         if not isinstance(data, list):
             raise IssueReadFailed(f"GitHub's answer for {what} is not a list")

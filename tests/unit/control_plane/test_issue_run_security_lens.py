@@ -16,7 +16,7 @@ import copy
 
 import pytest
 
-from swarm_api import issueruns, validation
+from swarm_api import issueruns, reviewgate, validation
 from swarm_api.issueruns import compile_plan
 from swarm_api.schemas import WorkflowStepCreate
 from swarm_api.validation import DagError, REREVIEW_STEP_ID, SECURITY_VERDICT_FILE, StepSpec
@@ -70,6 +70,8 @@ def test_a_plan_touching_no_risk_path_compiles_exactly_as_before(plan, monkeypat
     "apps/common/swarm_common/models.py", "apps/redaction/redact.py",
     "apps/swarm-api/swarm_api/credentials.py", "apps/swarm-api/swarm_api/auth.py",
     "terraform/infra/iam.tf", ".github/workflows/ci.yml",
+    # The security checks' own switches (issue 430).
+    ".trivyignore.yaml", ".gitleaks.toml",
 ])
 def test_the_risk_paths_are_the_review_gates(path):
     assert issueruns.risk_path_hits(_risky(FULL_PLAN, path)) == [path]
@@ -253,14 +255,39 @@ def test_swarm_api_does_not_publish_a_gate_with_further_reviews_itself():
     ".github/workflows", "terraform/infra", "apps/redaction",
     "apps/x/../common/swarm_common/m.py", "apps\\common\\swarm_common\\m.py",
     "Apps/Common/Swarm_Common/m.py",
+    ".trivyignore.yaml", ".gitleaks.toml", ".github/codeql", "./.trivyignore.yaml",
 ])
 def test_a_directory_or_a_respelled_risk_path_in_a_plan_is_a_hit(path):
     assert issueruns.risk_path_hits(_risky(FULL_PLAN, path)) != []
 
 
-@pytest.mark.parametrize("path", ["docs", "apps/swarm-api/swarm_api/issues.py", "tests/unit"])
+@pytest.mark.parametrize("path", [
+    "docs", "apps/swarm-api/swarm_api/issues.py", "tests/unit",
+    # Issue 430's root-anchored entries must not catch an ordinary directory
+    # or dotfile: a `**/` on them would make every such plan a risk-path plan.
+    "docs/design", ".gitignore", ".dockerignore", "README.md",
+])
 def test_a_plain_path_is_no_hit(path):
     assert [h for h in issueruns.risk_path_hits({"steps": [{"files": [path]}]})] == []
+    assert not any(reviewgate.matches(path, g) for g in reviewgate.DEFAULT_RISK_PATHS)
+
+
+#: Issue 430's group, as `reviewgate.DEFAULT_RISK_PATHS` holds it.
+SCAN_SWITCHES = (".trivyignore*", "trivy.y*ml", ".gitleaks.toml", ".gitleaksignore",
+                 ".github/secret_scanning.yml", ".github/codeql/", ".checkov.y*ml",
+                 ".semgrepignore")
+
+
+def test_the_scan_switches_are_root_anchored_and_catch_no_plain_directory():
+    """`apps/swarm-ui` is already a plan hit through the `apps/**/` entries
+    (a directory may hold an `auth.py`); the new root-anchored group must add
+    no hit of its own to it or to any ordinary directory or dotfile."""
+    assert set(SCAN_SWITCHES) <= set(reviewgate.DEFAULT_RISK_PATHS)
+    assert not any(glob.startswith("**") for glob in SCAN_SWITCHES)
+    for path in ("docs", "docs/design", "apps/swarm-ui", "apps", "tests/unit",
+                 ".gitignore", ".dockerignore", "README.md", "apps/swarm-ui/.gitignore"):
+        assert not any(reviewgate.matches(path, glob) for glob in SCAN_SWITCHES), path
+        assert not any(issueruns._risky_entry(path, glob) for glob in SCAN_SWITCHES), path
 
 
 class _Store:
@@ -286,3 +313,7 @@ def test_the_merge_backstop_reads_the_real_diff_not_the_plan():
     assert _lacks(risky, ["implement", REVIEW, LENS]) is False
     assert _lacks(risky, ["implement", REVIEW], security_review=True) is False
     assert _lacks(["docs/a.md"], ["implement", REVIEW]) is False
+    # Issue 430: an edit of the image scan's accept list with no security lens
+    # waits for approval.
+    assert _lacks([".trivyignore.yaml"], ["implement", REVIEW]) is True
+    assert _lacks([".trivyignore.yaml"], ["implement", REVIEW, LENS]) is False

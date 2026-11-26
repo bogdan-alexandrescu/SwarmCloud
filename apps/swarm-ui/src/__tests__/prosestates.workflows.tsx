@@ -28,16 +28,16 @@ import {
 } from './prosestates.workflows.mounts'
 import { mountAnsweredQuestions, mountWideStage } from './prosestates.workflows.board'
 import {
-  mountRunApproveRefused,
   mountRunChecks,
   mountRunEditRefused,
   mountRunHeld,
   mountRunLongSummary,
-  mountRunMovedOn,
   mountRunOverlaps,
-  mountRunPlanChanged,
   mountRunRejected,
+  mountPlanSettingsRefused,
+  mountRunPlanless,
   mountRunRejectRefused,
+  mountRunWhole,
   mountRunsOlder,
   mountRunsOlderRefused,
 } from './prosestates.workflows.runs'
@@ -74,6 +74,7 @@ async function clickWhenDrawn(selector: string): Promise<void> {
 
 /** Open Reject's form, give a reason and send it. */
 async function rejectWith(reason: string): Promise<void> {
+  await whenDrawn('.rn-actions button')
   clickText('.rn-actions button', 'Reject')
   await drawn()
   const field = document.querySelector<HTMLTextAreaElement>('.rn-reject textarea')
@@ -136,16 +137,18 @@ export const WORKFLOWS: readonly ProseState[] = [
     group: 'workflows',
     files: ['Runs.tsx'],
     // The plan as the planner wrote it, and its JSON.
-    data: ['Sum the steps\' recorded spend into the workflow read'],
+    data: ['Sum step spend into the workflow read, then draw a cost column.', '"summary": "Sum step spend'],
     shows: 'details.rn-raw[open]',
-    walk: { open: PLANNED, then: () => openDetails('details.rn-raw') },
+    mount: mountRunWhole,
+    act: () => openDetails('details.rn-raw'),
   },
   {
     key: 'run/step-prompt',
     group: 'workflows',
     files: ['Runs.tsx'],
     shows: 'details.rn-prompt-d[open]',
-    walk: { open: PLANNED, then: () => openDetails('details.rn-prompt-d') },
+    mount: mountRunWhole,
+    act: () => openDetails('details.rn-prompt-d'),
   },
   {
     key: 'run/issue-body',
@@ -170,30 +173,18 @@ export const WORKFLOWS: readonly ProseState[] = [
     group: 'workflows',
     files: ['Runs.tsx'],
     shows: '.rn-reject',
-    walk: { open: PLANNED, then: () => clickText('.rn-actions button', 'Reject') },
+    mount: mountRunPlanless,
+    act: () => clickText('.rn-actions button', 'Reject'),
   },
   {
     key: 'run/edit-plan',
     group: 'workflows',
-    files: ['Runs.tsx'],
+    files: ['Runs.tsx', 'PlanEditor.tsx'],
     shows: '.rn-edit',
-    // The plan's own summary and prompts, in the fields that edit them.
-    data: ['Sum the steps\' recorded spend into the workflow read', 'Draw the column in Workflows.tsx'],
-    lines: ['Optional', 'Checked by the review'],
-    moved: [
-      'Free text, as the planner wrote it: a time or a size, such as “about 2 hours”. Optional.',
-      'The requirements are what the review checks, and what decides Closes against part of. The mode and the overlaps are kept as the planner found them.',
-      'Saving sends the digest of the plan you opened; an edit made by someone else since is refused.',
-    ],
-    walk: { open: PLANNED, then: () => clickText('.rn-actions button', 'Edit plan') },
-  },
-  {
-    key: 'run/approved',
-    group: 'workflows',
-    files: ['Runs.tsx'],
-    shows: '.rn-decided',
-    moved: ['The run is Running now, with its workflow created.'],
-    walk: { open: PLANNED, then: () => clickText('.rn-actions button', 'Approve and run') },
+    // What the disabled Save names: the fields still blank, as the editor reads them.
+    data: ['Not saved: the summary, step 1\'s title, step 1\'s prompt are empty.'],
+    mount: mountRunPlanless,
+    act: () => clickText('.rn-actions button', 'Edit plan'),
   },
   {
     key: 'workflow/step-picked',
@@ -484,17 +475,6 @@ export const WORKFLOWS: readonly ProseState[] = [
     act: () => openDetails('details.rn-check-list'),
   },
   {
-    key: 'run/approve-refused',
-    group: 'workflows',
-    files: ['Runs.tsx'],
-    shows: '.rn-wait .state.failed',
-    data: ['the store refused the approval'],
-    lines: ['The change was not confirmed'],
-    moved: ['The platform did not confirm this change. Read the page again to see whether it was made before sending it again.'],
-    mount: mountRunApproveRefused,
-    act: () => clickText('.rn-actions button', 'Approve and run'),
-  },
-  {
     key: 'run/rejected',
     group: 'workflows',
     files: ['Runs.tsx'],
@@ -517,7 +497,7 @@ export const WORKFLOWS: readonly ProseState[] = [
   {
     key: 'run/edit-refused',
     group: 'workflows',
-    files: ['Runs.tsx'],
+    files: ['Runs.tsx', 'PlanEditor.tsx'],
     shows: '.state.failed',
     data: ['the store refused the edit'],
     lines: ['The change was not confirmed'],
@@ -530,33 +510,13 @@ export const WORKFLOWS: readonly ProseState[] = [
       const summary = document.querySelector<HTMLTextAreaElement>('.rn-edit textarea')
       if (summary === null) throw new Error('no summary field in the plan editor')
       fireEvent.change(summary, { target: { value: 'My edit of the plan.' } })
+      // A run held with no plan starts from one empty step: give it a title and a prompt.
+      const step = document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('.rn-edit .rn-field-set input, .rn-edit .rn-field-set textarea')
+      const [title, prompt] = step
+      if (title === undefined || prompt === undefined) throw new Error('no step fields in the plan editor')
+      fireEvent.change(title, { target: { value: 'Write the plan' } })
+      fireEvent.change(prompt, { target: { value: 'Write the plan by hand.' } })
       clickText('.rn-edit button', 'Save the plan')
-    },
-  },
-  {
-    key: 'run/plan-changed',
-    group: 'workflows',
-    files: ['Runs.tsx'],
-    shows: '.rn-notice',
-    lines: ['The plan changed; nothing was done'],
-    moved: ['The plan changed since you opened it, so nothing was done. This is the plan now: read it, then act on it again.'],
-    mount: mountRunPlanChanged,
-    act: async () => {
-      await whenDrawn('.rn-actions button')
-      clickText('.rn-actions button', 'Approve and run')
-    },
-  },
-  {
-    key: 'run/moved-on',
-    group: 'workflows',
-    files: ['Runs.tsx'],
-    shows: '.rn-notice',
-    lines: ['The run moved on; nothing was done'],
-    moved: ['The run moved on since you opened it, so nothing was done: the run is REJECTED'],
-    mount: mountRunMovedOn,
-    act: async () => {
-      await whenDrawn('.rn-actions button')
-      clickText('.rn-actions button', 'Approve and run')
     },
   },
   {
@@ -566,13 +526,25 @@ export const WORKFLOWS: readonly ProseState[] = [
     files: ['Runs.tsx'],
     shows: '.rn-held',
     lines: ['The plan changed since this page drew it'],
-    moved: ['The actions below still name the plan shown, so the API will refuse them.'],
+    moved: ['The summary below is the plan this page drew; the decision page reads the newest.'],
     mount: mountRunHeld,
     act: async () => {
       await whenDrawn('.rn-actions button')
       await act(async () => {
         await vi.advanceTimersByTimeAsync(RUN_POLL_MS)
       })
+    },
+  },
+  {
+    key: 'automate/plan-settings-refused',
+    group: 'workflows',
+    files: ['AutomateSettings.tsx', 'PlanSettingsCard.tsx'],
+    shows: '.as-card [role="alert"]',
+    data: ['the store refused the setting'],
+    mount: mountPlanSettingsRefused,
+    act: async () => {
+      await whenDrawn('[data-testid="plan-review"]')
+      clickText('[data-testid="plan-review"] button', 'off')
     },
   },
   {

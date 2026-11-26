@@ -263,7 +263,7 @@ export const KEYBOARD_GROUPS: readonly KeyboardGroup[] = [
   },
   {
     name: 'capacity',
-    routes: ['automate/schedules', 'automate/approvals', 'automate/pipeline', 'capacity/pools', 'capacity/catalogue', 'capacity/profiles', 'capacity/holders'],
+    routes: ['automate/schedules', 'automate/approvals', 'automate/pipeline', 'automate/settings', 'capacity/pools', 'capacity/catalogue', 'capacity/profiles', 'capacity/holders'],
     stopFloor: 90,
     helps: 8,
   },

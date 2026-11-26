@@ -1,0 +1,32 @@
+{
+  "_generated": "GENERATED FILE -- DO NOT EDIT BY HAND. Regenerate: uv run python scripts/gen_api_types.py",
+  "backends": [
+    "CLOUD_RUN_JOB",
+    "GKE_AUTOPILOT",
+    "AUTO"
+  ],
+  "resource_classes": [
+    "browser",
+    "builder",
+    "large",
+    "medium",
+    "standard"
+  ],
+  "runner_profiles": [
+    "await-input",
+    "browser",
+    "claude-code",
+    "claude-code-browser",
+    "claude-code-large",
+    "claude-code-lightpanda",
+    "claude-code-medium",
+    "claude-code-review",
+    "codex",
+    "fix-loop",
+    "generic",
+    "indexer",
+    "merge",
+    "mock",
+    "post-verdict"
+  ]
+}

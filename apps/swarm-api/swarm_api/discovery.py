@@ -98,7 +98,7 @@ def read_secret_manager(name: str) -> str:
         raise DiscoveryConfigError(f"{name} has no enabled version") from None
     except gexc.PermissionDenied:
         raise DiscoveryConfigError(f"swarm-discovery may not read {name}") from None
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         raise DiscoveryConfigError(f"{name} could not be read ({type(exc).__name__})") from None
     try:
         return bytes(version.payload.data).decode("utf-8")
