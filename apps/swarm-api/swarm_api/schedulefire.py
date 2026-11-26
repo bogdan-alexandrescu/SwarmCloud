@@ -817,7 +817,7 @@ class Ticker:
                 fid = self.claim(schedule_id, now, windows, report)
                 if fid:
                     self.finish(fid, now, report)
-            except Exception as exc:  # one schedule's error does not stop the page (§2.10)
+            except Exception as exc:  # one schedule's error does not stop the page (§2.10)  # noqa: BLE001
                 self._failed(report, schedule_id, exc)
         if self._clock() - started < TICK_BUDGET_SECONDS:
             self._finish_stale(now, report, started)
@@ -1096,7 +1096,7 @@ class Ticker:
 
         try:
             _apply(self.db.transaction())
-        except Exception:  # pragma: no cover - the lease lapses by itself
+        except Exception:  # pragma: no cover - the lease lapses by itself  # noqa: BLE001
             log.warning("schedule firing %s: lease release failed", fid)
 
     def _record_item(self, fid: str) -> Callable[[dict[str, Any]], None]:
@@ -1686,7 +1686,7 @@ class Ticker:
                 continue
             try:
                 self.finish(firing["firing_id"], now, report)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self._failed(report, firing["firing_id"], exc)
 
     def _finish_approved(self, now: datetime, report: TickReport, started: float) -> None:
@@ -1703,7 +1703,7 @@ class Ticker:
                 return
             try:
                 self.finish(firing["firing_id"], now, report)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self._failed(report, firing["firing_id"], exc)
 
     def _advance_live(self, now: datetime, report: TickReport, started: float) -> None:
@@ -1713,7 +1713,7 @@ class Ticker:
                 return
             try:
                 self.advance(firing, now, report)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self._failed(report, firing["firing_id"], exc)
         # §4.9 (lane S12): the pending approvals' GitHub threads, read for
         # `/swarmcloud approve <digest>` comments. Bounded by the inbox and
@@ -1731,7 +1731,7 @@ class Ticker:
                 "lateness": report.lateness,
                 "expire_at": now + TICK_TTL,
             })
-        except Exception as exc:  # the report is not the work
+        except Exception as exc:  # the report is not the work  # noqa: BLE001
             log.warning("schedule tick report not written (%s)", type(exc).__name__)
 
     # -- run now (§7.1 `:run`, the S3 route calls it) ------------------------

@@ -302,7 +302,7 @@ def typesafe_call_key(task_tenant_id: str, submitter_tenant_id: str | None,
         return None
     try:
         value = read_secret(secret_id)
-    except Exception:  # a denied or missing read is no key; its message may name the secret's content
+    except Exception:  # a denied or missing read is no key; its message may name the secret's content  # noqa: BLE001
         return None
     return value.strip() if isinstance(value, str) and value.strip() else None
 

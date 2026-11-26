@@ -12,18 +12,23 @@ docs/design/fix-loop.md §7 requests A and B, accepted by the owner on 2026-10-2
     capacity (invariant 1), and no scheduler sweep promotes it: the scheduler
     promotes a park only through a sweep that names its reason
     (`_parked_window(ParkReason.X)`), or through PREWARM_REASONS;
-  * `scripts/lib/check-contract-parity.sh` still passes with the new member;
-  * request 126 (the end cause Q3 (c) needs), accepted by the owner on
-    2026-10-27, is applied: the frozen `EndCause` has `FIX_LOOP_EXHAUSTED`, appended, the outcome ledger classes
-    it as its own failure class, and the console's `EndCause` list carries it.
+  * `scripts/lib/check-contract-parity.sh` still passes with the new member,
+    and the member reaches the generated `states.json` the console is held to
+    (`scripts/api_constants/states.py`; the console half is
+    apps/swarm-ui/src/__tests__/contract.parity.test.ts, part of #72);
+  * the requests are filed: 124 and 125 accepted and applied, and 126 (the end
+    cause Q3 (c) needs) accepted by the owner on 2026-10-27 and applied: the frozen
+    `EndCause` has `FIX_LOOP_EXHAUSTED`, appended, the outcome ledger classes
+    it as its own failure class, and it reaches the generated `states.json`,
+    whose `--check` fails CI until the console's `END_CAUSES` follows.
 
 MUTATION: set `available=False` (with a reason) on `fix-loop` and
 `test_fix_loop_is_available` fails; drop "fix-loop" from
 `profiles_without_a_job` in locals.tf and
 `test_terraform_makes_no_job_for_fix_loop` fails; add
 `ParkReason.FIX_ROUNDS_RUNNING` to PREWARM_REASONS and
-`test_no_scheduler_sweep_promotes_fix_rounds_running` fails; drop the member
-from `PARK_REASONS` in apps/swarm-ui/src/types.ts and
+`test_no_scheduler_sweep_promotes_fix_rounds_running` fails; make the states
+group publish `park_reason` without the member and
 `test_the_contract_parity_script_passes` fails; take `FIX_LOOP_EXHAUSTED`
 out of `EndCause` (or put "Not applied" back on request 126's row) and
 `test_request_c_is_accepted_and_applied` fails.
@@ -31,6 +36,7 @@ out of `EndCause` (or put "Not applied" back on request 126's row) and
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import re
 import subprocess
@@ -52,6 +58,16 @@ REPO = Path(__file__).resolve().parents[3]
 LOCALS_TF = REPO / "terraform" / "infra" / "locals.tf"
 SCHEDULER = REPO / "apps" / "scheduler" / "scheduler"
 PARITY = REPO / "scripts" / "lib" / "check-contract-parity.sh"
+STATES_GROUP = REPO / "scripts" / "api_constants" / "states.py"
+
+
+def _published_states() -> dict:
+    """What the `states` constants group publishes to the console's
+    states.json (`scripts/gen_api_types.py --check` holds the file to it)."""
+    spec = importlib.util.spec_from_file_location("fix_loop_states_group", STATES_GROUP)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.build()
 
 
 # --------------------------------------------------------------------------
@@ -167,8 +183,9 @@ def test_no_scheduler_sweep_promotes_fix_rounds_running():
 
 
 def test_the_contract_parity_script_passes():
-    """Every shell, jq and TypeScript restatement the script checks carries the
-    new member: the console's ParkReason union is one of them."""
+    """Every shell, jq and Terraform restatement the script checks carries the
+    new member, and the member reaches the park reasons published to the
+    console, which contract.parity.test.ts holds the ParkReason union to."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("GOOGLE_")}
     result = subprocess.run(
         ["bash", str(PARITY)],
@@ -176,8 +193,9 @@ def test_the_contract_parity_script_passes():
     )
     report = result.stdout + result.stderr
     assert result.returncode == 0, report[-6000:]
-    members = len(list(ParkReason))
-    assert re.search(rf"ok types\.ts ParkReason: {members} member", report), report[-6000:]
+    published = _published_states()["park_reason"]
+    assert published == [m.value for m in ParkReason]
+    assert ParkReason.FIX_ROUNDS_RUNNING.value in published
 
 
 def test_request_c_is_accepted_and_applied():
@@ -195,15 +213,10 @@ def test_request_c_is_accepted_and_applied():
     assert causes[-2] is EndCause.BUDGET_EXCEEDED
 
 
-def test_the_console_names_the_new_end_cause():
-    """The parity script holds the console's `EndCause` union and `END_CAUSES`
-    to the frozen enum; this pins that it counted the new member."""
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GOOGLE_")}
-    result = subprocess.run(
-        ["bash", str(PARITY)],
-        cwd=REPO, env=env, capture_output=True, text=True, timeout=240,
-    )
-    report = result.stdout + result.stderr
-    assert result.returncode == 0, report[-6000:]
-    members = len(list(EndCause))
-    assert re.search(rf"ok types\.ts END_CAUSES: {members} member", report), report[-6000:]
+def test_the_new_end_cause_reaches_the_console_constants():
+    """The end causes published to the console's states.json are the frozen
+    enum in its order, the new member last: contract.parity.test.ts holds the
+    console's `END_CAUSES` to that list, in order."""
+    published = _published_states()["end_cause"]
+    assert published == [c.value for c in EndCause]
+    assert published[-1] == EndCause.FIX_LOOP_EXHAUSTED.value

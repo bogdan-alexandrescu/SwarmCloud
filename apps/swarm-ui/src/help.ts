@@ -1999,6 +1999,7 @@ export const HELP_PLACES = {
   'automate/schedules': 'Schedules',
   'automate/pipeline': 'Pipeline',
   'automate/approvals': 'Approvals',
+  'automate/settings': 'Settings',
   // A Capacity page since NAV-FOOT (archived issue 1672); `reference` still lands there.
   'capacity/api-reads': 'API reads',
 } as const

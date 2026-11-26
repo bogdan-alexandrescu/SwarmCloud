@@ -292,7 +292,7 @@ class SessionCarry:
     async def _attached(self, target_id: str) -> str | None:
         try:
             result = await self._call("Target.attachToTarget", {"targetId": target_id, "flatten": True}, None)
-        except Exception:  # a page that closed between the listing and the attach
+        except Exception:  # a page that closed between the listing and the attach  # noqa: BLE001
             return None
         session = result.get("sessionId")
         return session if isinstance(session, str) else None
@@ -300,7 +300,7 @@ class SessionCarry:
     async def _detach(self, session: str) -> None:
         try:
             await self._call("Target.detachFromTarget", {"sessionId": session}, None)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
 
     async def _export_storage(self) -> list[dict[str, Any]]:
@@ -331,7 +331,7 @@ class SessionCarry:
                 ]
                 if items:
                     out.append({"origin": origin, "localStorage": items})
-            except Exception:
+            except Exception:  # noqa: BLE001
                 self._record("browser_session_storage_skipped", {"step": "export"})
             finally:
                 await self._detach(session)
@@ -374,7 +374,7 @@ class SessionCarry:
                         "DOMStorage.setDOMStorageItem", {"storageId": storage_id, "key": key, "value": value}, session
                     )
                 written += 1
-        except Exception:
+        except Exception:  # noqa: BLE001
             self._record("browser_session_storage_skipped", {"step": "import"})
         finally:
             await self._detach(session)

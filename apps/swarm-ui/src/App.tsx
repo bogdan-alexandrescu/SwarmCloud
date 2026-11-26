@@ -128,6 +128,7 @@ const IssueSubmitScreen = lazy(() => import('./IssueSubmit').then((m) => ({ defa
 const RunsScreen = lazy(() => import('./Runs').then((m) => ({ default: m.RunsScreen })))
 const ApprovalsScreen = lazy(() => import('./Approvals').then((m) => ({ default: m.ApprovalsScreen })))
 const PipelineScreen = lazy(() => import('./Pipeline').then((m) => ({ default: m.PipelineScreen })))
+const AutomateSettingsScreen = lazy(() => import('./AutomateSettings').then((m) => ({ default: m.AutomateSettingsScreen })))
 const RepositoriesScreen = lazy(() => import('./Repositories').then((m) => ({ default: m.RepositoriesScreen })))
 const VoicePreferencesScreen = lazy(() => import('./voice/Section').then((m) => ({ default: m.VoicePreferencesScreen })))
 const VoiceProjectsScreen = lazy(() => import('./voice/Section').then((m) => ({ default: m.VoiceProjectsScreen })))
@@ -446,6 +447,9 @@ export const SECTIONS: SectionDef[] = [
       // found to merged, between Schedules and Approvals.
       { id: 'pipeline', label: 'Pipeline' },
       { id: 'approvals', label: 'Approvals' },
+      // plans-pipeline §6.4 (the owner's PD4 pick, B): the workspace's
+      // plan-review settings and the schedules that plan, after Approvals.
+      { id: 'settings', label: 'Settings' },
     ],
   },
   {
@@ -2749,6 +2753,8 @@ function SectionBody({
       return <PipelineScreen view={view} go={go} />
     case 'automate/approvals':
       return <ApprovalsScreen view={view} go={go} />
+    case 'automate/settings':
+      return <AutomateSettingsScreen />
 
     case 'capacity/pools':
       return <CapacityScreen />

@@ -270,7 +270,7 @@ class Engine:
             return what(self.ctx)
         except CheckFailed:
             raise
-        except Exception as exc:  # a probe that cannot run is unknown, not fine
+        except Exception as exc:  # a probe that cannot run is unknown, not fine  # noqa: BLE001
             return Observation(UNKNOWN, f"{type(exc).__name__}: {exc}")
 
     def _mark(self, step: Step, met: bool) -> None:
@@ -375,7 +375,7 @@ class Engine:
                 except LeaseLost as exc:
                     lost.append(exc)
                     return
-                except Exception:  # noqa: BLE001 - a missed beat is retried on the next tick
+                except Exception:  # noqa: BLE001, S112 - a missed beat is retried on the next tick
                     continue
 
         thread = threading.Thread(target=beat, name="swarm-install-heartbeat", daemon=True)
@@ -406,7 +406,7 @@ class Engine:
     def _trigger_landed(self, step: TriggeredStep) -> bool:
         try:
             return bool(step.trigger(self.ctx))
-        except Exception:  # an unreadable trigger has not landed; the next poll asks again
+        except Exception:  # an unreadable trigger has not landed; the next poll asks again  # noqa: BLE001
             return False
 
     def run_step(self, step: Step) -> None:

@@ -278,7 +278,8 @@ describe('C: a step\'s touches and tests are lists', () => {
   it('draws one item per line, broken only at `/`, `::` or `_`, each with a copy button', async () => {
     const writes: string[] = []
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn(async (t: string) => { writes.push(t) }) } })
-    const { container } = await mount(run())
+    // The steps are drawn on a run not waiting on its decision page (a PLANNED one is a summary, PR 464).
+    const { container } = await mount(run({ state: 'REJECTED', terminal: true }))
     const step = container.querySelector('.rn-step')!
     const touches = step.querySelector('ul.rn-step-list[aria-label="Touches"]')!
     const tests = step.querySelector('ul.rn-step-list[aria-label="Tests"]')!
@@ -299,18 +300,17 @@ describe('C: a step\'s touches and tests are lists', () => {
   })
 })
 
-describe('D: a PLANNED run\'s actions are at the top and at the foot of the plan', () => {
-  it('puts Approve, Edit and Reject in the waiting banner and in a sticky bar', async () => {
+describe('D: a PLANNED run is decided on its decision page, linked from the waiting banner', () => {
+  it('puts the decision page in the waiting banner, and no Approve, Edit or Reject anywhere (PR 464: summary only)', async () => {
     const { container } = await mount(run())
     const banner = container.querySelector('.rn-wait')!
+    expect(within(banner as HTMLElement).getByTestId('rn-decide')).not.toBeNull()
     for (const name of ['Approve and run', 'Edit plan', 'Reject']) {
-      expect(within(banner as HTMLElement).getByRole('button', { name })).not.toBeNull()
+      expect(within(container).queryByRole('button', { name })).toBeNull()
     }
-    const bar = container.querySelector('.rn-plan .rn-actbar')!
-    expect(bar).not.toBeNull()
-    expect(painted(bar, 'position', WIDE)).toBe('sticky')
-    expect(painted(bar, 'bottom', WIDE)).toBe('0')
-    expect(within(bar as HTMLElement).getByRole('button', { name: 'Approve and run' })).not.toBeNull()
+    expect(container.querySelector('.rn-actbar')).toBeNull()
+    expect(within(container).getByTestId('rn-plan-summary')).not.toBeNull()
+    expect(container.querySelector('.rn-step')).toBeNull()
   })
 
   for (const state of ['RUNNING', 'DONE', 'PLANNING', 'REJECTED']) {
@@ -379,7 +379,7 @@ describe('F/N18: the lead is cut on what it renders, and can be read whole', () 
 
   it('offers Read more beside a cut lead, and it shows the whole summary', async () => {
     const summary = 'First sentence here. ' + 'Then `code` and words. '.repeat(30)
-    const { container } = await mount(run({ plan: { ...run().plan, summary } }))
+    const { container } = await mount(run({ state: 'REJECTED', terminal: true, plan: { ...run().plan, summary } }))
     const lead = container.querySelector('.rn-summary')!
     expect(visible(lead)).not.toContain('`')
     const more = within(lead as HTMLElement).getByRole('button', { name: 'Read more' })

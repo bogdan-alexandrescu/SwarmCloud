@@ -727,6 +727,58 @@ SWITCHES: dict[str, Switch] = {
         why="a plan:edit or another plan:revise while a re-plan runs is refused 409. On once "
         "the decision page (lane U4) offers Cancel the re-plan beside the editor",
     ),
+    # Diagrams in plans on demand (docs/design/plans-pipeline.md §6.5, lane P6
+    # PLANS-DIAGRAMS-API). Each gates `plan:diagram` or `plan:add-diagram`,
+    # routes new with that lane. Off, the request goes ahead and the log names
+    # the refusal it would have made. None of them is what keeps a diagram
+    # safe: the source check (§6.6), the cap of four in the plan's schema, the
+    # role floor and the digest are refusals of their own, always on.
+    "diagrams_off": Switch(
+        code="diagrams_off",
+        why="a plan:diagram or plan:add-diagram while the platform, workspace or schedule "
+        "setting turns diagrams off is refused 409, naming the level. On once the decision "
+        "page (lane U8) offers the ask only while the setting is on",
+    ),
+    "diagram_cap": Switch(
+        code="diagram_cap",
+        why="a plan:diagram past plan_review_caps.diagram_asks (20 by default) or review_usd "
+        "($25), Admin › Settings, is refused 429. On once the decision page shows both counts",
+    ),
+    "diagram_running": Switch(
+        code="diagram_running",
+        why="a plan:diagram while another ask of the run is being drawn is refused 409; off, "
+        "the newer ask ends the older one. On once the decision page shows the ask that draws",
+    ),
+    "diagrams_cap": Switch(
+        code="diagrams_cap",
+        why="a plan:add-diagram to a plan that holds four is refused 422 with its own code; "
+        "off, the plan's schema refuses the fifth as invalid_plan. On once the decision page "
+        "disables Pin to the plan at four",
+    ),
+    # The plan review chat (docs/design/plans-pipeline.md §7, lane P7
+    # PLANS-CHAT-API). Each gates `POST /v1/runs/{id}/plan-chat`, a route new
+    # with that lane. Off, the question is asked anyway -- one ordinary task in
+    # the run's tenant whose answer never changes the plan -- and the log names
+    # the refusal it would have made. NOT here, and always on: the role floor
+    # (`role_member_required`'s own switch), the tenant check (404), `chat_busy`
+    # and `turn_not_pinnable` (the guard's NOT_SWITCHABLE_CODES says why).
+    "chat_closed": Switch(
+        code="chat_closed",
+        why="a plan-chat question on a run that is not PLANNED (its plan decided, rejected or "
+        "not yet made) is refused 409. On once the decision page (lane U9) hides the "
+        "composer after the decision",
+    ),
+    "comment_level_required": Switch(
+        code="comment_level_required",
+        why="a plan-chat question by a member who may not comment on the plan is refused "
+        "403. On once the decision page offers the chat only at may_decide.comment",
+    ),
+    "chat_cap": Switch(
+        code="chat_cap",
+        why="a plan-chat question past plan_review_caps.chat_turns (40 by default) or "
+        "review_usd ($25), Admin › Settings, is refused 429 naming which. On once the "
+        "decision page shows both counts",
+    ),
 }
 
 

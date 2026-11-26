@@ -488,7 +488,7 @@ class BudgetGuard:
         """One look at the channel; the action taken, or None. Never raises."""
         try:
             return self._watch()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning("could not check this attempt's budget; the agent carries on",
                              error_type=type(exc).__name__)
             return None
@@ -557,7 +557,7 @@ class BudgetGuard:
         try:
             self._emit({"cause": WARNING_CAUSE, "percent": percent, "told": told,
                         **self._numbers()})
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning("could not record the budget warning on the task's events",
                              error_type=type(exc).__name__)
 
@@ -583,7 +583,7 @@ class BudgetGuard:
             # The last figure, priced now whatever the throttle says.
             self._priced_at = None
             self._refresh()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.log.warning("could not read the runner's budget channel",
                              error_type=type(exc).__name__)
 

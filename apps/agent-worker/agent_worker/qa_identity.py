@@ -205,7 +205,7 @@ def issue(cfg: Any, key: Any, api: Any, identity: str, *, now: float) -> Issued:
     try:
         headers = sign_headers(key, QA_IDENTITY_PURPOSE, "POST", path, body, now=now)
         _, payload = api.call("POST", path, body=body, headers=headers)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         code = str(getattr(exc, "code", "") or "")
         if code in _PERMANENT:
             raise IssueRefused(code, retryable=False) from None
@@ -329,12 +329,12 @@ class QaSignIn:
         if self._register_secret is not None:
             try:
                 self._register_secret(issued.credential)
-            except Exception:  # redaction is a second guard; nothing logs the value anyway
+            except Exception:  # redaction is a second guard; nothing logs the value anyway  # noqa: BLE001, S110
                 pass
         try:
             gate.call(CTL_OP, {"host": issued.host, "header": issued.header, "scheme": issued.scheme,
                                "credential": issued.credential, "expires_in": issued.expires_in})
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # The gate's refusal is a word it chose, never what was sent; the
             # exception's class is all that is logged.
             refused = type(exc).__name__ == "GateRefused"
@@ -371,7 +371,7 @@ class QaSignIn:
                          cause=cause)
         try:
             gate.call(CTL_OP, {"failed": cause})
-        except Exception as exc:  # an expired credential is refused by the gate on its own
+        except Exception as exc:  # an expired credential is refused by the gate on its own  # noqa: BLE001
             self.log.warning("the gate was not told the qa identity failed", error=type(exc).__name__)
 
     def _retry_later(self, cause: str) -> None:

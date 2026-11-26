@@ -55,6 +55,7 @@ body:
         - "Web UI · Automate › Schedules (/automate/schedules)"
         - "Web UI · Automate › Pipeline (/automate/pipeline)"
         - "Web UI · Automate › Approvals (/automate/approvals)"
+        - "Web UI · Automate › Settings (/automate/settings)"
         - "Web UI · Capacity › Pools (/capacity/pools)"
         - "Web UI · Capacity › Runtimes (/capacity/runtimes)"
         - "Web UI · Capacity › By runner profile (/capacity/pools/profiles)"

@@ -798,7 +798,7 @@ class _ServerRun:
                 else:
                     try:
                         code = client.process.wait(timeout=2.0)
-                    except Exception:  # still dying: it is being killed below
+                    except Exception:  # still dying: it is being killed below  # noqa: BLE001
                         code = None
                     self._stop(STATUS_FAILING, f"{self.spec.name} exited with status {code}")
             finally:

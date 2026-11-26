@@ -37,6 +37,9 @@ import { errorHeading, type Result } from './fetch'
 import { InfoTip } from './InfoTip'
 import { timeAgo } from './Shell'
 import { useNow } from './useNow'
+import { PlanThread, openComments, useBarRegistration, usePlanConversation, ReplanControls } from './PlanThread'
+import { PlanRevisionPicker } from './PlanRevisions'
+import { PlanEditorMount, useSavedOver } from './PlanEditor'
 import './styles/plan-document.css'
 
 type Json = Record<string, unknown>
@@ -147,7 +150,10 @@ function Names({ shown }: { shown: ShownRevision }) {
  * the verbs in `children` act on. Superseded (`D:P2c`), it holds no verb: it
  * names the newer revision and offers one button to read it.
  */
-export function PlanBar({ shown, newer, onRead, children }: { shown: ShownRevision; newer: NewerRevision | null; onRead: () => void; children: ReactNode }) {
+export function PlanBar({ shown, newer: polled, onRead, children }: { shown: ShownRevision; newer: NewerRevision | null; onRead: () => void; children: ReactNode }) {
+  // A revision saved over the shown one on this page (PlanEditor.tsx, D:P3c) supersedes it at once.
+  const saved = useSavedOver(shown.digest)
+  const newer = polled ?? (saved === null ? null : { revision: saved.revision, digest: saved.digest, changed: 0 })
   if (newer !== null) {
     const next = newer.revision === null ? 'the new revision' : `revision ${newer.revision}`
     return (
@@ -172,6 +178,8 @@ export function PlanBar({ shown, newer, onRead, children }: { shown: ShownRevisi
         <Names shown={shown} />
         <InfoTip about="what Approve approves" tip="Approve approves this revision of the plan, by its digest. A plan changed since it was read is refused, never approved unread." />
       </span>
+      {/* Request changes, or what Approve does to a running re-plan (PlanThread.tsx, §5.3). */}
+      <ReplanControls digest={shown.digest} />
       {children}
     </div>
   )
@@ -227,8 +235,8 @@ function stepsOf(plan: Json): DocStep[] {
 }
 
 /** One part of the document beside its margin: the planner's reason, then the part's thread (U4). */
-function Part({ label, anchor, reason, thread, children }: { label: string; anchor: string; reason: string | null; thread?: (anchor: string) => ReactNode; children: ReactNode }) {
-  const said = thread?.(anchor) ?? null
+function Part({ label, anchor, reason, thread, children }: { label: string; anchor: string; reason: string | null; thread?: (anchor: string, label: string) => ReactNode; children: ReactNode }) {
+  const said = thread?.(anchor, label) ?? null
   return (
     <section className="pd-part" aria-label={label} data-anchor={anchor}>
       <div className="pd-main">{children}</div>
@@ -350,8 +358,27 @@ export function PlanDocument({
   digest: string | null
   onRead: () => void
   pinned?: ReactNode
-  thread?: (anchor: string) => ReactNode
+  thread?: (anchor: string, label: string) => ReactNode
 }) {
+  // The margin's thread, Comment, Request changes and the revisions (U4,
+  // PlanThread.tsx and PlanRevisions.tsx), from the run read and kept live
+  // while a re-plan runs. A run read with no `plan_thread` draws none.
+  const runId = run === null ? null : text(run.id)
+  const conversation = usePlanConversation(runId, run)
+  const shownRev = shownRevision(digest, run).revision
+  useBarRegistration(
+    conversation.thread === null || runId === null || digest === null
+      ? null
+      : {
+          runId,
+          digest,
+          revision: shownRev,
+          open: openComments(conversation.thread, digest).length,
+          replan: conversation.replan,
+          mayEdit: conversation.may.edit && run?.state === 'PLANNED',
+          onReplan: conversation.setReplan,
+        },
+  )
   if (plan === null)
     return (
       <section className="pd-doc" aria-label="The plan" data-testid="pd-doc" data-state="empty">
@@ -367,11 +394,19 @@ export function PlanDocument({
   const risk = obj(run?.plan_risk)
   const riskSteps = risk !== null && (digest === null || risk.digest === digest) ? obj(risk.steps) : null
   const [first, ...rest] = requirements
+  const margin =
+    thread ??
+    ((anchor: string, label: string) => <PlanThread c={conversation} anchorKey={anchor} label={label} plan={plan} digest={digest} shownRevision={shownRev} />)
   return (
     <section className="pd-doc" aria-label="The plan" data-testid="pd-doc" data-state={read?.status ?? 'ok'}>
       <ReadState read={read} onRead={onRead} />
       {pinned}
-      <Part label="Summary" anchor="plan" reason={text(plan.rationale)} thread={thread}>
+      {runId !== null && conversation.revisions.length > 0 && (
+        <PlanRevisionPicker runId={runId} revisions={conversation.revisions} shown={shownRev} shownPlan={plan} complete={conversation.complete} />
+      )}
+      {/* Edit by hand (U5, PlanEditor.tsx; D:P3b, D:P3c). */}
+      <PlanEditorMount runId={runId} run={run} plan={plan} digest={digest} />
+      <Part label="Summary" anchor="plan" reason={text(plan.rationale)} thread={margin}>
         <p className="pd-summary" data-testid="pd-summary">
           {text(plan.summary) ?? <Dash why="no summary served" />}
         </p>
@@ -386,7 +421,7 @@ export function PlanDocument({
         </div>
       </Part>
       {first !== undefined && (
-        <Part label="Requirements" anchor="requirements" reason={null} thread={thread}>
+        <Part label="Requirements" anchor="requirements" reason={null} thread={margin}>
           <h3 className="pd-h">Requirements</h3>
           <ol className="pd-reqs" aria-label="Requirements" data-testid="pd-reqs">
             <li>{first}</li>
@@ -406,7 +441,7 @@ export function PlanDocument({
       {steps.map((s, i) => {
         const rows = riskSteps === null ? [] : objs(riskSteps[s.id])
         return (
-          <Part key={s.id} label={`Step ${i + 1}`} anchor={`step:${s.id}`} reason={s.reason} thread={thread}>
+          <Part key={s.id} label={`Step ${i + 1}`} anchor={`step:${s.id}`} reason={s.reason} thread={margin}>
             <h3 className="pd-step-h">
               <span className="pd-stepn">{i + 1}</span>
               <span className="pd-step-t">{s.title}</span>

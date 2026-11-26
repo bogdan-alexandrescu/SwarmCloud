@@ -791,7 +791,7 @@ def judge(base: str) -> list[tuple[str, str, str]]:
     for check in CHECKS:
         try:
             verdict, reason = verdicts[check]()
-        except Exception as exc:  # a crash judges nothing: FAIL, named
+        except Exception as exc:  # a crash judges nothing: FAIL, named  # noqa: BLE001
             verdict, reason = "FAIL", f"the judge crashed ({type(exc).__name__}: {exc})"
         out.append((check, verdict, reason))
     return out

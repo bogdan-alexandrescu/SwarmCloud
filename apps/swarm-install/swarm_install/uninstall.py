@@ -56,7 +56,7 @@ from typing import Any, Protocol, TextIO
 from swarm_redaction import redact
 
 from . import remains as remains_mod
-from . import tfvars
+from . import planguard, tfvars
 from .api_client import deployer_email
 from .events import Events
 from .exitcodes import ExitCode
@@ -296,9 +296,19 @@ class Destroyed:
     kms_key_ring: str | None = None
 
 
-def _plan_destroy(tf: Terraform, who: str | None) -> dict[str, Any]:
+def refuse_wrong_project(plan: Mapping[str, Any], project: str, what: str) -> None:
+    """A plan that names a project other than the install's is refused before
+    any apply, by the operator scripts' own rule (`planguard`; issue 344)."""
+    wrong = planguard.refusal(plan, project, what)
+    if wrong:
+        raise UninstallRefused(wrong)
+
+
+def _plan_destroy(tf: Terraform, who: str | None, project: str) -> dict[str, Any]:
     tf.run("plan", "-destroy", "-input=false", f"-out={PLAN_FILE}", impersonate=who)
-    return json.loads(tf.run("show", "-json", PLAN_FILE, impersonate=who).stdout or "{}")
+    plan = json.loads(tf.run("show", "-json", PLAN_FILE, impersonate=who).stdout or "{}")
+    refuse_wrong_project(plan, project, f"{tf.root}'s destroy")
+    return plan
 
 
 def _deletes(plan: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -323,13 +333,14 @@ def _buckets(plan: Mapping[str, Any]) -> list[str]:
 
 
 def _unprotect(tf: Terraform, targets: Sequence[str], who: str | None,
-               announce: Callable[[str], None]) -> None:
+               announce: Callable[[str], None], project: str) -> None:
     """Audit 4e F1: one infra pass, targeted at the protected resources alone,
     that applies the uninstall's inputs (`tfvars.UNINSTALL_OVERLAY`), so the
     destroy that follows is not refused. Targeted, so the pass changes nothing
     but those resources' protection; a plan that would delete or replace
     anything is refused before it applies."""
     plan = tf.plan(targets=targets, impersonate=who)
+    refuse_wrong_project(plan, project, f"{tf.root}'s unprotect pass")
     moved = [str(c.get("address")) for c in plan.get("resource_changes") or ()
              if set((c.get("change") or {}).get("actions") or ()) - {"update", "no-op", "read"}]
     if moved:
@@ -367,7 +378,7 @@ def destroy_root(tf: Terraform, *, project: str, who: str | None, inputs: Mappin
     if inputs is None:
         raise UninstallRefused(f"{tf.root} has state but no generated inputs in gs://{tf.state_bucket}/"
                                f"{tfvars.object_name(tf.root)}, so its destroy cannot be planned")
-    plan = _plan_destroy(tf, who)
+    plan = _plan_destroy(tf, who, project)
     for change in _deletes(plan):
         before = (change.get("change") or {}).get("before") or {}
         refuse_denied(f"{tf.root}'s destroy of {change.get('address')}", _strings(before), deny_list)
@@ -393,7 +404,7 @@ def destroy_root(tf: Terraform, *, project: str, who: str | None, inputs: Mappin
     if keep or unowned:
         for address in [*keep, *unowned]:
             tf.run("state", "rm", address, impersonate=who)
-        plan = _plan_destroy(tf, who)
+        plan = _plan_destroy(tf, who, project)
     deletes = [str(c.get("address")) for c in _deletes(plan)]
     if not deletes:
         return done
@@ -401,13 +412,13 @@ def destroy_root(tf: Terraform, *, project: str, who: str | None, inputs: Mappin
         raise UninstallRefused(f"{tf.root}'s destroy was not approved with the project id; nothing was applied")
     protected = _protected(plan)
     if protected:
-        _unprotect(tf, protected, who, announce)
+        _unprotect(tf, protected, who, announce, project)
     buckets = _buckets(plan)
     if buckets and empty_bucket is not None:
         for name in buckets:
             empty_bucket(name)
     if protected or buckets:
-        plan = _plan_destroy(tf, who)
+        plan = _plan_destroy(tf, who, project)
         deletes = [str(c.get("address")) for c in _deletes(plan)]
     announce(f"terraform destroy: {tf.root} ({len(deletes)} resources)" + (f" as {who}" if who else " as you"))
     tf.apply(impersonate=who)
@@ -536,7 +547,7 @@ class Uninstall:
         except (UninstallRefused, LeaseHeld, LeaseRefused) as exc:
             self.say(f"swarm uninstall: refused: {exc}")
             return ExitCode.REFUSED
-        except Exception as exc:  # a failed call: said (redacted), and the next run continues at this step
+        except Exception as exc:  # a failed call: said (redacted), and the next run continues at this step  # noqa: BLE001
             message = redact(f"{type(exc).__name__}: {exc}").text
             self.events.emit("step_failed", step=step.id, detail=message)
             self.say(f"swarm uninstall: step {step.number} ({step.title}) failed: {message}. "
@@ -546,7 +557,7 @@ class Uninstall:
             if self.lease is not None:
                 try:
                     self.lease.release()
-                except Exception as exc:  # the lease expires by itself; say so, never mask the outcome
+                except Exception as exc:  # the lease expires by itself; say so, never mask the outcome  # noqa: BLE001
                     self.say(f"swarm uninstall: the lease was not released ({type(exc).__name__}); it expires")
         self.events.emit("run_end", outcome="ok", exit_code=int(ExitCode.OK), message="uninstalled")
         return ExitCode.OK
@@ -682,7 +693,7 @@ class Uninstall:
         page = f"https://console.cloud.google.com/billing/{account}/budgets"
         try:
             self.world.delete_budgets(account, name)
-        except Exception as exc:  # a refusal on the billing account is a remain, not a stop
+        except Exception as exc:  # a refusal on the billing account is a remain, not a stop  # noqa: BLE001
             return remains_mod.Remain(
                 kind="budget", name=f"billingAccounts/{account}: {name}",
                 why=redact(f"the billing account refused its deletion ({type(exc).__name__}: {exc})").text[:400],
@@ -725,7 +736,7 @@ class Uninstall:
         refuse_denied("the Cloud DNS zone", [zone], self.state.deny_list)
         try:
             done = self.world.delete_dns_record(zone, hostname, address)
-        except Exception as exc:  # the record is listed with its console page instead
+        except Exception as exc:  # the record is listed with its console page instead  # noqa: BLE001
             self.say(redact(f"swarm uninstall: the A record for {hostname} in Cloud DNS zone {zone} was not "
                             f"deleted ({type(exc).__name__}: {exc})").text[:400])
             done = remains_mod.DNS_FAILED

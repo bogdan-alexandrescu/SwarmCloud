@@ -23,11 +23,17 @@ REPO = Path(__file__).resolve().parents[3]
 PYPROJECT = REPO / "pyproject.toml"
 LOCK = REPO / "uv.lock"
 
-# Issue 54: the broad/silent-except rules, selected with a per-file baseline.
+# Issue 54: the broad/silent-except rules. Issue 185: every existing site
+# carries its own inline noqa marker; no per-file ignore names these rules.
 SILENT_EXCEPT_RULES = ("BLE001", "S110", "S112")
-# The baseline's size when the rules were selected (2026-11-21). It may only
-# shrink: lower this number when a line is deleted, never raise it.
-BASELINE_CEILING = 146
+# The number of BLE001/S110/S112 sites silenced by an inline noqa marker when
+# issue 185 landed. It may only go DOWN: fix a handler, delete its marker,
+# lower this number. Never raise it for new code; 1050 -> 1051 once, for one
+# site that arrived from the default branch (accountpool.py).
+# 1051 -> 1052 once (schedules.py), 1052 -> 1055 once, for three sites from the default branch
+# (livegate/__main__.py, swarm_api/routes/runs.py, agent_worker/handoff.py).
+# 1055 -> 1061 once, for six sites from the default branch, each already marked inline.
+SUPPRESSED_SITE_CEILING = 1061
 
 
 def _project() -> dict:
@@ -65,12 +71,6 @@ def test_ruff_is_an_exact_dev_pin_held_equal_to_required_version_and_the_lock():
     m = re.search(r'\[\[package\]\]\nname = "ruff"\nversion = "([^"]+)"', lock)
     assert m, "uv.lock has no ruff package: run `uv lock`"
     assert m.group(1) == version
-
-
-def _baseline() -> dict[str, list[str]]:
-    # The per-file-ignores entries naming any of the silent-except rules.
-    ignores = _ruff()["lint"].get("per-file-ignores", {})
-    return {k: v for k, v in ignores.items() if set(v) & set(SILENT_EXCEPT_RULES)}
 
 
 def _ruff_check(*args: str, stdin: str | None = None) -> list[dict]:
@@ -114,57 +114,77 @@ def test_the_rule_set_is_the_conservative_one_plus_the_silent_except_rules():
     assert ruff["lint"]["select"] == ["E4", "E7", "E9", "F", *SILENT_EXCEPT_RULES]
 
 
-def test_the_silent_except_baseline_names_exact_existing_files_and_only_shrinks():
-    baseline = _baseline()
-    assert 0 < len(baseline) <= BASELINE_CEILING, (
-        f"the BLE001/S110/S112 baseline has {len(baseline)} files, over its ceiling "
-        f"{BASELINE_CEILING}: it may only shrink -- fix the new handler instead"
-    )
-    for path, rules in baseline.items():
-        assert not set(path) & set("*?[]{}"), f"{path}: a baseline entry is one file, never a glob"
-        assert (REPO / path).is_file(), f"{path}: baselined but gone -- delete its line"
-        assert set(rules) <= set(SILENT_EXCEPT_RULES), f"{path}: {rules}"
-        assert len(set(rules)) == len(rules), f"{path}: {rules}"
-        assert not path.startswith("apps/common/swarm_common/"), path
-
-
-def test_every_baselined_rule_still_suppresses_something():
-    # A file whose handlers were fixed must leave the baseline, so it shrinks.
-    baseline = _baseline()
-    found = _ruff_check(
-        "--select", ",".join(SILENT_EXCEPT_RULES),
-        "--config", "lint.per-file-ignores = {}",
-        *sorted(baseline),
-    )
-    live: dict[str, set[str]] = {}
-    for f in found:
-        live.setdefault(Path(f["filename"]).resolve().relative_to(REPO).as_posix(), set()).add(
-            f["code"]
-        )
-    stale = {p: sorted(set(r) - live.get(p, set())) for p, r in baseline.items()}
-    stale = {p: r for p, r in stale.items() if r}
-    assert not stale, f"baseline lines that suppress nothing any more -- delete them: {stale}"
+def test_no_per_file_ignore_names_a_silent_except_rule():
+    # A per-file ignore silences the rule for the whole file, so a NEW broad
+    # except there would pass (issue 185): each site is marked inline instead.
+    ignores = _ruff()["lint"].get("per-file-ignores", {})
+    named = {k: v for k, v in ignores.items() if set(v) & set(SILENT_EXCEPT_RULES)}
+    assert not named, f"per-file ignores naming a silent-except rule: {named}"
+    assert "BLE001/S110/S112 BASELINE" not in PYPROJECT.read_text()
 
 
 @pytest.mark.parametrize(
     "path",
-    ["apps/agent-worker/agent_worker/brand_new_module.py", "scripts/brand_new_tool.py"],
+    [
+        # Formerly baselined for BLE001 (issue 54): no longer quiet as a file.
+        "apps/agent-worker/agent_worker/lifecycle.py",
+        "apps/swarm-api/swarm_api/attemptstate.py",
+        "scripts/lib/ci_reuse.py",
+        # Brand-new paths: every path behaves the same.
+        "apps/agent-worker/agent_worker/brand_new_module.py",
+        "scripts/brand_new_tool.py",
+    ],
 )
-def test_a_new_silent_broad_except_outside_the_baseline_fails(path):
-    assert path not in _baseline()
+def test_a_new_silent_broad_except_in_a_formerly_baselined_file_fails(path):
     codes = sorted(
         f["code"] for f in _ruff_check("--stdin-filename", path, "-", stdin=NEW_SILENT_EXCEPTS)
     )
     assert codes == ["BLE001", "BLE001", "BLE001", "S110", "S112"], codes
 
 
-def test_a_baselined_file_is_quiet_only_for_its_own_rules():
-    baseline = _baseline()
-    path = next(p for p, r in sorted(baseline.items()) if r == ["BLE001"])
-    codes = sorted(
-        f["code"] for f in _ruff_check("--stdin-filename", path, "-", stdin=NEW_SILENT_EXCEPTS)
+def test_the_tree_is_clean_and_the_suppressed_site_count_only_goes_down():
+    rules = ",".join(SILENT_EXCEPT_RULES)
+    unmarked = _ruff_check("--select", rules, ".")
+    assert unmarked == [], (
+        "a BLE001/S110/S112 site without an inline marker -- narrow the handler: "
+        + ", ".join(f"{f['filename']}:{f['location']['row']} {f['code']}" for f in unmarked)
     )
-    assert codes == ["S110", "S112"], codes
+    # Counting ruff's own findings with the markers ignored, not a regex over
+    # comments: a regex would count markers inside strings and miss a blanket
+    # noqa marker.
+    count = len(_ruff_check("--select", rules, "--ignore-noqa", "."))
+    assert count <= SUPPRESSED_SITE_CEILING, (
+        f"{count} BLE001/S110/S112 sites carry a `# noqa`, over SUPPRESSED_SITE_CEILING "
+        f"{SUPPRESSED_SITE_CEILING}: it may only go down -- fix the new handler instead"
+    )
+    assert count >= SUPPRESSED_SITE_CEILING, (
+        f"only {count} BLE001/S110/S112 sites carry a `# noqa` now: lower "
+        f"SUPPRESSED_SITE_CEILING in {Path(__file__).name} to {count}"
+    )
+
+
+_UNUSED = re.compile(r"(?:\(|; )unused: ([^;)]*)")
+
+
+def test_no_silent_except_marker_suppresses_nothing():
+    # RUF100 runs here scoped to the three rules, NOT in `lint.select`:
+    # selected repository-wide (measured for issue 185) it reported 920
+    # findings in 309 files -- about 570 markers for rules this repository
+    # never selected (ANN001, SLF001, ARG001 ...), 310 `F811` markers under
+    # tests/, and one inside the FROZEN apps/common/swarm_common/. Only the
+    # `unused:` part of a message counts; `non-enabled:` lists codes never
+    # selected here.
+    stale = []
+    for f in _ruff_check("--select", ",".join((*SILENT_EXCEPT_RULES, "RUF100")), "."):
+        if f["code"] != "RUF100":
+            continue
+        m = _UNUSED.search(f["message"])
+        unused = {c.strip(" `") for c in m.group(1).split(",")} if m else set()
+        if unused & set(SILENT_EXCEPT_RULES):
+            stale.append(f"{f['filename']}:{f['location']['row']} {f['message']}")
+    assert not stale, "markers that suppress nothing -- delete the code from them: " + "; ".join(
+        stale
+    )
 
 
 def test_an_inline_noqa_ble001_marker_still_suppresses():

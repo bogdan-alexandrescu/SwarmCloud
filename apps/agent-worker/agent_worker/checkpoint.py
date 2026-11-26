@@ -1787,7 +1787,7 @@ class CheckpointManager:
             try:
                 data = json.loads(self._store.download_bytes(key).decode("utf-8"))
                 record = CheckpointRecord.from_dict(data)
-            except Exception as exc:  # a half-written manifest must not block a resume
+            except Exception as exc:  # a half-written manifest must not block a resume  # noqa: BLE001
                 self._log.warning("ignoring unreadable checkpoint manifest", key=key, error=str(exc))
                 continue
             if self._accept(record, key) is None:
@@ -1828,7 +1828,7 @@ class CheckpointManager:
         try:
             data = json.loads(self._store.download_bytes(key).decode("utf-8"))
             record = CheckpointRecord.from_dict(data)
-        except Exception:
+        except Exception:  # noqa: BLE001
             # A manifest is bucket data: one that is not an object, or lacks
             # a field, resolves to nothing rather than failing the attempt.
             return None

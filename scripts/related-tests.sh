@@ -106,6 +106,16 @@ RUN_SECONDS=540
 # What --run prints of each run's log (TEST-OUTPUT above).
 TAIL_LINES=25
 BLOCK_LINES=200
+# pytest's worker count, the same in the printed command and the run (issue
+# 422). The platform sets PYTEST_XDIST_AUTO_NUM_WORKERS from the container's
+# memory; `-n auto` read it but hid it, and an agent copies the printed
+# command and raises `-n` (six workers OOM-killed an 8 GiB container). So a
+# positive integer budget is passed as `-n <count>`; without one (CI, a
+# laptop) it stays `-n auto`. The budget is only read here, never computed.
+xdist_workers="${PYTEST_XDIST_AUTO_NUM_WORKERS:-}"
+if [[ ! "${xdist_workers}" =~ ^[1-9][0-9]*$ ]]; then
+  xdist_workers=auto
+fi
 FAILURE_HEADER='^=+ (FAILURES|ERRORS) =+$|Failed (Tests|Suites) [0-9]+|^not ok '
 
 usage() {
@@ -204,7 +214,7 @@ command_of() {
   # $1 kind, $2 space-separated files (for node, the package directory).
   # Paths in this repository hold no spaces.
   if [[ "$1" == pytest ]]; then
-    printf 'uv run pytest -q -n auto %s' "$2"
+    printf 'uv run pytest -q -n %s %s' "${xdist_workers}" "$2"
   elif [[ "$1" == node ]]; then
     printf '(cd %s && npm run test:node)' "$2"
   else
@@ -267,7 +277,7 @@ for i in "${!runs[@]}"; do
     (cd "${REPO_ROOT}/${runs[$i]}" && ${limit[@]+"${limit[@]}"} npm run test:node) >"${raw}" 2>&1 || status=$?
   elif [[ "${kinds[$i]}" == pytest ]]; then
     info "run $((i + 1)) of ${#runs[@]}: pytest, ${#run_files[@]} file(s)"
-    (cd "${REPO_ROOT}" && ${limit[@]+"${limit[@]}"} uv run pytest -q -n auto "${run_files[@]}") >"${raw}" 2>&1 \
+    (cd "${REPO_ROOT}" && ${limit[@]+"${limit[@]}"} uv run pytest -q -n "${xdist_workers}" "${run_files[@]}") >"${raw}" 2>&1 \
       || status=$?
   else
     info "run $((i + 1)) of ${#runs[@]}: vitest, ${#run_files[@]} file(s)"

@@ -75,7 +75,18 @@ from ..utilisation import utilisation_of
 from ..waiting import waiting_for_page
 from ..waiting_detail import build_waiting, read_inputs, waiting_row
 from ..waker import TASK_FINISHED, ring
-from ..wire_types import TaskEnvelope
+from ..wire_types import (
+    ArtifactContent,
+    ArtifactListing,
+    AttemptPage,
+    TaskAnswer,
+    TaskEnvelope,
+    TaskEventPage,
+    TaskInputCopy,
+    TaskLogs,
+    TaskPage,
+    TaskTranscript,
+)
 
 log = logging.getLogger(__name__)
 
@@ -239,7 +250,7 @@ def _owner_filter(requested: str | None, auth: AuthContext, forced: str | None) 
     return value
 
 
-@router.get("")
+@router.get("", responses={200: {"model": TaskPage}})
 @route_scope.reachable_by(route_scope.CONTINUATION)
 def list_tasks(
     state: list[str] | None = Query(
@@ -675,7 +686,7 @@ def _usage_chunk(ctx: AppContext, tenant_id: str, chunk: list[str]) -> dict[str,
                 continue
             by_task[doc["task_id"]].append(attempt_from_dict(doc))  # type: ignore[union-attr]
         return by_task
-    except Exception as exc:  # the tasks were read; only their attempts were not
+    except Exception as exc:  # the tasks were read; only their attempts were not  # noqa: BLE001
         log.warning("digest attempt read failed: %s", type(exc).__name__)
         return {t: None for t in chunk}
 
@@ -786,7 +797,7 @@ def list_digests(
         def head(task: Task) -> datetime | None:
             try:
                 return entered_at(task.state, ctx.store.newest_events(task, limit=DIGEST_EVENT_PAGE))
-            except Exception as exc:  # one task's events unread: its lower bound stays
+            except Exception as exc:  # one task's events unread: its lower bound stays  # noqa: BLE001
                 log.warning("digest event read failed: %s", type(exc).__name__)
                 return None
 
@@ -1046,7 +1057,7 @@ def human_ready(
     return {"task": task_to_api(task, console_url=ctx.settings.console_url)}
 
 
-@router.get("/{task_id}/events")
+@router.get("/{task_id}/events", responses={200: {"model": TaskEventPage}})
 @route_scope.reachable_by(route_scope.CONTINUATION)
 def list_events(
     task_id: str,
@@ -1134,7 +1145,7 @@ def read_utilisation(
     return utilisation_of(ctx.db, task, attempts, read_at=ctx.now())
 
 
-@router.get("/{task_id}/attempts")
+@router.get("/{task_id}/attempts", responses={200: {"model": AttemptPage}})
 @route_scope.reachable_by(route_scope.CONTINUATION)
 def list_attempts(
     task_id: str,
@@ -1190,7 +1201,7 @@ def list_attempts(
     }
 
 
-@router.get("/{task_id}/artifacts")
+@router.get("/{task_id}/artifacts", responses={200: {"model": ArtifactListing}})
 @route_scope.reachable_by(route_scope.CONTINUATION)
 def list_artifacts(
     task_id: str,
@@ -1228,7 +1239,7 @@ def list_artifacts(
     )
 
 
-@router.get("/{task_id}/artifacts/content")
+@router.get("/{task_id}/artifacts/content", responses={200: {"model": ArtifactContent}})
 @route_scope.reachable_by(route_scope.CONTINUATION)
 def read_artifact(
     task_id: str,
@@ -1397,7 +1408,7 @@ def list_checkpoints(
     )
 
 
-@router.get("/{task_id}/logs")
+@router.get("/{task_id}/logs", responses={200: {"model": TaskLogs}})
 @route_scope.reachable_by(route_scope.CONTINUATION)
 def read_logs(
     task_id: str,
@@ -1465,7 +1476,7 @@ def read_logs(
     )
 
 
-@router.get("/{task_id}/transcript")
+@router.get("/{task_id}/transcript", responses={200: {"model": TaskTranscript}})
 @route_scope.reachable_by(route_scope.CONTINUATION)
 def read_transcript(
     task_id: str,
@@ -1501,7 +1512,7 @@ def read_transcript(
     )
 
 
-@router.get("/{task_id}/answer")
+@router.get("/{task_id}/answer", responses={200: {"model": TaskAnswer}})
 @route_scope.reachable_by(route_scope.CONTINUATION)
 def read_answer(
     task_id: str,
@@ -1620,7 +1631,7 @@ def answer_question(
     }
 
 
-@router.get("/{task_id}/input")
+@router.get("/{task_id}/input", responses={200: {"model": TaskInputCopy}})
 @route_scope.reachable_by(route_scope.CONTINUATION)
 def read_input(
     task_id: str,

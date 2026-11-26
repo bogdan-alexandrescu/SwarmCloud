@@ -130,7 +130,9 @@ def _assert_every_command_names_files(commands: list[str]) -> None:
         assert not command.rstrip().endswith("&"), command
         assert " & " not in command and "sleep" not in command, command
         if command.startswith(PYTEST_CMD):
-            args = [a for a in command[len(PYTEST_CMD):].split() if not a.startswith("-") and a != "auto"]
+            # `-n` is `auto` or the container's worker budget (issue 422).
+            args = [a for a in command[len(PYTEST_CMD):].split()
+                    if not a.startswith("-") and a != "auto" and not a.isdigit()]
             assert args, command
             for arg in args:
                 assert arg.endswith(".py") and (REPO / arg).is_file(), (arg, command)

@@ -41,6 +41,7 @@ on:
       - "tests/terraform/**"
       - "scripts/lib/plan-guard.sh"
       - "scripts/lib/destroy-guard.jq"
+      - "scripts/lib/wrong-project.jq"
       - "scripts/lib/unlabelable-types.json"
       - ".github/workflows/terraform.yml"
   # A MERGE QUEUE ENTRY (owner decision 2026-10-06, docs/ci.md "Merging

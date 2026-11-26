@@ -98,7 +98,7 @@ def test_worker_default_checkpoint_interval_matches_the_catalogue():
 def test_dispatch_routes_serve_runtimes_and_resource_classes():
     """GET /v1/runtimes and GET /v1/resource-classes are real routes."""
     platform = "apps/swarm-api/swarm_api/routes/platform.py"
-    assert _cited_symbol(platform, "runtimes").startswith('@router.get("/runtimes")')
+    assert _cited_symbol(platform, "runtimes").startswith('@router.get("/runtimes"')
     assert _cited_symbol(platform, "resource_classes").startswith('@router.get("/resource-classes")')
 
 

@@ -243,7 +243,7 @@ def test_a_builder_lease_that_does_not_fit_one_pool_takes_nothing_anywhere():
     try:
         acquire_lease_in_transaction(_Txn(db), db=db, task=task, units=2, backend=BACKEND,
                                      config=AdmissionConfig(), now=ADMIT_AT)
-    except Exception:  # noqa: BLE001 -- a refusal may raise or return; both take nothing
+    except Exception:  # noqa: BLE001, S110 -- a refusal may raise or return; both take nothing
         pass
     for name in required:
         assert db.docs[f"pools/{name}"]["active"] == 0, name

@@ -140,11 +140,23 @@ MEMORY_LIMIT_ENV = "SWARM_MEMORY_LIMIT_BYTES"
 XDIST_WORKERS_ENV = "PYTEST_XDIST_AUTO_NUM_WORKERS"
 _GIB = 1 << 30
 #: Kept out of the test workers' share: the worker, the agent CLI and the node
-#: toolchain stay about 2 GiB resident (f-039's baseline was 1.47 GB before
-#: the agent ran anything).
+#: toolchain stay under 2 GiB charged (f-039's baseline was 1.47 GB before the
+#: agent ran anything; issue 422 measured 1.75 GB `memory.current` and 0.70 GB
+#: working set, `memory.current` less `inactive_file`, before any test,
+#: 2026-11-25).
 AGENT_MEMORY_HEADROOM_BYTES = 2 * _GIB
-#: What one xdist worker of the api suite measured, about 1 GiB resident.
-XDIST_WORKER_BYTES = 1 * _GIB
+#: What one xdist worker of tests/unit/worker costs the CONTAINER (issue 422,
+#: 2026-11-25). The old 1 GiB was one api-suite worker's process RSS, and 6
+#: workers at 8 GiB OOM-killed two attempts of one build on tests/unit/worker
+#: (8.35-8.44 GB). Its tests start git and write repositories: the subprocesses
+#: and the files stay charged to the container, and on a memory-backed
+#: filesystem the files are not reclaimable, so a worker's own RSS undercounts.
+#: Measured at `-n 2` on its 176 files that import lifecycle or gitops, with
+#: TMPDIR on tmpfs: `memory.peak` 1.75 -> 4.90 GB, working set 0.70 -> 4.08 GB
+#: (shmem 2.15 GB, when the 2 GiB tmpfs filled, so a lower bound), anonymous
+#: memory 0.30 -> 1.56 GB. (peak - baseline) / 2 = 1.58-1.69 GB a worker, over
+#: the 1.5 GiB that would allow 4 workers at 8 GiB; 2 GiB allows 3.
+XDIST_WORKER_BYTES = 2 * _GIB
 #: Kept out of node's heap (archived issue 2507): `--max-old-space-size` set to the whole
 #: limit leaves nothing for the worker and the CLI that share the container.
 OLD_SPACE_HEADROOM_BYTES = _GIB + _GIB // 2

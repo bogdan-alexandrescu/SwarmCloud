@@ -189,6 +189,18 @@ RELEASE_WAIT_MAX_RESUMES = 4
 QUOTA_PARK_RESUMES_METADATA_KEY = "quota_park_resumes"
 QUOTA_MAX_RESUMES = 5
 
+#: A WORKFLOW_PAUSED park (docs/design/workflow-pause.md section 5.4; the
+#: owner's decision Q1, 2026-11-24, "(a) refund both, bounded"): a pause is a
+#: person's choice, not a failed attempt, so the direct park refunds its
+#: attempt on its own counter while fewer than PAUSE_MAX_REFUNDS were. 5
+#: BECAUSE it is the quota park's number: without a refund two pauses of a
+#: running step exhaust a default three-attempt step, and the bound stops a step
+#: that only ever parks from looping on refunds. Restated from
+#: `swarm_api.attemptstate.PAUSE_REFUNDS` and `PAUSE_MAX_REFUNDS`, which decide
+#: on the routes' path; a test holds them equal.
+PAUSE_REFUNDS_METADATA_KEY = "pause_refunds"
+PAUSE_MAX_REFUNDS = 5
+
 #: A continuation at the time limit (the owner, 2026-11-02): a SCHEDULED_RETRY park
 #: whose detail carries a `TIME_LIMIT_DETAIL_KEY` block, written by
 #: `lifecycle._continue_at_time_limit`. Such a park refunds its attempt, and
@@ -336,6 +348,12 @@ class ControlSignals:
     retry_after_seconds: int | None = None
     quota_reset_at: datetime | None = None
     observed_at: datetime | None = None
+    #: The step's workflow is paused (docs/design/workflow-pause.md 5.1): the
+    #: raw `pause_requested_at` mirror on the task, or swarm-api's fence view's
+    #: `pause_requested`. A signal, never the authority; it rides the read the
+    #: poll already makes. `Worker._apply_control_signals` honours it after
+    #: the fence and the cancel.
+    pause_requested: bool = False
 
     def is_fenced(self, generation: int) -> bool:
         """True when this worker no longer owns the task."""
@@ -1618,6 +1636,7 @@ class ControlPlane:
             lease_released=False,
             lease_expires_at=_as_datetime(lease.get("expires_at")),
             observed_at=utcnow(),
+            pause_requested=bool(task.get("pause_requested_at")),
         )
 
     def _fenced_task(self, txn: Any, *, write: str) -> dict[str, Any]:
@@ -1751,6 +1770,7 @@ class ControlPlane:
             retry_after_seconds=int(retry_after) if retry_after is not None else None,
             quota_reset_at=reset_at,
             observed_at=utcnow(),
+            pause_requested=bool(task.get("pause_requested_at")),
         )
 
     # -- events ------------------------------------------------------------
@@ -1829,7 +1849,7 @@ class ControlPlane:
 
         try:
             self._run_transaction(_apply, call="event")
-        except Exception as exc:  # the view never costs the event
+        except Exception as exc:  # the view never costs the event  # noqa: BLE001
             self._log.warning("current account not stored", error_type=type(exc).__name__)
             return False
         return True
@@ -1856,7 +1876,7 @@ class ControlPlane:
         when the attempts cannot be read, so nothing is stored short."""
         try:
             docs = self._attempt_docs()
-        except Exception as exc:  # a view never fails the write it rides on
+        except Exception as exc:  # a view never fails the write it rides on  # noqa: BLE001
             self._log.warning("attempt totals not stored", error_type=type(exc).__name__)
             return None
         return stored_attempt_totals(docs, attempt_id=self.attempt_id,
@@ -1890,7 +1910,7 @@ class ControlPlane:
 
         try:
             self._run_transaction(_apply, call="attempt")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._log.warning("attempt totals not stored", error_type=type(exc).__name__)
 
     def store_pending_attempt_totals(self) -> None:
@@ -2013,7 +2033,7 @@ class ControlPlane:
         """`cancel_end_cause` of the task as it is now. One read, on a cancel only."""
         try:
             return cancel_end_cause(self.fetch_task())
-        except Exception:  # the cause must never stop the cancel itself
+        except Exception:  # the cause must never stop the cancel itself  # noqa: BLE001
             return EndCause.CANCEL_REQUESTED
 
     def advance_to_running(self) -> None:
@@ -2447,7 +2467,7 @@ class ControlPlane:
             self._quota_reporter.report(
                 provider=provider, tenant_id=self.tenant_id, route=route, body=body
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._log.warning(
                 "could not report a provider outcome to the quota broker; carrying on",
                 provider=provider,
@@ -2504,7 +2524,7 @@ class ControlPlane:
             self._quota_reporter.report(
                 provider=provider, tenant_id=self.tenant_id, route="exhausted", body=body
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._log.warning(
                 "could not report a key's spent credit to the quota broker; carrying on",
                 provider=provider,
@@ -2535,7 +2555,7 @@ class ControlPlane:
             self._quota_reporter.report(
                 provider=provider, tenant_id=self.tenant_id, route="account-error", body=body
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._log.warning(
                 "could not report an account error to the quota broker; carrying on",
                 provider=provider,
@@ -2774,8 +2794,10 @@ class ControlPlane:
         one and `metadata.quota_park_resumes` up by one while fewer than
         `QUOTA_MAX_RESUMES` have been. Past the bound the park spends an
         attempt as before, so a task that only ever parks still ends at
-        `max_attempts`. Every other reason refunds nothing. Returns whether the
-        attempt was refunded.
+        `max_attempts`. A WORKFLOW_PAUSED park refunds the same way, on its own
+        counter (`metadata.pause_refunds`, within `PAUSE_MAX_REFUNDS`; decision
+        Q1 of docs/design/workflow-pause.md). Every other reason refunds
+        nothing here. Returns whether the attempt was refunded.
 
         ONE FENCED TRANSACTION (archived issue 2064): the fence, PARKED, the lease release
         and the pools coming back down, the attempt's end, the uploads and the
@@ -2815,6 +2837,7 @@ class ControlPlane:
         uploads = uploads if isinstance(uploads, list) else None
         announced = [self._event_write(kind, d) for kind, d in announce]
         quota = reason is ParkReason.PROVIDER_QUOTA_EXHAUSTED
+        paused = reason is ParkReason.WORKFLOW_PAUSED
         time_limit = (reason is ParkReason.SCHEDULED_RETRY
                       and isinstance((detail or {}).get(TIME_LIMIT_DETAIL_KEY), Mapping))
         parked = self._event_write(
@@ -2858,6 +2881,29 @@ class ControlPlane:
                         "attempt_refunded": refund,
                         TIME_LIMIT_CONTINUATIONS_METADATA_KEY: used + (1 if refund else 0),
                         "max_continuations": TIME_LIMIT_MAX_CONTINUATIONS,
+                        **(detail or {}),
+                    },
+                )
+            if paused:
+                # Decision Q1: refunded within PAUSE_MAX_REFUNDS, on its own
+                # counter (never another reason's); past it the park counts.
+                metadata = dict(task.get("metadata") or {})
+                used = _count(metadata.get(PAUSE_REFUNDS_METADATA_KEY))
+                attempt_count = _count(task.get("attempt_count"))
+                refund = used < PAUSE_MAX_REFUNDS and attempt_count > 0
+                if refund:
+                    metadata[PAUSE_REFUNDS_METADATA_KEY] = used + 1
+                    payload["metadata"] = metadata
+                    payload["attempt_count"] = attempt_count - 1
+                event = self._filled(
+                    parked,
+                    EventType.PARKED,
+                    {
+                        "reason": reason.value,
+                        "next_eligible_at": next_eligible_at,
+                        "attempt_refunded": refund,
+                        PAUSE_REFUNDS_METADATA_KEY: used + (1 if refund else 0),
+                        "max_refunds": PAUSE_MAX_REFUNDS,
                         **(detail or {}),
                     },
                 )
@@ -3371,7 +3417,7 @@ class ControlPlane:
                 )
             )
             outcome = "published" if published else "refused"
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # The type only: a transport error's text can name the request.
             outcome = f"error:{type(exc).__name__}"
         self._log.info("finish wake", state=state.value, outcome=outcome)
@@ -3770,6 +3816,9 @@ class RemoteControlPlane(ControlPlane):
             lease_released=False,
             lease_expires_at=_as_datetime(lease.get("expires_at")),
             observed_at=utcnow(),
+            # `state/open` serves the task document itself, so the raw mirror;
+            # its answer reached here only because the attempt owns the task.
+            pause_requested=bool(self._task.get("pause_requested_at")),
         )
 
     def _absorb_open(self, answer: Mapping[str, Any]) -> None:
@@ -3926,6 +3975,7 @@ class RemoteControlPlane(ControlPlane):
             lease_released=False,
             lease_expires_at=_as_datetime(lease.get("expires_at")),
             observed_at=utcnow(),
+            pause_requested=bool(view.get("pause_requested")),
         )
 
     def ensure_owner(self, *, write: str) -> None:
@@ -3995,6 +4045,9 @@ class RemoteControlPlane(ControlPlane):
             retry_after_seconds=retry_after,
             quota_reset_at=reset_at,
             observed_at=utcnow(),
+            # swarm-api's fence view answers False to an attempt it found
+            # fenced: a stale worker exits on the fence and never parks.
+            pause_requested=bool(view.get("pause_requested")),
         )
 
     # -- events ----------------------------------------------------------------
@@ -4153,7 +4206,7 @@ class RemoteControlPlane(ControlPlane):
             # and costs the spend nothing.
             try:
                 self._usage("credential", credential)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self._log.warning(
                     "could not record the attempt's credential; its spend is recorded",
                     error_type=type(exc).__name__,
@@ -4251,8 +4304,10 @@ class RemoteControlPlane(ControlPlane):
         announce: Sequence[tuple[EventType, dict[str, Any]]] = (),
     ) -> bool:
         """`ControlPlane.park` as one route call: whether the attempt was
-        refunded, which only a PROVIDER_QUOTA_EXHAUSTED park within
-        swarm-api's `attemptstate.QUOTA_MAX_RESUMES` is (archived issue 2350)."""
+        refunded, as swarm-api's `AttemptState.park` decides by reason: a
+        PROVIDER_QUOTA_EXHAUSTED park within `attemptstate.QUOTA_MAX_RESUMES`
+        (archived issue 2350), a WORKFLOW_PAUSED park within
+        `attemptstate.PAUSE_MAX_REFUNDS` (decision Q1), among others."""
         uploads = (detail or {}).get("artifacts")
         answer = self._park(reason, detail=detail,
                             uploads=uploads if isinstance(uploads, list) else None,
