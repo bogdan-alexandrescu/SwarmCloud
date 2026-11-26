@@ -294,7 +294,7 @@ class AccountPoolMixin:
                     ask=ask,
                     error=str(exc),
                 )
-            except Exception as exc:  # noqa: BLE001 -- baselined in lifecycle.py before this move (issue 54)
+            except Exception as exc:  # noqa: BLE001 -- any client failure is the same as an unreachable broker
                 # Defence in depth: whatever the client raised, the pool is
                 # there and did not answer. The same as an unreachable broker.
                 cause = "broker_client_error"
@@ -533,7 +533,7 @@ class AccountPoolMixin:
                     "moves to another account at its next turn boundary",
                     account_id=self._account.account_id,
                 )
-        except Exception as exc:  # noqa: BLE001 -- baselined in lifecycle.py before this move (issue 54)
+        except Exception as exc:  # noqa: BLE001 -- a failed channel or hold read only logs; the run carries on
             self.log.warning(
                 "could not read the account channel or the hold's status; the run "
                 "carries on as it is",
@@ -652,7 +652,7 @@ class AccountPoolMixin:
         if self._account_broker is not None:
             try:
                 status = self._account_broker.hold_status(account)
-            except Exception as exc:  # noqa: BLE001 -- baselined in lifecycle.py before this move (issue 54)
+            except Exception as exc:  # noqa: BLE001 -- a refused status read only loses the reauth hint
                 # A fenced attempt's status read is refused; the swap checks
                 # the fence itself, so this only loses the reauth hint.
                 self.log.warning(
@@ -945,7 +945,7 @@ class AccountPoolMixin:
                     "from_tier": left.tier,
                 },
             )
-        except Exception as exc:  # noqa: BLE001 -- baselined in lifecycle.py before this move (issue 54)
+        except Exception as exc:  # noqa: BLE001 -- a failed event write is logged, never fails the move
             self.log.warning(
                 "could not record the account move on the task's events",
                 error_type=type(exc).__name__,
@@ -969,7 +969,7 @@ class AccountPoolMixin:
             )
         except (FencedError, TenantMismatchError):
             raise
-        except Exception as exc:  # noqa: BLE001 -- baselined in lifecycle.py before this move (issue 54)
+        except Exception as exc:  # noqa: BLE001 -- a failed event write is logged; fence and tenant errors re-raise above
             self.log.warning(
                 "could not record the account move on the task's events",
                 error_type=type(exc).__name__,
@@ -1016,7 +1016,7 @@ class AccountPoolMixin:
             )
         except (FencedError, TenantMismatchError):
             raise
-        except Exception as exc:  # noqa: BLE001 -- baselined in lifecycle.py before this move (issue 54)
+        except Exception as exc:  # noqa: BLE001 -- a failed event write is logged; fence and tenant errors re-raise above
             self.log.warning(
                 "could not record the account pool's decline",
                 reason=reason,
@@ -1055,7 +1055,7 @@ class AccountPoolMixin:
                 # its token, whatever the profile's own provider is named.
                 provider=account.provider or profile.provider or "anthropic",
             )
-        except Exception as exc:  # noqa: BLE001 -- baselined in lifecycle.py before this move (issue 54)
+        except Exception as exc:  # noqa: BLE001 -- any read failure becomes AccountUnreadable, re-raised
             raise AccountUnreadable(
                 account.account_id, f"{type(exc).__name__}: {exc}"
             ) from None
@@ -1132,7 +1132,7 @@ class AccountPoolMixin:
                 account_id=account.account_id,
                 unusable=bool(unusable),
             )
-        except Exception as exc:  # noqa: BLE001 -- baselined in lifecycle.py before this move (issue 54)
+        except Exception as exc:  # noqa: BLE001 -- a failed release is logged; the hold expires on its own
             self.log.warning(
                 "could not release the account; its hold expires on its own and "
                 "the broker's quota sweep prunes it",
@@ -1175,7 +1175,7 @@ class AccountPoolMixin:
                     "unusable": unusable,
                 },
             )
-        except Exception as exc:  # noqa: BLE001 -- baselined in lifecycle.py before this move (issue 54)
+        except Exception as exc:  # noqa: BLE001 -- a failed event write is logged, never fails the release
             self.log.warning(
                 "could not record the account's release on the task's events",
                 account_id=account.account_id,

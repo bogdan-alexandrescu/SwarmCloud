@@ -141,7 +141,7 @@ class FirestorePublishLedger:
     def published_digest(self, base: str) -> str | None:
         try:
             snap = self._db.collection(COLLECTION).document(base).get()
-        except Exception as exc:  # noqa: BLE001 -- re-raised as a distinct type
+        except Exception as exc:  # re-raised as a distinct type
             raise LedgerUnavailable(type(exc).__name__) from exc
         if not getattr(snap, "exists", False):
             return None

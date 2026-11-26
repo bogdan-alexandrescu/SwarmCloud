@@ -19,14 +19,13 @@
 // The bodies are `routes/schedules.py::_admin_row` and `_tick_health`'s
 // shapes. Placeholders only; nothing is token-shaped.
 
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
 import { Routed } from './screenroute'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
+import server from '../generated/constants/server.json'
 
 /**
  * `terraform/modules/scheduler/jobs.tf`'s Cloud Scheduler jobs, in file order:
@@ -34,11 +33,8 @@ import { painted } from './marks'
  * `${each.key}` read as `<tenant>`.
  */
 function jobsTf(): { name: string; job: string }[] {
-  const tf = readFileSync(join(__dirname, '..', '..', '..', '..', 'terraform', 'modules', 'scheduler', 'jobs.tf'), 'utf8')
-  const out: { name: string; job: string }[] = []
-  const re = /^resource "google_cloud_scheduler_job" "([a-z_]+)" \{[\s\S]*?^\s*name\s*=\s*"\$\{var\.name_prefix\}-([^"]+)"/gm
-  for (const m of tf.matchAll(re)) out.push({ name: m[1]!, job: m[2]!.replace('${each.key}', '<tenant>') })
-  return out
+  // Parsed from jobs.tf by scripts/api_constants/server.py into the generated server.json.
+  return server.scheduler_jobs.map((j) => ({ name: j.resource, job: j.job }))
 }
 
 const WAIT = { timeout: 4000 }
@@ -178,10 +174,10 @@ describe('Automate › Schedules, All workspaces', () => {
 
   it('COUNTS-SEAL: says the workflow rollup tick also seals each tenant’s outcome days, as jobs.tf asks it to', async () => {
     const { PLATFORM_TICKS } = await import('../PlatformCounts')
-    const tf = readFileSync(join(__dirname, '..', '..', '..', '..', 'terraform', 'modules', 'scheduler', 'jobs.tf'), 'utf8')
     // A control: the job really asks the route to seal (archived issue 2149), so the row is
-    // describing what the tick does, not what it might.
-    expect(tf).toContain('/v1/admin/workflows/rollup?tenant_id=${urlencode(each.key)}&seal_outcomes=true')
+    // describing what the tick does, not what it might. jobs.tf's uri, from the generated server.json.
+    const rollup = server.scheduler_jobs.find((j) => j.resource === 'workflow_rollup')
+    expect(rollup?.uri).toContain('/v1/admin/workflows/rollup?tenant_id=${urlencode(each.key)}&seal_outcomes=true')
     const row = PLATFORM_TICKS.find((t) => t.name === 'workflow_rollup')
     // MUTATION: drop the sealing sentence from the workflow_rollup row.
     expect(row?.does).toMatch(/seals each tenant’s ended outcome days/)

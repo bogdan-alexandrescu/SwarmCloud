@@ -1621,7 +1621,7 @@ def advance_tenant_runs(ctx: AppContext, tenant_id: str, *, limit: int) -> Advan
         report.visited += 1
         try:
             advanced = advance_run(ctx, tenant_id, run)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             report.failed += 1
             code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
             report.failures.append({"run_id": run.id, "error": code})

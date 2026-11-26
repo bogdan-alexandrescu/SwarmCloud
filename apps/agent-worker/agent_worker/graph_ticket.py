@@ -162,7 +162,7 @@ def mint(cfg: Any, key: Any, api: Any, *, index_sha: str, now: float,
     try:
         headers = sign_headers(key, GRAPH_TICKET_PURPOSE, "POST", path, body, now=now)
         _, payload = api.call("POST", path, body=body, headers=headers)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         status = getattr(exc, "status", None)
         code = str(getattr(exc, "code", "") or type(exc).__name__)
         if status == 409:

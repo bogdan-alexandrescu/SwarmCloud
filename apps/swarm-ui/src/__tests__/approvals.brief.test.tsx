@@ -299,14 +299,21 @@ describe('the decision', () => {
     expect(sent(calls, 'POST', `/v1/approvals/${encodeURIComponent(ITEM)}:reject`)[0]!.body).toEqual({ reason: 'the plan reads the wrong train' })
   })
 
-  it('opens the run’s page on Edit, where its plan editor is', async () => {
-    const { go } = await mount(routes(LEGACY, SECTIONS))
+  it('opens the plan editor in place on Edit, not the run’s page', async () => {
+    // The owner's pick on PR 464: Edit opens the editor in the document, over the revision the bar names.
+    const planned = (m: string, url: string): Reply =>
+      m === 'GET' && url.split('?')[0] === `/v1/runs/${RUN}`
+        ? { status: 200, body: { run: { id: RUN, state: 'PLANNED', plan: SECTIONS, plan_digest: 'plan-digest-1', planner_documents: null, may_decide: { approve: true, reject: true, edit: true, comment: true, why: null, deciders: ['members'] } } } }
+        : null
+    const { go } = await mount(routes(LEGACY, SECTIONS, {}, planned))
     const h = await head()
-    const edit = within(h).getByRole('link', { name: 'Edit' })
-    expect(edit.getAttribute('href')).toBe(`/runs/${RUN}`)
-    fireEvent.click(edit, { button: 0 })
-    // MUTATION: make Edit a button that does nothing.
-    expect(go).toHaveBeenCalledWith(`work/runs?run=${RUN}`)
+    expect(within(h).queryByRole('link', { name: 'Edit' })).toBeNull()
+    const edit = await within(h).findByRole('button', { name: 'Edit' }, WAIT)
+    fireEvent.click(edit)
+    // MUTATION: make Edit link to the run's page again.
+    const doc = await screen.findByTestId('pd-doc', undefined, WAIT)
+    expect(await within(doc).findByRole('form', { name: 'Edit the plan' }, WAIT)).toBeTruthy()
+    expect(go).not.toHaveBeenCalled()
   })
 })
 

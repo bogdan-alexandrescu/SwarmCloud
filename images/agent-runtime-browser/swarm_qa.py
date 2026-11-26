@@ -1574,7 +1574,7 @@ class _Errors:
         try:
             if message.type == "error":
                 self.console.append(str(message.text)[:MAX_MESSAGE_CHARS])
-        except Exception:  # noqa: BLE001 -- a listener must never break the capture
+        except Exception:  # noqa: BLE001, S110 -- a listener must never break the capture
             pass
 
     def _page_error(self, error):
@@ -1583,7 +1583,7 @@ class _Errors:
     def _request_failed(self, request):
         try:
             self.requests.append(_where(request.url))
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110
             pass
 
     def _response(self, response):
@@ -1594,7 +1594,7 @@ class _Errors:
             status = response.status
             if isinstance(status, int) and status >= 400:
                 self.responses.append({"url": _where(response.url), "status": status})
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110
             pass
 
     def document(self, gate_refused: list[dict] | None = None) -> dict:
@@ -1887,10 +1887,10 @@ def _masked_screenshot(page) -> tuple[bytes, int]:
         if (not isinstance(drew, list) or len(drew) != 2
                 or not all(isinstance(v, int) and not isinstance(v, bool) for v in drew)):
             raise ValueError("the mask's draw answered malformed")
-    except Exception as exc:  # noqa: BLE001 -- any failure refuses the shot
+    except Exception as exc:  # any failure refuses the shot
         try:
             _clear_mask(page)
-        except Exception:  # noqa: BLE001 -- the shot is refused either way
+        except Exception:  # noqa: BLE001, S110 -- the shot is refused either way
             pass
         raise _MaskFailed(f"the credential mask could not be drawn, so no shot was stored: "
                           f"{type(exc).__name__}: {_one_line(exc)}") from exc
@@ -1899,7 +1899,7 @@ def _masked_screenshot(page) -> tuple[bytes, int]:
     finally:
         try:
             intact, boxes = _clear_mask(page)
-        except Exception as exc:  # noqa: BLE001 -- unknown is not intact
+        except Exception as exc:  # unknown is not intact
             raise _MaskFailed(f"the credential mask could not be checked after the shot, so it was not "
                               f"stored: {type(exc).__name__}: {_one_line(exc)}") from exc
     if not intact or boxes != drew[1]:
@@ -2037,7 +2037,7 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
                 for href in list(page.evaluate(LINKS_JS) or [])[:MAX_LINKS]:
                     if href not in bucket and len(bucket) < MAX_LINKS:
                         bucket.append(href)
-            except Exception:  # noqa: BLE001 -- unread links are the crawl's to find, never a failed route
+            except Exception:  # noqa: BLE001, S110 -- unread links are the crawl's to find, never a failed route
                 pass
         step = "measure"
         measured = page.evaluate(MEASURE_JS, ready)
@@ -2120,7 +2120,7 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
             entry["axe"] = f"{stem}.axe.json"
     except _RouteFailed:
         raise
-    except Exception as exc:  # noqa: BLE001 -- a failed route is a finding
+    except Exception as exc:  # a failed route is a finding
         where = f"ready selector {ready!r} not found" if step == "ready" else step
         raise _RouteFailed(f"{where}: {type(exc).__name__}: {_one_line(exc)}") from exc
     refused = gate.during(errors.since, time.time()) if gate is not None else None
@@ -2260,7 +2260,7 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
         if page is not None:
             try:
                 page.close()
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110
                 pass
         playwright.stop()
         manifest["gate_refusals"] = gate.summary()
@@ -2802,7 +2802,7 @@ class _Walk:
                 return entry["stored"]
             try:
                 page.wait_for_load_state("networkidle", timeout=NETWORK_IDLE_MS)
-            except Exception:  # noqa: BLE001 -- an app that polls may never be idle
+            except Exception:  # noqa: BLE001, S110 -- an app that polls may never be idle
                 pass
             hrefs = list(page.evaluate(LINKS_JS) or [])
         except Exception:  # noqa: BLE001 -- a page that failed is listed; its capture says so
@@ -2839,7 +2839,7 @@ class _Walk:
                 before = _fingerprint(page.evaluate(TEXT_JS))
                 at = time.time()
                 answer = page.evaluate(CLICK_JS, {"css": css, "text": text})
-            except Exception:  # noqa: BLE001 -- a click that threw is no click
+            except Exception:  # noqa: BLE001, S112 -- a click that threw is no click
                 continue
             if answer is not True:
                 continue
@@ -2847,7 +2847,7 @@ class _Walk:
             self.clicked += 1
             try:
                 page.wait_for_timeout(CLICK_SETTLE_MS)
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110
                 pass
             refused = self.gate.during(at, time.time())
             if refused is None:
@@ -2895,7 +2895,7 @@ class _Walk:
                 self.admit(path, depth, reveal)
         try:
             page.keyboard.press("Escape")
-        except Exception:  # noqa: BLE001 -- a page with nothing open has nothing to close
+        except Exception:  # noqa: BLE001, S110 -- a page with nothing open has nothing to close
             pass
         return True
 
@@ -2949,7 +2949,7 @@ def discover(*, base: str, max_pages: int, max_depth: int, exclude: list[str],
         if page is not None:
             try:
                 page.close()
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110
                 pass
         playwright.stop()
     if not walk.entries:

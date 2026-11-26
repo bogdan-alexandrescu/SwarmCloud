@@ -82,7 +82,7 @@ import yaml
 from swarm_common.profiles import RUNNER_PROFILES
 
 from . import migrations as mig
-from . import tfvars
+from . import planguard, tfvars
 from .exitcodes import ExitCode
 from .terraform import _IAM_TYPE, review_plan
 from .events import Events
@@ -533,6 +533,9 @@ class Upgrade:
         terraform = {root: self.world.plan_root(root, target) for root in ("bootstrap", "infra")}
         iam: list[IamRow] = []
         for root, found in terraform.items():
+            wrong = planguard.refusal(found, self.project, f"{root}'s plan")
+            if wrong:
+                raise UpgradeRefused(wrong)
             review = review_plan(found)
             if review.iam_destroy_first:
                 raise UpgradeRefused(
@@ -668,6 +671,9 @@ class Upgrade:
 
     def _infra(self, target: str) -> None:
         found = self.world.plan_root("infra", target)
+        wrong = planguard.refusal(found, self.project, "infra's plan")
+        if wrong:
+            raise UpgradeRefused(wrong)
         metrics = replaced_metrics(found)
         if metrics:
             for address, after in metrics:
@@ -825,7 +831,7 @@ class Upgrade:
             except (WaitGaveUp, UpgradeRefused, KeyboardInterrupt):
                 self._stopped(name, done)
                 raise
-            except Exception as exc:  # noqa: BLE001 -- every failure is recorded, then reported
+            except Exception as exc:  # every failure is recorded, then reported
                 why = str(exc)[:500]
                 if name in ROLLED_BACK:
                     self._rollback(plan, name, why)

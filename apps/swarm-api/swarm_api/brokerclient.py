@@ -151,7 +151,7 @@ class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
         try:
             fp.close()
-        except Exception:  # pragma: no cover - best effort, the socket is done
+        except Exception:  # pragma: no cover - best effort, the socket is done  # noqa: BLE001, S110
             pass
         # Hosts only. Never a header, and never the redirect target's query
         # string, which is somebody else's URL and may itself carry a secret.
@@ -407,7 +407,7 @@ def _token_expiry(token: str) -> float | None:
     payload = parts[1] + "=" * (-len(parts[1]) % 4)
     try:
         claims = json.loads(base64.urlsafe_b64decode(payload.encode("ascii")))
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     exp = claims.get("exp") if isinstance(claims, dict) else None
     if isinstance(exp, (int, float)) and not isinstance(exp, bool):

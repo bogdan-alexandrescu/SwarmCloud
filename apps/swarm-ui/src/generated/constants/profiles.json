@@ -1,0 +1,300 @@
+{
+  "_generated": "GENERATED FILE -- DO NOT EDIT BY HAND. Regenerate: uv run python scripts/gen_api_types.py",
+  "browser_actions": {
+    "click": {
+      "selector": true
+    },
+    "extract": {
+      "name": false,
+      "selector": false
+    },
+    "fill": {
+      "selector": true,
+      "text": false
+    },
+    "goto": {
+      "url": true,
+      "wait_until": false
+    },
+    "press": {
+      "key": false,
+      "selector": true
+    },
+    "screenshot": {
+      "full_page": false,
+      "name": false
+    },
+    "wait": {
+      "seconds": false
+    },
+    "wait_for": {
+      "selector": true,
+      "timeout_ms": false
+    }
+  },
+  "declaration_fields": [
+    "choices",
+    "kind",
+    "maximum",
+    "means",
+    "minimum",
+    "required"
+  ],
+  "dispatch": {
+    "carriers": [
+      "checkpoints",
+      "branches"
+    ],
+    "default_carrier": "checkpoints",
+    "default_strategy": "collect",
+    "dispatchable_strategies": [
+      "collect",
+      "direct-pr",
+      "integrate"
+    ],
+    "refusals": {
+      "carrier": {
+        "accepted_carriers": [
+          "checkpoints",
+          "branches"
+        ]
+      },
+      "repository_url": {
+        "carrier": "checkpoints",
+        "missing": "repository_url",
+        "strategy": "direct-pr"
+      },
+      "strategy": {
+        "accepted_strategies": [
+          "collect",
+          "direct-pr",
+          "integrate",
+          "single-pr"
+        ]
+      }
+    },
+    "strategies": [
+      "collect",
+      "direct-pr",
+      "integrate",
+      "single-pr"
+    ],
+    "task_dispatch_keys": [
+      "strategy",
+      "carrier",
+      "role",
+      "integrates"
+    ]
+  },
+  "platform_input_keys": [
+    "prompt",
+    "territory"
+  ],
+  "profiles": {
+    "await-input": {
+      "control_plane": true,
+      "declared_inputs": [],
+      "input_choices": {},
+      "required_keys": [],
+      "worker_action": null
+    },
+    "browser": {
+      "control_plane": false,
+      "declared_inputs": [
+        "url",
+        "actions",
+        "timeout_ms",
+        "launch_timeout_ms",
+        "viewport_width",
+        "viewport_height",
+        "user_agent",
+        "extract_text",
+        "screenshot"
+      ],
+      "input_choices": {},
+      "required_keys": [],
+      "worker_action": null
+    },
+    "claude-code": {
+      "control_plane": false,
+      "declared_inputs": [
+        "issue",
+        "mcp_servers",
+        "pull_request",
+        "context_ceiling"
+      ],
+      "input_choices": {},
+      "required_keys": [
+        "prompt"
+      ],
+      "worker_action": null
+    },
+    "claude-code-browser": {
+      "control_plane": false,
+      "declared_inputs": [
+        "issue",
+        "mcp_servers",
+        "browser_tool",
+        "qa_identity",
+        "context_ceiling"
+      ],
+      "input_choices": {
+        "browser_tool": [
+          "auto",
+          "playwright",
+          "dev-browser",
+          "jev"
+        ],
+        "qa_identity": [
+          "console"
+        ]
+      },
+      "required_keys": [
+        "prompt"
+      ],
+      "worker_action": null
+    },
+    "claude-code-large": {
+      "control_plane": false,
+      "declared_inputs": [
+        "issue",
+        "mcp_servers",
+        "context_ceiling"
+      ],
+      "input_choices": {},
+      "required_keys": [
+        "prompt"
+      ],
+      "worker_action": null
+    },
+    "claude-code-lightpanda": {
+      "control_plane": false,
+      "declared_inputs": [
+        "issue",
+        "mcp_servers",
+        "context_ceiling"
+      ],
+      "input_choices": {},
+      "required_keys": [
+        "prompt"
+      ],
+      "worker_action": null
+    },
+    "claude-code-medium": {
+      "control_plane": false,
+      "declared_inputs": [
+        "issue",
+        "mcp_servers",
+        "context_ceiling"
+      ],
+      "input_choices": {},
+      "required_keys": [
+        "prompt"
+      ],
+      "worker_action": null
+    },
+    "claude-code-review": {
+      "control_plane": false,
+      "declared_inputs": [
+        "issue",
+        "pull_request",
+        "context_ceiling"
+      ],
+      "input_choices": {},
+      "required_keys": [
+        "prompt"
+      ],
+      "worker_action": null
+    },
+    "codex": {
+      "control_plane": false,
+      "declared_inputs": [
+        "issue",
+        "mcp_servers",
+        "pull_request"
+      ],
+      "input_choices": {},
+      "required_keys": [
+        "prompt"
+      ],
+      "worker_action": null
+    },
+    "fix-loop": {
+      "control_plane": true,
+      "declared_inputs": [],
+      "input_choices": {},
+      "required_keys": [],
+      "worker_action": null
+    },
+    "generic": {
+      "control_plane": false,
+      "declared_inputs": [
+        "command",
+        "paths",
+        "target",
+        "working_directory",
+        "timeout_seconds",
+        "grace_seconds",
+        "max_stdout_bytes",
+        "max_stderr_bytes"
+      ],
+      "input_choices": {
+        "command": [
+          "make",
+          "npm-build",
+          "npm-ci",
+          "npm-test",
+          "pytest",
+          "uv-sync"
+        ]
+      },
+      "required_keys": [],
+      "worker_action": null
+    },
+    "indexer": {
+      "control_plane": false,
+      "declared_inputs": [
+        "issue",
+        "context_ceiling"
+      ],
+      "input_choices": {},
+      "required_keys": [
+        "prompt"
+      ],
+      "worker_action": null
+    },
+    "merge": {
+      "control_plane": false,
+      "declared_inputs": [],
+      "input_choices": {},
+      "required_keys": [],
+      "worker_action": "merge"
+    },
+    "mock": {
+      "control_plane": false,
+      "declared_inputs": [
+        "sleep_seconds",
+        "cpu_burn_seconds",
+        "steps",
+        "fail",
+        "fail_message",
+        "exit_code",
+        "artifact_text",
+        "artifact_name",
+        "quota_exhausted",
+        "retry_after_seconds",
+        "artifact_before_park"
+      ],
+      "input_choices": {},
+      "required_keys": [],
+      "worker_action": null
+    },
+    "post-verdict": {
+      "control_plane": false,
+      "declared_inputs": [],
+      "input_choices": {},
+      "required_keys": [],
+      "worker_action": "post_verdict"
+    }
+  }
+}

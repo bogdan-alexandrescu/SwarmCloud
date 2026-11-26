@@ -270,7 +270,8 @@ describe('2: after approval the plan\'s steps carry their live state and link', 
   })
 
   it('keeps "starts at once" on a plan not yet approved', async () => {
-    const { container } = await mount(run({ state: 'PLANNED', workflow_id: null, approved_by: null, approved_at: null }))
+    // A plan never approved, drawn whole: a PLANNED run's plan is a summary (PR 464), so a rejected one.
+    const { container } = await mount(run({ state: 'REJECTED', workflow_id: null, approved_by: null, approved_at: null }))
     const plan = within(container).getByRole('region', { name: 'The plan' })
     expect(visible(plan.querySelectorAll('.rn-step').item(0))).toContain('starts at once')
   })

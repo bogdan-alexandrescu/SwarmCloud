@@ -1,4 +1,3 @@
-# source-text: contract - the Navigate card's destinations must be paths.ts's FIXED addresses, with HELP_ROUTE read from help.ts
 """Voice it's Navigate card: the planner offers a console page from a fixed
 list, and only a person's yes accepts it (docs/design/voice-it.md §3.12.3).
 
@@ -7,16 +6,14 @@ swarm-api from the person's click (`POST .../cards/{card_id}/accept`) or the
 read-back gate's yes, with `accepted_by: person`. One offer is open a session
 at a time: a newer one replaces it, and one unanswered for two minutes, or
 outlived by the next turn's output, is dismissed. The destination is one key
-of a list the test reads out of apps/swarm-ui/src/paths.ts's `FIXED`, the way
-test_voice_cards.py reads the kinds out of cards.ts. Firestore is the
+of `NAVIGATE_DESTINATIONS`, which the console's `contract.constants.test.ts`
+holds to its own reading pages (part of #72). Firestore is the
 in-memory fake; every token and grant is built at runtime; no network.
 """
 
 from __future__ import annotations
 
-import re
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -31,60 +28,12 @@ from swarm_api.voice import store as vstore
 from .conftest import auth_header
 from .test_voice_grant import _build, _grant_headers, _start
 
-ROOT = Path(__file__).resolve().parents[3]
-PATHS_TS = ROOT / "apps" / "swarm-ui" / "src" / "paths.ts"
-HELP_TS = ROOT / "apps" / "swarm-ui" / "src" / "help.ts"
-
 CARDS = "/v1/voice/sessions/{session_id}/cards"
 ACCEPT = "/v1/voice/sessions/{session_id}/cards/{card_id}/accept"
 ANSWER = "/v1/voice/sessions/{session_id}/readbacks/answer"
 
 
-# ---- the destination list against paths.ts ----------------------------------
-
-
-def _fixed() -> dict[str, str]:
-    """paths.ts's `FIXED`, address -> path; `[HELP_ROUTE]` read from help.ts."""
-    text = PATHS_TS.read_text(encoding="utf-8")
-    found = re.search(r"export const FIXED\b[^=]*=\s*\{(.*?)\n\}", text, re.S)
-    assert found, "apps/swarm-ui/src/paths.ts has no `export const FIXED = {...}`"
-    help_route = re.search(r"export const HELP_ROUTE\s*=\s*'([^']+)'",
-                           HELP_TS.read_text(encoding="utf-8"))
-    assert help_route, "apps/swarm-ui/src/help.ts has no `export const HELP_ROUTE = '...'`"
-    out: dict[str, str] = {}
-    for line in found.group(1).splitlines():
-        line = line.strip()
-        if line.startswith("//"):
-            continue
-        hit = re.match(r"(?:'([^']+)'|([A-Za-z_]+)|\[([A-Z_]+)\]):\s*'([^']+)',?$", line)
-        if hit:
-            key = hit.group(1) or hit.group(2) or (help_route.group(1) if hit.group(3) else None)
-            assert key, line
-            out[key] = hit.group(4)
-    return out
-
-
-def _reading_pages(fixed: dict[str, str]) -> list[str]:
-    """The pages a person reads: never an admin page, a submit form or a
-    callback (§3.12.3)."""
-    return [address for address, path in fixed.items()
-            if not address.startswith("admin/") and not path.startswith("/admin")
-            and not path.startswith("/submit") and "callback" not in address]
-
-
-def test_the_destination_list_equals_paths_ts_reading_pages():
-    fixed = _fixed()
-    assert len(fixed) > 30, "the FIXED parser read too little of paths.ts"
-    assert list(vcards.NAVIGATE_DESTINATIONS) == _reading_pages(fixed), (
-        "swarm_api/voice/cards.py's NAVIGATE_DESTINATIONS and paths.ts's reading pages "
-        "differ; change both sides together")
-
-
-def test_the_parser_reads_a_renamed_page_as_drifted():
-    # Guards the guard: a page renamed in the console cannot leave a stale offer.
-    fixed = _fixed()
-    fixed["work/agents"] = fixed.pop("work/running")
-    assert list(vcards.NAVIGATE_DESTINATIONS) != _reading_pages(fixed)
+# ---- the destination list ----------------------------------------------------
 
 
 def test_no_destination_is_a_form_a_callback_or_an_admin_page():

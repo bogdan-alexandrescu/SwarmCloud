@@ -61,7 +61,8 @@ async function mount(served: unknown) {
   vi.resetModules()
   const { RunsScreen } = await import('../Runs')
   const utils = render(<RunsScreen view={`run=${RUN_ID}`} go={vi.fn()} />)
-  await waitFor(() => expect(utils.container.querySelector('.rn-steps')).not.toBeNull(), WAIT)
+  // A PLANNED run's plan is a summary (owner's pick on PR 464); the check sits in it.
+  await waitFor(() => expect(utils.container.querySelector('[data-testid="rn-plan-summary"]')).not.toBeNull(), WAIT)
   return utils.container
 }
 
@@ -70,7 +71,7 @@ afterEach(() => {
 })
 
 describe('the planner check on the plan approval page', () => {
-  it('draws each flag and the duplicate above the steps', async () => {
+  it('draws each flag and the duplicate in the plan’s summary', async () => {
     const page = await mount(run({ plan_advisory: ADVISORY }))
     const block = page.querySelector('.rn-advisory')
     expect(block).not.toBeNull()
@@ -83,9 +84,9 @@ describe('the planner check on the plan approval page', () => {
     expect(text).toContain('waits for a person')
     const link = block!.querySelector('a')
     expect(link?.getAttribute('href')).toBe('https://github.com/acme/widgets/issues/41')
-    // Above the steps.
-    const steps = page.querySelector('.rn-steps')!
-    expect(block!.compareDocumentPosition(steps) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // In the summary: the steps themselves are on the decision page.
+    expect(page.querySelector('[data-testid="rn-plan-summary"]')!.contains(block)).toBe(true)
+    expect(page.querySelector('.rn-steps')).toBeNull()
   })
 
   it('draws nothing when the run carries no advisory', async () => {

@@ -33,6 +33,7 @@ import { HELP, HELP_GROUPS, HELP_ROUTE, TOPIC_IDS, helpAnchor, topicFor, type To
 import { HelpNote } from '../src/HelpCard'
 import { HelpScreen } from '../src/HelpSection'
 import { CONCURRENCY_STATES, NEVER_WRITTEN, REAL_STATES, REASON_COPY, TERMINAL_STATES } from '../src/types'
+import server from '../src/generated/constants/server.json'
 
 /**
  * Every Help page, as one string. H1 (admin-help.html, the owner's pick) draws
@@ -353,7 +354,7 @@ test('event paging and serve-time masking each have a topic of their own', () =>
  * and is about THIS SCREEN: api.ts asks for one page, oldest-first, and never
  * sends the token back.
  *
- * So this reads both sources rather than trusting a sentence. While the route
+ * So this reads both sides (server.json and api.ts) rather than trusting a sentence. While the route
  * pages, the topic may not say it cannot; while the UI does not follow the
  * token, the topic has to say that the screen stops at one page.
  *
@@ -364,12 +365,9 @@ test('the event-paging topic puts the one-page limit on this screen, not on the 
   const t = HELP['event-paging']
   const all = [t.short, ...t.long].join(' ')
 
-  const route = readFileSync(resolve(SRC, '..', '..', 'swarm-api', 'swarm_api', 'routes', 'tasks.py'), 'utf8')
-  const start = route.indexOf('def list_events(')
-  assert.ok(start >= 0, 'routes/tasks.py has no list_events; this check is reading the wrong file')
-  const end = route.indexOf('\n@router', start)
-  const listEvents = route.slice(start, end === -1 ? undefined : end)
-  const routePages = listEvents.includes('page_token') && listEvents.includes('"next_page_token"')
+  // Whether list_events takes `page_token`, from swarm-api's OpenAPI document
+  // into the generated server.json; its paging is test_event_paging.py's.
+  const routePages = server.events_route_pages
   if (routePages) {
     assert.ok(
       !/returns no page token|no token to ask|cannot be fetched at all/i.test(all),
@@ -678,22 +676,17 @@ test('Help carries the four topics the QA pass found missing (AH-14)', () => {
  * strength of the old sentence would believe its members had lost read
  * access they still hold.
  *
- * So this reads service.py rather than trusting a sentence: while the read
+ * So this reads scope_for's behaviour (server.json) rather than trusting a sentence: while the read
  * path does not look at `enabled`, the topic may not claim every call is
  * refused, and it has to say what is still allowed.
  *
  * MUTATION: restore "refused on every call".
  */
 test('tenant-fields says what a disabled tenant can still do, as the API decides it', () => {
-  const service = readFileSync(resolve(SRC, '..', '..', 'swarm-api', 'swarm_api', 'service.py'), 'utf8')
-  const start = service.indexOf('def scope_for(')
-  assert.ok(start >= 0, 'service.py has no scope_for; this check is reading the wrong file')
-  const end = service.indexOf('\n    def ', start + 1)
-  const scopeFor = service.slice(start, end === -1 ? undefined : end)
-  // The body after the docstring: the docstring itself talks about `enabled`.
-  const body = scopeFor.split('"""')[2] ?? ''
-  assert.ok(body.includes('assert_tenant_scope'), 'scope_for no longer calls the collision check; re-read it')
-  const readsRefuseDisabled = /\benabled\b|tenant_for\(/.test(body)
+  // Whether scope_for consults nothing but Store.assert_tenant_scope, found by
+  // calling it on a probe (scripts/api_constants/server.py, into the generated
+  // server.json; generation fails if it stops calling the collision check).
+  const readsRefuseDisabled = !server.read_scope_checks_collision_only
 
   const fields = HELP['tenant-fields'].long.join(' ')
   if (!readsRefuseDisabled) {

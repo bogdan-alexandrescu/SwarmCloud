@@ -872,7 +872,7 @@ class ChildPath:
         self.log.warning("no child path for this attempt", child_path=what, reason=why)
         try:
             note({"phase": "child_key", "child_path": what, "reason": why})
-        except Exception:  # a note must never stop the attempt
+        except Exception:  # a note must never stop the attempt  # noqa: BLE001, S110
             pass
 
     def _retry_deadline(self) -> float:
@@ -1583,7 +1583,7 @@ class ChildPath:
                 used += int(store.download_file(reference.key, destination))
             except InputUnavailable as exc:
                 return staged, used, str(exc)[:300]
-            except Exception as exc:  # an expired object, a network fault
+            except Exception as exc:  # an expired object, a network fault  # noqa: BLE001
                 return staged, used, f"{type(exc).__name__}"[:300]
             staged.append(destination.relative_to(results).as_posix())
         return staged, used, None

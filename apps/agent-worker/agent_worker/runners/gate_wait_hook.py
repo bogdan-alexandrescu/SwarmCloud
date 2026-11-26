@@ -91,7 +91,7 @@ def main():
     try:
         # The CLI writes the call to stdin; nothing in it is needed.
         sys.stdin.buffer.read(1 << 20)
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
         pass
     try:
         message = gate_message(sys.argv[1] if len(sys.argv) > 1 else "")
@@ -100,7 +100,7 @@ def main():
         out = {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": message}}
         sys.stdout.write(json.dumps(out))
         sys.stdout.flush()
-    except Exception:
+    except Exception:  # noqa: BLE001
         return 0
     return 0
 

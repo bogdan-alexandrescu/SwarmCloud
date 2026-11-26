@@ -328,7 +328,7 @@ def resign_stored(doc: Mapping[str, Any], *, task_id: str, changes: Mapping[str,
                 result = signer.sign(digest)
                 signed.append((base64.b64encode(result.signature).decode("ascii"),
                                result.key_version, spec_format))
-        except Exception:  # noqa: BLE001 -- the task keeps the class it was signed with
+        except Exception:  # the task keeps the class it was signed with
             log.exception("task %s could not be signed again; it keeps its class", task_id)
             return None
     fields.update(zip(("spec_signature", "spec_key_version", "spec_format"), signed[0]))

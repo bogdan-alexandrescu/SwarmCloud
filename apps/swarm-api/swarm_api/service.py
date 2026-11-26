@@ -3277,7 +3277,7 @@ class SubmissionService:
             return "not_configured", set()
         try:
             listing = accounts(tenant_id)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.warning(
                 "providers: the account pool could not be read",
                 extra={"tenant_id": tenant_id, "error": type(exc).__name__},

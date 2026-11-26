@@ -105,7 +105,7 @@ def _read_state(path):
     try:
         with open(path, encoding="utf-8") as handle:
             value = json.load(handle).get("fingerprint")
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     return value if isinstance(value, str) else None
 
@@ -139,7 +139,7 @@ def main():
                 }
             }))
             sys.stdout.flush()
-    except Exception:
+    except Exception:  # noqa: BLE001
         return 0
     return 0
 

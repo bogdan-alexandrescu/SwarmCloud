@@ -189,7 +189,7 @@ def mint(cfg: Any, key: Any, api: Any, *, now: float) -> tuple[str, int]:
     try:
         headers = sign_headers(key, TYPESAFE_TICKET_PURPOSE, "POST", path, body, now=now)
         _, payload = api.call("POST", path, body=body, headers=headers)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         status = getattr(exc, "status", None)
         code = str(getattr(exc, "code", "") or type(exc).__name__)
         if status == 409:
