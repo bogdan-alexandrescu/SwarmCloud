@@ -21,7 +21,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { visible } from './repofixture'
-import { D1, D2, PLAN, REV1, WAIT, at, mount, routes, runRead, sent, RUN, type Json } from './planthreadfixture'
+import { D1, D2, PLAN, REV1, WAIT, at, mount, routes, runRead, sent, RUN, type Handler, type Json } from './planthreadfixture'
 
 // Mermaid is not drawn here (diagram.view.test.tsx holds the renderer): the
 // strip and the thread are tested on which diagram they hand it.
@@ -94,7 +94,7 @@ function drawnEntry(over: Json = {}): Json {
   }
 }
 
-const page = (o: { run: Json; may?: Json; extra?: Parameters<typeof routes>[0]['extra'] }) =>
+const page = (o: { run: Json; may?: Json; extra?: Handler }) =>
   mount(routes({ item: { digest: D1, may_decide: o.may ?? EDITOR }, run: () => ({ may_decide: o.may ?? EDITOR, ...o.run }), extra: o.extra }))
 
 const doc = () => screen.findByTestId('pd-doc', undefined, WAIT)
@@ -230,7 +230,7 @@ describe('who may ask', () => {
     fireEvent.click(within(s1).getByRole('button', { name: 'Ask' }))
     const alert = await within(s1).findByRole('alert', undefined, WAIT)
     expect(visible(alert)).toContain(sentence)
-    expect((within(s1).getByRole('button', { name: 'Ask' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(within(s1).getByRole('button', { name: 'Ask' })).toHaveProperty('disabled', true)
   })
 })
 
