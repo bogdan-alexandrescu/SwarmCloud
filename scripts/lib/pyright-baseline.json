@@ -78,7 +78,7 @@
       "reportArgumentType": 2
     },
     "apps/agent-worker/agent_worker/lifecycle.py": {
-      "reportArgumentType": 10,
+      "reportArgumentType": 6,
       "reportAssignmentType": 4,
       "reportAttributeAccessIssue": 3,
       "reportCallIssue": 1,
@@ -106,7 +106,7 @@
       "reportArgumentType": 1
     },
     "apps/agent-worker/agent_worker/livegate/qatarget.py": {
-      "reportArgumentType": 3,
+      "reportArgumentType": 1,
       "reportReturnType": 1
     },
     "apps/agent-worker/agent_worker/livegate/rfb.py": {
@@ -294,7 +294,6 @@
       "reportOptionalMemberAccess": 1
     },
     "apps/swarm-api/swarm_api/agent_output.py": {
-      "reportArgumentType": 2,
       "reportOptionalMemberAccess": 1
     },
     "apps/swarm-api/swarm_api/agent_questions.py": {
@@ -440,7 +439,6 @@
       "reportAttributeAccessIssue": 1
     },
     "apps/swarm-api/swarm_api/issueruns.py": {
-      "reportOptionalMemberAccess": 1,
       "reportOptionalSubscript": 1,
       "reportReturnType": 2
     },
@@ -611,7 +609,6 @@
       "reportOptionalMemberAccess": 5
     },
     "apps/swarm-api/swarm_api/routes/schedules.py": {
-      "reportArgumentType": 5,
       "reportOptionalMemberAccess": 1,
       "reportReturnType": 1
     },
@@ -753,7 +750,8 @@
       "reportOptionalMemberAccess": 1
     },
     "apps/swarm-api/swarm_api/wire_types.py": {
-      "reportAssignmentType": 4
+      "reportAssignmentType": 6,
+      "reportInvalidTypeForm": 2
     },
     "apps/swarm-api/swarm_api/workspace_secrets.py": {
       "reportArgumentType": 1,

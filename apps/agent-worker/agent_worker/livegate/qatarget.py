@@ -1018,7 +1018,7 @@ def _parse(args: Mapping[str, Any]) -> dict[str, Any]:
             or not all(isinstance(o, str) and _ORIGIN.fullmatch(o) for o in origins)):
         raise QaTargetRefused("origins")
     # Each read as `origin_of` reads a request's (`:443` dropped), once each.
-    origins = list(dict.fromkeys(origin_of(o) for o in origins))
+    origins = [o for o in dict.fromkeys(origin_of(o) for o in origins) if o is not None]
     base_url = args.get("base_url")
     if not isinstance(base_url, str) or origin_of(base_url) not in origins \
             or not base_url.startswith("https://"):
@@ -1200,7 +1200,7 @@ class QaTargetGuard:
         self._sessions: dict[str, _Session] = {}
         self._attaching: set[str] = set()
         #: requestId -> (status, url, proxied) of a target 5xx whose body is still loading.
-        self._upstream: dict[str, tuple[int, str, str, bool]] = {}
+        self._upstream: dict[str, tuple[int, str, bool]] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
         self._closed = False
 

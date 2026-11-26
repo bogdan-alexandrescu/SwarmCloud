@@ -4332,7 +4332,8 @@ any other new error; the 12 dead ones were removed when it was turned on
 baseline. Regenerate it with `scripts/typecheck.sh --write-baseline` after
 fixing errors (lower the ceiling with it) or after a deliberate pin bump.
 It was set once at 1,364 when CI began running the check (2026-11-24): the
-1,245 of 2026-11-22 had grown by the code merged while nothing ran it.
+1,245 of 2026-11-22 had grown by the code merged while nothing ran it. It was
+lowered to 1,354 on 2026-11-26, regenerated against the main merged since.
 
 **Fixed thread count.** pyright's `--threads 4`: the errors it reports can
 depend on how the files are split over its workers (one `# type: ignore` in

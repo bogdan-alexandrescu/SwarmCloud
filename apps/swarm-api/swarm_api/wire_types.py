@@ -41,7 +41,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -818,7 +818,7 @@ class TaskEventPage(BaseModel):
 def _enum(name: str, values: tuple[str, ...], doc: str) -> type[Enum]:
     """A string enum over live values: a named type in the OpenAPI document,
     a string-literal union in the generated TypeScript."""
-    enum = Enum(name, [(value, value) for value in values], type=str)  # type: ignore[misc]
+    enum = cast("type[Enum]", Enum(name, [(value, value) for value in values], type=str))
     enum.__doc__ = doc
     return enum
 

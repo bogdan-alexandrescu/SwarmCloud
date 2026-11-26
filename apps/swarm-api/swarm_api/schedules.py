@@ -42,7 +42,7 @@ import secrets
 from datetime import datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
-from typing import Any, Iterable, Literal, Mapping
+from typing import Any, Iterable, Literal, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt, ValidationError
 
@@ -653,7 +653,7 @@ def state_word(doc: Mapping[str, Any], *, waiting: int) -> str:
     return "active"
 
 
-def summarize(words: Iterable[str], waiting: list[Mapping[str, Any]] | None) -> dict[str, Any]:
+def summarize(words: Iterable[str], waiting: Sequence[Mapping[str, Any]] | None) -> dict[str, Any]:
     """`GET /v1/schedules`'s `summary`: the listed schedules by word, every
     word present (a zero is a count, not a gap), and the tenant's waiting
     approvals as the Approvals tab lists them, oldest first.

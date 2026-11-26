@@ -92,7 +92,7 @@ import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from itertools import chain
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, Query, Response, status
 from fastapi.responses import JSONResponse
@@ -474,7 +474,7 @@ def _spend_today(doc: Mapping[str, Any], now: datetime) -> dict[str, Any]:
     }
 
 
-def _budget_use(doc: Mapping[str, Any], now: datetime, live: list[Mapping[str, Any]]) -> dict[str, Any] | None:
+def _budget_use(doc: Mapping[str, Any], now: datetime, live: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
     """Today's burn as the tick's budget gate counts it (§4.3), for the console's bar.
 
     Four parts of `per_day_usd`: what was reported; each attempt that never
@@ -512,7 +512,7 @@ def _budget_use(doc: Mapping[str, Any], now: datetime, live: list[Mapping[str, A
 
 
 def schedule_to_api(doc: Mapping[str, Any], now: datetime, *, pending: int = 0,
-                    live: list[Mapping[str, Any]] | None = None) -> dict[str, Any]:
+                    live: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any]:
     """The stored fields and what is computed on read. `live` (the schedule's
     `created` firings) is read only by the one-schedule route, which then
     serves `budget_use`; the list does not scan each schedule's firings.
@@ -550,7 +550,7 @@ def _proposes(doc: Mapping[str, Any]) -> bool:
     return entry is not None and entry.proposes
 
 
-def _proposals(ctx: AppContext, tenant_id: str, rows: list[Mapping[str, Any]]) -> dict[str, dict[str, Any]] | None:
+def _proposals(ctx: AppContext, tenant_id: str, rows: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]] | None:
     """`proposals_7d` (plans-pipeline §3.10) for each listed schedule whose
     type proposes, from `approvals.proposals_by_schedule`'s two bounded reads.
     A proposing schedule with nothing in the window gets zeros, and says
@@ -740,6 +740,7 @@ def create_schedule(
         # `build_schedule` holds the creator rule without the repository's
         # `platform` flag; the registrations are read here, so it is held here.
         entry = scheduletypes.get(doc["type"])
+        assert entry is not None  # `build_schedule` refused an unknown type
         schedules.check_creator(entry, doc["scope"]["mode"], is_admin=auth.is_admin, is_owner=auth.is_owner,
                                 platform_repository=platform_repository)
         if hold is not None:
@@ -1318,8 +1319,9 @@ def _item_tasks(ctx: AppContext, tenant_id: str, item: Mapping[str, Any]) -> tup
         except NotFound:
             return [], {"unread": "its issue run was not found"}
         out: list[tuple[str, str | None]] = []
-        if (run.readiness or {}).get("task_id"):
-            out.append((str(run.readiness["task_id"]), "readiness"))
+        readiness = run.readiness or {}
+        if readiness.get("task_id"):
+            out.append((str(readiness["task_id"]), "readiness"))
         if run.planner_task_id:
             out.append((run.planner_task_id, "plan"))
         wf_ids = ([run.workflow_id] if run.workflow_id else []) + list(run.ci_fix_workflows)
@@ -1406,7 +1408,7 @@ def _pr_state(run: Mapping[str, Any], merge_waiting: bool) -> str:
 
 
 def _pull_requests(ctx: AppContext, tenant_id: str,
-                   rows: list[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+                   rows: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
     """`{number, state}` per issue run of `rows`' work that opened a pull
     request: the runs in one batched read, the waiting merges in one more,
     only when a run is at the merge point. A run of another tenant, missing,
@@ -1469,7 +1471,7 @@ def _stored_largest(row: Mapping[str, Any]) -> tuple[float | None, str | None]:
 
 
 def _largest_runs(ctx: AppContext, tenant_id: str,
-                  rows: list[Mapping[str, Any]]) -> dict[str, tuple[float | None, str | None]]:
+                  rows: Sequence[Mapping[str, Any]]) -> dict[str, tuple[float | None, str | None]]:
     """`largest_run_usd` for the newest `SPAN_FIRINGS` of `rows`, read as
     `/spans` reads an item's cost (`_item_tasks`, `_item_cost`), within its
     `SPAN_TASKS` cap, so the firing and its spans cannot disagree."""
@@ -1506,7 +1508,7 @@ def _largest_runs(ctx: AppContext, tenant_id: str,
     return out
 
 
-def _firings_api(ctx: AppContext, tenant_id: str, rows: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def _firings_api(ctx: AppContext, tenant_id: str, rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Firings as served: `firing_to_api`, each issue-run work item that
     opened a pull request with its `pull_request`, and `largest_run_usd`
     with `largest_run_unread` saying why when it is null."""

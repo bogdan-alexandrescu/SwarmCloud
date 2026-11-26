@@ -1064,7 +1064,7 @@ class Worker(
         #: at the end of `_prepare`; it remembers it ran, so no later session
         #: runs it again.
         self._python_env = pythonenv_mod.PythonEnvWarmup(
-            redact=lambda text: redact_text(self.log.scrub_text(text)),
+            redact=lambda text: redact_text(self.log.scrub_text(text)).text,
             emit=self._note_python_env,
         )
         #: The pull request this step works on (`_requested_pull_request`),
@@ -6956,7 +6956,7 @@ class Worker(
         """
         block = self._dispatch_block()
         declared = (task.get("metadata") or {}).get("input_from")
-        input_from = {
+        input_from: dict[str, str] = {
             key.strip(): value
             for key, value in (declared.items() if isinstance(declared, dict) else ())
             if isinstance(key, str) and isinstance(value, str) and _TASK_ID_RE.match(key.strip())
@@ -6976,7 +6976,7 @@ class Worker(
             [t for t in self._dispatch_integrates() if _TASK_ID_RE.match(t)]
             if self._integration_is_pending() else []
         )
-        upstream = list(dict.fromkeys(
+        upstream: list[str] = list(dict.fromkeys(
             [*input_from, *branch_from, *([builds_on] if builds_on else []), *integrates]
         ))
         if not upstream:
@@ -8659,7 +8659,7 @@ class Worker(
         if not self._expected_outputs:
             return []
         produced = [
-            entry.get("name")
+            str(entry.get("name"))
             for entry in summary.get("artifacts") or []
             if isinstance(entry, dict) and isinstance(entry.get("name"), str)
         ]
@@ -9799,7 +9799,7 @@ class Worker(
             raise GitError(f"branch {branch} not pushed (401 twice): {FORGE_REFUSED_TWICE}; "
                            f"the push said: {str(exc)[:200]}") from None
 
-    def _write_token_read_again(self, branch: str, reason: str, failed: str, error=GitError) -> str:
+    def _write_token_read_again(self, branch: str, reason: str, failed: str, error: type[Exception] = GitError) -> str:
         """The ONE re-read after a 401 at a pull request's open, a push or the read before
         it (issue 284), gates and all (`_forge_write_refusal`, `_git_token_refusal`, then
         this task's own `_git_token(write=True)`): the fresh token, or `error` with no token.

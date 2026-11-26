@@ -33,7 +33,10 @@ COMPARE = REPO / "scripts" / "lib" / "pyright_baseline.py"
 # (mostly reportAttributeAccessIssue in agent_worker's heartbeat/checkpointing
 # mixins), less the 12 dead `# type: ignore` pruned with
 # reportUnnecessaryTypeIgnoreComment. From here CI fails any error over it.
-BASELINE_CEILING = 1364
+# Lowered to 1,354 on 2026-11-26, when the baseline was regenerated against the
+# main merged since: 26 more errors than allowed, 36 fixed, 8 left baselined
+# (wire_types.py's runtime-built enums and "optional, never null" defaults).
+BASELINE_CEILING = 1354
 
 _spec = importlib.util.spec_from_file_location("pyright_baseline", COMPARE)
 assert _spec and _spec.loader
