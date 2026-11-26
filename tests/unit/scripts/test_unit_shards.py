@@ -344,7 +344,6 @@ def test_weights_covering_most_files_print_no_warning(tmp_path):
                   "tests/unit/scripts/test_ci_gate.py"],
          ["tests/unit/scheduler/test_gke_browser_pod_dns.py"]),
         ("swarm-ui", ["tests/unit/control_plane/test_blocker_ui_surface.py",
-                      "tests/unit/scripts/test_issue_forms.py",
                       "tests/unit/scripts/test_ui_node_line.py"],
          ["tests/unit/scheduler/test_gke_browser_pod_dns.py",
           "tests/unit/scripts/test_docs_spec_amendments.py"]),
