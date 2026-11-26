@@ -38,7 +38,6 @@ const ADMIN_P = 'platform-admin' as const
 const PEOPLE = 'admin/people'
 const LIMITS = 'admin/limits'
 const SIZES = 'admin/runner-sizes'
-const COUNTS = 'admin/counts'
 const SETUP = 'admin/setup'
 const VOICE = 'voice/settings'
 
@@ -283,14 +282,8 @@ export const ADMIN: readonly ProseState[] = [
       },
     },
   },
-  // ---------------------------------------------------------------- Platform counts
-  {
-    key: 'admin/counts-breakdown',
-    group: 'admin',
-    files: ['PlatformOverTime.tsx'],
-    shows: '.pot-menu',
-    walk: { open: COUNTS, persona: ADMIN_P, then: () => press('main', 'Breakdown') },
-  },
+  // Platform counts' breakdown menu is prosestates.overview.tsx's
+  // 'admin/counts-breakdown': one key, one state.
   // ---------------------------------------------------------------- Setup
   {
     key: 'admin/setup-more',
