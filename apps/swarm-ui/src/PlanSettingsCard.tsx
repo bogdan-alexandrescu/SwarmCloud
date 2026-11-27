@@ -43,8 +43,8 @@ const INHERIT = 'inherit'
 export const DIAGRAMS_LABEL = 'Diagrams in plans'
 export const MODEL_LABEL = 'Chat model'
 
-/** The owner's examples (§6.3), behind the switch's (i). */
-const DIAGRAM_EXAMPLES =
+/** The owner's examples (§6.3), behind the switch's (i), here and on Admin › Settings' Plan review. */
+export const DIAGRAM_EXAMPLES =
   'Drawn: a plan of two or more steps, or one that crosses components (a route in apps/swarm-api and its console page). ' +
   'Not drawn: a one-line value change in a tfvars file, a wording fix, a rename in one file.'
 
