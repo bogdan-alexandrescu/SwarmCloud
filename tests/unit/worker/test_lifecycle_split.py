@@ -2,7 +2,8 @@
 """Concerns moved out of `lifecycle.py` (part of issue 68): the publish guard into
 `publish_guard.py`, then a runner's run and spend into `spend.py`, then the
 account pool into `accountpool.py`, then the parks into `parking.py`, then the
-publish's retryable ends into `publish_retry.py` (issue 367).
+publish's retryable ends into `publish_retry.py` (issue 367), then the git
+harvest and publish into `gitpublish.py`.
 
 A mechanical move: each name below lives in `publish_guard` now. The names
 `lifecycle` itself still calls, or another module or a test still reads
@@ -27,7 +28,7 @@ LIFECYCLE = Path(lifecycle.__file__)
 
 #: Set just above `lifecycle.py`'s length after the move. Lower it as the
 #: split goes on; never raise it.
-LIFECYCLE_LINE_CEILING = 17_630
+LIFECYCLE_LINE_CEILING = 15_363
 
 #: Moved, and still read through `lifecycle` (by itself, another module or a
 #: test): bound there as the same object.
@@ -559,6 +560,146 @@ def test_importing_publish_retry_does_not_import_lifecycle():
 
     code = (
         "import sys, agent_worker.publish_retry\n"
+        "assert 'agent_worker.lifecycle' not in sys.modules"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
+# -- the git harvest and publish: `gitpublish.GitPublishMixin` (issue 68) -------
+
+
+def _gitpublish():
+    """`agent_worker.gitpublish`, imported when a test runs so each test below
+    says on its own what is missing."""
+    return importlib.import_module("agent_worker.gitpublish")
+
+
+#: Methods `Worker` inherits from `GitPublishMixin`; `Worker` defines none of them.
+GITPUBLISH_METHODS = [
+    "_harvest_git",
+    "_publish_checked",
+    "_integration_is_pending",
+    "_shut_gate_owes_publish",
+    "_harvest_tree_patch",
+    "_keep_work_bundle",
+    "_build_clean_repo",
+    "_origin_line_fetcher",
+    "_origin_confirmer",
+    "_publish_onto_own_moved_head",
+    "_own_before_forge_write",
+    "_push_over_own_earlier_attempt",
+    "_push_onto_base_merge",
+    "_publish_git",
+    "_publish_onto_pull_text",
+    "_post_pull_body_comment",
+]
+
+#: `gitops` names only the publish methods read: imported in `gitpublish` and
+#: not bound in `lifecycle`, so a stale patch of one there raises.
+GITPUBLISH_DROPPED = [
+    "MergedHeadUnreadable",
+    "PublishFetchIncomplete",
+    "PushUnreachable",
+    "base_merge_tip",
+    "moved_branch_tip",
+    "keep_work_bundle",
+    "read_agent_excludes",
+    "replay_onto_tip",
+    "summarize_work",
+    "verify_merged_default_branch",
+]
+
+#: Names the publish methods read from `lifecycle` when they run, because a
+#: test patches them there (or `lifecycle` defines them): still bound in
+#: `lifecycle`, not in `gitpublish`.
+GITPUBLISH_READ_FROM_LIFECYCLE = [
+    "open_pull_request",
+    "commit_dirty",
+    "fetch_shallow_lines_from_origin",
+    "fold_agent_commits",
+    "merge_branches",
+    "mirror_worktree",
+    "own_branch_tip",
+    "prepare_publish_repo",
+    "push_branch",
+    "verify_worker_authorship",
+    "replay_agent_commits",
+    "final_tree_leak",
+    "_commits_leak",
+    "_scan_diff_stream",
+    "_config_seal",
+    "pr_body_with_console_links",
+    "PATCH_NAME",
+    "REPO_DIR_NAME",
+    "PUBLISH_FAILED_FIELD",
+]
+
+
+@pytest.mark.parametrize("name", GITPUBLISH_METHODS)
+def test_each_publish_method_is_inherited_from_git_publish_mixin(name):
+    gitpublish = _gitpublish()
+    assert name in vars(gitpublish.GitPublishMixin), f"GitPublishMixin does not define {name}"
+    assert name not in vars(lifecycle.Worker), f"Worker still defines {name} itself"
+    assert getattr(lifecycle.Worker, name) is vars(gitpublish.GitPublishMixin)[name]
+
+
+@pytest.mark.parametrize("name", GITPUBLISH_DROPPED)
+def test_a_publish_name_lives_in_gitpublish_alone(name):
+    assert hasattr(_gitpublish(), name), f"gitpublish does not bind {name}"
+    assert not hasattr(lifecycle, name), (
+        f"lifecycle.{name} is bound; read or patch gitpublish.{name}"
+    )
+
+
+@pytest.mark.parametrize("name", GITPUBLISH_READ_FROM_LIFECYCLE)
+def test_a_name_the_publish_methods_read_from_lifecycle_stays_there(name):
+    assert hasattr(lifecycle, name), f"lifecycle no longer binds {name}"
+    assert not hasattr(_gitpublish(), name), (
+        f"gitpublish binds {name}: a patch of lifecycle.{name} would not reach it"
+    )
+
+
+def test_the_publish_methods_import_what_stayed_from_lifecycle_when_they_run():
+    """A method that reads a name a test patches in `lifecycle` imports it
+    there in its body, at call time, so a `monkeypatch.setattr(lifecycle,
+    "push_branch", ...)` (as `test_carrier_branches` makes) is what
+    `_publish_git` calls."""
+    for method, names in {
+        "_harvest_tree_patch": ("mirror_worktree", "prepare_publish_repo"),
+        "_origin_line_fetcher": ("fetch_shallow_lines_from_origin",),
+        "_push_over_own_earlier_attempt": ("own_branch_tip", "push_branch"),
+        "_publish_git": (
+            "commit_dirty", "final_tree_leak", "fold_agent_commits", "merge_branches",
+            "open_pull_request", "push_branch", "replay_agent_commits", "verify_worker_authorship",
+        ),
+    }.items():
+        source = inspect.getsource(getattr(lifecycle.Worker, method))
+        head, _, rest = source.partition("from .lifecycle import ")
+        assert rest, method
+        imported = rest.split(")\n", 1)[0] if rest.startswith("(") else rest.split("\n", 1)[0]
+        for name in names:
+            assert name in imported.replace("(", " ").replace(",", " ").split(), (method, name)
+
+
+def test_a_patch_of_lifecycle_push_branch_is_what_the_publish_reads(monkeypatch):
+    """`gitpublish` does not bind `push_branch`: the publish reads the one in
+    `lifecycle`, so the patch is the one it calls."""
+    sentinel = object()
+    monkeypatch.setattr(lifecycle, "push_branch", sentinel)
+    from agent_worker.lifecycle import push_branch
+
+    assert push_branch is sentinel
+    assert "push_branch" not in vars(_gitpublish())
+
+
+def test_importing_gitpublish_does_not_import_lifecycle():
+    """No module-level import of `lifecycle` from `gitpublish`: that would be
+    circular, as `lifecycle` imports `gitpublish` for `Worker`'s bases."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys, agent_worker.gitpublish\n"
         "assert 'agent_worker.lifecycle' not in sys.modules"
     )
     subprocess.run([sys.executable, "-c", code], check=True)

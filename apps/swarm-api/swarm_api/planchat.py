@@ -37,6 +37,15 @@ and kept with its changes against the revision it was asked on, or dropped
 saying why. Nothing here ever writes a plan: a proposal is applied only by a
 person, through Request changes or an edit.
 
+THE MODEL PER PLAN (§7.8, lane P10 PLANS-CHAT-MODEL-API). A person at the
+edit level names a CLASS for this plan's chat (`plan:chat-model`): a cheaper
+one than the workspace's always, a stronger one (by its pinned model's
+`model_prices` output price; unpriced is stronger) only when
+`chat_model_suggestion` suggests it. It is the run's `plan_chat_model`, with a
+thread event per change; not signed and not in the digest. The run read's
+`plan_review_usage` counts re-plans, diagram asks, chat turns and review
+dollars against the caps read at that moment.
+
 THE TRANSCRIPT is `issue_runs/{run_id}/plan_chat/{turn_id}`, kept with the
 run, read by every member including viewers (Q10), never posted to the forge.
 Whichever lane first deletes an issue run must delete this subcollection in
@@ -55,10 +64,12 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from swarm_common.admission import _snapshot
 from swarm_common.models import utcnow
+from swarm_common.profiles import RUNNER_PROFILES
 from swarm_common.states import TaskState
 
-from . import issueruns, plansettings, refusals, sessiontag, stepceiling, stepclass
-from .errors import ApiError, Conflict, Forbidden, NotFound, UpstreamUnavailable
+from . import (issueruns, modelprices, plansettings, refusals, sessiontag, stepceiling,
+               stepclass)
+from .errors import ApiError, Conflict, Forbidden, NotFound, UpstreamUnavailable, ValidationFailed
 from .issueruns import (
     CHAT_ANSWER_FILE,
     MAX_CHAT_ANSWER_BYTES,
@@ -68,6 +79,7 @@ from .issueruns import (
     PLAN_THREAD_COLLECTION,
     PLANNER_PROFILE,
     RUNS_COLLECTION,
+    RunState,
     TASKS_COLLECTION,
     InvalidPlan,
     IssueRun,
@@ -172,6 +184,14 @@ class ChatCap(ApiError):
                 "detail": self.message, "message": self.message, "set_in": CAP_WHERE}
 
 
+class ChatModelNotNeeded(ValidationFailed):
+    """422: a class stronger than the one the settings resolve, asked for a
+    plan whose own reading does not suggest it (§7.8). A NEW refusal: it ships
+    off (`refusals.SWITCHES`), and off the class is recorded anyway."""
+
+    code = "chat_model_not_needed"
+
+
 # --------------------------------------------------------------------------
 # the run's chat record, and the caps
 # --------------------------------------------------------------------------
@@ -205,11 +225,36 @@ def review_spent(data: Mapping[str, Any] | None) -> float:
     """What the run's review agents cost against `review_usd` (§7.1, Q11):
     every chat turn's and every on-demand diagram agent's, each unreported one
     at the median of the reported ones (or $0.50), and nothing of a re-plan."""
+    return issueruns.review_usd({"costs": _review_costs(data)})
+
+
+def _review_costs(data: Mapping[str, Any] | None) -> list[Any]:
+    """Every cost counted against `review_usd`: each on-demand diagram agent's
+    and each chat turn's, as recorded (None where unreported)."""
     diagram = (data or {}).get("plan_diagram")
     diagram_costs = (diagram or {}).get("costs") if isinstance(diagram, Mapping) else None
-    costs = [*(diagram_costs if isinstance(diagram_costs, list) else ()),
-             *chat_record(data)["costs"]]
-    return issueruns.review_usd({"costs": costs})
+    return [*(diagram_costs if isinstance(diagram_costs, list) else ()),
+            *chat_record(data)["costs"]]
+
+
+def review_unreported(data: Mapping[str, Any] | None) -> bool:
+    """Whether any cost counted in `review_usd` was unreported, so the spend
+    is a floor (`at_least`, §7.8), never a figure that looks exact."""
+    return any(isinstance(cost, bool) or not isinstance(cost, (int, float))
+               for cost in _review_costs(data))
+
+
+def plan_review_usage(data: Mapping[str, Any] | None, *, replans: int,
+                      caps: Mapping[str, Any], read_at: Any) -> dict[str, Any]:
+    """`plan_review_usage` on the run read (§7.8): what the run has used of
+    each cap, against the caps read NOW (`caps` from `effective_plan_settings`
+    at this read), so an admin who lowered a cap sees it on the next read.
+
+    `review_usd` sums chat turns and on-demand diagram agents only; a
+    re-plan's cost is on its revision and never here (the owner's Q11).
+    `replans` is the run's `plan_replans`."""
+    return {"replans": {"used": _count(replans), "cap": int(caps["replans"])},
+            **usage(data, caps), "caps_read_at": read_at}
 
 
 def diagram_asks_used(data: Mapping[str, Any] | None) -> int:
@@ -233,10 +278,9 @@ def chat_cap(data: Mapping[str, Any] | None, caps: Mapping[str, Any]) -> ChatCap
 def usage(data: Mapping[str, Any] | None, caps: Mapping[str, Any]) -> dict[str, Any]:
     """What the run has used of the chat's caps, as the transcript read serves it."""
     record = chat_record(data)
-    known = [c for c in record["costs"] if isinstance(c, (int, float)) and not isinstance(c, bool)]
     return {"chat_turns": {"used": record["turns"], "cap": int(caps["chat_turns"])},
             "review_usd": {"spent": review_spent(data), "cap": float(caps["review_usd"]),
-                           "at_least": len(known) != len(record["costs"])},
+                           "at_least": review_unreported(data)},
             "diagram_asks": {"used": diagram_asks_used(data), "cap": int(caps["diagram_asks"])}}
 
 
@@ -276,6 +320,206 @@ def may_draw(*, edit: bool, settings: Mapping[str, Any], data: Mapping[str, Any]
     if diagram_asks_used(data) >= limit:
         return f"this run has had its {limit} diagram asks"
     return None
+
+
+# --------------------------------------------------------------------------
+# the chat's model per plan: the suggestion and the override (§7.8, lane P10)
+# --------------------------------------------------------------------------
+#
+# A CLASS, never a model id. The caller names one of the classes `claude-code`
+# carries (`plansettings.chat_model_classes`), or null; the model id a class
+# stands for is the deployment's pin (`stepclass.class_models_of`), read here
+# only to look its list price up. "Stronger" is measured, never listed: the
+# class whose pinned model's OUTPUT price per million tokens in the
+# platform's `model_prices` is higher. A class with no pin or no price is
+# treated as stronger, so it needs the suggestion. The override is recorded on
+# the run document (`plan_chat_model`) and as a thread event; it is not signed
+# and not in the digest: it changes what the chat costs, never what is approved.
+
+#: The run document's override, and its change log the thread derives events from.
+MODEL_FIELD = "plan_chat_model"
+MODEL_EVENTS_FIELD = "plan_chat_model_events"
+#: The most changes the run keeps for its thread (a person changes it a handful
+#: of times; past this the oldest go, the current record is unaffected).
+MODEL_EVENTS_KEPT = 50
+#: The thread event's name (`plan_thread`).
+MODEL_EVENT = "chat_model"
+#: The `plan_risk` stops that make a plan's questions harder (§3.7, §7.8).
+SUGGESTING_STOPS = ("iam", "contract", "security", "tenancy", "secrets", "shared", "workflows",
+                    "protected_path", "cost")
+#: §6.3's E1 counts at four steps or more, E2 at three components or more.
+SUGGEST_MIN_STEPS = 4
+SUGGEST_MIN_COMPONENTS = 3
+MAX_MODEL_WHY_CHARS = 500
+
+
+def class_output_price(model_class: str, class_models: Mapping[str, str] | None,
+                       prices: Mapping[str, Mapping[str, Any]] | None) -> float | None:
+    """The list output price (USD per million tokens) of the model `model_class`
+    is pinned to, or None when it has no pin or no well-formed price."""
+    model_id = (class_models or {}).get(model_class)
+    price = modelprices.price_for(model_id, prices or {}) if model_id else None
+    output = price.get("output") if isinstance(price, Mapping) else None
+    if isinstance(output, bool) or not isinstance(output, (int, float)):
+        return None
+    return float(output)
+
+
+def stronger(model_class: str, than: str, class_models: Mapping[str, str] | None,
+             prices: Mapping[str, Mapping[str, Any]] | None) -> bool:
+    """Whether `model_class` is stronger than `than` (§7.8): its output price
+    is higher, or it has none (an unpriced class needs a reason)."""
+    if model_class == than:
+        return False
+    mine = class_output_price(model_class, class_models, prices)
+    if mine is None:
+        return True
+    theirs = class_output_price(than, class_models, prices)
+    return theirs is not None and mine > theirs
+
+
+def planner_class(run: IssueRun, class_models: Mapping[str, str] | None) -> str:
+    """The class the run's planner was submitted at: the one its creator
+    named, else the planner role's default where this deployment pins it,
+    else the profile's default (`stepclass.choose`, as the planner's own
+    submission picks it)."""
+    named = (run.readiness or {}).get("planner_model_class")
+    choice = stepclass.choose(stepclass.ROLE_PLANNER, PLANNER_PROFILE, class_models,
+                              explicit=named if isinstance(named, str) and named else None)
+    return choice.model_class or RUNNER_PROFILES[PLANNER_PROFILE].default_model_class
+
+
+def _and(words: Sequence[str]) -> str:
+    return words[0] if len(words) == 1 else f"{', '.join(words[:-1])} and {words[-1]}"
+
+
+def _plan_reasons(plan: Mapping[str, Any], risk: Mapping[str, Any] | None) -> list[str]:
+    """What in this plan's own reading makes its questions harder (§7.8):
+    a step with a risk stop, the run's approval hold, or its size by §6.3's
+    E1 (four or more steps) or E2 (three or more components)."""
+    steps = [s for s in plan.get("steps") or () if isinstance(s, Mapping)]
+    reasons: list[str] = []
+    by_step = (risk or {}).get("steps") if isinstance((risk or {}).get("steps"), Mapping) else {}
+    risky: list[str] = []
+    for number, step in enumerate(steps, start=1):
+        rows = by_step.get(str(step.get("step_id"))) or ()
+        stops = list(dict.fromkeys(str(r.get("stop")) for r in rows if isinstance(r, Mapping)
+                                   and r.get("stop") in SUGGESTING_STOPS))
+        if stops:
+            risky.append(f"step {number}, {step.get('step_id')}, touches {_and(stops)}")
+    if risky:
+        more = len(risky) - 1
+        reasons.append(risky[0] + (f" (and {more} more step{'s' if more > 1 else ''})"
+                                   if more else ""))
+    hold = (risk or {}).get("run_hold")
+    if isinstance(hold, Mapping) and hold:
+        held = [str(r) for r in hold.get("reasons") or () if isinstance(r, str)]
+        reasons.append("the run's approval is held" + (f" for {_and(held)}" if held else ""))
+    components = list(dict.fromkeys(
+        c for s in steps for c in map(issueruns._component, map(str, s.get("files") or ()))
+        if c is not None))
+    if len(components) >= SUGGEST_MIN_COMPONENTS:
+        reasons.append(f"{len(steps)} step{'s' if len(steps) != 1 else ''} across "
+                       f"{_and(components)}")
+    elif len(steps) >= SUGGEST_MIN_STEPS:
+        reasons.append(f"{len(steps)} steps")
+    return reasons
+
+
+def chat_model_suggestion(run: IssueRun, *, risk: Mapping[str, Any] | None,
+                          resolved: Mapping[str, Any], class_models: Mapping[str, str] | None,
+                          prices: Mapping[str, Mapping[str, Any]] | None,
+                          ) -> dict[str, Any] | None:
+    """`chat_model_suggestion` on the run read (§7.8), outside the digest like
+    `plan_risk`: the run's planner class when it is stronger than `resolved`
+    (the workspace's, else the platform's: `resolve_model` without the run)
+    and the plan's own reading makes its questions harder; else nothing, with
+    the sentence saying why. None without a plan."""
+    if run.plan is None:
+        return None
+    reasons = _plan_reasons(run.plan, risk)
+    if not reasons:
+        count = len([s for s in run.plan.get("steps") or () if isinstance(s, Mapping)])
+        size = "one-step" if count == 1 else f"{count}-step"
+        return {"suggested": None, "why": f"a {size} plan with no risk paths"}
+    planner = planner_class(run, class_models)
+    base = str(resolved["class"])
+    if planner not in plansettings.chat_model_classes():
+        return {"suggested": None,
+                "why": (f"the planner's class {planner} is not one "
+                        f"{plansettings.CHAT_PROFILE} carries")}
+    if not stronger(planner, base, class_models, prices):
+        return {"suggested": None,
+                "why": (f"the planner's class {planner} is not stronger than {base}, the "
+                        f"{resolved['from']}'s")}
+    return {"suggested": planner, "why": "; ".join(reasons)}
+
+
+def model_refusal(wanted: str, suggestion: Mapping[str, Any] | None) -> ChatModelNotNeeded:
+    """The 422 a stronger class not suggested is refused with, in the
+    suggestion's own sentence (§7.8)."""
+    suggestion = suggestion or {}
+    why = suggestion.get("why") or "this plan has no plan to read"
+    suggested = suggestion.get("suggested")
+    head = (f"this plan's reading suggests {suggested}, not {wanted}" if suggested
+            else "this plan's reading suggests no stronger model")
+    return ChatModelNotNeeded(f"{head}: {why}",
+                              detail={"model_class": wanted, "suggested": suggested, "why": why})
+
+
+def model_record(wanted: str, *, base: Mapping[str, Any], suggestion: Mapping[str, Any] | None,
+                 is_stronger: bool, by: str, at: datetime) -> dict[str, Any]:
+    """The run's `plan_chat_model` (§7.8): the class, who set it, when, and why."""
+    suggested = (suggestion or {}).get("suggested")
+    if is_stronger and wanted == suggested:
+        why = str((suggestion or {}).get("why") or "")
+    elif is_stronger:
+        why = f"stronger than the {base['from']}'s, set while chat_model_not_needed is off"
+    elif wanted == base["class"]:
+        why = f"the {base['from']}'s own class"
+    else:
+        why = f"cheaper than the {base['from']}'s"
+    return {"class": wanted, "set_by": by, "set_at": at, "why": why[:MAX_MODEL_WHY_CHARS]}
+
+
+def model_event(record: Mapping[str, Any] | None, *, base: Mapping[str, Any], by: str,
+                at: datetime) -> dict[str, Any]:
+    """One change of the override, as the run keeps it for its thread."""
+    if record is None:
+        text = (f"the chat now answers with {base['class']}, the {base['from']}'s: this plan's "
+                "own class was cleared")
+    else:
+        text = f"the chat now answers with {record['class']}: {record['why']}"
+    return {"class": None if record is None else record["class"], "by": by, "at": at,
+            "text": text[:MAX_MODEL_WHY_CHARS]}
+
+
+def served_model_record(data: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """The run's `plan_chat_model` as the API serves it, or None."""
+    raw = (data or {}).get(MODEL_FIELD)
+    if not isinstance(raw, Mapping) or not isinstance(raw.get("class"), str):
+        return None
+    why = raw.get("why")
+    return {"class": raw["class"], "set_by": raw.get("set_by"), "set_at": _iso(raw.get("set_at")),
+            "why": redact_detail(why, limit=MAX_MODEL_WHY_CHARS) if isinstance(why, str) else None}
+
+
+def model_thread_events(data: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """The `chat_model` events the thread shows (§7.8), from the run's own
+    change log: "the chat now answers with opus: step 2 touches iam"."""
+    raw = (data or {}).get(MODEL_EVENTS_FIELD)
+    events: list[dict[str, Any]] = []
+    for item in raw if isinstance(raw, list) else ():
+        if not isinstance(item, Mapping) or item.get("at") is None:
+            continue
+        text = item.get("text")
+        events.append({"kind": "event", "event": MODEL_EVENT, "at": _iso(item.get("at")),
+                       "ref": None, "by": item.get("by"),
+                       "model_class": item.get("class") if isinstance(item.get("class"), str)
+                       else None,
+                       "text": redact_detail(text, limit=MAX_MODEL_WHY_CHARS)
+                       if isinstance(text, str) else ""})
+    return events
 
 
 # --------------------------------------------------------------------------
@@ -730,6 +974,36 @@ class PlanChat:
                     .document(entry["entry_id"]), entry)
 
         _apply(self._db.transaction())
+
+    def set_model(self, run: IssueRun, record: dict[str, Any] | None,
+                  event: dict[str, Any], *, digest: str | None) -> dict[str, Any]:
+        """Write the run's `plan_chat_model` (None clears it) and append
+        `event` to its change log, in one transaction that re-checks the
+        tenant, that the run is still PLANNED and that its plan is still the
+        one `digest` names (the suggestion that admitted a stronger class was
+        read off that plan). Returns the run document as written."""
+        ref = self._run_ref(run.id)
+
+        @firestore.transactional
+        def _apply(txn: Any) -> dict[str, Any]:
+            snap = _snapshot(txn.get(ref))
+            data = snap.to_dict() if snap.exists else None
+            if data is None or data.get("tenant_id") != run.tenant_id:
+                raise NotFound(f"run {run.id!r} not found")
+            if data.get("state") != RunState.PLANNED.value:
+                raise Conflict(f"run {run.id!r} is {data.get('state')}; the chat's model is set "
+                               "only while its plan waits", detail={"state": data.get("state")})
+            if data.get("plan_digest") != digest:
+                raise Conflict(f"the plan of run {run.id!r} changed while its chat's model was "
+                               "being set; read the run again",
+                               detail={"plan_digest": data.get("plan_digest")})
+            kept = data.get(MODEL_EVENTS_FIELD)
+            events = [*(kept if isinstance(kept, list) else ()), event][-MODEL_EVENTS_KEPT:]
+            changes = {MODEL_FIELD: record, MODEL_EVENTS_FIELD: events}
+            txn.update(ref, changes)
+            return {**data, **changes}
+
+        return _apply(self._db.transaction())
 
     def adopt_task(self, run: IssueRun, turn: str) -> str | None:
         """The id of a task of the run's own tenant carrying this turn, or None."""
