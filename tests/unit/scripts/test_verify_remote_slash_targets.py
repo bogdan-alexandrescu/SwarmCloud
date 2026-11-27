@@ -2,8 +2,7 @@
 36678195824, at 0ede37b).
 
 Main's "acceptance (dev)" job runs `verify-remote.sh acceptance/mock
-acceptance/generic ...` -- see test_release_acceptance_job.py, which pins that
-those are exactly the arguments release.yml passes. The job failed before any
+acceptance/generic ...`. The job failed before any
 suite ran:
 
     ./scripts/verify-remote.sh: line 212: /tmp/swarm-verify-acceptance/mock.2283:

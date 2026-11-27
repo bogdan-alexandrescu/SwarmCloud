@@ -21,8 +21,9 @@ from pathlib import Path
 import pytest
 import yaml
 
+from .ci_run_blocks import run_block
+
 REPO = Path(__file__).resolve().parents[3]
-WORKFLOW = REPO / ".github/workflows/application.yml"
 SCRIPT = "scripts/ci-select.sh"
 LIBS = ("common.sh", "related_tests.py", "select_unit_tests.py", "ui_shards.py", "ci_reuse.py")
 GH_REPO = "acme/widgets"
@@ -31,13 +32,16 @@ sys.path.insert(0, str(REPO / "scripts/lib"))
 import ci_reuse  # noqa: E402
 
 
-def _jobs() -> dict:
-    return yaml.safe_load(WORKFLOW.read_text())["jobs"]
+WORKFLOW = REPO / ".github/workflows/application.yml"
 
 
 def _step(job: str, step_id: str) -> dict:
     (step,) = [s for s in _jobs()[job]["steps"] if s.get("id") == step_id]
     return step
+
+
+def _jobs() -> dict:
+    return yaml.safe_load(WORKFLOW.read_text())["jobs"]
 
 
 def _write(root: Path, rel: str, text: str) -> None:
@@ -257,9 +261,6 @@ def test_an_unreadable_api_runs_the_suite(tree: Path):
     assert got == {"reused": "[]", "reused_from": "", "train": ""}, got
 
 
-# --------------------------------------------------------------------------
-# application.yml
-# --------------------------------------------------------------------------
 def test_main_s_push_looks_for_the_train_before_the_tree_record():
     """MUTATION: run the train step on a pull request, after `reuse`, or with no read of checks."""
     changes = _jobs()["changes"]
@@ -282,53 +283,51 @@ def test_a_lane_pull_request_and_only_one_selects():
         assert outputs[key].replace(" ", "") == f"${{{{steps.lane.outputs.{key}}}}}", outputs[key]
 
 
-def _run_step(step: dict, tmp_path: Path, **env: str) -> dict[str, str]:
+# --------------------------------------------------------------------------
+# application.yml's run blocks, executed from their published text
+# --------------------------------------------------------------------------
+def _run_step(script: str, tmp_path: Path, **env: str) -> dict[str, str]:
     out = tmp_path / "step-output"
     out.write_text("")
     full = {**os.environ, "GITHUB_OUTPUT": str(out), "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
             "RUNNER_TEMP": str(tmp_path), **env}
-    proc = subprocess.run(["bash", "-c", step["run"]], capture_output=True, text=True, cwd=tmp_path, env=full)
+    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True, cwd=tmp_path, env=full)
     assert proc.returncode == 0, proc.stderr + proc.stdout
     return dict(line.split("=", 1) for line in out.read_text().splitlines() if "=" in line)
 
 
 def test_a_merge_train_pull_request_runs_every_job(tmp_path: Path):
     """MUTATION: let the diff narrow a train, or let the select step narrow its unit shards."""
-    diff = _step("changes", "diff")
+    diff = run_block("application.yml", "changes", "diff")
+    # A train returns before APP_PATHS is read; any well-formed list will do.
     got = _run_step(diff, tmp_path, EVENT="pull_request", HEAD_REF="train/123-1", HEAD_REPO=GH_REPO,
-                    REPO=GH_REPO, APP_PATHS=diff["env"]["APP_PATHS"], BASE_SHA="x", HEAD_SHA="y")
+                    REPO=GH_REPO, APP_PATHS="apps/**\n", BASE_SHA="x", HEAD_SHA="y")
     assert got == {"app": "true", "python": "all", "areas": "", "ui": "true"}, got
-    select = _step("changes", "select")
+    select = run_block("application.yml", "changes", "select")
     got = _run_step(select, tmp_path, EVENT="pull_request", PYTHON="all", AREAS="", HEAD_REF="train/123-1",
                     LANE="", LANE_WHY="", BASE_SHA="x", HEAD_SHA="y")
     assert got == {"python": "all", "areas": "", "tests": ""}, got
 
 
 def test_a_lane_on_shared_ground_runs_the_whole_unit_suite(tmp_path: Path):
-    select = _step("changes", "select")
+    select = run_block("application.yml", "changes", "select")
     got = _run_step(select, tmp_path, EVENT="pull_request", PYTHON="all", AREAS="", HEAD_REF="swarm/x",
                     LANE="false", LANE_WHY="uv.lock is a lockfile", BASE_SHA="x", HEAD_SHA="y")
     assert got == {"python": "all", "areas": "", "tests": ""}, got
 
 
 def test_a_lane_takes_its_own_component_shard_count(tmp_path: Path):
-    step = _step("changes", "ui_shards")
+    step = run_block("application.yml", "changes", "ui_shards")
     got = _run_step(step, tmp_path, LANE="true", LANE_UI_SHARDS="[1, 2]")
     assert got == {"shards": "[1, 2]"}, got
 
 
 def test_integration_runs_whole_except_on_a_lane_that_reaches_none(tmp_path: Path):
     """MUTATION: skip integration on main or a train, or run all of it on a lane that reaches none."""
-    pick = _step("integration", "pick")
+    pick = run_block("application.yml", "integration", "pick")
     assert _run_step(pick, tmp_path, LANE="", INTEGRATION_TESTS="") == {"none": "false"}
     assert _run_step(pick, tmp_path, LANE="true", INTEGRATION_TESTS="") == {"none": "true"}
     assert _run_step(pick, tmp_path, LANE="true", INTEGRATION_TESTS="tests/integration/test_a.py") == {"none": "false"}
-    steps = _jobs()["integration"]["steps"]
-    after = steps[steps.index(pick) + 1:]
-    assert after and all(s.get("if") == "steps.pick.outputs.none != 'true'" for s in after), after
-    (run,) = [s for s in after if "uv run pytest" in str(s.get("run", ""))]
-    assert run["env"]["INTEGRATION_TESTS"] == "${{ needs.changes.outputs.integration_tests }}"
-    assert "uv run pytest tests/integration -q -n auto -m \"not serial\"" in run["run"]
 
 
 def test_the_required_check_names_are_unchanged():

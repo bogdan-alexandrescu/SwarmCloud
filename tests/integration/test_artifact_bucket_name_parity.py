@@ -47,21 +47,19 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 
-#: Everything an operator reads, copies or runs. Not `apps/` or `kubernetes/`.
-SEARCHED = (
-    sorted((REPO / "docs").rglob("*.md"))
-    + sorted((REPO / "scripts").rglob("*.sh"))
-    + [REPO / "README.md", REPO / ".env.example", REPO / "Makefile"]
-)
+#: Everything an operator copies or runs. Not `apps/` or `kubernetes/`, and
+#: not docs prose, the root *.md files or the Makefile: a test reads only the
+#: code tree it tests (issue 71).
+SEARCHED = sorted((REPO / "scripts").rglob("*.sh")) + [REPO / ".env.example"]
 
 #: `<anything>-swarm-artifacts` -- the words in the wrong order -- where it is
 #: being USED rather than merely named: assigned (`=`), quoted as a value, or
 #: written as a `gs://` URI.
 #:
-#: A backtick-quoted mention is prose. Both `scripts/lib/common.sh` and
-#: `docs/disaster-recovery.md` have to be able to write the reversed name down
-#: in order to forbid it, and a check that cannot tell an explanation from an
-#: instruction would delete its own documentation.
+#: A backtick-quoted mention is prose. `scripts/lib/common.sh` has to be able
+#: to write the reversed name down in order to forbid it, and a check that
+#: cannot tell an explanation from an instruction would delete its own
+#: documentation.
 REVERSED = re.compile(r"""(?:=|gs://|["'])\s*\$?\{?[\w$.-]*-swarm-artifacts\b""")
 
 

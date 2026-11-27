@@ -37,7 +37,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "verify-deployer-trust.sh"
-WORKFLOWS = REPO / ".github" / "workflows"
+WIF_TF = REPO / "terraform" / "bootstrap" / "wif.tf"
 
 REPOSITORY = "acme/swarm-test"
 PROJECT_NUMBER = "123456789012"
@@ -388,7 +388,9 @@ def test_the_script_is_strict_and_executable():
 def test_no_workflow_file_is_named_in_the_script():
     """The expected set is terraform's `github_principals`, never a second list
     that drifts from wif.tf's `deployer_workflows`."""
-    names = sorted(p.name for p in WORKFLOWS.glob("*.yml"))
+    declared = re.search(r"^  deployer_workflows = \[\n(.*?)^  \]", WIF_TF.read_text(), re.M | re.S)
+    assert declared, "wif.tf declares no deployer_workflows"
+    names = re.findall(r'^\s*"([\w.-]+\.yml)"', declared.group(1), re.M)
     assert "release.yml" in names, "read no workflow files"
     text = SCRIPT.read_text()
     restated = [name for name in names if name in text]

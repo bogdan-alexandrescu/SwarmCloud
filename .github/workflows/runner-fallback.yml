@@ -88,7 +88,7 @@ jobs:
     # Every trigger here runs on main's ref -- schedule and workflow_dispatch
     # from main -- so the rule admits them; a dispatch from another branch is
     # refused, and that is the point. `deployment: false`: no deployment
-    # record. test_repo_secrets_environment.py.
+    # record.
     environment:
       name: repo-secrets
       deployment: false

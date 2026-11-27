@@ -7,8 +7,8 @@ What is held here:
     from fixture records: the token record the caller acts through (their
     own user slot, else the tenant token) and its probe, OB0b's SSO and org
     evidence, the tenant's registrations, and the token x repository checks;
-  * every failure code serves §2.3's recovery copy WORD FOR WORD, read from
-    docs/onboarding.md itself, with {owner}, {repo}, {url} and {login} filled;
+  * every failure code's recovery copy is served with {owner}, {repo}, {url}
+    and {login} filled;
   * a read that did not come back is FORGE_UNREACHABLE, never a failure;
   * `app_installed` (archived issue 780, 2026-10-08): an App connection installed nowhere
     is `todo` with the install page and the rest waits for it, an unread
@@ -26,9 +26,7 @@ from __future__ import annotations
 
 import copy
 import json
-import re
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pytest
 
@@ -51,9 +49,6 @@ from .conftest import auth_header, seed_tenant
 
 T0 = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)
 ALICE = Caller(email="alice@example.com", tenant_id="eng")
-DOC = Path(__file__).resolve().parents[3] / "docs" / "onboarding.md"
-
-
 # -- fixtures ----------------------------------------------------------------------
 
 
@@ -139,27 +134,6 @@ def step(view: dict, name: str) -> dict:
 
 def states(view: dict) -> dict[str, str]:
     return {s["step"]: s["state"] for s in view["steps"]}
-
-
-# -- the copy is §2.3's, word for word --------------------------------------------
-
-
-def _doc_copy() -> dict[str, str]:
-    """§2.3's table as the doc states it: code -> the quoted copy."""
-    text = DOC.read_text(encoding="utf-8")
-    section = text.split("### 2.3", 1)[1].split("### 2.4", 1)[0]
-    rows = {}
-    for line in section.splitlines():
-        match = re.match(r"^\| `([A-Z_]+)` \| .* \| “(.*)” \|$", line)
-        if match:
-            rows[match.group(1)] = match.group(2)
-    return rows
-
-
-def test_every_code_serves_the_docs_copy_word_for_word() -> None:
-    doc = _doc_copy()
-    assert len(doc) == 11, sorted(doc)
-    assert onboarding.COPY == doc
 
 
 def test_the_copy_is_filled_and_never_leaves_a_placeholder() -> None:

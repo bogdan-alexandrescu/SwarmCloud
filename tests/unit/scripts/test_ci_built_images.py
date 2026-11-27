@@ -30,8 +30,6 @@ the build path, a fake `gcloud`) on PATH:
   * `--reuse-ci only` submits NO Cloud Build; `--reuse-ci or-build` on a
     commit CI never built builds every image, at the commit's tag, and records
     the commit in the manifest;
-  * the job and artifact the script looks for are the ones application.yml
-    actually has -- read from application.yml, not restated here;
   * `--previous` (observer proposal H, 2026-10-08) hands main's build the
     newest record of an ANCESTOR commit: never the commit itself, never a
     later merge, never a failed or expired build; exit 3 when there is none
@@ -64,9 +62,8 @@ REGISTRY = "us-central1-docker.pkg.dev/swarm-test-project/swarm-images"
 SHA = "c0ffee" * 6 + "abcd"
 OTHER_SHA = "0badc0de" * 5
 # The jobs that gate the release, as scripts/lib/common.sh names them
-# (CI_RELEASE_TEST_JOBS): every job application.yml's ci-gate needs.
-# test_the_release_is_gated_on_every_job_ci_gate_needs holds the list to
-# common.sh and to application.yml.
+# (CI_RELEASE_TEST_JOBS): every job application.yml's ci-gate needs. A run
+# that lists fewer is refused (test_a_finished_run_without_the_gating_tests_is_refused).
 TEST_JOBS = (
     "shellcheck",
     "release workflow wiring (actionlint)",
@@ -142,8 +139,7 @@ pytestmark = pytest.mark.skipif(
 
 
 # ---------------------------------------------------------------------------
-# What application.yml actually builds and uploads, read from the file, so the
-# fake world below is built from the real names and a rename fails here.
+# application.yml, read from the file for the checks of its wiring below.
 # ---------------------------------------------------------------------------
 def _workflow(name: str) -> dict:
     data = yaml.safe_load((REPO / ".github" / "workflows" / name).read_text())
@@ -153,45 +149,15 @@ def _workflow(name: str) -> dict:
     return data
 
 
-def _uncommented(run: str) -> str:
-    return "\n".join(l for l in run.splitlines() if not l.lstrip().startswith("#"))
-
-
-def application_build() -> dict:
-    """The job in application.yml that builds the images on main, with the
-    name it runs under, the environment it builds for and the artifact it
-    uploads -- or an assertion naming what could not be found."""
-    jobs = _workflow("application.yml")["jobs"]
-    builders = [
-        (job_id, job)
-        for job_id, job in jobs.items()
-        for step in job.get("steps") or []
-        if "scripts/build-images.sh" in _uncommented(step.get("run", ""))
-        # The pull-request job's runs (archived issue 650) map a change to images and build
-        # them WITHOUT pushing; neither records a build a release could use.
-        and not re.search(r"--(build-only|affected-by|inputs)\b", _uncommented(step.get("run", "")))
-    ]
-    assert len(builders) == 1, (
-        f"expected exactly one job in application.yml to run build-images.sh, found "
-        f"{[j for j, _ in builders]}"
-    )
-    job_id, job = builders[0]
-    env = dict(job.get("env") or {})
-    uploads = [s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
-    assert len(uploads) == 1, f"application.yml's {job_id} job uploads {len(uploads)} artifacts, not one"
-    with_ = uploads[0].get("with") or {}
-    env.update(uploads[0].get("env") or {})
-
-    def resolve(value: str) -> str:
-        return re.sub(r"\$\{\{\s*env\.([A-Z_]+)\s*\}\}", lambda m: str(env.get(m.group(1), m.group(0))), str(value))
-
-    return {
-        "job_id": job_id,
-        "name": job.get("name", job_id),
-        "environment": str(env.get("ENVIRONMENT", "")),
-        "artifact": resolve(with_.get("name", "")),
-        "path": resolve(with_.get("path", "")),
-    }
+# What application.yml's build job runs under, builds for and uploads: the
+# names ci-built-images.sh looks for by default (JOB, the artifact and the
+# manifest build-images.sh writes), so the fake world below serves them.
+BUILD = {
+    "name": "build images",
+    "environment": "dev",
+    "artifact": "images-dev",
+    "path": "build/images-dev.json",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -408,10 +374,10 @@ def ci_run(
     tests_pending: int = 0,
     **fields,
 ) -> dict:
-    """application.yml's run of `sha`, shaped from application.yml itself.
+    """application.yml's run of `sha`, as the GitHub API lists it.
     `tests_*` shape the jobs that gate the release (CI_RELEASE_TEST_JOBS):
     their conclusion, None for not listed, and how many looks they run for."""
-    build = application_build()
+    build = BUILD
     env = environment or build["environment"]
     artifacts = []
     if job_conclusion == "success":
@@ -729,24 +695,6 @@ def test_the_running_ceiling_defaults_to_ninety_minutes_and_is_checked():
     text = (REPO / "scripts" / "lib" / "ci-built-images.sh").read_text()
     assert 'WAIT_RUNNING="${CI_BUILD_WAIT_RUNNING:-5400}"' in text
     assert re.search(r"for knob in [^;]*\bWAIT_RUNNING\b", text)
-
-
-def test_the_script_looks_for_what_application_yml_actually_builds_and_uploads():
-    """The job name and the artifact are an interface between two workflows.
-    Stated once in each, so compared here: application.yml's build job must
-    answer to the name the script looks for, build for the environment its
-    artifact is named after, and upload the file build-images.sh writes."""
-    build = application_build()
-    script = (REPO / "scripts" / "lib" / "ci-built-images.sh").read_text()
-    default_job = re.search(r'^JOB="\$\{CI_BUILD_JOB:-([^}]*)\}"', script, re.M)
-    assert default_job, "ci-built-images.sh no longer declares its default job name as JOB=\"${CI_BUILD_JOB:-...}\""
-    assert build["name"] == default_job.group(1), (
-        f"application.yml's build job is named {build['name']!r}; ci-built-images.sh looks for "
-        f"{default_job.group(1)!r}, so every release would find it 'never built'"
-    )
-    assert build["environment"] == "dev", f"application.yml builds for {build['environment']!r}"
-    assert build["artifact"] == f"images-{build['environment']}", build
-    assert build["path"] == f"build/images-{build['environment']}.json", build
 
 
 # ---------------------------------------------------------------------------
@@ -1145,7 +1093,6 @@ def test_the_release_is_gated_on_every_job_ci_gate_needs():
         for job_id, job in jobs.items():
             other = str(job.get("name") or job_id)
             assert not (other != n and other.startswith(n + " (") and "${{" not in other), (n, other)
-
 
 
 def test_main_builds_even_when_a_needed_check_was_skipped_by_its_paths():

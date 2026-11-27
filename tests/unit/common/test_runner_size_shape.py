@@ -1,4 +1,4 @@
-# source-text: contract - runner sizes' definitions in the source must match what the contract request 110 names
+# source-text: contract - the states constants group must say in its source that it publishes the code DEFAULT unit weights, not a resized version's
 """Contract request 110: `ResourceSize`, `LiveShare`, `default_sizes` and `effective_size` (SIZES-CONTRACT-2, part of archived issue 1689).
 
 docs/design/runner-sizes.md §5 request RS-3, accepted by the owner on
@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import dataclasses
 import importlib.util
-import re
 from pathlib import Path
 
 import pytest
@@ -48,7 +47,6 @@ from swarm_common.profiles import (
 )
 
 REPO = Path(__file__).resolve().parents[3]
-REQUESTS = REPO / "docs" / "contract-change-requests.md"
 STATES_GROUP = REPO / "scripts" / "api_constants" / "states.py"
 
 #: Version 2 of the design's SIZES-SCHED-2 example: `standard` at 6 / 12 GiB.
@@ -182,12 +180,3 @@ def test_the_published_ui_units_are_the_code_defaults():
     text = STATES_GROUP.read_text(encoding="utf-8")
     assert "size.units for name, size in default_sizes().items()" in text
     assert "DEFAULT sizes" in text
-
-
-def test_request_rs_3_is_filed_as_entry_110():
-    text = REQUESTS.read_text(encoding="utf-8")
-    rows = [line for line in text.splitlines() if line.startswith("| 110 |")]
-    assert len(rows) == 1, rows
-    assert "SIZES-CONTRACT-2" in rows[0] and "RS-3" in rows[0]
-    assert "APPLIED" in rows[0]
-    assert re.search(r"^## 110\. .*\(SIZES-CONTRACT-2, runner sizes request RS-3, part of #1689\)$", text, re.M)

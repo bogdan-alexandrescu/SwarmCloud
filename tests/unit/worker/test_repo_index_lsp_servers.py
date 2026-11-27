@@ -22,9 +22,7 @@ Two kinds of test, kept apart on purpose:
 
 * WIRING TESTS, which run everywhere: the server is enabled for its
   language, the image installs terraform-ls pinned by version and sha256,
-  the build's self-test covers every listed language, and
-  docs/repo-index.md's language table says which server serves which
-  language and how each is budgeted.
+  and the build's self-test covers every listed language.
 """
 
 from __future__ import annotations
@@ -44,7 +42,6 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 TOOL_DIR = REPO_ROOT / "images" / "agent-runtime-indexer" / "repo-index"
 SCRIPT = TOOL_DIR / "repo_index_extract.py"
 DOCKERFILE = REPO_ROOT / "images" / "agent-runtime-indexer" / "Dockerfile"
-DOC = REPO_ROOT / "docs" / "repo-index.md"
 
 
 @pytest.fixture(scope="module")
@@ -246,30 +243,3 @@ def test_the_image_builds_terraform_ls_pinned_by_version_and_sha256(lsp: Any) ->
     assert "COPY --from=languageservers /usr/local/bin/terraform-ls /opt/repo-index/servers/bin/" in code
     check = re.search(r"for s in ([^;]+); do \\\n\s*test -x", code)
     assert check and "terraform-ls" in check.group(1).split()
-
-
-def _language_table(text: str) -> dict[str, list[str]]:
-    """docs/repo-index.md's language table: extractor language -> its row's cells."""
-    lines = text.splitlines()
-    for at, line in enumerate(lines):
-        if re.match(r"^\| language \| files \| server \|", line):
-            rows = {}
-            for row in lines[at + 2:]:
-                if not row.startswith("|"):
-                    break
-                cells = [cell.strip() for cell in row.strip("|").split("|")]
-                rows[cells[0].strip("`")] = cells
-            return rows
-    return {}
-
-
-def test_the_doc_says_which_server_serves_each_language_and_its_budget(tool: Any, lsp: Any) -> None:
-    table = _language_table(DOC.read_text(encoding="utf-8"))
-    # MUTATION: delete the table from docs/repo-index.md §3.5 and this is red.
-    assert set(table) == set(tool.LANGUAGE_SERVERS), table
-    for language, name in tool.LANGUAGE_SERVERS.items():
-        cells = table[language]
-        assert f"`{name}`" in cells[2], (language, cells)
-        assert " ".join(lsp.SERVERS[name].command) in " ".join(cells), (language, cells)
-        # The budget cell names how the server is granted its time.
-        assert re.search(r"share|grant", cells[-1]), (language, cells)

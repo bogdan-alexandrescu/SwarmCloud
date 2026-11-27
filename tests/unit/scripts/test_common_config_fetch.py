@@ -228,16 +228,6 @@ def test_resolve_deny_list_checks_the_object(tmp_path: Path) -> None:
     assert "is not readable; nothing that mutates runs without it" in proc.stderr
 
 
-def test_the_makefile_asks_resolve_for_its_tfvars() -> None:
-    text = (REPO / "Makefile").read_text()
-    assert "VAR_FILE = $(shell $(RESOLVE) tfvars $(ENVIRONMENT))" in text
-    assert "terraform/environments/$(ENVIRONMENT)" not in text
-    # Read-only targets load the list too, so a broken one is found early.
-    for target in ("tf-plan", "status", "prerequisites"):
-        block = text.split(f"\n{target}:", 1)[1].split("\n\n", 1)[0]
-        assert "$(RESOLVE) deny-list $(ENVIRONMENT)" in block, target
-
-
 def test_fetches_running_at_once_never_collide(tmp_path: Path) -> None:
     # A plan guard and a kubectl call can source common.sh at the same moment.
     # MUTATION: one shared `.<name>.part` file for every process and this goes

@@ -52,7 +52,7 @@ on:
   # through the merge queue"). ci-gate is required and is a job of this
   # workflow, so it runs there with NO filter -- a run that never starts is a
   # required check that never reports, and the queue drops the entry at its
-  # timeout (tests/unit/scripts/test_merge_queue_workflows.py).
+  # timeout.
   # Never raised while the queue is off.
   merge_group:
     types: [checks_requested]
@@ -121,8 +121,8 @@ env:
 # (id-token) runs on the self-hosted runner pool's VMs through the one guarded
 # `runs-on` expression: a fork's pull request, or the repo variable
 # SELF_HOSTED_CI set to `off` (the capacity escape hatch), sends it to
-# GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted is listed,
-# with why, in tests/unit/scripts/test_fork_prs_off_self_hosted.py.
+# GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted says why in
+# its own comment.
 jobs:
   shell:
     name: shellcheck
@@ -658,9 +658,8 @@ jobs:
             CLAUDE.md
             CONTRACT.md
             .github/workflows/application.yml
-            # tests/unit/scripts/test_release_reuses_ci_images.py reads release.yml
-            # to hold it to reusing this workflow's build. release.yml never runs on
-            # a pull request, so without this a PR touching only it ran nothing.
+            # release.yml reuses this workflow's build and never runs on a pull
+            # request, so without this a PR touching only it ran nothing.
             .github/workflows/release.yml
             # The hotfix lane, and the stages both lanes run: held to their shape
             # by tests/unit/scripts/test_hotfix_release.py and the release tests,
@@ -670,10 +669,10 @@ jobs:
             .github/actions/**
             # Post-deploy acceptance runs only after a release completes on main,
             # so a pull request is the only place it is linted (actionlint below)
-            # and held to its shape (tests/unit/scripts/test_release_acceptance_job.py).
+            # and its `decide` step is run (tests/unit/scripts/test_release_acceptance_job.py).
             .github/workflows/accept.yml
-            # tests/unit/scripts/test_issue_forms.py validates the issue forms and
-            # the label declaration. Without these a PR editing only a form would run
+            # actionlint and the YAML checks read the issue forms and the label
+            # declaration. Without these a PR editing only a form would run
             # nothing -- and a form GitHub rejects fails nowhere a reviewer looks.
             .github/ISSUE_TEMPLATE/**
             .github/labels.yml
@@ -1207,6 +1206,26 @@ jobs:
         if: ${{ !cancelled() && needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'workflows') }}
         run: scripts/check-action-pins.sh
 
+      - name: release workflow wiring (actionlint) · the published run blocks are current
+        # Tests execute workflow shell from scripts/generated/ci-run-blocks.json,
+        # never from .github/ (issue 71); this fails when a run block changed
+        # without `uv run python scripts/gen_ci_run_blocks.py`. A command, not
+        # a pytest test: a test regenerating from .github/ would read CI YAML.
+        id: workflows-run-blocks
+        if: ${{ !cancelled() && needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'workflows') }}
+        run: uv run --frozen python scripts/gen_ci_run_blocks.py --check
+
+      - name: release workflow wiring (actionlint) · the console's user guide copy is current
+        # apps/swarm-ui/src/guidePages.ts is generated from docs/user-guide/*.md
+        # by apps/swarm-ui/guide-sync.mjs (the image build sees only
+        # apps/swarm-ui/). A command, not a console test: a test reading docs/
+        # would turn the UI's unit tests red on a docs edit (issue 71). It runs
+        # on a docs-only change too, where the ui jobs do not; node builtins
+        # only, no npm install.
+        id: workflows-guide-copy
+        if: ${{ !cancelled() && needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'workflows') }}
+        run: node apps/swarm-ui/guide-sync.mjs --check
+
       # --- ruff check ----------------------------------------------------------
       # Why: the `ruff` name-keeper's comment.
       - name: ruff check · ruff check
@@ -1248,7 +1267,7 @@ jobs:
         # `uv sync --frozen` installs what uv.lock says without checking it
         # against the pyproject files, so a stale or hand-edited lock passed
         # every job here (archived issue 76). One check is enough: every job reads this one
-        # lock. tests/unit/scripts/test_uv_lock_check_step.py holds it here.
+        # lock.
         id: python-checks-lock
         if: ${{ !cancelled() && (needs.changes.outputs.python == 'all' || needs.changes.outputs.python == 'selected') && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'python-checks') }}
         run: uv lock --check
@@ -1421,7 +1440,7 @@ jobs:
     timeout-minutes: 30
     # SELF-HOSTED (owner decision 2026-10-12, in the runner pool's own repository): the ephemeral
     # self-hosted VMs, with fork PRs kept on a GitHub-hosted image. The expression is
-    # the one tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces, and
+    # the guarded one every self-hosted job uses, and
     # SELF_HOSTED_CI=off (a repo variable) sends it to ubuntu-24.04 as well.
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
     needs: changes
@@ -1459,7 +1478,6 @@ jobs:
         # on every supported line, so a fallback to the runner's Node (what an
         # empty version would mean) changes no result. The table's own
         # fail-under-CI is the guard that matters.
-        # tests/unit/scripts/test_python_job_node.py holds this step here.
         run: |
           set -euo pipefail
           dockerfile=images/swarm-ui/Dockerfile
@@ -1724,7 +1742,7 @@ jobs:
     # was skipped -- and on main `python-unit` and the lock / contract checks
     # skip whenever the tree was reused from its pull request -- so the job
     # was skipped on every main build although `python` succeeded (found
-    # 2026-11-11; tests/unit/scripts/test_workflow_needs_result_status.py).
+    # 2026-11-11).
     # With it, the job runs exactly when `python` succeeded on a push to
     # main, whatever was skipped above it; a cancelled run tags nothing.
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.python.result == 'success' && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository) }}
@@ -1827,7 +1845,7 @@ jobs:
     name: swarm-ui typecheck / build
     # SELF-HOSTED (owner decision 2026-10-12, in the runner pool's own repository): the ephemeral
     # self-hosted VMs, with fork PRs kept on a GitHub-hosted image. The expression is
-    # the one tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces, and
+    # the guarded one every self-hosted job uses, and
     # SELF_HOSTED_CI=off (a repo variable) sends it to ubuntu-24.04 as well.
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
     needs: changes
@@ -1843,8 +1861,8 @@ jobs:
         # of a line that reached end of life in April 2026 (docs/versions.md).
         # Reading it from the Dockerfile means the typecheck, the tests and the
         # build below run on the line the image uses, and a bump there moves
-        # this job with it. tests/unit/scripts/test_ui_node_line.py fails if a
-        # literal comes back.
+        # this job with it. tests/unit/scripts/test_ui_node_line.py runs
+        # this step.
         run: |
           set -euo pipefail
           dockerfile=images/swarm-ui/Dockerfile
@@ -1951,7 +1969,7 @@ jobs:
     name: swarm-ui component tests (${{ matrix.shard }}/${{ strategy.job-total }})
     # SELF-HOSTED (owner decision 2026-10-12, in the runner pool's own repository): the ephemeral
     # self-hosted VMs, with fork PRs kept on a GitHub-hosted image. The expression is
-    # the one tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces, and
+    # the guarded one every self-hosted job uses, and
     # SELF_HOSTED_CI=off (a repo variable) sends it to ubuntu-24.04 as well.
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
     needs: changes
@@ -1997,8 +2015,8 @@ jobs:
         # of a line that reached end of life in April 2026 (docs/versions.md).
         # Reading it from the Dockerfile means the typecheck, the tests and the
         # build below run on the line the image uses, and a bump there moves
-        # this job with it. tests/unit/scripts/test_ui_node_line.py fails if a
-        # literal comes back.
+        # this job with it. tests/unit/scripts/test_ui_node_line.py runs
+        # this step.
         run: |
           set -euo pipefail
           dockerfile=images/swarm-ui/Dockerfile
@@ -2105,7 +2123,7 @@ jobs:
     name: integration tests (emulator)
     # SELF-HOSTED (owner decision 2026-10-12, in the runner pool's own repository): the ephemeral
     # self-hosted VMs, with fork PRs kept on a GitHub-hosted image. The expression is
-    # the one tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces, and
+    # the guarded one every self-hosted job uses, and
     # SELF_HOSTED_CI=off (a repo variable) sends it to ubuntu-24.04 as well.
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
     # Skipped when the change reaches nothing in this workflow (`changes`).
@@ -2337,8 +2355,7 @@ jobs:
       # As main builds it: swarm-ui bakes its environment in at build time.
       ENVIRONMENT: dev
       # The scanner the release's promotion runs, at the SAME pin
-      # (release.yml's TRIVY_VERSION; tests/unit/scripts/test_pr_image_scan.py
-      # holds the two equal): a pull request's scan that could disagree with
+      # (release.yml's TRIVY_VERSION): a pull request's scan that could disagree with
       # the release's would say nothing about whether the release will pass.
       TRIVY_VERSION: "0.74.0"
     steps:
@@ -2604,8 +2621,7 @@ jobs:
     # and stays so that a need added back cannot bring that skip back.
     # Main's push and a dispatch only: a lane push (`swarm/**`, LANE CI-EARLY)
     # is tested here but never builds or pushes an image. A disjunction, not
-    # parentheses: `&&` binds tighter than `||`, and the workflow models in
-    # tests/unit/scripts read this shape (test_workflow_step_reachability.py).
+    # parentheses: `&&` binds tighter than `||`.
     if: ${{ (!cancelled() && !failure() && github.event_name != 'pull_request' && github.event_name != 'merge_group' && github.ref == 'refs/heads/main' || !cancelled() && !failure() && github.event_name == 'workflow_dispatch') && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository) }}
     environment: build-pr
     # Authenticates to Google through workload identity: the only reason this

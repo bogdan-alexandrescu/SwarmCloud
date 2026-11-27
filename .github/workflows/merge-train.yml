@@ -40,7 +40,7 @@
 #     `pull_request` trigger of our own: that runs the copy of this file in
 #     the pull request's merge commit, on a ref the `repo-secrets` environment
 #     refuses (so no App token), and it would put a `pull_request` trigger on
-#     a self-hosted job (test_fork_prs_off_self_hosted.py). Not
+#     a self-hosted job. Not
 #     `pull_request_target` either: auto-merge.yml already carries that risk,
 #     once, and is reviewed for it. auto-merge's own dispatches, schedule and
 #     `workflow_run` runs are filtered out by their event;
@@ -128,8 +128,7 @@ jobs:
     # main's ref) of a train/ branch's application or security run, of a
     # green one on a pull request from this repository, or of auto-merge's
     # run on a pull request from this repository; never `pull_request`, and
-    # never from a fork's pull request (test_fork_prs_off_self_hosted.py
-    # checks the triggers). SELF_HOSTED_CI=off sends it back to ubuntu-24.04.
+    # never from a fork's pull request. SELF_HOSTED_CI=off sends it back to ubuntu-24.04.
     runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
     # The merge App's key (MERGE_APP_PRIVATE_KEY) lives in environment
     # `repo-secrets`, whose deployment branches are `main` only (the owner,
@@ -140,7 +139,6 @@ jobs:
     # (it runs main's file), workflow_dispatch from main --
     # so the rule admits them; a dispatch from another branch is refused, and
     # that is the point. `deployment: false`: no deployment record.
-    # test_repo_secrets_environment.py.
     environment:
       name: repo-secrets
       deployment: false

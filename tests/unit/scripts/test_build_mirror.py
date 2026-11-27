@@ -46,8 +46,6 @@ MIRROR_TF = REPO / "terraform" / "infra" / "build_mirror.tf"
 COMMON = REPO / "scripts" / "lib" / "common.sh"
 LIB = REPO / "scripts" / "lib" / "build-mirror.sh"
 REFRESH = REPO / "scripts" / "refresh-build-mirror.sh"
-RUNBOOK = REPO / "docs" / "runbooks" / "build-mirror.md"
-RUNBOOK_INDEX = REPO / "docs" / "runbooks" / "README.md"
 DEV_TFVARS = REPO / "terraform" / "environments" / "dev" / "dev.tfvars.example"
 
 
@@ -523,13 +521,6 @@ def test_the_refresh_check_names_every_missing_object_and_changes_nothing(tmp_pa
     assert urls == [], "--check fetched from upstream"
     assert not [c for c in calls if c[:2] == ["storage", "cp"]], "--check uploaded"
 
-
-
-def test_the_runbook_is_indexed_and_names_the_script() -> None:
-    assert RUNBOOK.exists()
-    text = RUNBOOK.read_text()
-    assert "scripts/refresh-build-mirror.sh" in text
-    assert "build-mirror.md" in RUNBOOK_INDEX.read_text()
 
 
 @pytest.mark.skipif(shutil.which("shellcheck") is None, reason="shellcheck not installed")

@@ -24,9 +24,12 @@ Merging to `main` was code execution as the deployer
 The owner chose two independent controls on 2026-10-02, and the deployer-trust-pin PR wrote both:
 
 1. **Job-level grants.** Every workflow grants `id-token: write` only to the
-   jobs that run `google-github-actions/auth`.
-   `tests/unit/scripts/test_workflow_id_token_scope.py` and
-   `test_release_id_token_scope.py` keep it that way. **This already holds:** it
+   jobs that run `google-github-actions/auth`, held in review of each
+   workflow change and, for `release.yml`, by
+   `tests/unit/scripts/test_release_id_token_scope.py`, one of the CI security
+   guards the owner kept on 2026-11-25 (`SECURITY_GUARDS` in
+   `scripts/check_test_reads.py`; no other test reads CI YAML,
+   [why](../ci.md#a-test-reads-only-its-own-tree)). **This already holds:** it
    took effect when the deployer-trust-pin PR merged.
 2. **A trust pin.** The binding names `attribute.job_workflow_ref` =
    `<repo>/.github/workflows/<file>@<ref>` for each file in `deployer_workflows`

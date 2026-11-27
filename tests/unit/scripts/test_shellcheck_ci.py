@@ -29,11 +29,9 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "lib" / "shellcheck-ci.sh"
-APPLICATION = REPO / ".github" / "workflows" / "application.yml"
 
 #: The roots the serial command named (application.yml's shell job, read from
 #: main at 0760d29). Main must keep checking exactly these.
@@ -87,16 +85,6 @@ def test_without_a_change_list_it_checks_every_script_main_checks(tmp_path):
     listed = _listed(tmp_path)
     assert listed == _main_set(), set(listed) ^ set(_main_set())
     assert len(listed) > 100, f"only {len(listed)} script(s) listed: the set did not expand"
-
-
-def test_the_set_is_the_one_the_other_shell_steps_walk(tmp_path):
-    """The strict-mode step names the same globs; two sets drift apart.
-    MUTATION: add a glob to the strict step's loop and not to the script."""
-    steps = yaml.safe_load(APPLICATION.read_text())["jobs"]["shell"]["steps"]
-    (strict,) = [s for s in steps if s.get("name") == "scripts are executable and strict"]
-    loop = re.search(r"for f in ([^;]+);", strict["run"])
-    assert loop, strict["run"]
-    assert tuple(loop.group(1).split()) == MAIN_GLOBS, loop.group(1)
 
 
 def test_a_changed_script_brings_the_libraries_it_sources(tmp_path):
@@ -238,28 +226,3 @@ def test_nothing_to_check_passes_and_says_so(tmp_path):
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert not log.exists(), log.read_text()
     assert "0 file(s)" in proc.stdout + proc.stderr
-
-
-def _shell_steps() -> list[dict]:
-    return yaml.safe_load(APPLICATION.read_text())["jobs"]["shell"]["steps"]
-
-
-def test_the_shell_job_runs_the_script_with_the_pull_requests_change():
-    """MUTATION: keep the serial `shellcheck -x ...` line in the shell job."""
-    (step,) = [s for s in _shell_steps() if s.get("name") == "shellcheck"]
-    run = step["run"]
-    assert "scripts/lib/shellcheck-ci.sh" in run, run
-    assert "shellcheck -x" not in run, run
-    assert "--changed" in run, run
-    assert step["env"].get("EVENT") == "${{ github.event_name }}", step.get("env")
-    assert step["env"].get("CHANGED") == "${{ needs.changes.outputs.changed }}", step.get("env")
-    # Only a pull request narrows; everything else runs the whole set.
-    assert re.search(r'"\$\{EVENT\}" = "pull_request"', run), run
-
-
-def test_the_changes_job_hands_the_shell_job_its_diff():
-    """MUTATION: drop the `changed` output, so a pull request has nothing to narrow by."""
-    job = yaml.safe_load(APPLICATION.read_text())["jobs"]["changes"]
-    assert job["outputs"].get("changed") == "${{ steps.changed.outputs.changed }}", job["outputs"]
-    (step,) = [s for s in job["steps"] if s.get("id") == "changed"]
-    assert "git diff --name-only" in step["run"], step["run"]

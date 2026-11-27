@@ -65,9 +65,6 @@ REPO = Path(__file__).resolve().parents[3]
 PROFILE = "claude-code-browser"
 DOCKERFILE = REPO / "images/agent-runtime-browser/Dockerfile"
 POLICY = REPO / "images/agent-runtime-browser/chromium-policy.json"
-DOC = REPO / "docs/execution-backends.md"
-
-
 @pytest.fixture
 def tenant() -> Tenant:
     return Tenant(
@@ -488,9 +485,3 @@ def test_the_image_carries_the_display_uid_xvfb_and_the_policy(tenant):
     for target in ("/etc/opt/chrome/policies/managed/", "/etc/chromium/policies/managed/"):
         assert target in text, f"the policy must be installed where Chromium reads it: {target}"
     assert "chromium-policy.json" in text
-
-
-def test_the_backend_doc_describes_the_sidecar():
-    text = DOC.read_text()
-    for needle in ("native sidecar", "swarm-live", "LIVE_BROWSER_SIDECAR", "/dev/shm"):
-        assert needle in text, needle

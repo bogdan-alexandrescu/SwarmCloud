@@ -1,62 +1,41 @@
-"""Every required check reports on a merge queue's `merge_group` ref.
+"""ci-gate judges a merge queue entry by its `merge_group` runs.
 
 OWNER DECISION, 2026-10-06 (observer P26). main was red from 19:12 to 19:58Z
 because two pull requests were each green on their own base and merged nine
-seconds apart: ruleset `main-protection` has
-`strict_required_status_checks_policy: false`, so neither ran against the
-other. The owner chose a merge queue. The operator adds the `merge_queue` rule
-after this lands (docs/ci.md, "Merging through the merge queue"); this file
-holds everything that must already be true when they do.
+seconds apart: the ruleset did not require a branch to be up to date, so
+neither ran against the other. The owner chose a merge queue.
 
 A queue builds a temporary `gh-readonly-queue/main/...` branch and waits for
-the ruleset's required checks to report on it, through the `merge_group`
-event. A required check whose workflow does not run on `merge_group` -- or
-runs with a filter that skips it, or whose job's `if:` skips it -- never
-reports there, and the queue holds the entry until
-`check_response_timeout_minutes` and then drops it. So:
+the required checks to report on it, through the `merge_group` event. These
+run scripts/ci-gate.sh over test_ci_gate's fixture workflows and fake GitHub:
+on `merge_group` it expects every workflow it gates whatever changed, waits
+for that event's runs and fails with them.
 
-  * every workflow that produces a required context triggers on
-    `merge_group: types: [checks_requested]`, with no filter;
-  * so does every workflow `ci-gate` waits on, or the gate waits for a run
-    that never comes and fails the entry by name;
-  * no job producing a required context is skipped on `merge_group`;
-  * no job that mints a cloud identity runs there: the workload identity
-    pool admits `refs/heads/main` only, and a red `build images` or `plan`
-    would fail ci-gate on every queue entry;
-  * release.yml and auto-merge.yml never run on it.
-
-None of this changes a pull request or a push to main: `merge_group` is a new
-trigger beside them, and while the queue is off GitHub never raises it.
+The tests that hold the workflows' own `on:` blocks and job conditions to that
+(who can start them, what mints a cloud identity, which jobs report on a queue
+entry) read the CI YAML and are kept; the ones that read the docs' prose or the
+ruleset body quoted there were deleted by issue 71.
 """
 
 from __future__ import annotations
 
-import importlib.util
-import json
+import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
 
 from .test_ci_gate import GATE_WORKFLOW, SHA, gate, tf_jobs, wait
-from .test_workflow_step_reachability import _events, _triggers
 
 REPO = Path(__file__).resolve().parents[3]
-
-_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
-assert _PLACEHOLDERS_SPEC and _PLACEHOLDERS_SPEC.loader
-placeholders = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
-_PLACEHOLDERS_SPEC.loader.exec_module(placeholders)
 WORKFLOWS = REPO / ".github" / "workflows"
-CI_DOC = REPO / "docs" / "ci.md"
 
 #: The required status checks of ruleset `main-protection`, read
 #: with `gh api repos/<owner>/<repo>/rules/branches/main` on
 #: 2026-10-01 and unchanged at 2026-10-06 (test_auto_merge_workflow.py's
 #: RULESET_CHECKS is the same read). A context added to the ruleset must be
 #: added here, or the queue can hold on it unnoticed.
-#: The docs look the ruleset up by this name, never by its numeric id.
-RULESET_NAME = "main-protection"
 REQUIRED_CONTEXTS = (
     "secret scan",
     "trivy (repo)",
@@ -68,18 +47,12 @@ REQUIRED_CONTEXTS = (
     "ci-gate",
 )
 
-#: The ruleset change docs/ci.md gives the operator, value by value.
-QUEUE_PARAMETERS = {
-    "merge_method": "MERGE",
-    "grouping_strategy": "ALLGREEN",
-    "max_entries_to_build": 5,
-    # The group size the owner chose on 2026-10-08 (proposal G); the API
-    # refuses a merge_queue rule without it (the 2026-10-07 attempt).
-    "max_entries_to_merge": 5,
-    "min_entries_to_merge": 1,
-    "min_entries_to_merge_wait_minutes": 0,
-    "check_response_timeout_minutes": 60,
-}
+#: The clause every job's `if:` in application.yml, security.yml and
+#: terraform.yml ends with (the lane rule of 2026-11-12).
+LANE_SKIP = ("!(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') "
+             "&& github.event.pull_request.head.repo.full_name == github.repository)")
+
+_COMPARISON = re.compile(r"^github\.event_name\s*(==|!=)\s*'([A-Za-z_]+)'$")
 
 
 def _load(path: Path) -> dict:
@@ -125,6 +98,83 @@ def _assert_unfiltered_merge_group(name: str, workflow: dict) -> None:
     )
 
 
+def _without_the_clause(condition: str) -> str:
+    """The job's `if:` before the lane clause, unwrapped: what it ran before
+    2026-11-12."""
+    inner = condition.strip().removeprefix("${{").removesuffix("}}").strip()
+    if inner == LANE_SKIP:
+        return ""
+    assert inner.endswith(" && " + LANE_SKIP), inner
+    before = inner[: -len(" && " + LANE_SKIP)]
+    if before.startswith("(") and before.endswith(")") and _balanced(before[1:-1]):
+        before = before[1:-1]
+    return before
+
+
+def without_lane_clause(condition: object, *, required: bool = True) -> str:
+    """A job's `if:` as it was written before the lane clause, `${{ }}` and
+    all, for the tests that pin a job's own condition (test_ci_fold.py,
+    test_build_images_local.py). Fails when the clause is missing, unless
+    `required` is false (a sweep over every job, ci-gate included)."""
+    text = str(condition or "").strip()
+    inner = text.removeprefix("${{").removesuffix("}}").strip()
+    if not required and not (inner == LANE_SKIP or inner.endswith(" && " + LANE_SKIP)):
+        return text
+    before = _without_the_clause(text)
+    return "${{ " + before + " }}" if text.startswith("${{") and before else before
+
+
+def _balanced(text: str) -> bool:
+    depth = 0
+    for char in re.sub(r"'[^']*'", "", text):
+        depth += {"(": 1, ")": -1}.get(char, 0)
+        if depth < 0:
+            return False
+    return depth == 0
+
+
+def _triggers(workflow: dict[Any, Any]) -> frozenset[str]:
+    """The events a workflow runs on. PyYAML reads a bare `on:` key as True."""
+    on = workflow.get("on", workflow.get(True))
+    if isinstance(on, str):
+        return frozenset({on})
+    if isinstance(on, list):
+        return frozenset(str(event) for event in on)
+    return frozenset(str(event) for event in (on or {}))
+
+
+def _events(condition: Any, universe: frozenset[str]) -> frozenset[str]:
+    """The events on which `condition` can be true; all of them if it does not say."""
+    if condition is None:
+        return universe
+    text = str(condition).strip()
+    if text.startswith("${{") and text.endswith("}}"):
+        text = text[3:-2].strip()
+    # The lane clause every job of application.yml, security.yml and
+    # terraform.yml ends with (test_fast_checks_on_lane_prs.py) only narrows a
+    # pull request by its head, never rules an event out, so it is dropped:
+    # the events read from what precedes it.
+    if text == LANE_SKIP or text.endswith(" && " + LANE_SKIP):
+        text = without_lane_clause(text)
+    # A status check (!cancelled(), !failure(), success(), always()) says nothing
+    # about which EVENT runs the job, so a conjunct of one is dropped before the
+    # comparison is read (application.yml build, PR 1324).
+    text = re.sub(r"!?\b(?:cancelled|failure|success|always)\(\)\s*&&\s*", "", text).strip()
+    if "(" in text or "!" in text.replace("!=", ""):
+        return universe
+    allowed: frozenset[str] = frozenset()
+    for disjunct in text.split("||"):
+        events = universe
+        for conjunct in disjunct.split("&&"):
+            match = _COMPARISON.match(conjunct.strip())
+            if not match:
+                continue
+            operator, event = match.groups()
+            events = events & (frozenset({event}) if operator == "==" else universe - {event})
+        allowed = allowed | events
+    return allowed
+
+
 # ---------------------------------------------------------------------------
 # The workflows
 # ---------------------------------------------------------------------------
@@ -162,19 +212,17 @@ def test_every_workflow_ci_gate_waits_on_triggers_on_merge_group(tmp_path):
         _assert_unfiltered_merge_group(name, workflows[name])
 
 
-def test_the_trigger_reads_as_all_to_ci_gate(tmp_path):
-    """ci-gate decides which workflows a change triggers from their `on:`
-    blocks. On merge_group every gated workflow is unfiltered, so each one is
-    expected, whatever changed."""
-    for name in _ci_gate_waits_on(tmp_path):
-        proc = gate(tmp_path, "paths", "--workflow", str(WORKFLOWS / name), "--event", "merge_group")
-        assert proc.returncode == 0, proc.stderr
-        assert proc.stdout.split() == ["all"], (name, proc.stdout)
+
+def test_every_gated_workflow_is_expected_on_merge_group_whatever_changed(tmp_path):
+    waits_on = gate(tmp_path, "workflows")
+    assert waits_on.returncode == 0, waits_on.stderr
+    names = set(waits_on.stdout.split())
+    assert names, "ci-gate waits on nothing: this test would check nothing"
     listing = tmp_path / "changed.txt"
     listing.write_text("LICENSE\n")
     proc = gate(tmp_path, "expected", "--event", "merge_group", "--changed", str(listing))
     assert proc.returncode == 0, proc.stderr
-    assert set(proc.stdout.split()) == set(_ci_gate_waits_on(tmp_path)), proc.stdout
+    assert set(proc.stdout.split()) == names, proc.stdout
 
 
 def test_ci_gate_waits_for_the_merge_group_runs_and_passes_when_they_pass(tmp_path):
@@ -250,88 +298,3 @@ def test_no_workflow_but_the_required_ones_and_ci_gates_runs_on_merge_group(tmp_
     expected |= set(_ci_gate_waits_on(tmp_path))
     on_queue = {name for name, wf in _all().items() if "merge_group" in _triggers(wf)}
     assert on_queue == expected, on_queue ^ expected
-
-
-# ---------------------------------------------------------------------------
-# The ruleset change, in the docs
-# ---------------------------------------------------------------------------
-def _section() -> str:
-    text = CI_DOC.read_text()
-    start = text.index("## Merging through the merge queue")
-    end = text.find("\n## ", start + 1)
-    return text[start:] if end < 0 else text[start:end]
-
-
-def _ruleset_body() -> dict:
-    """The JSON body of the section's PUT."""
-    section = _section()
-    repo = placeholders.GITHUB_REPOSITORY
-    lookup = section.index(
-        f"RULESET_ID=\"$(gh api repos/{repo}/rulesets"
-        f" --jq '.[] | select(.name==\"{RULESET_NAME}\") | .id')\""
-    )
-    put = section.index(f'gh api -X PUT repos/{repo}/rulesets/"$RULESET_ID"', lookup)
-    start = section.index("<<'JSON'\n", put) + len("<<'JSON'\n")
-    end = section.index("\nJSON\n", start)
-    return json.loads(section[start:end])
-
-
-def test_docs_say_why_with_the_incident():
-    section = " ".join(_section().split())
-    for fact in ("2026-10-06", "two pull requests were each green on their own base and merged nine seconds apart",
-                 "strict"):
-        assert fact in section, fact
-
-
-def test_docs_say_why_with_the_wait_it_removes():
-    """Owner decision 2026-10-08 (observer proposal G): the strict policy's
-    serial update-branch and re-run is what the queue replaces."""
-    section = _section()
-    for fact in ("2026-10-08", "p50 75 min", "p90 8.5 h", "update-branch",
-                 "Only merge non-failing pull requests", "status check"):
-        assert fact in section, fact
-
-
-def test_docs_say_the_queue_is_refused_on_a_user_owned_repository():
-    """The 2026-10-07 attempt was refused with HTTP 422: an operator must not
-    read the command below as one that will work here as things stand."""
-    section = _section()
-    assert "Invalid rule 'merge_queue'" in section
-    assert "owned by an organization" in section
-
-
-def test_the_put_turns_strict_off_and_the_rollback_turns_it_back_on():
-    """With strict on, every pull request still needs an update-branch and its
-    own CI run before it can join the queue -- the wait the queue removes.
-    Rolling back must restore strict, or main has neither protection.
-    MUTATION: leave `strict_required_status_checks_policy: true` in the PUT."""
-    (checks,) = [r for r in _ruleset_body()["rules"] if r["type"] == "required_status_checks"]
-    assert checks["parameters"]["strict_required_status_checks_policy"] is False
-    rollback = _section().split("### Rolling back", 1)[1]
-    assert "`strict_required_status_checks_policy` back to `true`" in rollback
-
-
-def test_docs_carry_the_exact_merge_queue_rule():
-    rules = _ruleset_body()["rules"]
-    (queue,) = [r for r in rules if r.get("type") == "merge_queue"]
-    assert queue["parameters"] == QUEUE_PARAMETERS, queue
-
-
-def test_the_put_keeps_every_rule_the_ruleset_has_today():
-    """The PUT replaces the ruleset whole: a rule it leaves out is deleted."""
-    body = _ruleset_body()
-    assert body["name"] == RULESET_NAME
-    types = [r["type"] for r in body["rules"]]
-    assert types == ["deletion", "non_fast_forward", "pull_request", "required_status_checks",
-                     "merge_queue"], types
-    (checks,) = [r for r in body["rules"] if r["type"] == "required_status_checks"]
-    contexts = [c["context"] for c in checks["parameters"]["required_status_checks"]]
-    assert contexts == list(REQUIRED_CONTEXTS), contexts
-
-
-def test_docs_say_how_to_roll_back():
-    section = _section().lower()
-    assert "roll back" in section or "rolling back" in section
-    # Rolling back is the same PUT without the merge_queue rule: the ci-gate
-    # section's body, which is this one's minus that rule.
-    assert "without the `merge_queue` rule" in section

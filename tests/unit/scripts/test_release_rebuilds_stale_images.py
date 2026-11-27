@@ -214,16 +214,6 @@ def test_a_record_ci_built_whole_needs_no_history(box):
     assert "Incremental build" not in proc.stderr
 
 
-def test_the_release_images_stage_has_uv_for_the_check():
-    """A digest CI kept across a uv.lock change is checked by its own `uv
-    export`; without uv the release would rebuild it."""
-    action = (Path(__file__).resolve().parents[3] / ".github" / "actions" / "release-images" / "action.yml").read_text()
-    uv = action.find("astral-sh/setup-uv@")
-    build = action.find("./scripts/build-images.sh --reuse-ci")
-    assert 0 <= uv < build, "release-images installs no uv before build-images.sh --reuse-ci"
-
-
-
 def test_a_one_commit_checkout_fetches_the_history_it_checks_against(box):
     """release.yml checks out one commit. The check fetches the rest, and so
     builds the stale image alone rather than every image."""

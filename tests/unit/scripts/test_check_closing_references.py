@@ -24,7 +24,9 @@ These tests RUN it against a fake `gh`:
   listed by GitHub: exit 2 and the refusal comment on stdout;
 * an unreadable answer or a failed read: non-zero and not 2 -- fail closed.
 
-The workflow wiring is held at the bottom. Nothing here touches the network.
+At the bottom, auto-merge.yml's own `gate` shell (from
+scripts/generated/ci-run-blocks.json) is run with a refusal handed in.
+Nothing here touches the network.
 """
 
 from __future__ import annotations
@@ -39,6 +41,8 @@ from pathlib import Path
 
 import pytest
 import yaml
+
+from .ci_run_blocks import run_block
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "check-closing-references.sh"
@@ -502,11 +506,16 @@ def test_the_gate_refuses_on_the_checks_finding(enable: dict):
     assert "CLOSING_REFUSAL" in gate["run"]
 
 
+# ---------------------------------------------------------------------------
+# auto-merge.yml's gate shell refuses on the check's finding
+# ---------------------------------------------------------------------------
+
+
 @pytest.fixture
-def run_gate_with_refusal(enable: dict, tmp_path: Path):
+def run_gate_with_refusal(tmp_path: Path):
     """The gate's own shell with a refusal handed in, against a fake gh that
     records the label removal and the comment."""
-    script = next(s for s in enable["steps"] if s.get("id") == "gate")["run"]
+    script = run_block("auto-merge.yml", "enable", "gate")
     # Its own directory, so a test can run the check (`run_check`) beside it.
     tmp_path = tmp_path / "gate"
     tmp_path.mkdir()

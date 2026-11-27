@@ -25,16 +25,13 @@ default of 8 and `test_the_sized_fields_default_to_none` fails.
 from __future__ import annotations
 
 import dataclasses
-import re
 from datetime import datetime, timezone
-from pathlib import Path
 
 import pytest
 
 from swarm_common.models import Attempt, Task
 from swarm_common.specsign import canonical_step_spec
 
-REQUESTS = Path(__file__).resolve().parents[3] / "docs" / "contract-change-requests.md"
 
 SIZED = (
     "size_version",
@@ -175,12 +172,3 @@ def test_the_sized_fields_are_outside_the_signed_step_spec():
     assert canonical_step_spec(carrying, task_id="task_1") == signed
     for name in SIZED:
         assert name.encode() not in signed
-
-
-def test_request_rs_4_is_filed_as_entry_111():
-    text = REQUESTS.read_text(encoding="utf-8")
-    rows = [line for line in text.splitlines() if line.startswith("| 111 |")]
-    assert len(rows) == 1, rows
-    assert "SIZES-CONTRACT-2" in rows[0] and "RS-4" in rows[0]
-    assert "APPLIED" in rows[0]
-    assert re.search(r"^## 111\. .*\(SIZES-CONTRACT-2, runner sizes request RS-4, part of #1689\)$", text, re.M)

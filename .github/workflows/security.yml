@@ -32,8 +32,8 @@ on:
   # "Merging through the merge queue"). Four of the ruleset's required
   # checks are this workflow's, and a queue entry waits for them on its own
   # `gh-readonly-queue/main/...` ref: without this trigger they never report
-  # there and the queue drops every entry at its timeout. No filter, ever
-  # (tests/unit/scripts/test_merge_queue_workflows.py). While the queue is off
+  # there and the queue drops every entry at its timeout. No filter, ever.
+  # While the queue is off
   # GitHub never raises this event, so nothing else changes.
   merge_group:
     types: [checks_requested]
@@ -63,8 +63,8 @@ env:
 # (id-token) runs on the self-hosted runner pool's VMs through the one guarded
 # `runs-on` expression: a fork's pull request, or the repo variable
 # SELF_HOSTED_CI set to `off` (the capacity escape hatch), sends it to
-# GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted is listed,
-# with why, in tests/unit/scripts/test_fork_prs_off_self_hosted.py.
+# GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted says why in
+# its own comment.
 jobs:
   filesystem:
     # NOT FOLDED, on purpose (owner decision 2026-10-21 on PR 1813): this is

@@ -47,8 +47,6 @@ from .test_dispatch_manifests import NOW, make_lease, make_task
 
 REPO = Path(__file__).resolve().parents[3]
 DEV_TFVARS = REPO / "terraform" / "environments" / "dev" / "dev.tfvars.example"
-RUNBOOK = REPO / "docs" / "runbooks" / "typesafe-forwarder.md"
-
 LABEL = ("swarm-typesafe", "inject")
 SWITCH = (typesafe_shim.SWITCH_ENV, typesafe_shim.SWITCH_ON)
 
@@ -225,13 +223,3 @@ def test_everyone_else_is_left_as_they_were(dev_settings, attempt, tenant_id, ba
     template = _pod(dev_settings, tenant_id, backend=backend, **attempt)
     assert LABEL[0] not in template["metadata"]["labels"]
     assert SWITCH[0] not in _worker_environ(template)
-
-
-def test_the_runbook_shows_one_engineering_call_through_the_forwarder():
-    """The deployed probe: the forwarder's own `typesafe_forwarded` line for
-    tenant eng, read from swarm-system, and the pod's label beside it."""
-    text = RUNBOOK.read_text(encoding="utf-8")
-    assert "typesafe_forwarded" in text
-    assert '"tenant_id": "eng"' in text
-    assert "deployment/swarm-typesafe-fwd" in text
-    assert "swarm-typesafe=inject" in text

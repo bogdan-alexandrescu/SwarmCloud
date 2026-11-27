@@ -10,8 +10,7 @@ taken first). What is held here:
     worker or a pod would read, and admits an empty `runner_argv`;
   * the `await-input` entry is `control_plane`, and Terraform makes no Job for
     it; it shipped unavailable, and is available since request D (entry 105,
-    HW-ENABLE, applied after HW-ACCEPT);
-  * the requests are filed in docs/contract-change-requests.md.
+    HW-ENABLE, applied after HW-ACCEPT).
 
 MUTATION: drop `"provider"` from the control_plane checks in `__post_init__`
 and `test_a_control_plane_profile_refuses_what_only_a_runner_reads[provider]`
@@ -49,7 +48,6 @@ from swarm_common.states import (
 
 REPO = Path(__file__).resolve().parents[3]
 LOCALS_TF = REPO / "terraform" / "infra" / "locals.tf"
-REQUESTS = REPO / "docs" / "contract-change-requests.md"
 
 
 # --------------------------------------------------------------------------
@@ -190,33 +188,3 @@ def test_terraform_mirrors_await_input():
     assert re.search(r'backend\s*=\s*"CLOUD_RUN_JOB"', body)
     assert re.search(r"provider\s*=\s*null", body)
     assert re.search(r"timeout_seconds\s*=\s*300\b", body)
-
-
-# --------------------------------------------------------------------------
-# The record
-# --------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "number,request_letter",
-    [("92", "human steps request A"), ("93", "human steps request B"),
-     ("94", "human steps request C")],
-)
-def test_the_requests_are_filed_as_accepted_and_applied(number, request_letter):
-    text = REQUESTS.read_text(encoding="utf-8")
-    rows = [line for line in text.splitlines() if line.startswith(f"| {number} |")]
-    assert len(rows) == 1, rows
-    assert "HW-CONTRACT" in rows[0] and request_letter in rows[0]
-    assert "ACCEPTED by the owner 2026-10-17" in rows[0] and "APPLIED" in rows[0]
-    assert re.search(rf"^## {number}\. .*\(HW-CONTRACT, {request_letter}\)$", text, re.M)
-
-
-def test_request_d_is_filed_as_entry_105():
-    """The change `test_await_input_is_available_since_request_d` holds has its
-    entry, under the design's §5 letter (CLAUDE.md rule 1)."""
-    text = REQUESTS.read_text(encoding="utf-8")
-    rows = [line for line in text.splitlines() if line.startswith("| 105 |")]
-    assert len(rows) == 1, rows
-    assert "HW-ENABLE" in rows[0] and "human steps request D" in rows[0]
-    assert re.search(r"^## 105\. .*\(HW-ENABLE, human steps request D\)$", text, re.M)
-

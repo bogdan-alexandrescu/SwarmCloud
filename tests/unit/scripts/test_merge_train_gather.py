@@ -37,7 +37,6 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "merge-train.sh"
-RUNBOOK = REPO / "docs" / "runbooks" / "merge-train.md"
 GATHER_FILE = REPO / "apps" / "swarm-api" / "swarm_api" / "merge_train_gather.json"
 GH_REPO = "example-org/example-repo"
 
@@ -367,14 +366,6 @@ def test_the_judge_needs_no_shared_file(tmp_path):
                           capture_output=True, text=True, timeout=60, check=False, env=env)
     assert "merge_train_gather.json" not in proc.stderr, proc.stderr
     assert proc.returncode == 0, proc.stderr
-
-
-def test_the_runbook_names_both_settings_and_how_to_change_them():
-    text = RUNBOOK.read_text()
-    for knob in ("MERGE_TRAIN_MIN_PRS", "MERGE_TRAIN_MAX_WAIT_MINUTES"):
-        assert knob in text
-    assert "gh variable set MERGE_TRAIN_MIN_PRS" in text
-    assert "gh variable set MERGE_TRAIN_MAX_WAIT_MINUTES" in text
 
 
 def test_a_train_holds_at_most_forty_by_default():

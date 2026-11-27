@@ -15,9 +15,7 @@ image. These hold that:
   * the Terraform mirror and the model table carry it as they carry
     claude-code (tests/terraform/catalogue.tftest.hcl compares the rest);
   * it runs the claude_code runner, so the worker and the API name its agent
-    streams as claude-code's;
-  * request 48 records the acceptance with the phrase
-    scripts/lib/check-frozen-contract.sh looks for.
+    streams as claude-code's.
 """
 
 from __future__ import annotations
@@ -33,7 +31,6 @@ from swarm_api.schemas import TaskCreate
 
 REPO = Path(__file__).resolve().parents[3]
 LOCALS = REPO / "terraform" / "infra" / "locals.tf"
-REQUESTS = REPO / "docs" / "contract-change-requests.md"
 SHA = "b" * 40
 
 
@@ -122,14 +119,3 @@ def test_the_indexer_writes_claude_codes_agent_streams():
 
     assert cli_agent_spec("indexer") is cli_agent_spec("claude-code")
     assert AGENT_STREAM_FILES["indexer"] == AGENT_STREAM_FILES["claude-code"]
-
-
-def test_request_48_records_the_owners_acceptance():
-    text = REQUESTS.read_text(encoding="utf-8")
-    start = text.index("## 48. ")
-    end = text.find("\n## 49. ", start)
-    section = text[start:end if end != -1 else len(text)]
-    # check-frozen-contract.sh passes a diff under apps/common/swarm_common/
-    # only beside an added line holding exactly this phrase (grep -iF).
-    assert "accepted by the owner" in section.lower()
-    assert "**Status:** open" not in section

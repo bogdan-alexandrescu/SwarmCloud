@@ -6,16 +6,13 @@
 # observer proposal H; docs/ci.md, "Hotfix releases"). One copy, so the lanes
 # cannot drift. Each caller's JOB keeps its permissions, its checkout and
 # Google authentication, its `needs:` and its `if:` -- every gate stays in the
-# workflow file, where tests/unit/scripts/test_release_prod_gate.py reads it
-# with this action's steps inlined (test_release_reuses_ci_images.py,
-# `_workflow`).
+# workflow file.
 #
 # WHY A COMPOSITE ACTION AND NOT A REUSABLE WORKFLOW. The deployer trusts
 # workflow FILES, by `job_workflow_ref` (terraform/bootstrap/wif.tf, archived issue 457), and
 # for a reusable workflow that names the CALLED file -- which would have to be
 # pinned and callable at once, so any workflow on main that grants id-token
-# could call it and mint the deployer
-# (test_workflow_id_token_scope.py::test_no_deployer_pinned_workflow_is_callable).
+# could call it and mint the deployer.
 # A composite action runs inside the caller's job, so the token still names
 # release.yml or hotfix.yml.
 #
@@ -180,10 +177,8 @@ runs:
       # Written BEFORE the approval, so a prod reviewer can read it on the
       # run's summary page while the run waits.
       #
-      # The prose below never names the apply by its command: the gate test
-      # (test_release_prod_gate.py) reads every `run:` as text and errs
-      # toward calling a step prod-facing, so an echoed "terraform apply"
-      # made this pre-approval step count as an apply.
+      # The prose below never names the apply by its command: this step runs
+      # before the approval and applies nothing.
       env:
         LANE: ${{ inputs.lane }}
       shell: bash

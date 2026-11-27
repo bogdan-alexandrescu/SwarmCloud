@@ -579,15 +579,6 @@ def test_tick_limit_none_means_every_request_and_the_default_is_the_per_tick_cap
 # --------------------------------------------------------------------------
 
 
-def test_the_docs_copy_of_the_agent_guide_is_the_one_the_worker_writes():
-    from pathlib import Path
-
-    doc = (Path(__file__).resolve().parents[3] / "docs" / "child-tasks-for-agents.md").read_text()
-    assert doc.endswith(children_mod.AGENT_GUIDE), (
-        "docs/child-tasks-for-agents.md must end with agent_worker.children.AGENT_GUIDE, verbatim"
-    )
-
-
 def test_the_guide_states_the_formats_the_worker_reads_and_writes():
     guide = children_mod.AGENT_GUIDE
     for field in sorted(children_mod.CHILD_FIELDS):

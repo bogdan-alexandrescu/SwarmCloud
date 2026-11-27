@@ -9,26 +9,15 @@ once. release.yml waited 2700 s for its own commit's `build images` job, which
 had not reached a runner, and every release timed out: 34 merges were waiting
 to deploy.
 
-So now:
+So a newer push cancels main's older application run, and a release whose
+commit main has moved past ends GREEN, superseded, and promotes nothing --
+asked before it waits for its images, and again after, when the newer push
+has cancelled its commit's build. Any other failure stays red.
 
-  * application.yml puts every run on main in ONE group with
-    cancel-in-progress, so a newer push cancels an older run that has not
-    finished. Main is linear: the cancelled commit's change is in the newer
-    commit's build, and it was tested on its pull request.
-  * release.yml runs on EVERY push to main. The path filter it had is what
-    stranded a release on 2026-09-24: a docs-only push cancelled the previous
-    commit's build and started no release of its own.
-  * a release whose commit main has moved past ends GREEN, superseded, and
-    promotes nothing -- asked before it waits for its images, and again after,
-    when the newer push has cancelled its commit's build. Any other failure
-    stays red.
-  * a pending release is replaced by the next (GitHub keeps one pending run
-    per group); a running one is never cancelled, because past `approval` it
-    may be promoting, applying or deploying.
-
-The two decision steps are run here, as written in release.yml, against a
-fake `gh`. WHAT THIS CANNOT PROVE: that GitHub's compare API says `ahead` for
-a commit main has moved past, or lists a run cancelled by concurrency as
+The two decision steps (`newest` and `after`) are run here, as published from
+release.yml in scripts/generated/ci-run-blocks.json, against a fake `gh`.
+WHAT THIS CANNOT PROVE: that GitHub's compare API says `ahead` for a commit
+main has moved past, or lists a run cancelled by concurrency as
 `cancelled` with its build job `cancelled` or absent -- that is GitHub's
 documented behaviour, read once against the live API by the first burst of
 merges after this lands.
@@ -44,54 +33,17 @@ from pathlib import Path
 
 import pytest
 
+from .ci_run_blocks import run_block
 from .test_ci_built_images import gating_job_names
 from .test_release_reuses_ci_images import _evaluate, _load_workflow, _render
 
 REPO_NAME = "owner/repo"
 SHA = "a" * 40
-NEWER = "b" * 40
 RUN_ID = 4242
 
 COMPARE = f"repos/{REPO_NAME}/compare/{SHA}...main"
 APP_RUNS = f"repos/{REPO_NAME}/actions/workflows/application.yml/runs?head_sha={SHA}&branch=main&event=push&per_page=1"
 APP_JOBS = f"repos/{REPO_NAME}/actions/runs/{RUN_ID}/jobs?per_page=100"
-
-
-def _build_steps() -> dict[str, dict]:
-    steps = _load_workflow("release.yml")["jobs"]["build"]["steps"]
-    return {s["id"]: s for s in steps if "id" in s}
-
-
-# ---------------------------------------------------------------------------
-# application.yml: one group for main, and the newest run wins
-
-
-def test_every_run_on_main_shares_one_group_and_a_newer_push_cancels_the_older():
-    """MUTATION: put main back on a per-commit group, or turn
-    cancel-in-progress off on main -- the 2026-10-26 stall."""
-    concurrency = _load_workflow("application.yml")["concurrency"]
-
-    def group(ref: str, sha: str) -> str:
-        return _render(concurrency["group"], **{"github.ref": ref, "github.sha": sha})
-
-    main_a = group("refs/heads/main", SHA)
-    assert main_a == group("refs/heads/main", NEWER), (
-        f"main's commits land in different groups ({main_a!r}): no push to main supersedes "
-        "an older run, and a burst of merges queues one full run per commit"
-    )
-    assert _evaluate(concurrency["cancel-in-progress"], **{"github.ref": "refs/heads/main"}) is True, (
-        "a newer push to main does not cancel the run in progress, so the queue still grows by one run per merge"
-    )
-    # Pull requests keep their own group, and a newer push still supersedes.
-    pr = group("refs/pull/7/merge", SHA)
-    assert pr == group("refs/pull/7/merge", NEWER)
-    assert pr != group("refs/pull/8/merge", SHA), "two pull requests share one group"
-    assert pr != main_a, "a pull request's push can cancel main's run"
-    assert _evaluate(concurrency["cancel-in-progress"], **{"github.ref": "refs/pull/7/merge"}) is True
-
-
-# ---------------------------------------------------------------------------
-# release.yml: on every push, one pending at a time, never cancelled running
 
 
 def test_the_release_starts_on_every_push_to_main():
@@ -140,30 +92,6 @@ def test_a_superseded_release_approves_and_promotes_nothing(job_id):
     assert _evaluate(condition, **_push_context("true")) is False, f"{job_id} runs for a release a newer commit superseded"
 
 
-def test_the_decision_steps_run_on_a_push_and_a_dispatch_is_untouched():
-    """A dispatch ships main's head by construction and fails as it always
-    did. MUTATION: let `continue-on-error` hold on a dispatch, or run the
-    decision steps there."""
-    job = _load_workflow("release.yml")["jobs"]["build"]
-    steps = _build_steps()
-    ids = [s.get("id") for s in job["steps"]]
-    assert ids.index("newest") < ids.index("stage") < ids.index("after"), ids
-    for event, expected in (("push", True), ("workflow_dispatch", False)):
-        ctx = {"github.event_name": event}
-        assert _evaluate(steps["newest"]["if"], **ctx) is expected
-        assert _evaluate(steps["stage"]["continue-on-error"], **ctx) is expected
-        assert _evaluate(steps["after"]["if"], **{**ctx, "steps.newest.outputs.superseded": "false"}) is expected
-    # Superseded before the wait: nothing authenticates, nothing waits.
-    for step_id in ("auth", "stage"):
-        assert _evaluate(steps[step_id]["if"], **{"steps.newest.outputs.superseded": "true"}) is False, step_id
-        assert _evaluate(steps[step_id]["if"], **{"steps.newest.outputs.superseded": "false"}) is True, step_id
-    assert _evaluate(steps["after"]["if"], **{"github.event_name": "push", "steps.newest.outputs.superseded": "true"}) is False
-    output = job["outputs"]["superseded"]
-    for newest, after, expected in (("true", "", "True"), ("false", "true", "True"), ("false", "false", "False"), ("", "", "False")):
-        got = _render(output, **{"steps.newest.outputs.superseded": newest, "steps.after.outputs.superseded": after})
-        assert got == expected, (newest, after, got)
-
-
 # ---------------------------------------------------------------------------
 # The two steps, run against a fake gh
 
@@ -207,7 +135,7 @@ def _run_step(tmp_path: Path, step_id: str, responses: dict, *, stage: str = "")
         "FAKE_GH_LOG": str(log),
     }
     proc = subprocess.run(
-        ["bash", "-c", _build_steps()[step_id]["run"]], env=env, capture_output=True, text=True, timeout=60
+        ["bash", "-c", run_block("release.yml", "build", step_id)], env=env, capture_output=True, text=True, timeout=60
     )
     outputs = dict(line.split("=", 1) for line in output.read_text().splitlines() if "=" in line)
     return proc, outputs, summary.read_text(), log.read_text().splitlines()

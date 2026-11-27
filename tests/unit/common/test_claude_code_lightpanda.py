@@ -16,10 +16,7 @@ real pages at a tenth of the memory. What is held here:
     catalogue's default checkpoint interval (invariant 8);
   * its rendered GKE pod has memory and ephemeral storage `requests ==
     limits`, and CPU request <= limit <= CPU_BURST_MAX_RATIO x request
-    (invariant 7);
-  * docs/contract-change-requests.md records request 127 as applied, on a
-    line carrying "accepted by the owner", which is what
-    scripts/lib/check-frozen-contract.sh admits a `swarm_common` change on.
+    (invariant 7).
 
 No cloud, no emulator: the catalogue is pure, and the manifest is rendered by
 the scheduler's dispatcher with a stand-in batch API it never calls.
@@ -53,8 +50,6 @@ from swarm_common.profiles import (  # noqa: E402
 
 from scheduler.dispatch import GkeJobDispatcher, GkeTarget  # noqa: E402
 
-REPO = Path(__file__).resolve().parents[3]
-REQUESTS = REPO / "docs" / "contract-change-requests.md"
 
 NAME = "claude-code-lightpanda"
 IMAGE = "agent-runtime-lightpanda"
@@ -175,15 +170,3 @@ def test_its_gke_pod_holds_invariant_7_in_one_container(tenant):
     # check is what tells the two apart, and this pins the standard size.
     assert worker["resources"]["requests"]["memory"] == f"{RESOURCE_CLASSES['standard'].memory_gib}Gi"
     assert worker["image"].rsplit("/", 1)[-1].split("@")[0].split(":")[0] == IMAGE
-
-
-def test_request_127_is_recorded_as_applied_with_the_owners_acceptance():
-    text = REQUESTS.read_text(encoding="utf-8")
-    (row,) = [line for line in text.splitlines() if line.startswith("| 127 |")]
-    # MUTATION: leave row 127 reading "open" and the index says the catalogue
-    # lacks a profile it has.
-    assert "APPLIED" in row
-    assert not row.rstrip().endswith("| open |")
-    # MUTATION: drop "accepted by the owner" from the row and
-    # check-frozen-contract.sh refuses this pull request's swarm_common diff.
-    assert "accepted by the owner" in row.lower()

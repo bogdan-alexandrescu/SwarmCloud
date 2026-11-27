@@ -1,14 +1,12 @@
-"""Release blockers are caught before the merge (C3), the measured download
-flakes retry (PR 1281's table), and ruff runs in CI (owner decisions
-2026-10-14; docs/ci.md "A pull request scans the images it builds").
+"""Release blockers are caught before the merge (C3), and the measured download
+flakes retry (PR 1281's table; owner decisions 2026-10-14).
 
-  * a pull request's `build changed images without pushing` scans every image
-    it builds with the release's own policy, at the release's trivy pin, and a
-    finding fails the build;
-  * it checks the tool mirror's manifest against the Dockerfiles' pins and
-    names every object a merge would need uploaded first;
-  * the three downloads that failed runs retry, bounded;
-  * `ruff check` is a job of application.yml.
+  * a local build scans every image it builds with the release's own policy,
+    and a finding fails the build;
+  * the pull request's mirror check names every object a merge would need
+    uploaded first (the step's own shell, read through `ci_run_blocks`), and
+    `refresh-build-mirror.sh --tools-only` uploads only checked files;
+  * the downloads the Dockerfiles make retry, bounded.
 """
 
 from __future__ import annotations
@@ -23,9 +21,10 @@ from pathlib import Path
 import pytest
 import yaml
 
-from .ci_fold_layout import check_steps
+from .ci_run_blocks import run_block
 from .test_build_images_local import _builds, _local, _value
 from .test_build_mirror import _refresh
+from .test_ci_fold import check_steps
 from .test_fast_checks_on_lane_prs import without_lane_clause
 
 REPO = Path(__file__).resolve().parents[3]
@@ -40,11 +39,6 @@ def _jobs() -> dict:
     return yaml.safe_load(APPLICATION.read_text())["jobs"]
 
 
-def _step(job: str, name: str) -> dict:
-    (step,) = [s for s in _jobs()[job]["steps"] if s.get("name") == name]
-    return step
-
-
 # --------------------------------------------------------------------------
 # The scan.
 # --------------------------------------------------------------------------
@@ -54,9 +48,7 @@ def test_the_pull_request_scans_at_the_releases_trivy_pin():
     assert _jobs()["build-check"]["env"]["TRIVY_VERSION"] == release_pin
 
 
-def test_the_build_step_scans_with_the_shared_policy():
-    env = _step("build-check", "build with docker buildx, pushing nothing")["env"]
-    assert env["BUILD_ONLY_SCAN"] == "scripts/scan-image-layout.sh", env
+def test_both_scans_read_the_shared_policy():
     assert SCAN.exists() and os.access(SCAN, os.X_OK)
     # One policy: both scans read lib/image-scan.sh, neither restates its flags.
     for script in (SCAN, REPO / "scripts" / "push-images.sh"):
@@ -211,18 +203,10 @@ def test_without_the_scan_nothing_is_exported(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------
 # The tool mirror.
 # --------------------------------------------------------------------------
-def test_the_mirror_step_runs_the_consistency_check_that_exists():
-    run = _step("build-check", "the tool mirror holds what this pull request pins")["run"]
-    (node,) = re.findall(r"tests/unit/scripts/(test_\w+\.py)::(\w+)", run)
-    path = REPO / "tests" / "unit" / "scripts" / node[0]
-    assert f"def {node[1]}(" in path.read_text(), node
-    assert "tool-mirror.sha256" in run and "refresh-build-mirror.sh --tools-only" in run, run
-
-
 def test_the_mirror_step_names_every_added_row(tmp_path):
     """The diff-reading line of the step, run over a fixture diff: an added row
     is named, a removed or unchanged one is not."""
-    run = _step("build-check", "the tool mirror holds what this pull request pins")["run"]
+    run = run_block("application.yml", "build-check", "the tool mirror holds what this pull request pins")
     (sed,) = [line.strip() for line in run.splitlines() if line.strip().startswith("| sed -nE")]
     sed = sed[1:].strip().split(" > ")[0]
     diff = "\n".join([
@@ -240,12 +224,6 @@ def test_the_mirror_step_names_every_added_row(tmp_path):
 # --------------------------------------------------------------------------
 # The download flakes.
 # --------------------------------------------------------------------------
-def test_the_emulator_download_retries_bounded():
-    run = _step("integration", "install the emulator")["run"]
-    assert "for attempt in 1 2 3 4" in run and "sleep" in run, run
-    assert run.count("gcloud components install cloud-firestore-emulator") == 1, run
-
-
 def test_every_image_download_retries_on_an_http_error():
     """curl's exit 22 (an HTTP error) is retried only with --retry-all-errors.
     MUTATION: drop it from any `curl -fsSL` in a Dockerfile."""

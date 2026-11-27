@@ -24,11 +24,19 @@
 #     repo-relative path or its basename. A basename in GENERIC_BASENAMES
 #     (`__init__.py`, `package.json`, ...) selects by full path only: by name
 #     alone it would select half the suite;
-#   * every tests/unit/**/test_*.py whose text names a docs/**/*.md that cites
-#     a changed non-doc path by its FULL path, one level deep (archived issue 2299): a test
-#     that resolves a doc's citation names only the doc;
+#   (no doc citing a changed path is followed to its readers: no test reads
+#   docs, docs/ci.md#a-test-reads-only-its-own-tree);
 # then runs them in ONE `pytest -q -n auto -p no:warnings` call, followed by
 # scripts/lib/check-contract-parity.sh. An empty diff runs nothing.
+#
+# A change to a workflow or composite action (.github/**.yml), to
+# scripts/gen_ci_run_blocks.py or to the JSON it writes also runs
+# `scripts/gen_ci_run_blocks.py --check` (RUN-BLOCKS, issue 71): tests execute
+# workflow shell from scripts/generated/ci-run-blocks.json, never from
+# .github/, so a run block edited without regenerating is caught here, as a
+# command and not a pytest test (a test regenerating from .github/ would read
+# CI YAML). Part 1 only, like the parity check; with --only it runs when the
+# list names its line, `python scripts/gen_ci_run_blocks.py --check`.
 #
 # A change to a swarm-ui stylesheet (apps/swarm-ui/**.css) also runs the UI's
 # stylesheet guards in one vitest call (RELATED-CSS-GUARDS, part of archived issue 1914).
@@ -124,27 +132,97 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # kubernetes/, the same defect class one directory over (a new .tf, .yaml or
 # .sh breaks them and names none), each under 5 CI-seconds, about 11 s
 # together (CI-GUARDS-MORE, part of archived issue 1822). After test_swarm_verify_image_
-# helpers: the walkers of .github/ and images/ -- every workflow, every
-# Dockerfile, or every file of one image directory -- each under 5
-# CI-seconds, about 12 s together (CI-GUARDS-DOCS, part of archived issue 1822). After
-# test_repo_index_extract: three more of those walkers, test_auto_merge_base_
-# merge (2.6 s), test_issue_forms (0.6 s) and test_verify_deployer_trust
-# (4.0 s), +7.2 CI-seconds a pull request; they also read CLAUDE.md or
-# docs/runbooks/merge-app.md by name, so a docs-only diff of those selects
-# them as readers (CI-GUARDS-THREE, part of archived issue 1822). After
+# helpers: the walkers of images/ -- every Dockerfile, or every file of one
+# image directory -- and the tests that run a published CI run block, each
+# under 5 CI-seconds (CI-GUARDS-DOCS, part of archived issue 1822). After
+# test_repo_index_extract: more of those walkers, test_auto_merge_base_
+# merge (2.6 s) and test_verify_deployer_trust (4.0 s), +6.6 CI-seconds a
+# pull request (the issue-forms walker was a third until issue 71 deleted
+# it) (CI-GUARDS-THREE, part of archived issue 1822). After
 # test_verify_deployer_trust: test_check_test_pointers (about 2.5 s), which
 # refuses a comment under apps/ that names a test -- a new one names no test,
 # so only a whole-tree run reaches it (part of issue 69). After it:
-# test_check_source_text (about 10 s, most of it one read and parse of the
-# test trees), which refuses a malformed source-text marker on a test that
+# test_check_test_reads (about 8 s): no test under tests/ opens docs prose,
+# CI YAML, a root *.md or the Makefile -- a new read lands in a file no diff
+# names, so only a whole-tree run reaches it (part of issue 71). The scanner
+# has ONE named exception list, SECURITY_GUARDS in scripts/check_test_reads.py:
+# the tests that hold CI security decisions, kept by the owner's decision of
+# 2026-11-25 (the hotfix lane's gates and the merge workflows' token-scope and
+# script-injection tests added that day on the security review's
+# recommendation, and every test the issue 71 pull request deleted that holds
+# a workflow's permissions, secrets, triggers, gates, redaction or supply
+# chain, restored under one rule), which may read CI YAML only; a listed
+# file that is gone or reads nothing is red too. The listed files:
+#   tests/unit/scripts/test_fork_prs_off_self_hosted.py
+#   tests/unit/scripts/test_release_prod_gate.py
+#   tests/unit/scripts/test_release_dev_iam_gate.py
+#   tests/unit/scripts/test_release_id_token_scope.py
+#   tests/unit/scripts/test_repo_secrets_environment.py
+#   tests/unit/scripts/test_accept_tenant_isolation_job.py
+#   tests/unit/scripts/test_trivy_new_findings.py
+#   tests/unit/scripts/test_ci_early.py
+#   tests/unit/scripts/test_release_reuses_ci_images.py
+#   tests/unit/scripts/test_workflow_id_token_scope.py
+#   tests/unit/scripts/test_hotfix_release.py
+#   tests/unit/scripts/test_auto_merge_workflow.py
+#   tests/unit/scripts/test_auto_merge_ready_on_green.py
+#   tests/unit/scripts/test_auto_merge_base_merge.py
+#   tests/unit/scripts/test_merge_train.py
+#   tests/unit/scripts/test_acceptance_target.py
+#   tests/unit/scripts/test_ci_gate.py
+#   tests/unit/scripts/test_deployment_values_workflow.py
+#   tests/unit/scripts/test_coverage_workflow.py
+#   tests/unit/install/test_addons.py
+#   tests/unit/scripts/test_acceptance_roles.py
+#   tests/unit/scripts/test_build_images_incremental.py
+#   tests/unit/scripts/test_build_images_local.py
+#   tests/unit/scripts/test_build_images_pr_check.py
+#   tests/unit/scripts/test_check_action_pins.py
+#   tests/unit/scripts/test_check_closing_references.py
+#   tests/unit/scripts/test_check_pr_dependencies.py
+#   tests/unit/scripts/test_ci_built_images.py
+#   tests/unit/scripts/test_ci_fix.py
+#   tests/unit/scripts/test_ci_fold.py
+#   tests/unit/scripts/test_ci_once_per_head.py
+#   tests/unit/scripts/test_ci_reuse.py
+#   tests/unit/scripts/test_ci_select.py
+#   tests/unit/scripts/test_ci_tfvars_workflow.py
+#   tests/unit/scripts/test_ci_tool_versions.py
+#   tests/unit/scripts/test_egress_rollout.py
+#   tests/unit/scripts/test_fast_checks_on_lane_prs.py
+#   tests/unit/scripts/test_flaky_quarantine.py
+#   tests/unit/scripts/test_hotfix_superseded.py
+#   tests/unit/scripts/test_iam_refusal_probe.py
+#   tests/unit/scripts/test_image_streaming.py
+#   tests/unit/scripts/test_install_trivy.py
+#   tests/unit/scripts/test_issue_forms.py
+#   tests/unit/scripts/test_join_acceptance_probe.py
+#   tests/unit/scripts/test_merge_app_permissions_doc.py
+#   tests/unit/scripts/test_merge_queue_workflows.py
+#   tests/unit/scripts/test_live_relay_rollout.py
+#   tests/unit/scripts/test_plan_text_never_public.py
+#   tests/unit/scripts/test_plugin_tag.py
+#   tests/unit/scripts/test_pr_image_scan.py
+#   tests/unit/scripts/test_private_tfvars.py
+#   tests/unit/scripts/test_refresh_weights_workflow.py
+#   tests/unit/scripts/test_release_acceptance_job.py
+#   tests/unit/scripts/test_release_held_plan_workflow.py
+#   tests/unit/scripts/test_release_newest_only.py
+#   tests/unit/scripts/test_release_size_record.py
+#   tests/unit/scripts/test_runner_fallback_workflow.py
+#   tests/unit/scripts/test_unit_shards.py
+#   tests/unit/scripts/test_warm_jobs.py
+#   tests/unit/scripts/test_workflow_needs_result_status.py
+# Then test_check_source_text (about 10 s, most of it one read and parse of
+# the test trees), which refuses a malformed source-text marker on a test that
 # reads .py/.ts source as text and a hit of a forbidden-pattern rule in
 # scripts/source_text_rules/ -- either can sit in any file, so no diff
 # selects it (part of issue 73). Then the inventory
-# walkers the merge train ejected for (owner's improvement plan, 2026-11-23)
-# -- test_runbook_index (every docs/runbooks/*.md is linked from its README;
-# 0.1 s) and test_plugin_agents_ignore_chat (every plugin/agents/*.md is a
-# known kind; 1.0 s). A new runbook or agent breaks them and names neither,
-# so no diff selects them. test_agent_quality_inventory was a third until
+# walker the merge train ejected for (owner's improvement plan, 2026-11-23)
+# -- test_plugin_agents_ignore_chat (every plugin/agents/*.md is a known kind;
+# 1.0 s). A new agent breaks it and names it not, so no diff selects it.
+# test_runbook_index was a second until issue 71 deleted it: it pinned the
+# runbooks README's text. test_agent_quality_inventory was a third until
 # issue 74 deleted it: its subject was the agent-quality docs, not the product.
 # Last, tests/unit/install/test_manifest_complete.py: every Terraform resource,
 # environment variable reference, secret, image and Kubernetes object in the
@@ -188,19 +266,16 @@ GUARD_TESTS=(
   tests/unit/worker/test_checkpoint_retention.py
   tests/unit/worker/test_workspace_provisioner_scope.py
   tests/unit/scripts/test_swarm_verify_image_helpers.py
-  tests/unit/scripts/test_fork_prs_off_self_hosted.py
-  tests/unit/scripts/test_workflow_step_reachability.py
   tests/unit/scripts/test_image_streaming.py
   tests/unit/scripts/test_pr_image_scan.py
   tests/unit/scripts/test_ui_node_line.py
   tests/unit/worker/test_jev_browser_image.py
   tests/unit/worker/test_repo_index_extract.py
   tests/unit/scripts/test_auto_merge_base_merge.py
-  tests/unit/scripts/test_issue_forms.py
   tests/unit/scripts/test_verify_deployer_trust.py
   tests/unit/scripts/test_check_test_pointers.py
+  tests/unit/scripts/test_check_test_reads.py
   tests/unit/scripts/test_check_source_text.py
-  tests/unit/scripts/test_runbook_index.py
   tests/unit/mcp/test_plugin_agents_ignore_chat.py
   tests/unit/install/test_manifest_complete.py
 )
@@ -211,6 +286,9 @@ DOC_GUARD_TESTS=(
   tests/unit/scripts/test_docs_spec_amendments.py
 )
 PARITY_CHECK="scripts/lib/check-contract-parity.sh"
+# The run-block drift check (RUN-BLOCKS above) and the line --list prints for it.
+RUN_BLOCKS_CHECK="scripts/gen_ci_run_blocks.py"
+RUN_BLOCKS_LINE="python ${RUN_BLOCKS_CHECK} --check"
 # The stylesheet guards' list and the package they run in (see above).
 STYLESHEET_SELECTOR="scripts/lib/related_tests.py"
 UI_DIR="apps/swarm-ui"
@@ -352,6 +430,11 @@ if [[ "${docs_only}" -eq 1 ]]; then
   guards=("${DOC_GUARD_TESTS[@]}")
   run_parity=0
 fi
+# RUN-BLOCKS: a workflow, a composite action, the generator or its output.
+run_blocks=0
+if grep -qE '^(\.github/.*\.ya?ml|scripts/gen_ci_run_blocks\.py|scripts/generated/ci-run-blocks\.json)$' "${work}/changed"; then
+  run_blocks=1
+fi
 
 # One fixed-string pattern per full path, and one per distinctive basename.
 : >"${work}/patterns"
@@ -370,30 +453,6 @@ while IFS= read -r path; do
       fi ;;
   esac
 done <"${work}/changed"
-
-# A doc that cites a changed non-doc path by its full path counts as changed,
-# one level deep (archived issue 2299; select_unit_tests.py's doc_closure says why). A
-# changed doc cites nothing in, so a docs-only diff selects what it did.
-grep -vE '^docs/|\.md$' "${work}/changed" >"${work}/cited" || true
-: >"${work}/citing-docs"
-if [[ -s "${work}/cited" && -d "${REPO_ROOT}/docs" ]]; then
-  status=0
-  (cd "${REPO_ROOT}" && grep -rlF -f "${work}/cited" --include='*.md' \
-    --exclude-dir=node_modules --exclude-dir=.venv --exclude-dir=__pycache__ docs) \
-    >"${work}/citing-docs" || status=$?
-  if [[ "${status}" -gt 1 ]]; then
-    err "grep could not search docs/"
-    exit 2
-  fi
-fi
-while IFS= read -r doc; do
-  printf '%s\n' "${doc}" >>"${work}/patterns"
-  name="${doc##*/}"
-  case "${GENERIC_BASENAMES}" in
-    *" ${name} "*) ;;
-    *) printf '%s\n' "${name}" >>"${work}/patterns" ;;
-  esac
-done <"${work}/citing-docs"
 
 status=0
 (cd "${REPO_ROOT}" && grep -rlF -f "${work}/patterns" --include='test_*.py' tests/unit) \
@@ -421,6 +480,7 @@ if [[ -n "${only_from}" ]]; then
   grep -xF -f "${work}/only" "${work}/selected" >"${work}/kept" || true
   mv "${work}/kept" "${work}/selected"
   grep -qxF "bash ${PARITY_CHECK}" "${work}/only" || run_parity=0
+  grep -qxF "${RUN_BLOCKS_LINE}" "${work}/only" || run_blocks=0
 fi
 
 # The selection's weight in CI-seconds, and with --shard the part to run.
@@ -488,6 +548,9 @@ if [[ ${#style_guards[@]} -gt 0 ]]; then
 fi
 if [[ "${shard_k}" -le 1 && "${run_parity}" -eq 1 ]]; then
   printf 'bash %s\n' "${PARITY_CHECK}"
+fi
+if [[ "${shard_k}" -le 1 && "${run_blocks}" -eq 1 ]]; then
+  printf '%s\n' "${RUN_BLOCKS_LINE}"
 fi
 
 if [[ "${list_only}" -eq 1 ]]; then
@@ -659,6 +722,20 @@ if [[ "${shard_k}" -le 1 && "${run_parity}" -eq 1 ]]; then
   (cd "${REPO_ROOT}" && "${caller_only[@]}" ${deadline[@]+"${deadline[@]}"} bash "${PARITY_CHECK}") >"${log}.parity" 2>&1 \
     || parity_status=$?
 fi
+run_blocks_status=0
+if [[ "${shard_k}" -le 1 && "${run_blocks}" -eq 1 ]]; then
+  step "run blocks: ${RUN_BLOCKS_CHECK} --check"
+  (cd "${REPO_ROOT}" && "${caller_only[@]}" ${deadline[@]+"${deadline[@]}"} "${py[@]}" "${RUN_BLOCKS_CHECK}" --check) \
+    >"${log}.run-blocks" 2>&1 || run_blocks_status=$?
+  if [[ "${run_blocks_status}" -ne 0 ]]; then
+    tail -n 25 "${log}.run-blocks" | redact
+    if [[ "${run_blocks_status}" -eq 124 ]]; then
+      err "the run-block check ran past ${PARITY_SECONDS} s"
+    fi
+    err "the published run blocks are stale or unreadable (exit ${run_blocks_status}); full output: ${log}.run-blocks"
+    failed=1
+  fi
+fi
 if [[ "${parity_status}" -ne 0 ]]; then
   tail -n 25 "${log}.parity" | redact
   # The `ran past` line, as for pytest and vitest: the gate reads it as a stop
@@ -671,7 +748,8 @@ if [[ "${parity_status}" -ne 0 ]]; then
 fi
 
 if [[ "${failed}" -ne 0 ]]; then
-  if [[ "${pytest_status}" -eq 124 || "${vitest_status}" -eq 124 || "${parity_status}" -eq 124 ]]; then
+  if [[ "${pytest_status}" -eq 124 || "${vitest_status}" -eq 124 || "${parity_status}" -eq 124 \
+      || "${run_blocks_status}" -eq 124 ]]; then
     finish timed_out
   else
     finish failed
@@ -679,7 +757,10 @@ if [[ "${failed}" -ne 0 ]]; then
   exit 1
 fi
 finish passed
-rm -f "${log}" "${log}.vitest" "${log}.parity"
+rm -f "${log}" "${log}.vitest" "${log}.parity" "${log}.run-blocks"
+if [[ "${shard_k}" -le 1 && "${run_blocks}" -eq 1 ]]; then
+  ok "the published run blocks are current"
+fi
 if [[ ${#style_guards[@]} -gt 0 ]]; then
   ok "${#style_guards[@]} stylesheet guard(s) pass"
 fi

@@ -1,17 +1,15 @@
-"""The nightly coverage workflow (issue 64; owner decision 2026-11-23; docs/ci.md
-"Coverage floors"): coverage is measured once a day, OFF THE MERGE PATH.
+"""The nightly coverage report (issue 64; owner decision 2026-11-23; docs/ci.md
+"Coverage floors"): coverage is measured once a day, off the merge path.
 
-Held here: .github/workflows/coverage.yml never runs on a pull request, a
-push or a merge train, and nothing that gates a merge names it (ci-gate's
-needs, application.yml's jobs); it runs on main only; its permissions are
-explicit, `issues: write` in the one job that files; its third-party actions
-are pinned to the commits application.yml pins them to; two runs never
-overlap; the suites run with coverage on and the judge runs
-scripts/coverage-floors.sh. And scripts/coverage-report.sh, driven against a
-stand-in `gh`: a red night opens ONE issue (found by its marker, never a
-second) naming the packages and the commits since the last green run; a green
-night comments and closes it; a night with no floors files nothing and prints
-the `fill` command.
+Held here: scripts/coverage-report.sh, driven against a stand-in `gh`: a red
+night opens ONE issue (found by its marker, never a second) naming the
+packages and the commits since the last green run; a green night comments and
+closes it; a night with no floors files nothing and prints the `fill` command.
+
+THE TESTS THAT READ .github/ hold CI security decisions the owner kept on
+2026-11-25: that coverage.yml's permissions are explicit and only its report
+job writes. This file is on scripts/check_test_reads.py's SECURITY_GUARDS
+list for those tests alone (issue 71).
 """
 
 from __future__ import annotations
@@ -27,146 +25,9 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
-WORKFLOW = ROOT / ".github" / "workflows" / "coverage.yml"
-APPLICATION = ROOT / ".github" / "workflows" / "application.yml"
 REPORT = ROOT / "scripts" / "coverage-report.sh"
 MARKER = "<!-- swarm-coverage: nightly line coverage is under a floor -->"
 PIN = re.compile(r"^([\w.-]+/[\w.-]+)@([0-9a-f]{40})$")
-
-
-def _load(path: Path) -> dict:
-    return yaml.safe_load(path.read_text())
-
-
-def _on(doc: dict) -> dict:
-    # PyYAML reads the bare key `on` as the boolean True.
-    return doc.get("on", doc.get(True))
-
-
-def _uses(doc: dict) -> list[str]:
-    return [step["uses"] for job in doc["jobs"].values() for step in job.get("steps", []) if "uses" in step]
-
-
-# --- the workflow --------------------------------------------------------------
-
-
-def test_it_runs_on_a_schedule_and_by_hand_only():
-    """MUTATION: add pull_request, push, merge_group or workflow_run."""
-    triggers = _on(_load(WORKFLOW))
-    assert set(triggers) == {"schedule", "workflow_dispatch"}, sorted(triggers)
-    assert "pull_request" not in triggers and "pull_request_target" not in triggers
-    crons = [entry["cron"] for entry in triggers["schedule"]]
-    assert len(crons) == 1, crons
-    minute, hour, *rest = crons[0].split()
-    assert rest == ["*", "*", "*"], crons  # once a day
-    assert minute != "0", "the top of the hour is when GitHub's scheduler drops runs"
-
-
-def test_ci_gate_and_application_yml_do_not_name_it():
-    """It must never become required or slow a merge. MUTATION: add a coverage
-    job to application.yml or to ci-gate's needs."""
-    jobs = _load(APPLICATION)["jobs"]
-    assert not {"coverage", "judge", "report"} & set(jobs["ci-gate"]["needs"]), jobs["ci-gate"]["needs"]
-    text = APPLICATION.read_text()
-    assert "coverage" not in text.lower(), "application.yml mentions coverage: the merge path measures nothing"
-    ours = set(_load(WORKFLOW)["jobs"])
-    assert not ours & set(jobs["ci-gate"]["needs"]), ours
-
-
-def test_every_job_runs_on_main_only():
-    """A dispatch from another branch would close main's issue on its own
-    green. MUTATION: drop plan's `if:`, or a job that does not need plan."""
-    jobs = _load(WORKFLOW)["jobs"]
-    assert jobs["plan"]["if"] == "github.ref == 'refs/heads/main'", jobs["plan"].get("if")
-
-    def reaches_plan(name: str) -> bool:
-        needs = jobs[name].get("needs", [])
-        needs = [needs] if isinstance(needs, str) else needs
-        return "plan" in needs or any(reaches_plan(n) for n in needs)
-
-    for name in set(jobs) - {"plan"}:
-        assert reaches_plan(name), name
-
-
-def test_permissions_are_explicit_and_only_report_writes():
-    """MUTATION: write-all, a missing top-level block, or issues: write on a
-    job that runs the suites."""
-    doc = _load(WORKFLOW)
-    assert doc["permissions"] == {"contents": "read"}, doc.get("permissions")
-    writers = {name for name, job in doc["jobs"].items()
-               if any(v == "write" for v in (job.get("permissions") or {}).values())}
-    assert writers == {"report"}, writers
-    assert doc["jobs"]["report"]["permissions"] == {"contents": "read", "actions": "read", "issues": "write"}
-    for name, job in doc["jobs"].items():
-        assert "id-token" not in (job.get("permissions") or {}), name
-
-
-def test_two_runs_never_overlap():
-    """MUTATION: cancel-in-progress true, or a group per run."""
-    concurrency = _load(WORKFLOW)["concurrency"]
-    assert concurrency["cancel-in-progress"] is False, concurrency
-    assert "${{" not in concurrency["group"], concurrency
-
-
-def test_every_action_is_pinned_to_the_commit_the_other_workflows_pin():
-    """The SHAs application.yml pins; download-artifact, which application.yml
-    does not use, at publish-release.yml's. MUTATION: a tag, or a SHA other
-    than the one main already reviewed."""
-    main_pins: dict[str, set[str]] = {}
-    others = [p for p in sorted(WORKFLOW.parent.glob("*.yml")) if p != WORKFLOW]
-    for uses in (u for path in others for u in _uses(_load(path))):
-        match = PIN.match(uses.split("#")[0].strip())
-        if match:
-            main_pins.setdefault(match.group(1), set()).add(match.group(2))
-    ours = _uses(_load(WORKFLOW))
-    assert ours
-    for uses in ours:
-        match = PIN.match(uses.strip())
-        assert match, f"{uses} is not pinned to a commit SHA"
-        assert match.group(2) in main_pins.get(match.group(1), set()), (uses, main_pins.get(match.group(1)))
-    for line in WORKFLOW.read_text().splitlines():
-        if "uses:" in line:
-            assert re.search(r"@[0-9a-f]{40} # v\d", line), line
-
-
-def test_runners_and_tool_versions_match_application_yml():
-    """MUTATION: another runs-on, or a uv literal application.yml does not use."""
-    app_jobs = _load(APPLICATION)["jobs"]
-    expression = app_jobs["python-unit"]["runs-on"]
-    for name, job in _load(WORKFLOW)["jobs"].items():
-        assert job["runs-on"] == expression, name
-    uv = {step["with"]["version"] for job in app_jobs.values() for step in job.get("steps", [])
-          if "setup-uv" in str(step.get("uses", ""))}
-    ours = {step["with"]["version"] for job in _load(WORKFLOW)["jobs"].values() for step in job.get("steps", [])
-            if "setup-uv" in str(step.get("uses", ""))}
-    assert ours and ours <= uv, (ours, uv)
-    assert _load(WORKFLOW)["env"]["PYTHON_VERSION"] == _load(APPLICATION)["env"]["PYTHON_VERSION"]
-    for job in ("unit", "ui"):
-        steps = _load(WORKFLOW)["jobs"][job]["steps"]
-        node = next(s for s in steps if s.get("id") == "node")
-        assert "ARG NODE_IMAGE=node:" in node["run"], job
-        setup = next(s for s in steps if "setup-node" in str(s.get("uses", "")))
-        assert setup["with"]["node-version"] == "${{ steps.node.outputs.major }}", job
-
-
-def test_the_suites_measure_and_the_judge_runs_the_wrapper():
-    """MUTATION: drop --cov, SWARM_UI_COVERAGE_DIR, the shared shard split, or the wrapper."""
-    jobs = _load(WORKFLOW)["jobs"]
-    unit_runs = "\n".join(str(s.get("run", "")) for s in jobs["unit"]["steps"])
-    assert "unit_shards.py pick" in unit_runs and "--cov --cov-report=" in unit_runs, unit_runs
-    measured = next(s for s in jobs["unit"]["steps"] if "--cov" in str(s.get("run", "")))
-    assert "COVERAGE_FILE" in measured["env"], measured
-    ui_steps = jobs["ui"]["steps"]
-    assert any("ui_shards.py pick" in str(s.get("run", "")) for s in ui_steps)
-    vitest = next(s for s in ui_steps if "test:components" in str(s.get("run", "")))
-    assert "SWARM_UI_COVERAGE_DIR" in vitest["env"], vitest
-    plan_env = next(s for s in jobs["plan"]["steps"] if "unit_shards.py count" in str(s.get("run", "")))["env"]
-    assert plan_env["PYTHON_MODE"] == "all", plan_env
-    judge_runs = "\n".join(str(s.get("run", "")) for s in jobs["judge"]["steps"])
-    assert "scripts/coverage-floors.sh" in judge_runs and "pytest" not in judge_runs, judge_runs
-    assert str(jobs["judge"]["if"]).startswith("${{ !cancelled()"), jobs["judge"]["if"]
-    report_runs = "\n".join(str(s.get("run", "")) for s in jobs["report"]["steps"])
-    assert "scripts/coverage-report.sh" in report_runs, report_runs
 
 
 # --- the report ------------------------------------------------------------------
@@ -308,3 +169,80 @@ def test_an_incomplete_measurement_files_and_closes_nothing(night):
     calls = night.log.read_text()
     assert "issue" not in calls, calls
     assert "Not a measurement" in proc.summary, proc.summary
+
+
+WORKFLOW = ROOT / ".github" / "workflows" / "coverage.yml"
+
+
+def _load(path: Path) -> dict:
+    return yaml.safe_load(path.read_text())
+
+
+def _on(doc: dict) -> dict:
+    # PyYAML reads the bare key `on` as the boolean True.
+    return doc.get("on", doc.get(True))
+
+
+def _uses(doc: dict) -> list[str]:
+    return [step["uses"] for job in doc["jobs"].values() for step in job.get("steps", []) if "uses" in step]
+
+
+def test_it_runs_on_a_schedule_and_by_hand_only():
+    """MUTATION: add pull_request, push, merge_group or workflow_run."""
+    triggers = _on(_load(WORKFLOW))
+    assert set(triggers) == {"schedule", "workflow_dispatch"}, sorted(triggers)
+    assert "pull_request" not in triggers and "pull_request_target" not in triggers
+    crons = [entry["cron"] for entry in triggers["schedule"]]
+    assert len(crons) == 1, crons
+    minute, hour, *rest = crons[0].split()
+    assert rest == ["*", "*", "*"], crons  # once a day
+    assert minute != "0", "the top of the hour is when GitHub's scheduler drops runs"
+
+
+def test_every_job_runs_on_main_only():
+    """A dispatch from another branch would close main's issue on its own
+    green. MUTATION: drop plan's `if:`, or a job that does not need plan."""
+    jobs = _load(WORKFLOW)["jobs"]
+    assert jobs["plan"]["if"] == "github.ref == 'refs/heads/main'", jobs["plan"].get("if")
+
+    def reaches_plan(name: str) -> bool:
+        needs = jobs[name].get("needs", [])
+        needs = [needs] if isinstance(needs, str) else needs
+        return "plan" in needs or any(reaches_plan(n) for n in needs)
+
+    for name in set(jobs) - {"plan"}:
+        assert reaches_plan(name), name
+
+
+def test_permissions_are_explicit_and_only_report_writes():
+    """MUTATION: write-all, a missing top-level block, or issues: write on a
+    job that runs the suites."""
+    doc = _load(WORKFLOW)
+    assert doc["permissions"] == {"contents": "read"}, doc.get("permissions")
+    writers = {name for name, job in doc["jobs"].items()
+               if any(v == "write" for v in (job.get("permissions") or {}).values())}
+    assert writers == {"report"}, writers
+    assert doc["jobs"]["report"]["permissions"] == {"contents": "read", "actions": "read", "issues": "write"}
+    for name, job in doc["jobs"].items():
+        assert "id-token" not in (job.get("permissions") or {}), name
+
+
+def test_every_action_is_pinned_to_the_commit_the_other_workflows_pin():
+    """The SHAs application.yml pins; download-artifact, which application.yml
+    does not use, at publish-release.yml's. MUTATION: a tag, or a SHA other
+    than the one main already reviewed."""
+    main_pins: dict[str, set[str]] = {}
+    others = [p for p in sorted(WORKFLOW.parent.glob("*.yml")) if p != WORKFLOW]
+    for uses in (u for path in others for u in _uses(_load(path))):
+        match = PIN.match(uses.split("#")[0].strip())
+        if match:
+            main_pins.setdefault(match.group(1), set()).add(match.group(2))
+    ours = _uses(_load(WORKFLOW))
+    assert ours
+    for uses in ours:
+        match = PIN.match(uses.strip())
+        assert match, f"{uses} is not pinned to a commit SHA"
+        assert match.group(2) in main_pins.get(match.group(1), set()), (uses, main_pins.get(match.group(1)))
+    for line in WORKFLOW.read_text().splitlines():
+        if "uses:" in line:
+            assert re.search(r"@[0-9a-f]{40} # v\d", line), line

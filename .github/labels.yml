@@ -3,8 +3,8 @@
 # WHY THIS FILE EXISTS. GitHub files an issue from a form even when the form
 # names a label the repository does not have; it just drops the label, and the
 # issue lands where nobody filtering by that label will ever see it.
-# tests/unit/scripts/test_issue_forms.py holds every form to this list, and
-# holds this list to what the forms actually apply.
+# Every form's labels must be in this list, and this list must hold what the
+# forms actually apply.
 #
 # WHAT IT IS NOT. A copy of every label on the repository, or a sync. A unit
 # test here runs without credentials and cannot read GitHub, so a label deleted
@@ -21,8 +21,7 @@
 # request before it ships the commit to dev on the hotfix lane (owner decision
 # 2026-10-08, observer proposal H; docs/ci.md, "Hotfix releases"). A workflow
 # gating on a label the repository does not have would never proceed, so it is
-# declared for the same reason the forms' labels are. test_issue_forms.py
-# accepts a declared label that a workflow passes as `--label <name>`.
+# declared for the same reason the forms' labels are.
 # `ready-on-green` is the second: .github/workflows/auto-merge.yml's
 # `ready-on-green` job lists it, and swaps it for `ready` once the pull
 # request is green at its head (owner decision 2026-10-17; docs/ci.md).
@@ -31,12 +30,12 @@
 # touches a path outside the step's declared `inputs.territory` (owner decision
 # 2026-10-19, lane TERRITORY-WARN, part of archived issue 1468). It warns; it gates nothing.
 # GitHub creates it on first use; declaring it keeps its colour and wording ours.
-# test_issue_forms.py accepts it as `agent_worker.territory.OUT_OF_TERRITORY_LABEL`.
+# The code names it as `agent_worker.territory.OUT_OF_TERRITORY_LABEL`.
 # The worker's merge step applies `review-not-yet` to a pull request whose
 # review said NOT_YET, and removes it when a later review says MERGE (owner
 # decision, 9 November 2026). While it is on, `ready` cannot merge the pull
 # request: scripts/check-closing-references.sh, which auto-merge.yml's gate and
-# the merge train run, refuses it. test_issue_forms.py accepts it as
+# the merge train run, refuses it. The code names it as
 # `agent_worker.merge.REVIEW_NOT_YET_LABEL`.
 #
 # One is applied by SWARM-API: `needs-owner`, which the `failure-review`
@@ -46,7 +45,7 @@
 # and FR3-HOLDLABEL, part of archived issue 1933). issue-sweep's default `labels_exclude`
 # skips it, so no fix run picks a held issue up. The label already existed on
 # the repository; declaring it keeps this file and the code in agreement.
-# test_issue_forms.py accepts it as `failure_review.HOLD_LABEL`.
+# The code names it as `failure_review.HOLD_LABEL`.
 #
 # Four more are acted on when a PERSON (or CI) applies them, and are declared
 # so that a fresh repository gets them from `gh label create`:
@@ -56,7 +55,7 @@
 # FIRST_LABEL); `hold` keeps the stranded-PR sweep's hands off a pull request
 # (`swarm_api.strandedprs.HOLD_LABEL`); `security` marks an issue security
 # class, so an issue run on it is held (`swarm_api.issueruns.SECURITY_LABEL`).
-# test_issue_forms.py reads each from its source.
+# Each is named in its source.
 #
 # `full-ci` is read by application.yml's `changes` job (its `full` output): a
 # pull request carrying it runs the whole suite instead of the fast checks

@@ -4,8 +4,8 @@
 The load analysis of 2026-11-06 found swarm-api at 5 of its 5 instances for
 359 of 360 minutes, at 91% CPU and 94% memory, on instances of 1 vCPU and
 1 GiB. These hold the pick where a deployment reads it: the swarm-api service
-in terraform/infra/main.tf, dev's service_max_instances, the Day One
-installer's fixed monthly floor, and docs/scaling.md's ceilings row.
+in terraform/infra/main.tf, dev's service_max_instances, and the Day One
+installer's fixed monthly floor.
 
 Text-level and offline; tests/terraform/cloud_run.tftest.hcl holds the module
 that renders these to a plan.
@@ -19,7 +19,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 MAIN_TF = ROOT / "terraform" / "infra" / "main.tf"
 DEV_TFVARS = ROOT / "terraform" / "environments" / "dev" / "dev.tfvars.example"
-SCALING = ROOT / "docs" / "scaling.md"
 
 
 def _strip_comments(text: str) -> str:
@@ -71,7 +70,3 @@ def test_the_installer_floor_prices_two_instances_of_the_new_size():
     assert "2 vCPU / 2 GiB" in api[0]
     assert api[1] == 210
 
-
-def test_the_scaling_doc_states_the_new_size():
-    text = re.sub(r"\s+", " ", SCALING.read_text())
-    assert "max 8 instances of 2 vCPU and 2 GiB" in text

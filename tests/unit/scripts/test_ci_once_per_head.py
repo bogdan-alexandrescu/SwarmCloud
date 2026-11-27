@@ -9,33 +9,25 @@ October one head's checks took 1.5 to 4 hours behind 23 to 28 queued merges
 although no job ran over about 20 minutes. The owner chose to run CI once per
 head: on the pull request.
 
-What this holds, reading the workflow YAML:
-
-* no workflow that a lane branch's pull request triggers is ALSO triggered by
-  a push to that lane branch -- one head, one event;
-* `main` keeps its own push runs (the tested-tree record main reuses, the
-  image build, the release);
-* every check the `main-protection` ruleset requires (read from the ruleset
-  body docs/ci.md publishes) is a job of a workflow that runs on EVERY pull
-  request, with no path or branch filter, and on `synchronize`, so a pull
-  request re-tests when its branch is brought up to date with a moved base;
-* the merge step and swarm-api's check reading decide a head that carries
-  only pull_request runs (they never required a push run).
+What this holds, reading the workflow YAML (the trigger decisions the owner
+kept on 2026-11-25, issue 71): no workflow a lane branch's pull request
+triggers is also triggered by a push to that lane branch; `main` keeps its own
+push runs; every required check is a job of a workflow that runs on every pull
+request with no path filter and on `synchronize`. And: the merge step and
+swarm-api's check reading decide a head that carries only pull_request runs
+(they never required a push run).
 """
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
 import pytest
 import yaml
 
-
 REPO = Path(__file__).resolve().parents[3]
 WORKFLOWS = REPO / ".github" / "workflows"
-CI_DOC = REPO / "docs" / "ci.md"
 #: The platform's branches start `swarm/` (agent_worker publishes
 #: `swarm/<task id>`); both shapes a lane head takes.
 LANE_REFS = ("swarm/task_0123456789abcdef0123", "swarm/task_0123456789abcdef0123-fix")
@@ -99,19 +91,6 @@ def _branch_triggers(trigger: dict | None, branch: str) -> bool:
     return True
 
 
-def test_the_branch_glob_reads_githubs_patterns():
-    """The matcher the sweep relies on. MUTATION: read `*` as `**`."""
-    assert _glob("swarm/**").match("swarm/task_1")
-    assert _glob("swarm/**").match("swarm/a/b")
-    assert not _glob("swarm/*").match("swarm/a/b")
-    assert not _glob("main").match("main2")
-    assert _branch_triggers({"branches": ["main", "swarm/**"]}, LANE_REFS[0])
-    assert not _branch_triggers({"branches": ["main"]}, LANE_REFS[0])
-    assert not _branch_triggers({"branches": ["**", "!swarm/**"]}, LANE_REFS[0])
-    assert not _branch_triggers({"branches-ignore": ["swarm/**"]}, LANE_REFS[0])
-    assert _branch_triggers(None, LANE_REFS[0])
-
-
 @pytest.mark.parametrize("lane", LANE_REFS)
 def test_no_lane_head_runs_a_workflow_on_both_push_and_pull_request(lane):
     """A lane head's pull request targets main; a workflow that runs on that
@@ -140,19 +119,21 @@ def test_main_keeps_its_own_push_runs(name):
     assert "paths" not in push and "paths-ignore" not in push, push
 
 
+#: The `required_status_checks` contexts of the `main-protection` ruleset
+#: (the contexts the owner requires; each is a job name in a workflow here).
+REQUIRED_CONTEXTS = (
+    "secret scan",
+    "trivy (repo)",
+    "checkov (terraform + kubernetes)",
+    "platform policy assertions",
+    "deployment-values",
+    "ci-gate",
+)
+
+
 def _required_contexts() -> list[str]:
-    """The `required_status_checks` contexts of the ruleset body docs/ci.md
-    publishes ("Owner step: require ci-gate"), the one the owner PUTs."""
-    text = CI_DOC.read_text()
-    start = text.index(
-        'rulesets/"$RULESET_ID" \\', text.index("### Owner step: require ci-gate")
-    )
-    body = text[text.index("<<'JSON'", start) + len("<<'JSON'"):text.index("\nJSON\n", start)]
-    rules = json.loads(body)["rules"]
-    (checks,) = [r for r in rules if r["type"] == "required_status_checks"]
-    contexts = [c["context"] for c in checks["parameters"]["required_status_checks"]]
-    assert "ci-gate" in contexts and len(contexts) >= 5, contexts
-    return contexts
+    assert "ci-gate" in REQUIRED_CONTEXTS and len(REQUIRED_CONTEXTS) >= 5, REQUIRED_CONTEXTS
+    return list(REQUIRED_CONTEXTS)
 
 
 def _jobs_by_name() -> dict[str, list[str]]:

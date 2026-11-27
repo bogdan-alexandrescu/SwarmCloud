@@ -268,12 +268,10 @@ def test_brand_support_email_is_the_persons_own_address_not_a_group() -> None:
     """Audit 5b M7: the install's groups exist only from stage 8
     (`identity.groups`), so "a group you own" would send the person to Google
     Admin to make one. The Branding page's dropdown offers the person's own
-    address, which works: the plan and docs/install.md say that."""
+    address, which works: the plan says that."""
     step = edge.BrandStep(lambda: FakeGcp(), Answers(), lambda: FakeEdge())
     branding_action = [a for a in step.plan(ctx_for()).actions if BRANDING in a]
-    docs = (Path(__file__).resolve().parents[3] / "docs" / "install.md").read_text()
-    brand_doc = docs[docs.index("auth/branding?project="):docs.index("auth/audience?project=")]
-    for text in (*branding_action, brand_doc):
+    for text in branding_action:
         flat = " ".join(text.split())
         assert "your own address" in flat, flat
         assert "a group you own" not in flat, flat

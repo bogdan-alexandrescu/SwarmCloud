@@ -48,7 +48,7 @@ on:
   # through the merge queue"). ci-gate is required and waits for this
   # workflow's run at the entry's commit, so it runs there with NO path
   # filter -- a filtered-out run is one ci-gate waits ten minutes for and then
-  # fails the entry on (tests/unit/scripts/test_merge_queue_workflows.py).
+  # fails the entry on.
   # Never raised while the queue is off.
   merge_group:
     types: [checks_requested]
@@ -88,8 +88,8 @@ env:
 # (id-token) runs on the self-hosted runner pool's VMs through the one guarded
 # `runs-on` expression: a fork's pull request, or the repo variable
 # SELF_HOSTED_CI set to `off` (the capacity escape hatch), sends it to
-# GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted is listed,
-# with why, in tests/unit/scripts/test_fork_prs_off_self_hosted.py.
+# GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted says why in
+# its own comment.
 jobs:
   offline:
     # SUB-MINUTE CHECKS SHARE A JOB (CI-FOLD, archived issue 1799; owner approval
@@ -500,5 +500,3 @@ jobs:
       # the only reason this workflow asked for `pull-requests: write`. The plan
       # is in the run summary (above, addresses only). A pull
       # request has no plan to post -- see "WHY A PULL REQUEST DOES NOT PLAN".
-      # tests/unit/scripts/test_workflow_step_reachability.py fails on a step
-      # its own job can never reach.

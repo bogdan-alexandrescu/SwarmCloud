@@ -45,8 +45,6 @@ STUB = IMAGE_DIR / "live-browser-only"
 SELFTEST = IMAGE_DIR / "selftest.py"
 INSTALL_STUB = IMAGE_DIR / "install-browser-stub.py"
 HELPER = IMAGE_DIR / "swarm_browser.py"
-SPEED_DOC = REPO / "docs" / "browser-startup-speed.md"
-DESIGN_DOC = REPO / "docs" / "design" / "live-browser.md"
 
 MESSAGE = (
     "This agent's browser is the live browser the person watches: connect with "
@@ -408,20 +406,3 @@ def test_the_helper_stops_playwright_when_the_connection_fails(monkeypatch):
     with pytest.raises(ConnectionError):
         helper.live(ENDPOINT)
     assert stopped == [True]
-
-
-# --- the docs ------------------------------------------------------------------
-
-
-def test_the_speed_doc_records_the_slimmed_image():
-    text = SPEED_DOC.read_text(encoding="utf-8")
-    section = text[text.index("### 2.3"):text.index("### 2.4")]
-    assert "BROWSER-ENFORCE" in section
-    assert "--no-shell" in section and "codex" in section
-
-
-def test_the_design_says_the_agents_own_launch_is_refused():
-    text = DESIGN_DOC.read_text(encoding="utf-8")
-    section = text[text.index("### 3.2"):text.index("### 3.3")]
-    assert "cannot be prevented" not in section
-    assert "live-browser-only" in section and "--cdp-endpoint" in section

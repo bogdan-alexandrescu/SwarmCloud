@@ -633,8 +633,8 @@ export const SECTIONS: SectionDef[] = [
     // "Change a ceiling, see who is registered..., and count what it has
     // done" -- which is a list of things to do rather than what a reader
     // arrives wanting to know. It asks what each tab answers, in tab order.
-    // docs/web-ui/redesign.md §2 carries the same words, and
-    // a sections test holds the two together.
+    // docs/web-ui/redesign.md §2 restates it as prose; no test reads that
+    // doc (issue 71), so a change here updates it by hand.
     // The cross-tenant schedules view sat here from 2026-10-11 until the owner
     // asked why schedules were in Admin and in Automate (SCHED-ONE-PAGE,
     // 2026-10-13, docs/schedules.md §6.1): it is Automate › Schedules' "All

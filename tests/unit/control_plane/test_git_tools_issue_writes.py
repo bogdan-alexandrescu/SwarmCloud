@@ -2,8 +2,8 @@
 
 `issue_create` and `issue_comment`, through the real route, over the in-memory
 Firestore, with GitHub a fake transport under the real `GitHubWriter`. The
-forms are THIS repository's own `.github/ISSUE_TEMPLATE/*.yml`, put on the fake
-default branch, so a form that changes is the form these tests read.
+forms are test_git_tools_reads' inline FORMS, put on the fake default branch
+under `.github/ISSUE_TEMPLATE/`.
 
 What each case pins, from §6.1's row AU-1:
 

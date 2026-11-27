@@ -52,7 +52,7 @@ concurrency:
 # SELF_HOSTED_CI set to `off` (the capacity escape hatch), sends it to
 # GitHub-hosted ubuntu-24.04 instead. A dispatch on main resolves it to
 # ubuntu-24.04 too. `publish` holds the deployer's identity, so it stays
-# hosted, listed with why in tests/unit/scripts/test_fork_prs_off_self_hosted.py.
+# hosted.
 jobs:
   # -------------------------------------------------------------------------
   # Before the approval: the inputs are a release name and a commit on main
