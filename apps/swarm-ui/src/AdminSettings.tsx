@@ -1,15 +1,17 @@
 import { Fragment, useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react'
 import {
   BUDGET_DOES, budgetCeilingOf, budgetLimitsWords, loadAdminPools, loadAdminQuota, loadCapacity, loadMe, loadModelClasses, loadModelPrices, loadPlatformSettings,
-  parseBudgetAmount, priceRefusals, resetAdaptiveTarget, saveBudgetCeiling, saveModelPrices, setPoolLimit, setQuotaHardMax, storeOwnerToken,
-  type BudgetLimits, type BudgetUnit,
+  parseBudgetAmount, priceRefusals, resetAdaptiveTarget, saveBudgetCeiling, saveModelPrices, savePlanReviewSettings, setPoolLimit, setQuotaHardMax, storeOwnerToken,
+  type BudgetLimits, type BudgetUnit, type PlanReviewChange,
 } from './api'
-import { Button, Card, CIcon } from './components'
+import { Button, Card, CIcon, Segmented } from './components'
 import { errorHeading, isPaused, route, write, type ApiError, type Result } from './fetch'
 import { Refusal } from './GitHubConnect'
 import { ACCESS } from './Onboarding'
 import { addressToPath } from './paths'
 import { HelpCard } from './HelpCard'
+import { InfoTip } from './InfoTip'
+import { DIAGRAM_EXAMPLES, DIAGRAMS_LABEL, MODEL_LABEL } from './PlanSettingsCard'
 import { POOLS_POLL_MS, capacityPoll, comparePools, poolViewer, tableMode, usePhoneTables } from './capacityPoll'
 import { Screen, timeAgo } from './Shell'
 import {
@@ -200,6 +202,7 @@ export function AdminSettingsScreen() {
       <AdditionalRepositoryLimitsCard fold />
       <AgentBudgetCeilingCard fold />
       <JevRateCard fold />
+      <PlanReviewSettingsCard admin={admin} fold />
       <ModelPricesCard admin={admin} fold />
       <FallbackTokenCard fold />
     </>
@@ -2672,7 +2675,7 @@ export function AdditionalRepositoryLimitsCard({ fold = false }: { fold?: boolea
           {values.map((v) => (
             <label key={v.key} htmlFor={`${id}-${v.key}`} className="ur-small">
               {v.label}
-              <input id={`${id}-${v.key}`} type="number" min={1} step={1} className="mono"
+              <input id={`${id}-${v.key}`} aria-label={v.label} type="number" min={1} step={1} className="mono"
                 value={typed[v.key]} disabled={busy} aria-invalid={v.n === null || undefined}
                 onChange={(e) => {
                   setSavedAt(null)
@@ -2959,6 +2962,232 @@ export function AgentBudgetCeilingCard({ fold = false }: { fold?: boolean } = {}
 }
 
 /** The four rates the price table edits, in the order it draws them. Per million tokens. */
+/**
+ * PLAN REVIEW, THE PLATFORM'S LEVEL (docs/design/plans-pipeline.md §6.4, §7.8;
+ * lane U10). The three plan-review settings a platform admin sets for every
+ * workspace that leaves them to the platform: the diagram default (on, the
+ * owner 2026-10-28), the plan chat's model class (sonnet, the owner
+ * 2026-10-28; one of the classes `claude-code` carries) and the four caps
+ * (5 / 20 / 40 / $25, the owner 2026-10-28, "configurable in platform"),
+ * saved through `PUT /v1/admin/settings` as this page's other settings are.
+ *
+ * THE SAME CONTROLS AND WORDS AS THE WORKSPACE'S CARD (`PlanSettingsCard`,
+ * Automate › Settings), so the two levels read the same: the switch and the
+ * class are its `Segmented` under its labels, and the diagram examples sit
+ * behind the same (i). The platform has no "platform's" choice: it is the
+ * level the others fall back to.
+ *
+ * A CAP OUTSIDE ITS RANGE IS REFUSED HERE, BEFORE THE SAVE, naming the range
+ * (`plansettings.CAPS_RANGES`; the route refuses the same with 422). 0 is
+ * accepted: it refuses that kind of ask on every run, how an admin turns a
+ * costly feature off without a deploy. Counts are whole; dollars go to the
+ * cent. Each range and reason is behind its field's (i), never on the card.
+ *
+ * A SAVE SENDS ONLY WHAT CHANGED: a key the admin did not touch is not in the
+ * body, and `plan_review_caps` names only the caps that changed (the API keeps
+ * the others' figures). The card then draws the settings the response says
+ * are stored.
+ *
+ * A NON-ADMIN NEVER SEES IT. Nothing is drawn, and nothing read, until the
+ * session says the caller is a platform admin (`admin === true`); while that
+ * is not known, or the session read failed, the group is not on the page. A
+ * 403 from the settings read (the session and the route disagree) draws
+ * nothing either.
+ */
+const PLAN_CAPS = [
+  { key: 'replans', label: 'Re-plans', short: 'Re-plans', high: 20, cents: false,
+    why: 'Planner re-plans one run may ask for. Default 5; 0 turns re-plans off.' },
+  { key: 'diagram_asks', label: 'Diagram asks', short: 'Asks', high: 100, cents: false,
+    why: 'On-demand diagrams one run may ask for. Default 20; 0 turns them off.' },
+  { key: 'chat_turns', label: 'Chat turns', short: 'Turns', high: 200, cents: false,
+    why: 'Review chat questions one run may ask. Default 40; 0 turns the chat off.' },
+  { key: 'review_usd', label: 'Review dollars', short: 'Dollars', high: 500, cents: true,
+    why: 'Dollars of review agents one run may spend, chat turns and on-demand diagrams. Default $25; 0 turns them off.' },
+] as const
+type PlanCapKey = (typeof PLAN_CAPS)[number]['key']
+type PlanCap = (typeof PLAN_CAPS)[number]
+
+/** "0 to 20", or "$0 to $500.00" for dollars. */
+function capRange(c: PlanCap): string {
+  return c.cents ? `$0 to $${c.high.toFixed(2)}` : `0 to ${c.high}`
+}
+
+/** A typed cap as its figure, or null when it is not one inside its range: a whole count, or dollars to the cent. */
+function capTyped(c: PlanCap, typed: string): number | null {
+  const t = typed.trim()
+  if (!(c.cents ? /^\d+(?:\.\d{1,2})?$/ : /^\d+$/).test(t)) return null
+  const n = Number(t)
+  return n >= 0 && n <= c.high ? n : null
+}
+
+/** The profile whose classes the plan chat may name (`plansettings.CHAT_PROFILE`). */
+const CHAT_PROFILE = 'claude-code'
+
+export function PlanReviewSettingsCard({ admin, fold = false }: { admin: boolean | null; fold?: boolean }) {
+  const id = useId()
+  const inFlight = useRef(false)
+  const [settings, setSettings] = useState<Result<PlatformSettings> | null>(null)
+  const [classes, setClasses] = useState<readonly string[]>([])
+  const [diagrams, setDiagrams] = useState<'on' | 'off'>('on')
+  const [model, setModel] = useState('')
+  const [typed, setTyped] = useState<Record<PlanCapKey, string>>({ replans: '', diagram_asks: '', chat_turns: '', review_usd: '' })
+  const [busy, setBusy] = useState(false)
+  const [refused, setRefused] = useState<ApiError | null>(null)
+  const [saved, setSaved] = useState(false)
+
+  const take = (s: PlatformSettings) => {
+    if (s.plan_diagrams_default !== null) setDiagrams(s.plan_diagrams_default ? 'on' : 'off')
+    if (s.plan_chat_model_class !== null) setModel(s.plan_chat_model_class)
+    const caps = s.plan_review_caps
+    if (caps !== null) {
+      setTyped({
+        replans: String(caps.replans),
+        diagram_asks: String(caps.diagram_asks),
+        chat_turns: String(caps.chat_turns),
+        review_usd: Number.isInteger(caps.review_usd) ? String(caps.review_usd) : caps.review_usd.toFixed(2),
+      })
+    }
+  }
+
+  useEffect(() => {
+    if (admin !== true) return
+    let live = true
+    void settle(() => loadPlatformSettings()).then((r) => {
+      if (!live) return
+      setSettings(r)
+      if (r.status === 'ok' || r.status === 'stale') take(r.data)
+    })
+    void settle(() => loadModelClasses()).then((r) => {
+      if (live && (r.status === 'ok' || r.status === 'stale')) setClasses(r.data[CHAT_PROFILE]?.model_classes ?? [])
+    })
+    return () => {
+      live = false
+    }
+  }, [admin])
+
+  if (admin !== true || settings === null || settings.status === 'loading') return null
+  if (settings.status === 'error' && settings.error.httpStatus === 403) return null
+  const data = settings.status === 'ok' || settings.status === 'stale' ? settings.data : null
+  const served = data !== null && data.plan_diagrams_default !== null && data.plan_chat_model_class !== null && data.plan_review_caps !== null
+  if (data === null || !served) {
+    return (
+      <FoldCard fold={fold} className="adm-plan-review" title="Plan review">
+        <p className="warn-text" role="alert"
+          title={settings.status === 'error' ? `${errorHeading(settings.error)}: ${settings.error.message}` : 'This API serves no plan-review settings.'}>
+          Not read
+        </p>
+      </FoldCard>
+    )
+  }
+
+  const caps = data.plan_review_caps!
+  const values = PLAN_CAPS.map((c) => ({ ...c, n: capTyped(c, typed[c.key]) }))
+  const bad = values.filter((v) => v.n === null)
+  const change: PlanReviewChange = {}
+  if ((diagrams === 'on') !== data.plan_diagrams_default) change.plan_diagrams_default = diagrams === 'on'
+  if (model !== data.plan_chat_model_class) change.plan_chat_model_class = model
+  const capChanges: Partial<Record<PlanCapKey, number>> = {}
+  for (const v of values) if (v.n !== null && v.n !== caps[v.key]) capChanges[v.key] = v.n
+  if (Object.keys(capChanges).length > 0) change.plan_review_caps = capChanges
+  const nothing = Object.keys(change).length === 0
+  // The served class stays a choice even when the runtimes read failed or no longer lists it.
+  const choices = classes.includes(model) || model === '' ? classes : [...classes, model]
+
+  const edited = () => {
+    setSaved(false)
+    setRefused(null)
+  }
+
+  async function save(e: FormEvent) {
+    e.preventDefault()
+    if (inFlight.current || bad.length > 0 || nothing) return
+    inFlight.current = true
+    setBusy(true)
+    setRefused(null)
+    setSaved(false)
+    const r = await savePlanReviewSettings(change)
+    inFlight.current = false
+    setBusy(false)
+    if (r.status === 'error') {
+      setRefused(r.error)
+      return
+    }
+    if (r.status === 'ok' || r.status === 'stale') {
+      setSettings(r)
+      take(r.data)
+      setSaved(true)
+    }
+  }
+
+  return (
+    <FoldCard fold={fold} className="adm-plan-review" title="Plan review">
+      <form className="as-fields" data-testid="adm-plan-review" onSubmit={(e) => void save(e)}>
+        <div className="as-field">
+          <span className="as-k">
+            Diagrams
+            <InfoTip about={DIAGRAMS_LABEL} tip={DIAGRAM_EXAMPLES} />
+          </span>
+          <Segmented
+            className="as-seg"
+            label={DIAGRAMS_LABEL}
+            value={diagrams}
+            disabled={busy}
+            options={[{ key: 'on', label: 'on' }, { key: 'off', label: 'off' }]}
+            onChange={(k) => {
+              edited()
+              setDiagrams(k)
+            }}
+          />
+        </div>
+        <div className="as-field">
+          <span className="as-k">Model</span>
+          <Segmented
+            className="as-seg"
+            label={MODEL_LABEL}
+            value={model}
+            disabled={busy}
+            options={choices.map((c) => ({ key: c, label: c }))}
+            onChange={(k) => {
+              edited()
+              setModel(k)
+            }}
+          />
+        </div>
+        <div className="as-field adm-plan-caps" title={caps.set_by === null ? undefined : `Set by ${caps.set_by}`}>
+          {values.map((v) => (
+            <span key={v.key} className="as-field">
+              <label htmlFor={`${id}-${v.key}`} className="as-k">{v.short}</label>
+              <InfoTip about={v.label} tip={`${capRange(v)}. ${v.why}`} />
+              <input id={`${id}-${v.key}`} aria-label={v.label} type="number" min={0} max={v.high} step={v.cents ? 0.01 : 1} inputMode={v.cents ? 'decimal' : 'numeric'}
+                className="c-inp is-mono adm-plan-cap" value={typed[v.key]} disabled={busy} aria-invalid={v.n === null || undefined}
+                onChange={(e) => {
+                  edited()
+                  setTyped((was) => ({ ...was, [v.key]: e.target.value }))
+                }} />
+            </span>
+          ))}
+        </div>
+        {bad.length > 0 && (
+          <p className="warn-text" role="alert">
+            {bad.map((v) => `${v.label}: ${capRange(v)}`).join('; ')}
+          </p>
+        )}
+        <div className="as-field">
+          <Button type="submit" iconOnly icon={<CIcon name="save" />} kind="primary" size="sm" busy={busy} disabled={bad.length > 0 || nothing}>
+            Save plan review
+          </Button>
+          {saved && nothing && (
+            <span role="status" aria-label="Saved" title={data.updated_by === null ? undefined : `Saved by ${data.updated_by}`}>
+              <CIcon name="check" />
+            </span>
+          )}
+        </div>
+      </form>
+      {refused !== null && <Refusal error={refused} title="Not saved" />}
+    </FoldCard>
+  )
+}
+
 const PRICE_COLUMNS: ReadonlyArray<{ key: ModelPriceRate; head: string }> = [
   { key: 'input', head: 'Input' },
   { key: 'output', head: 'Output' },
