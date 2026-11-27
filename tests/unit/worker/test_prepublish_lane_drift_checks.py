@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import io
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -365,12 +364,3 @@ def test_the_budget_arithmetic_holds():
 def test_the_fix_command_is_the_generators_own():
     text = (REPO / prepublish.API_TYPES_SCRIPT).read_text()
     assert f'REGENERATE = "{prepublish.API_TYPES_FIX}"' in text
-
-
-def test_docs_ci_lists_both_checks_with_their_triggers_and_cost():
-    text = (REPO / "docs" / "ci.md").read_text()
-    section = text.split("### The generated-types and test-pointer checks", 1)[1].split("\n## ", 1)[0]
-    for name in (prepublish.API_TYPES_CHECK, prepublish.TEST_POINTERS_CHECK):
-        assert f"`{name}`" in section
-    assert "--inputs" in section
-    assert re.search(r"\d+\.\d+ s", section), "the measured times"

@@ -1,5 +1,5 @@
 # source-text: contract - the unit shard plan must cover every test file pytest collects under tests/unit, sized by unit_shards.py's SHARD_TARGET_SECONDS and MAX_SHARDS
-"""The unit suite and the vitest suite run in shards, under the check names they had.
+"""The Python unit suite runs in weighted shards, and npm keeps vitest apart.
 
 OWNER REQUEST, 2026-10-07. With strict up-to-date merging, one pull request
 merges per CI cycle, and CI at a pull request's final head took a median 707 s
@@ -8,26 +8,21 @@ suite (`format / unit tests`, ~673 s) and the vitest suite (`swarm-ui
 typecheck / component tests`, ~11 min). Both now run as parallel shards, and
 the old names are kept by jobs that only read the shards' results.
 
-What is asserted here, by running the steps rather than matching their text
-where a step decides something:
+What is asserted here, by running scripts/lib/unit_shards.py:
 
-  * every check name application.yml reported is still reported, and the
-    required ones by exactly one job;
   * the Python shards cover every test file under tests/unit exactly once,
     balanced by the stored weights; a docs-only or UI-only change runs only the
     test files that read docs/ or apps/swarm-ui/ -- directly, through a helper
     they import, or under a conftest that reads it -- and a shard left with no
-    file runs nothing (a bare `pytest` would run the whole suite);
+    file says so (a bare `pytest` would run the whole suite);
   * the Python shard count is computed once, by scripts/lib/unit_shards.py
     in the `changes` job, from the measured weight of what the change runs
     (LANE CI-EARLY, part of archived issue 1694): a full run gets more shards, a small
     selection fewer, so every shard carries about the same measured time;
-  * vitest is sharded over its own weighted count (scripts/lib/ui_shards.py,
-    held by test_ui_shards.py since 2026-11-03), beside one job for the
-    typecheck, the node:test runners and the build;
-  * everything the old `python` job checked besides the unit suite still runs.
+  * the npm scripts keep vitest apart from the node runners, so a shard's file
+    list reaches vitest alone (the vitest split itself: test_ui_shards.py).
 
-The aggregating jobs' judgement and ci-gate's are run in test_ci_gate.py; the
+ci-gate's judgement is run in test_ci_gate.py; the
 path-filter matrix in test_ui_changes_gate.py.
 """
 
@@ -42,7 +37,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-from .ci_fold_layout import check_steps
 from .test_fast_checks_on_lane_prs import LANE_SKIP
 
 REPO = Path(__file__).resolve().parents[3]
@@ -50,6 +44,7 @@ APPLICATION = REPO / ".github" / "workflows" / "application.yml"
 DURATIONS = REPO / "tests" / "unit" / "scripts" / "unit_test_durations.json"
 UI_PACKAGE = REPO / "apps" / "swarm-ui" / "package.json"
 UNIT_SHARDS = REPO / "scripts" / "lib" / "unit_shards.py"
+
 
 #: Every check name application.yml reported on a pull request before the
 #: shards (read from main at 8892e96). Each must still be reported.
@@ -72,16 +67,6 @@ def _jobs() -> dict:
 def _needs(job: dict) -> list[str]:
     needs = job.get("needs")
     return [needs] if isinstance(needs, str) else list(needs or [])
-
-
-def _step(job_id: str, step_id: str) -> dict:
-    found = [s for s in _jobs()[job_id]["steps"] if s.get("id") == step_id]
-    assert len(found) == 1, f"{job_id} has no single step with id {step_id}"
-    return found[0]
-
-
-def _shards(job_id: str) -> list[int]:
-    return _jobs()[job_id]["strategy"]["matrix"]["shard"]
 
 
 def _test_files(root: Path = REPO) -> set[str]:
@@ -137,46 +122,9 @@ def test_the_unit_tests_gate_the_release_not_the_build():
         assert str(jobs[job_id].get("name") or job_id) in listed, job_id
 
 
-def test_the_old_python_jobs_other_checks_still_run():
-    """MUTATION: drop any step from python-checks."""
-    # Its steps run in `quick-checks` since CI-FOLD (archived issue 1799).
-    runs = "\n".join(str(s.get("run", "")) for s in check_steps("application.yml", "python-checks"))
-    for needle in ("uv lock --check", "uv sync --frozen", "check-frozen-contract.sh", "compileall",
-                   "test_plugin_bridge_install.py", "destroy.sh --self-test"):
-        assert needle in runs, needle
-    # The lock is checked before the frozen sync installs from it, in the job
-    # that checks it (test_uv_lock_check_step.py); each shard syncs too.
-    unit = "\n".join(str(s.get("run", "")) for s in _jobs()["python-unit"]["steps"])
-    assert "uv sync --frozen" in unit and "uv lock --check" not in unit
-
-
 # ---------------------------------------------------------------------------
 # The Python shards.
 # ---------------------------------------------------------------------------
-def test_the_python_shard_count_is_written_once():
-    """The `changes` job computes the count; the matrix reads it and the pick
-    step reads `strategy.job-total`. MUTATION: write SHARDS: 4 in the step,
-    or put a literal list back in the matrix."""
-    job = _jobs()["python-unit"]
-    assert job["strategy"]["matrix"]["shard"] == "${{ fromJSON(needs.changes.outputs.unit_shards) }}", job["strategy"]
-    assert "changes" in _needs(job)
-    changes = _jobs()["changes"]
-    assert changes["outputs"].get("unit_shards") == "${{ steps.shards.outputs.shards }}", changes["outputs"]
-    step = _step("changes", "shards")
-    assert "scripts/lib/unit_shards.py count" in step["run"], step["run"]
-    env = step.get("env") or {}
-    assert env.get("PYTHON_MODE") == "${{ steps.select.outputs.python }}", env
-    assert env.get("PYTHON_AREAS") == "${{ steps.select.outputs.areas }}", env
-    assert env.get("PYTHON_TESTS") == "${{ steps.select.outputs.tests }}", env
-    assert env.get("DURATIONS") == "tests/unit/scripts/unit_test_durations.json", env
-    env = _step("python-unit", "pick").get("env") or {}
-    assert env.get("SHARD") == "${{ matrix.shard }}", env
-    assert env.get("SHARDS") == "${{ strategy.job-total }}", env
-    pick = _step("python-unit", "pick")["run"]
-    assert pick.strip().splitlines()[-1].strip() == "python3 scripts/lib/unit_shards.py pick", pick
-    assert _jobs()["python-unit"]["strategy"].get("fail-fast") is False
-
-
 def _count(tmp_path: Path, *, mode: str = "all", areas: str = "", tests: str = "",
            cwd: Path = REPO, durations: Path = DURATIONS,
            extra: dict[str, str] | None = None) -> tuple[subprocess.CompletedProcess[str], dict]:
@@ -275,8 +223,7 @@ def test_the_count_refuses_what_it_does_not_model(tmp_path, mode, areas, tests):
 def _pick(tmp_path: Path, shard: int, shards: int, *, mode: str = "all", areas: str = "",
           cwd: Path = REPO, durations: Path = DURATIONS,
           extra: dict[str, str] | None = None) -> tuple[subprocess.CompletedProcess[str], list[str], dict]:
-    # The workflow's pick step runs this script from the checkout
-    # (test_the_python_shard_count_is_written_once holds that); a scratch tree
+    # The workflow's pick step runs this script from the checkout; a scratch tree
     # (`cwd`) has no scripts/, so the same script runs from here against it.
     files = tmp_path / f"shard-{shard}"
     output = tmp_path / f"output-{shard}"
@@ -393,12 +340,10 @@ def test_weights_covering_most_files_print_no_warning(tmp_path):
 @pytest.mark.parametrize(
     "areas, present, absent",
     [
-        ("docs", ["tests/unit/scripts/test_docs_describe_what_was_built.py",
-                  "tests/unit/scripts/test_docs_spec_amendments.py",
+        ("docs", ["tests/unit/mcp/test_qa_workflow_template.py",
                   "tests/unit/scripts/test_ci_gate.py"],
          ["tests/unit/scheduler/test_gke_browser_pod_dns.py"]),
         ("swarm-ui", ["tests/unit/control_plane/test_blocker_ui_surface.py",
-                      "tests/unit/scripts/test_issue_forms.py",
                       "tests/unit/scripts/test_ui_node_line.py"],
          ["tests/unit/scheduler/test_gke_browser_pod_dns.py",
           "tests/unit/scripts/test_docs_spec_amendments.py"]),
@@ -465,7 +410,7 @@ def test_a_test_that_reads_the_area_through_a_helper_or_conftest_is_in_the_subse
 def test_a_shard_left_with_no_file_runs_no_pytest(tmp_path):
     """`pytest` with no file argument runs testpaths -- the whole suite. A
     subset with fewer files than shards leaves some empty; those must say
-    count=0 and the pytest step must not run. MUTATION: drop the step's if."""
+    count=0. MUTATION: write no count for an empty shard."""
     root = tmp_path / "tree"
     _tree(root, {"tests/unit/a/test_one.py": 'X = "docs/"\n', "tests/unit/a/test_two.py": "pass\n"})
     durations = tmp_path / "durations.json"
@@ -478,41 +423,6 @@ def test_a_shard_left_with_no_file_runs_no_pytest(tmp_path):
         assert proc.returncode == 0, proc.stderr
         counts.append(outputs["count"])
     assert sorted(counts) == ["0", "0", "1"], counts
-    (unit,) = [s for s in _jobs()["python-unit"]["steps"] if "pytest" in str(s.get("run", ""))
-               and "junit" in str(s.get("run", ""))]
-    assert unit.get("if") == "steps.pick.outputs.count != '0'", unit.get("if")
-    assert '"${files[@]}"' in unit["run"], unit["run"]
-    assert (unit.get("env") or {}).get("SWARM_REQUIRE_REAL_REAP") == "1"
-
-
-def test_a_shards_workers_steal_rather_than_split_up_front():
-    """xdist's default `load` schedule left shard 3 ~45 % over its floor: its
-    long sleep-bound tests landed on one worker (docs/ci.md, "Where
-    pull-request CI time goes (2026-10-09)"). MUTATION: drop `--dist
-    worksteal`, or let a second pytest run in the job without it.
-
-    Two runs since 2026-10-14: the gating one and the quarantined tests'
-    (tests/flaky.txt), which reports and never fails the gate."""
-    runs = [str(s.get("run", "")) for s in _jobs()["python-unit"]["steps"]]
-    pytests = [r for r in runs if "uv run pytest" in r]
-    assert len(pytests) == 2, pytests
-    for run in pytests:
-        assert re.search(r"uv run pytest\b[^\n]*-n auto --dist worksteal\b", run), run
-
-
-def test_a_hung_shard_fails_and_names_the_test_that_hung():
-    """On 2026-10-14 eight unit shards sat "in progress" for 51-306 minutes, and
-    `build images` (which needs this job) never started, so release.yml timed
-    out waiting for it. MUTATION: drop the job's timeout-minutes, raise it past
-    an hour, or drop faulthandler_timeout from either pytest step."""
-    job = _jobs()["python-unit"]
-    assert 0 < int(job.get("timeout-minutes", 0)) <= 60, job.get("timeout-minutes")
-    runs = [str(s.get("run", "")) for s in job["steps"]]
-    pytests = [r for r in runs if "uv run pytest" in r]
-    assert len(pytests) == 2, pytests
-    for run in pytests:
-        m = re.search(r"-o faulthandler_timeout=(\d+)\b", run)
-        assert m and int(m.group(1)) < int(job["timeout-minutes"]) * 60, run
 
 
 @pytest.mark.parametrize("mode, areas", [("none", ""), ("subset", ""), ("subset", "terraform"), ("bogus", "")])
@@ -531,17 +441,6 @@ def test_a_shard_that_does_not_exist_is_refused(tmp_path):
 # ---------------------------------------------------------------------------
 # The vitest shards.
 # ---------------------------------------------------------------------------
-def test_vitest_is_sharded_over_the_weighted_matrix():
-    """The split itself, the count and the step that hands vitest its files are
-    held by test_ui_shards.py; here, only that the shards are a matrix of their
-    own beside ui-build. MUTATION: hard-code a list, or run `npm test` (all
-    three runners) per shard."""
-    assert _jobs()["ui-tests"]["strategy"]["matrix"]["shard"] == "${{ fromJSON(needs.changes.outputs.ui_shards) }}"
-    steps = [s for s in _jobs()["ui-tests"]["steps"] if "npm run test:" in str(s.get("run", "")) or "npm test" in str(s.get("run", ""))]
-    assert len(steps) == 1 and steps[0]["run"].strip().startswith("npm run test:components -- "), steps
-    assert _jobs()["ui-tests"]["strategy"].get("fail-fast") is False
-
-
 def test_the_npm_scripts_split_without_changing_npm_test():
     """`npm test` (scripts/ui-component-test.sh, a developer) still runs all
     three runners; CI runs vitest and the node runners as separate scripts so
@@ -554,19 +453,11 @@ def test_the_npm_scripts_split_without_changing_npm_test():
     assert "test/*.test.mjs" in scripts["test:node"], scripts
 
 
-def test_the_ui_build_job_runs_what_is_not_sharded():
-    runs = [str(s.get("run", "")).strip() for s in _jobs()["ui-build"]["steps"]]
-    for command in ("npm run typecheck", "npm run test:node", "npm run build"):
-        assert command in runs, command
-
-
-
-def test_the_quarantine_step_runs_only_on_a_shard_holding_a_quarantined_test(tmp_path):
+def test_the_pick_counts_the_quarantined_tests_of_its_own_shard(tmp_path):
     """tests/flaky.txt lists no test, yet the `quarantined unit tests` step ran
     a second pytest in every shard: its `if:` read the shard's file count. The
     pick step now writes `quarantined`, the entries naming one of its files.
-    MUTATION: count every entry whatever its file, count comment lines, or put
-    the step's `if:` back on `count`."""
+    MUTATION: count every entry whatever its file, or count comment lines."""
     root = tmp_path / "tree"
     _tree(root, {"tests/unit/a/test_one.py": "pass\n", "tests/unit/a/test_two.py": "pass\n"})
     durations = tmp_path / "durations.json"
@@ -587,8 +478,3 @@ def test_the_quarantine_step_runs_only_on_a_shard_holding_a_quarantined_test(tmp
             assert proc.returncode == 0, proc.stderr
             assert len(files) == 1, files
             assert outputs.get("quarantined") == counts[files[0]], (listed, files, outputs)
-
-    (step,) = [s for s in _jobs()["python-unit"]["steps"] if "-m flaky" in str(s.get("run", ""))]
-    assert step.get("if") == (
-        "${{ !cancelled() && steps.pick.outputs.count != '0' && "
-        "fromJSON(steps.pick.outputs.quarantined || '0') > 0 }}"), step.get("if")

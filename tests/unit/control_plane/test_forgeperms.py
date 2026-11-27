@@ -599,17 +599,3 @@ def test_the_route_answers_the_callers_tenant_with_the_apps_jwt(route, db):
     calls = len(github.calls)
     fresh = client.get("/v1/forge/permissions?refresh=true", headers=auth_header("alice"))
     assert fresh.json()["cached"] is False and len(github.calls) > calls
-
-
-# -- the docs ---------------------------------------------------------------------
-
-
-def test_the_onboarding_doc_lists_every_requirement_at_its_access():
-    from pathlib import Path
-
-    doc = (Path(__file__).resolve().parents[3] / "docs" / "onboarding.md").read_text("utf-8")
-    section = doc[doc.index("### 2.6 GitHub permissions health"):]
-    section = section[:section.index("\n---")]
-    rows = {line.split("|")[1].strip().strip("`"): line.split("|")[2].strip()
-            for line in section.splitlines() if line.startswith("| `")}
-    assert rows == {req.permission: req.access for req in REQUIRED}

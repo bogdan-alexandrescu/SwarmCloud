@@ -343,12 +343,8 @@ def test_a_page_with_text_reports_no_wall_by_default(fake_playwright, tmp_path):
     assert out["notes"] == []
 
 
-def test_the_runners_doc_names_the_values_the_runner_uses():
-    """The doc says why; this keeps its numbers the runner's."""
-    doc = (Path(__file__).resolve().parents[3] / "docs" / "browser-scripted-runner.md").read_text()
+def test_the_runner_waits_for_domcontentloaded_and_names_its_failure_codes():
     assert browser.DEFAULT_WAIT_UNTIL == "domcontentloaded"
-    assert f"`{browser.DEFAULT_WAIT_UNTIL}`" in doc
-    assert f"({browser.SCREENSHOT_TIMEOUT_MS // 1000} s," in doc
+    source = Path(browser.__file__).read_text()
     for code in ("goto_load_timeout_after_commit", "screenshot_missing"):
-        assert code in doc
-        assert code in Path(browser.__file__).read_text()
+        assert code in source

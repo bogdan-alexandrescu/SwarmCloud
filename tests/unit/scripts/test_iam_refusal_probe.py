@@ -1,10 +1,12 @@
-"""The IAM refusal probe (archived issue 68): its workflow's shape, and its verdict.
+"""The IAM refusal probe (archived issue 68): its main-only guard, and its verdict.
 
 `.github/workflows/iam-refusal-probe.yml` runs `scripts/iam-refusal-probe.sh`
 as the CI deployer and asks for a role the deployer's scoped
 `projectIamAdmin` condition must refuse. The owner dispatches it once. So this
-file is the only place its behaviour is exercised before that run, and it holds
-the three things that would make that one run lie:
+file is the only place its behaviour is exercised before that run. The
+workflow's main-only guard runs here as published in
+scripts/generated/ci-run-blocks.json; the script holds the three things that
+would make that one run lie:
 
 * a verdict of PASS for anything but a PERMISSION_DENIED on the policy write
   -- an auth failure, a network error, a 403 on the READ, a disabled API;
@@ -34,8 +36,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from .application_paths import app_paths, reaches
-from .ci_fold_layout import check_steps
+from .ci_run_blocks import run_block
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "iam-refusal-probe.sh"
@@ -90,11 +91,6 @@ def _runs(step: dict, subcommand: str) -> bool:
     return f"iam-refusal-probe.sh {subcommand}" in (step.get("run") or "")
 
 
-# ---------------------------------------------------------------------------
-# The workflow
-# ---------------------------------------------------------------------------
-
-
 def test_the_probe_is_dispatched_by_hand_and_by_nothing_else():
     """MUTATION: add `push:`, `pull_request:` or `schedule:` to its `on:`, or give
     `workflow_dispatch` an input a dispatcher could aim at another role."""
@@ -112,6 +108,11 @@ def test_the_probe_is_dispatched_by_hand_and_by_nothing_else():
     )
 
 
+# ---------------------------------------------------------------------------
+# The workflow's main-only guard
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.parametrize(
     ("ref", "passes"),
     [
@@ -123,19 +124,10 @@ def test_the_probe_is_dispatched_by_hand_and_by_nothing_else():
     ],
 )
 def test_the_probe_refuses_every_ref_but_main_before_it_authenticates(ref, passes):
-    """Runs the guard step's own shell. MUTATION: widen or drop the comparison,
-    or move the guard after the auth step."""
-    steps = _only_job(_workflow())["steps"]
-    guard = _step_index(steps, lambda s: "refs/heads/main" in (s.get("run") or ""))
-    auth = _step_index(steps, lambda s: str(s.get("uses", "")).startswith("google-github-actions/auth@"))
-    assert guard >= 0, "no step compares the ref to refs/heads/main"
-    assert auth >= 0, "no auth step found"
-    assert guard < auth, "the main-only guard must run before the deployer's token is requested"
-    assert not steps[guard].get("if"), "the guard is unconditional; an `if:` could skip it"
-
+    """Runs the guard step's own shell. MUTATION: widen or drop the comparison."""
     env = {"PATH": os.environ["PATH"], "GITHUB_REF": ref}
     proc = subprocess.run(
-        ["bash", "-e", "-c", steps[guard]["run"]],
+        ["bash", "-e", "-c", run_block("iam-refusal-probe.yml", "probe", "refuse any ref but main")],
         env=env, capture_output=True, text=True, timeout=30,
     )
     assert (proc.returncode == 0) is passes, (
@@ -199,19 +191,6 @@ def test_the_revert_runs_on_every_path_after_a_write_could_have_happened():
     # one step that must run on.
     assert gate in revert_if, f"the revert must be gated on preflight's output: `{revert_if}`"
     assert f"steps.{steps[grant].get('id')}.outputs" not in revert_if, revert_if
-
-
-def test_the_workflow_is_linted_on_every_pull_request_that_touches_it():
-    """It runs only when dispatched, so a pull request is the one place it is parsed."""
-    assert reaches(".github/workflows/iam-refusal-probe.yml"), app_paths()
-    lint = [
-        step.get("run") or ""
-        # The `release workflow wiring (actionlint) · ...` steps of
-        # `quick-checks` since CI-FOLD (archived issue 1799).
-        for step in check_steps("application.yml", "workflows")
-        if "actionlint" in (step.get("run") or "")
-    ]
-    assert any(".github/workflows/iam-refusal-probe.yml" in run for run in lint), lint
 
 
 # ---------------------------------------------------------------------------

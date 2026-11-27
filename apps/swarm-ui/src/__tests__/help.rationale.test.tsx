@@ -16,23 +16,23 @@
  * that answered differently would be an oracle" is about the API's refusal).
  * The controls pin that boundary both ways.
  *
+ * The doc is prose, so no test reads it (a test reads only its own tree,
+ * issue 71); what is held here is that each moved phrase stays off the Help
+ * page.
+ *
  * MUTATION: put "A screen that drew a file tree here would be inventing it."
- * back into `checkpoints`, or delete a topic's section from the doc. The
+ * back into `checkpoints`. The
  * verbs include `showed` and `asked`, and the hand-written-description form:
  * the review of archived issue 131 found three paragraphs the narrower pattern let through.
  */
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import { HELP, TOPIC_IDS, type TopicId } from '../help'
 
-const DOC = join(__dirname, '..', '..', '..', '..', 'docs', 'web-ui', 'help-rationale.md')
-
 const UI_RATIONALE =
   /\bthis UI’s\b|\b(this|the) (whole )?app (exists|is about)\b|\bwould be inventing\b|\b(a|any) (screen|panel|chip|console|button) that (drew|draws|read|reads|reported|kept|fell|says|showed|shows|asked|asks)\b|\bhand-written description would be\b|\bwhy the screens\b|\bthe intended cost\b/i
 
-/** The topics whose UI rationale moved to the doc, and a phrase of what moved. */
+/** The topics whose UI rationale moved to docs/web-ui/help-rationale.md, and a phrase of what moved. */
 const MOVED: Readonly<Record<string, string>> = {
   'absent-vs-zero': 'defining bug',
   'api-reads': 'reporting itself broken',
@@ -97,22 +97,12 @@ describe('Help’s long form carries no UI rationale (#131)', () => {
     expect(found).toEqual([])
   })
 
-  it('every rationale that left a topic is in docs/web-ui/help-rationale.md, under that topic', () => {
-    const doc = readFileSync(DOC, 'utf8')
-    const sections = doc.split(/^## /m).slice(1)
+  it('every rationale that left a topic stays off the Help page', () => {
     for (const [id, phrase] of Object.entries(MOVED)) {
       expect(HELP[id as TopicId], `${id} is not a topic`).toBeDefined()
-      const section = sections.find((s) => s.startsWith(`\`${id}\``))
-      expect(section, `the doc has no section for ${id}`).toBeDefined()
-      // Markdown wraps a quote across `> ` lines; read it as one line.
-      const flat = section!.replace(/\s*\n>?\s*/g, ' ')
-      expect(flat, `${id}'s section does not keep what moved`).toContain(phrase)
-      // And it is gone from the Help page.
       expect(HELP[id as TopicId].long.join(' ')).not.toContain(phrase)
     }
     // api-reads gave two; the second is the p95's counterfactual.
-    const reads = sections.find((s) => s.startsWith('`api-reads`'))!.replace(/\s*\n>?\s*/g, ' ')
-    expect(reads).toContain('the same class of claim')
     expect(HELP['api-reads'].long.join(' ')).not.toContain('the same class of claim')
   })
 })

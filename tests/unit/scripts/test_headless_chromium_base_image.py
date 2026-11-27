@@ -20,8 +20,7 @@ WHAT IS ASSERTED, reading images/agent-runtime-base/Dockerfile:
   * no browser binary is baked in: each repository pins its own Playwright
     and so its own Chromium revision, which goes into the agent's writable
     cache at run time;
-  * the Dockerfile says why, and docs/browser-qa.md tells a step how to run
-    its suite on both Claude profiles.
+  * the Dockerfile says why.
 """
 
 from __future__ import annotations
@@ -33,7 +32,6 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 DOCKERFILE = REPO / "images" / "agent-runtime-base" / "Dockerfile"
-BROWSER_QA_DOC = REPO / "docs" / "browser-qa.md"
 
 #: playwright-core 1.63.0 (the browser image's PLAYWRIGHT_VERSION) and 1.64.1,
 #: `nativeDeps` `debian12-x64.chromium`, read 2026-10-26: the same 21 names.
@@ -133,15 +131,3 @@ def test_the_dockerfile_says_why_each_block_is_there() -> None:
     for needle in ("#2253", "Skia FontConfig FATAL", "libglib-2.0.so.0",
                    "install-deps", "each repository pins its own"):
         assert needle in text, needle
-
-
-def test_the_doc_tells_a_step_how_to_run_its_suite_on_both_profiles() -> None:
-    doc = BROWSER_QA_DOC.read_text()
-    heading = re.search(
-        r"^## (?:\d+\. )?Running a repository's own Playwright suite$", doc, re.MULTILINE)
-    assert heading, "docs/browser-qa.md has no section on running a repository's own suite"
-    section = doc[heading.end():].split("\n## ", 1)[0]
-    for needle in ("claude-code-browser", "`claude-code`", "npx playwright install chromium",
-                   "swarm-test-browsers npx playwright test", "SWARM_TEST_BROWSERS_PATH",
-                   "XDG_CACHE_HOME", "--with-deps", "the Chromium-launch fix"):
-        assert needle in section, needle

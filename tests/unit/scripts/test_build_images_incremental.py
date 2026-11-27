@@ -28,10 +28,7 @@ fake `gcloud` on PATH that remembers which tag points at which digest:
   * every image is rebuilt when build logic changed, there is no ancestor
     record, the record is of a commit that is not an ancestor, a reused digest
     is older than seven days, --full-build is given, or the environment is
-    prod;
-  * application.yml asks for the previous record, builds incrementally, can
-    be told to build everything, and has the history and the permission it
-    needs.
+    prod.
 
 WHAT THIS CANNOT PROVE: that Artifact Registry's `docker tags add` behaves as
 the fake does (a tag moved to the named digest). It is the command
@@ -173,8 +170,11 @@ class Sandbox:
         for name in (".gitignore", ".gcloudignore", ".dockerignore", "pyproject.toml", "uv.lock"):
             if (REPO / name).exists():
                 shutil.copy2(REPO / name, self.root / name)
+        # build-images.sh lists the workflow among its build logic by path
+        # (a change to it rebuilds everything); its text is never read, so a
+        # stand-in is enough.
         (self.root / ".github" / "workflows").mkdir(parents=True)
-        shutil.copy2(WORKFLOW, self.root / ".github" / "workflows" / "application.yml")
+        (self.root / ".github" / "workflows" / "application.yml").write_text("name: application\n")
         (self.root / "apps" / "swarm-ui" / "src").mkdir(parents=True)
         (self.root / "apps" / "swarm-ui" / "src" / "App.tsx").write_text("export {};\n")
         self.git("init", "-q")

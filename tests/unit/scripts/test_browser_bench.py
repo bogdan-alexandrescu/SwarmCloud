@@ -8,7 +8,7 @@ would let the benchmark compare something other than the two tools:
   * the arms differ by the tool sentence and NOTHING else -- not the profile,
     not another input key, not a word of the prompt (invariant 10 too: the
     tool is chosen by prose, never by a new API input);
-  * the dry run's plan is the size the doc says (10 x 2 x 3 = 60) and its
+  * the dry run's plan is 10 x 2 x 3 = 60 and its
     estimate is that count times the measured median;
   * the summary counts a run as a success only when its answer passes the
     prompt's check AND the agent drove the live browser, says "not measured"
@@ -32,7 +32,6 @@ import pytest
 ROOT = Path(__file__).resolve().parents[3]
 HELPER = ROOT / "scripts" / "browser_bench.py"
 SCRIPT = ROOT / "scripts" / "browser-bench.sh"
-DOC = ROOT / "docs" / "browser-bench.md"
 _PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", ROOT / "tests" / "placeholders.py")
 _PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
 _PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
@@ -402,16 +401,6 @@ def test_script_house_style():
     assert SCRIPT.stat().st_mode & 0o111, "the script must be executable"
     assert "declare -A" not in text and "mapfile" not in text
     assert "run(s) visited" in text, "the script must print how many runs it visited"
-
-
-def test_doc_lists_every_prompt_and_the_pass_bar():
-    text = DOC.read_text()
-    for prompt in bb.PROMPTS:
-        assert f"`{prompt.id}`" in text, prompt.id
-    assert "8/10" in text
-    assert "0.66" in text and "39.60" in text
-    assert "egress" in text.lower()
-    assert "scripts/browser-bench.sh" in text
 
 
 def test_pypi_license_accepts_how_pypi_writes_it_now():

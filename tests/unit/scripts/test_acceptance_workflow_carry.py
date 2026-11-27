@@ -39,7 +39,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 LIB = ROOT / "scripts" / "acceptance" / "lib.sh"
 WORKFLOW = ROOT / "scripts" / "acceptance" / "groups" / "workflow.sh"
-ACCEPTANCE_DOC = ROOT / "docs" / "acceptance.md"
 
 
 def _function(text: str, name: str) -> str:
@@ -136,15 +135,6 @@ def test_carry_check_asserts_carried_from_and_child_staging():
         assert needle in check, f"_wf_check_carry does not reference {needle}"
     # The parked attempt is read from the park's own event, not guessed.
     assert re.search(r'select\(\.type == "parked"', check), check
-
-
-def test_acceptance_doc_has_a_carry_row():
-    doc = ACCEPTANCE_DOC.read_text()
-    section = doc.split("### workflow\n", 1)[1].split("\n### ", 1)[0]
-    rows = [line for line in section.splitlines() if line.startswith("| carry |")]
-    assert len(rows) == 1, section
-    assert "carried_from" in rows[0]
-    assert "the park-and-carry 403 finding" in rows[0]
 
 
 PARENT = "task_carrya00000000000001"

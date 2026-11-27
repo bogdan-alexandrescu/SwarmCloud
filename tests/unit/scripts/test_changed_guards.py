@@ -164,9 +164,9 @@ def test_a_docs_only_change_still_selects_the_tests_that_read_the_changed_doc():
     for reader in readers:
         assert reader in selected, reader
     # A non-doc guard may also be a READER of a changed doc: test_auto_merge_
-    # base_merge reads docs/runbooks/merge-app.md and test_issue_forms reads
-    # CLAUDE.md (CI-GUARDS-THREE, part of archived issue 1822). Such a guard is selected as a
-    # reader, by the same rule that picks test_merge_step_docs, not because the
+    # base_merge reads docs/runbooks/merge-app.md and test_verify_deployer_
+    # trust names CLAUDE.md (CI-GUARDS-THREE, part of archived issue 1822). Such a guard is selected as a
+    # reader, by the same rule that picks any other reader, not because the
     # guard set leaked in -- so it is allowed here only when its own text names
     # a changed doc, and every other non-doc guard is still refused.
     refused = [g for g in UNIT_GUARDS if not _names_a_changed_doc(g, changed)]
@@ -184,32 +184,38 @@ def test_a_docs_only_change_still_selects_the_tests_that_read_the_changed_doc():
 
 
 def test_the_cheap_walkers_that_read_a_doc_are_in_the_guard_set():
-    # The three CI-GUARDS-DOCS left out only because the docs-only assertion
+    # The CI-GUARDS-DOCS left out only because the docs-only assertion
     # above read them as leaks (CI-GUARDS-THREE, part of archived issue 1822): each walks
     # .github/ or scripts/ and weighs under 5 CI-seconds.
     for guard in (
         "tests/unit/scripts/test_auto_merge_base_merge.py",
-        "tests/unit/scripts/test_issue_forms.py",
         "tests/unit/scripts/test_verify_deployer_trust.py",
     ):
-        # MUTATION: drop any of the three from GUARD_TESTS and this is red, naming it.
+        # MUTATION: drop either from GUARD_TESTS and this is red, naming it.
         assert guard in GUARDS, guard
         # MUTATION: list one of them in DOC_GUARD_TESTS and every docs-only
         # diff runs it -- red here.
         assert guard not in DOC_GUARDS, guard
 
 
-def test_the_inventory_walkers_the_train_ejected_for_are_in_the_guard_set():
-    # Whole-tree inventories no diff selects (owner's improvement plan,
-    # 2026-11-23): a new runbook or plugin agent breaks them without either
-    # naming it.
-    for guard in (
-        "tests/unit/scripts/test_runbook_index.py",
-        "tests/unit/mcp/test_plugin_agents_ignore_chat.py",
-    ):
-        # MUTATION: drop either from GUARD_TESTS and this is red, naming it.
-        assert guard in GUARDS, guard
-        assert guard not in DOC_GUARDS, guard
+def test_the_out_of_tree_read_scanner_is_in_the_guard_set():
+    # A test that newly reads docs prose, CI YAML, a root *.md or the Makefile
+    # sits in a file no diff of the read file names: only GUARD_TESTS, which
+    # every pull request and the pre-publish gate run, reaches it (issue 71).
+    guard = "tests/unit/scripts/test_check_test_reads.py"
+    # MUTATION: drop it from GUARD_TESTS and this is red.
+    assert guard in GUARDS, guard
+    # A docs-only diff cannot add a read under tests/.
+    assert guard not in DOC_GUARDS, guard
+
+
+def test_the_inventory_walker_the_train_ejected_for_is_in_the_guard_set():
+    # A whole-tree inventory no diff selects (owner's improvement plan,
+    # 2026-11-23): a new plugin agent breaks it without naming it.
+    guard = "tests/unit/mcp/test_plugin_agents_ignore_chat.py"
+    # MUTATION: drop it from GUARD_TESTS and this is red.
+    assert guard in GUARDS, guard
+    assert guard not in DOC_GUARDS, guard
 
 
 def test_the_install_manifest_completeness_test_is_in_the_guard_set():
@@ -236,10 +242,9 @@ def test_a_doc_beside_a_code_change_keeps_the_whole_guard_set():
     assert "check-contract-parity.sh" in result.stdout
 
 
-# DOC CLOSURE (archived issue 2299). A doc that cites a changed non-doc path by its full
-# path counts as changed, so the tests that read that doc are selected: PR
-# archived pull request 2267 moved PushTestCell out of Access.tsx while docs/onboarding.md still
-# cited it, and the tests resolving that citation name only onboarding.md.
+# NO DOC CLOSURE (issue 71). Archived issue 2299 made a doc citing a changed
+# path count as changed, to run the tests that read the doc; no test reads
+# docs now (scripts/check_test_reads.py), so a citing doc selects nothing.
 def _doc_repo(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     (tmp_path / "scripts" / "lib").mkdir(parents=True)
     shutil.copy(SCRIPT, tmp_path / "scripts" / "changed-guards.sh")
@@ -264,7 +269,7 @@ def _doc_repo(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     return tmp_path, env
 
 
-def test_a_doc_citing_a_changed_path_selects_the_tests_that_read_the_doc(tmp_path: Path):
+def test_a_doc_citing_a_changed_path_selects_nothing(tmp_path: Path):
     root, env = _doc_repo(tmp_path)
     result = subprocess.run(
         ["bash", str(root / "scripts" / "changed-guards.sh"), "--list", "--files", "-"],
@@ -272,10 +277,8 @@ def test_a_doc_citing_a_changed_path_selects_the_tests_that_read_the_doc(tmp_pat
     )
     assert result.returncode == 0, result.stderr
     selected = _selected(result.stdout)
-    # MUTATION: drop the docs grep from changed-guards.sh and this is red.
-    assert "tests/unit/scripts/test_x_docs.py" in selected, selected
-    # The controls: a doc citing another file, and a doc citing A.tsx by its
-    # basename only, select none of their readers.
+    # MUTATION: restore the docs grep in changed-guards.sh and this is red.
+    assert "tests/unit/scripts/test_x_docs.py" not in selected, selected
     assert "tests/unit/scripts/test_y_docs.py" not in selected, selected
     assert "tests/unit/scripts/test_z_docs.py" not in selected, selected
 
@@ -296,7 +299,7 @@ def test_a_docs_only_change_follows_no_doc_citation(tmp_path: Path):
 
 
 def test_a_changed_test_file_is_selected_itself():
-    path = "tests/unit/scripts/test_issue_forms.py"
+    path = "tests/unit/scripts/test_check_test_reads.py"
     result = _run("--list", "--files", "-", stdin=path + "\n")
     assert result.returncode == 0, result.stderr
     assert path in _selected(result.stdout)

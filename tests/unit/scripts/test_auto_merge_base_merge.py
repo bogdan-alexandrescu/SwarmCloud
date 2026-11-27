@@ -20,9 +20,16 @@ Owner decision, 2026-10-07:
   it was queued, arms once more at the new head; a head moved by anything
   else is never armed.
 
-Every shell here is RUN: the classifier against a real git history in a
+Every shell here comes from scripts/generated/ci-run-blocks.json (issue 71: a
+test never reads .github/) and is RUN: the classifier against a real git history in a
 scratch `file://` repository, the `gh` calls against a fake that records them.
 Nothing touches the network.
+
+THE TESTS THAT READ .github/ hold CI security decisions the owner kept on
+2026-11-25: the disable job's App token without the workflows permission,
+its least-privilege, checkout-free job and the push read through env. This
+file is on scripts/check_test_reads.py's SECURITY_GUARDS list for those
+tests alone (issue 71).
 """
 
 from __future__ import annotations
@@ -38,11 +45,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-REPO = Path(__file__).resolve().parents[3]
-WORKFLOWS = REPO / ".github" / "workflows"
-AUTO_MERGE = WORKFLOWS / "auto-merge.yml"
-CI_GATE_SCRIPT = REPO / "scripts" / "ci-gate.sh"
-RUNBOOK = REPO / "docs" / "runbooks" / "merge-app.md"
+from .ci_run_blocks import run_block
+
 
 PR = "4242"
 # Which identity made each `gh` call. Plain words, not token-shaped: the fake
@@ -54,35 +58,6 @@ pytestmark = pytest.mark.skipif(
     shutil.which("bash") is None or shutil.which("jq") is None or shutil.which("git") is None,
     reason="bash, jq and git are required",
 )
-
-
-def _workflow(path: Path) -> dict:
-    data = yaml.safe_load(path.read_text())
-    # PyYAML reads the bare key `on` as the boolean True.
-    if True in data:
-        data["on"] = data.pop(True)
-    return data
-
-
-@pytest.fixture(scope="module")
-def workflow() -> dict:
-    return _workflow(AUTO_MERGE)
-
-
-@pytest.fixture(scope="module")
-def enable_job(workflow: dict) -> dict:
-    return workflow["jobs"]["enable"]
-
-
-@pytest.fixture(scope="module")
-def disable_job(workflow: dict) -> dict:
-    return workflow["jobs"]["disable"]
-
-
-def _step(job: dict, step_id: str) -> dict:
-    matches = [step for step in job.get("steps") or [] if step.get("id") == step_id]
-    assert len(matches) == 1, f"expected one step with id {step_id!r}, found {len(matches)}"
-    return matches[0]
 
 
 def _fake(tmp_path: Path, text: str) -> Path:
@@ -191,9 +166,9 @@ def history(tmp_path_factory) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def _run_classify(disable_job: dict, tmp_path: Path, history: dict, *, after: str, action: str = "synchronize",
+def _run_classify(tmp_path: Path, history: dict, *, after: str, action: str = "synchronize",
                   before: str | None = None):
-    script = _step(disable_job, "classify")["run"]
+    script = run_block("auto-merge.yml", "disable", "classify")
     bindir = _fake(tmp_path, "#!/usr/bin/env bash\necho \"fake gh: unexpected call: $*\" >&2\nexit 3\n")
     output = tmp_path / "output.txt"
     summary = tmp_path / "summary.md"
@@ -215,10 +190,10 @@ def _run_classify(disable_job: dict, tmp_path: Path, history: dict, *, after: st
     return proc, _outputs(output)
 
 
-def test_an_update_branch_merge_is_a_pure_base_merge(disable_job: dict, tmp_path: Path, history: dict):
+def test_an_update_branch_merge_is_a_pure_base_merge(tmp_path: Path, history: dict):
     """The control for every refusal below: without it, a classifier that
     says "no" to everything passes them all."""
-    proc, outputs = _run_classify(disable_job, tmp_path, history, after=history["pure"])
+    proc, outputs = _run_classify(tmp_path, history, after=history["pure"])
     assert proc.returncode == 0, proc.stderr
     assert outputs.get("pure_base_merge") == "true", (outputs, proc.stdout, proc.stderr)
 
@@ -232,26 +207,26 @@ def test_an_update_branch_merge_is_a_pure_base_merge(disable_job: dict, tmp_path
         ("stale_parent", "main merged into a commit that is not the labelled head"),
     ],
 )
-def test_any_other_push_is_not_a_pure_base_merge(disable_job: dict, tmp_path: Path, history: dict, after: str, why: str):
+def test_any_other_push_is_not_a_pure_base_merge(tmp_path: Path, history: dict, after: str, why: str):
     """MUTATION: drop the tree comparison (evil passes), the first-parent
     check (stale_parent passes) or the is-on-main check (side_merge passes)."""
-    proc, outputs = _run_classify(disable_job, tmp_path, history, after=history[after])
+    proc, outputs = _run_classify(tmp_path, history, after=history[after])
     assert proc.returncode == 0, proc.stderr
     assert outputs.get("pure_base_merge") == "false", (why, outputs, proc.stdout, proc.stderr)
 
 
 @pytest.mark.parametrize("action", ["reopened", "edited"])
-def test_a_reopen_or_a_base_change_is_never_a_pure_base_merge(disable_job: dict, tmp_path: Path, history: dict,
+def test_a_reopen_or_a_base_change_is_never_a_pure_base_merge(tmp_path: Path, history: dict,
                                                             action: str):
     """Only `synchronize` moves the head by a push; the other two always drop `ready`."""
-    proc, outputs = _run_classify(disable_job, tmp_path, history, after=history["pure"], action=action)
+    proc, outputs = _run_classify(tmp_path, history, after=history["pure"], action=action)
     assert proc.returncode == 0, proc.stderr
     assert outputs.get("pure_base_merge") == "false", outputs
 
 
-def test_a_head_that_cannot_be_read_is_treated_as_any_other_push(disable_job: dict, tmp_path: Path, history: dict):
+def test_a_head_that_cannot_be_read_is_treated_as_any_other_push(tmp_path: Path, history: dict):
     """Could not tell is not "pure": the safe answer drops `ready`, and says why."""
-    proc, outputs = _run_classify(disable_job, tmp_path, history, after="f" * 40)
+    proc, outputs = _run_classify(tmp_path, history, after="f" * 40)
     assert proc.returncode == 0, proc.stderr
     assert outputs.get("pure_base_merge") == "false", outputs
     assert "::warning::" in proc.stdout, proc.stdout
@@ -304,18 +279,17 @@ def test_no_later_event_can_cancel_a_push_s_disable_run(workflow: dict):
     assert group("workflow_run", run_id=13) != group("workflow_run", run_id=14)
 
 
-def test_a_pure_merge_over_a_foreign_push_is_pure_only_about_its_own_step(disable_job: dict, tmp_path: Path,
-                                                                         history: dict):
+def test_a_pure_merge_over_a_foreign_push_is_pure_only_about_its_own_step(tmp_path: Path, history: dict):
     """The chain L -> plain (foreign) -> stale_parent (main merged into plain):
     the last step alone IS a pure base merge, so keeping `ready` safe rests on
-    plain's own run -- which the test above keeps from being cancelled -- and
+    plain's own run -- which a run of its own disarms and strips -- and
     over the labelled head the chain is not pure. MUTATION: drop the
     first-parent check (the second assertion fails)."""
-    proc, outputs = _run_classify(disable_job, tmp_path, history, before=history["plain"],
+    proc, outputs = _run_classify(tmp_path, history, before=history["plain"],
                                   after=history["stale_parent"])
     assert proc.returncode == 0, proc.stderr
     assert outputs.get("pure_base_merge") == "true", (outputs, proc.stdout, proc.stderr)
-    proc, outputs = _run_classify(disable_job, tmp_path, history, after=history["stale_parent"])
+    proc, outputs = _run_classify(tmp_path, history, after=history["stale_parent"])
     assert proc.returncode == 0, proc.stderr
     assert outputs.get("pure_base_merge") == "false", (outputs, proc.stdout, proc.stderr)
 
@@ -341,27 +315,6 @@ def test_the_disable_job_acts_only_when_the_push_is_not_a_pure_base_merge(disabl
     reevaluate = str(_step(disable_job, "reevaluate").get("if") or "")
     assert "steps.one-event.outputs.one_event == 'true'" in reevaluate and "steps.disarm.outcome == 'success'" in reevaluate, reevaluate
     assert "steps.reevaluate.outcome != 'success'" in str(_step(disable_job, "strip").get("if")), _step(disable_job, "strip").get("if")
-
-
-def test_the_disable_job_reads_the_push_from_the_event_through_env(disable_job: dict):
-    env = _step(disable_job, "classify").get("env") or {}
-    assert env.get("ACTION") == "${{ github.event.action }}", env
-    assert env.get("BEFORE") == "${{ github.event.before }}", env
-    assert env.get("AFTER") == "${{ github.event.after }}", env
-    assert env.get("BASE_REF") == "${{ github.event.pull_request.base.ref }}", env
-    for step in disable_job["steps"]:
-        assert "${{" not in str(step.get("run") or ""), step.get("id")
-
-
-def test_the_disable_job_never_checks_out_and_holds_the_least_it_needs(disable_job: dict):
-    """contents: read is the classifier's fetch (commits and trees, never a
-    working tree); pull-requests: write the label and the comment; actions: write
-    the one-event step's read of this run's created_at and the re-evaluation it
-    dispatches (PR 1419, owner-approved 2026-10-16). The disable itself is the
-    App's (archived issue 795). MUTATION: add a checkout, or widen the token further."""
-    assert disable_job.get("permissions") == {"contents": "read", "pull-requests": "write", "actions": "write"}
-    for step in disable_job["steps"]:
-        assert "checkout" not in str(step.get("uses") or ""), step
 
 
 # ---------------------------------------------------------------------------
@@ -395,10 +348,10 @@ def _disarm_script(job: dict) -> str:
 
 
 @pytest.fixture(params=["enable", "disable"])
-def run_disarm(request, workflow: dict, tmp_path: Path):
+def run_disarm(request, tmp_path: Path):
     """The same step in both jobs: the disable job's on a push, the enable
     job's after a refusal on re-evaluation."""
-    script = _disarm_script(workflow["jobs"][request.param])
+    script = run_block("auto-merge.yml", request.param, "disarm")
     bindir = _fake(tmp_path, FAKE_GH_DISARM)
 
     def run(*, armed: bool = True, app: str | None = APP_IDENTITY, can_disable: str = APP_IDENTITY,
@@ -484,16 +437,6 @@ def test_no_disable_in_the_workflow_hides_its_failure():
     assert not re.search(r"--disable-auto[^\n]*\|\|\s*true", text), "a disable failure is hidden again"
 
 
-def test_the_disable_job_mints_the_app_token_without_the_workflows_permission(disable_job: dict):
-    """Turning auto-merge off writes no file, so it asks for no `workflows`."""
-    token = _step(disable_job, "app-token")
-    assert str(token.get("uses", "")).startswith("actions/create-github-app-token@"), token
-    inputs = token.get("with") or {}
-    assert inputs.get("permission-contents") == "write", inputs
-    assert inputs.get("permission-pull-requests") == "write", inputs
-    assert "permission-workflows" not in inputs, inputs
-
-
 FAKE_GH_STRIP = r"""#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "${FAKE_GH_LOG}"
@@ -513,12 +456,10 @@ exit 3
 @pytest.mark.parametrize("disarm, said", [("success", "turned off auto-merge"),
                                           ("skipped", "turned off auto-merge"),
                                           ("failure", "could not be turned off")])
-def test_any_other_push_strips_ready_and_says_whether_auto_merge_is_off(disable_job: dict, tmp_path: Path,
+def test_any_other_push_strips_ready_and_says_whether_auto_merge_is_off(tmp_path: Path,
                                                                         disarm: str, said: str):
     """MUTATION: drop the label removal, or claim it is off after a failed disable."""
-    script = _step(disable_job, "strip")["run"]
-    env_spec = _step(disable_job, "strip").get("env") or {}
-    assert env_spec.get("DISARM_OUTCOME") == "${{ steps.disarm.outcome }}", env_spec
+    script = run_block("auto-merge.yml", "disable", "strip")
     bindir = _fake(tmp_path, FAKE_GH_STRIP)
     log = tmp_path / "gh.log"
     comments = tmp_path / "comments.md"
@@ -536,11 +477,6 @@ def test_any_other_push_strips_ready_and_says_whether_auto_merge_is_off(disable_
     assert proc.returncode == 0, proc.stderr
     assert f"pr edit {PR} --remove-label ready" in log.read_text()
     assert said in comments.read_text(), comments.read_text()
-
-
-# ---------------------------------------------------------------------------
-# The enable job's disarm after a refusal on re-evaluation
-# ---------------------------------------------------------------------------
 
 
 def test_a_re_evaluation_refusal_disarms_with_the_app_token(enable_job: dict):
@@ -591,8 +527,8 @@ exit 3
 
 
 @pytest.fixture
-def run_enable(enable_job: dict, tmp_path: Path, history: dict):
-    script = _step(enable_job, "merge")["run"]
+def run_enable(tmp_path: Path, history: dict):
+    script = run_block("auto-merge.yml", "enable", "merge")
     bindir = _fake(tmp_path, FAKE_GH_ENABLE)
 
     def run(current: str, *, queue: str = "false", moves_again: bool = False):
@@ -673,17 +609,6 @@ def test_the_classifier_is_one_function_in_both_jobs(enable_job: dict, disable_j
         assert env.get("REMOTE_URL") == "${{ github.server_url }}/${{ github.repository }}.git", env
 
 
-# ---------------------------------------------------------------------------
-# Fan-out: re-evaluate only on the completions that can be the last
-# ---------------------------------------------------------------------------
-
-
-def _gated_workflow_files() -> set[str]:
-    match = re.search(r'^GATED_WORKFLOWS="\$\{CI_GATE_WORKFLOWS:-([^}]*)\}"', CI_GATE_SCRIPT.read_text(), re.M)
-    assert match, "scripts/ci-gate.sh no longer names the workflows it waits for"
-    return set(match.group(1).split())
-
-
 def test_completions_ci_gate_waits_for_do_not_start_a_run(workflow: dict):
     """ci-gate is the last job of application.yml and waits for terraform.yml's
     run at its head (CI_GATE_WORKFLOWS=terraform.yml), so terraform's own
@@ -706,8 +631,70 @@ def test_completions_ci_gate_waits_for_do_not_start_a_run(workflow: dict):
     assert "CI_GATE_WORKFLOWS" in str(gate) and "terraform.yml" in str(gate), gate  # what ci-gate waits for
 
 
-def test_the_runbook_says_why_the_app_turns_auto_merge_off():
-    text = RUNBOOK.read_text()
-    assert "## The App also turns auto-merge off" in text
-    assert "--disable-auto" in text and "Resource not accessible by integration" in text
-    assert "pure base merge" in text.lower()
+REPO = Path(__file__).resolve().parents[3]
+
+
+WORKFLOWS = REPO / ".github" / "workflows"
+
+
+AUTO_MERGE = WORKFLOWS / "auto-merge.yml"
+
+
+def _workflow(path: Path) -> dict:
+    data = yaml.safe_load(path.read_text())
+    # PyYAML reads the bare key `on` as the boolean True.
+    if True in data:
+        data["on"] = data.pop(True)
+    return data
+
+
+@pytest.fixture(scope="module")
+def workflow() -> dict:
+    return _workflow(AUTO_MERGE)
+
+
+@pytest.fixture(scope="module")
+def enable_job(workflow: dict) -> dict:
+    return workflow["jobs"]["enable"]
+
+
+@pytest.fixture(scope="module")
+def disable_job(workflow: dict) -> dict:
+    return workflow["jobs"]["disable"]
+
+
+def _step(job: dict, step_id: str) -> dict:
+    matches = [step for step in job.get("steps") or [] if step.get("id") == step_id]
+    assert len(matches) == 1, f"expected one step with id {step_id!r}, found {len(matches)}"
+    return matches[0]
+
+
+def test_the_disable_job_reads_the_push_from_the_event_through_env(disable_job: dict):
+    env = _step(disable_job, "classify").get("env") or {}
+    assert env.get("ACTION") == "${{ github.event.action }}", env
+    assert env.get("BEFORE") == "${{ github.event.before }}", env
+    assert env.get("AFTER") == "${{ github.event.after }}", env
+    assert env.get("BASE_REF") == "${{ github.event.pull_request.base.ref }}", env
+    for step in disable_job["steps"]:
+        assert "${{" not in str(step.get("run") or ""), step.get("id")
+
+
+def test_the_disable_job_never_checks_out_and_holds_the_least_it_needs(disable_job: dict):
+    """contents: read is the classifier's fetch (commits and trees, never a
+    working tree); pull-requests: write the label and the comment; actions: write
+    the one-event step's read of this run's created_at and the re-evaluation it
+    dispatches (PR 1419, owner-approved 2026-10-16). The disable itself is the
+    App's (archived issue 795). MUTATION: add a checkout, or widen the token further."""
+    assert disable_job.get("permissions") == {"contents": "read", "pull-requests": "write", "actions": "write"}
+    for step in disable_job["steps"]:
+        assert "checkout" not in str(step.get("uses") or ""), step
+
+
+def test_the_disable_job_mints_the_app_token_without_the_workflows_permission(disable_job: dict):
+    """Turning auto-merge off writes no file, so it asks for no `workflows`."""
+    token = _step(disable_job, "app-token")
+    assert str(token.get("uses", "")).startswith("actions/create-github-app-token@"), token
+    inputs = token.get("with") or {}
+    assert inputs.get("permission-contents") == "write", inputs
+    assert inputs.get("permission-pull-requests") == "write", inputs
+    assert "permission-workflows" not in inputs, inputs

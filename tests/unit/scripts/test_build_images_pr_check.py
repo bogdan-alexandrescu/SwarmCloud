@@ -10,7 +10,7 @@ main 539b5b58 and f1c4b075). Main went red and releases were blocked.
 Owner decision, 2026-10-05: a pull request that changes images/** or a file an
 image copies in builds the affected images in Cloud Build WITHOUT pushing, so
 their build-time self-tests run before merge. The properties asserted here,
-each against the REAL scripts and workflow:
+each against the REAL scripts:
 
   * which images a set of changed paths reaches is DERIVED from the
     Dockerfiles' COPY sources and each recipe's directory -- planting a COPY
@@ -22,10 +22,6 @@ each against the REAL scripts and workflow:
     `images:` to push and no registry at all, touches no registry itself,
     writes no manifest, and builds agent-runtime-browser on a base built in
     the same Cloud Build instead of pulling one from the registry;
-  * every input path the mapping knows reaches application.yml's jobs on a
-    pull request (its `changes` job's APP_PATHS), so the build job runs;
-  * the workflow job runs both modes on a pull request and authenticates as
-    something other than the deployer.
 
 WHAT THIS CANNOT PROVE: that Cloud Build accepts the generated configs, that
 BuildKit resolves the locally built base without a pull, or that the
@@ -47,12 +43,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from .application_paths import reaches
-from .test_fast_checks_on_lane_prs import without_lane_clause
-
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "build-images.sh"
-WORKFLOW = REPO / ".github" / "workflows" / "application.yml"
 TAG = "feed00c0ffee"
 
 pytestmark = pytest.mark.skipif(
@@ -87,6 +79,51 @@ ALL = PYTHON_SERVICES | WORKER | {"swarm-ui", "swarm-verify", "swarm-live", "swa
                                   "swarm-typesafe-fwd", "swarm-graph", "swarm-github-hooks",
                                   "swarm-voice", "swarm-speech", "swarm-plugin-intake",
                                   "swarm-plugin-bundler", "workspace-apply"}
+
+
+WORKFLOW = REPO / ".github" / "workflows" / "application.yml"
+
+
+def _pr_job() -> tuple[str, dict]:
+    hits = [
+        (job_id, job)
+        for job_id, job in _jobs().items()
+        if any("--build-only" in str(s.get("run", "")) for s in job.get("steps") or [])
+    ]
+    assert len(hits) == 1, f"expected one job running build-images.sh --build-only, found {hits}"
+    return hits[0]
+
+
+LANE_SKIP = ("!(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') "
+             "&& github.event.pull_request.head.repo.full_name == github.repository)")
+
+
+def _balanced(text: str) -> bool:
+    depth = 0
+    for char in re.sub(r"'[^']*'", "", text):
+        depth += {"(": 1, ")": -1}.get(char, 0)
+        if depth < 0:
+            return False
+    return depth == 0
+
+
+def without_lane_clause(condition: object) -> str:
+    """A job's `if:` before the lane clause every job ends with
+    (test_fast_checks_on_lane_prs.py), `${{ }}` and all. Fails when the clause is missing."""
+    text = str(condition or "").strip()
+    inner = text.removeprefix("${{").removesuffix("}}").strip()
+    if inner == LANE_SKIP:
+        before = ""
+    else:
+        assert inner.endswith(" && " + LANE_SKIP), inner
+        before = inner[: -len(" && " + LANE_SKIP)]
+        if before.startswith("(") and before.endswith(")") and _balanced(before[1:-1]):
+            before = before[1:-1]
+    return "${{ " + before + " }}" if text.startswith("${{") and before else before
+
+
+def _jobs() -> dict:
+    return yaml.safe_load(WORKFLOW.read_text())["jobs"]
 
 
 def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
@@ -360,30 +397,6 @@ def test_workspace_apply_builds_from_a_context_holding_every_path_it_copies(tmp_
     assert not missing, f"images/workspace-apply/cloudbuild.yaml does not put {missing} in the build context"
 
 
-def test_every_image_input_fires_application_yml_on_a_pull_request(tmp_path):
-    """The build job lives in application.yml, and runs only when its
-    `changes` job says the change reaches the workflow (APP_PATHS, which was
-    the pull_request path filter until 2026-10-07). An input that list misses
-    skips the job, and the image goes unbuilt with every check green."""
-    proc = subprocess.run(
-        ["bash", str(SCRIPT), "--inputs"],
-        env=_env(tmp_path),
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
-    assert proc.returncode == 0, proc.stderr
-    samples = sorted({
-        # A concrete path each pattern matches: a glob star becomes a name.
-        re.sub(r"\*+", "x", pattern)
-        for _, pattern in (line.split("\t") for line in proc.stdout.splitlines() if line)
-    })
-    assert samples
-    missed = [sample for sample in samples if not reaches(sample)]
-    assert not missed, f"application.yml's jobs do not run on a pull request changing {missed}"
-
-
 # ---------------------------------------------------------------------------
 # --build-only, against a fake gcloud.
 # ---------------------------------------------------------------------------
@@ -578,23 +591,6 @@ def test_a_build_still_needs_a_project(tmp_path):
     )
     assert proc.returncode != 0
     assert "PROJECT_ID is not set" in proc.stderr, proc.stderr
-
-
-# ---------------------------------------------------------------------------
-# The workflow.
-# ---------------------------------------------------------------------------
-def _jobs() -> dict:
-    return yaml.safe_load(WORKFLOW.read_text())["jobs"]
-
-
-def _pr_job() -> tuple[str, dict]:
-    hits = [
-        (job_id, job)
-        for job_id, job in _jobs().items()
-        if any("--build-only" in str(s.get("run", "")) for s in job.get("steps") or [])
-    ]
-    assert len(hits) == 1, f"expected one job running build-images.sh --build-only, found {hits}"
-    return hits[0]
 
 
 def test_a_pull_request_job_maps_the_change_and_builds_without_pushing():

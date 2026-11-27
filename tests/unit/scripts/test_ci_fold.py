@@ -23,12 +23,12 @@ steps succeeded. The two existing name-keepers (`format / unit tests`,
 on a pull request)`, which read `needs` or write a fixed summary and run
 nothing else, move to ubuntu-24.04 too.
 
-WHERE THE REQUIRED NAMES WERE READ. `gh api` is not available to the lane
-that wrote this, so the required names come from this repository:
-test_merge_queue_workflows.REQUIRED_CONTEXTS (the ruleset 24160219 read of
-2026-10-01, unchanged at 2026-10-06, and the body docs/ci.md gives the
-owner), the check names scripts/lib/ci_reuse.py reuses by (REUSABLE), and
-ci-gate's `needs`.
+WHAT THIS HOLDS. Each name-keeper's shell and each folded job's `verdict`
+shell, run from the published run blocks (scripts/generated/ci-run-blocks.json)
+with the env the workflow gives them written here. The pins on the layout
+that guard the required checks and the verdict (job names, the keepers' runs-on,
+needs and `if:`, step ids) stay; the VM counts, the reach and reuse conditions
+and their docs/ci.md table were deleted by issue 71.
 
 WHAT THIS CANNOT PROVE: that GitHub fills `toJSON(steps)` with an entry per
 step id carrying `outcome`, and a job's `outputs` after a failed step, in the
@@ -41,7 +41,6 @@ from __future__ import annotations
 import itertools
 import json
 import os
-import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -49,22 +48,36 @@ from pathlib import Path
 import pytest
 import yaml
 
-from .ci_fold_layout import FOLDED, FOLDED_HOSTS, PATCH_NOTE, check_steps, host_job
+from .ci_fold_layout import PATCH_NOTE
+from .ci_run_blocks import run_block
 from .test_ci_reuse import reuse as ci_reuse
-from .test_fast_checks_on_lane_prs import without_lane_clause
-from .test_merge_queue_workflows import REQUIRED_CONTEXTS
+from .test_merge_queue_workflows import REQUIRED_CONTEXTS, without_lane_clause
 
 REPO = Path(__file__).resolve().parents[3]
 WORKFLOWS = REPO / ".github" / "workflows"
-CI_DOC = REPO / "docs" / "ci.md"
 HOSTED = "ubuntu-24.04"
 
-#: Jobs that do no work of their own (they read `needs`, or write a fixed
-#: summary) and moved to a hosted runner without folding anything.
-MOVED_HOSTED = {
-    "application.yml": {"python", "ui"},
-    "terraform.yml": {"plan-not-run"},
+#: Per workflow: the job the sub-minute checks are folded into, and each old
+#: job id kept as a name-keeper with the check name it reports (its CHECK env).
+FOLDED: dict[str, tuple[str, dict[str, str]]] = {
+    "application.yml": ("quick-checks", {
+        "workflows": "release workflow wiring (actionlint)",
+        "ruff": "ruff check",
+        "manifests": "kubernetes manifests",
+        "python-checks": "lock / contract / format / bridge install",
+    }),
+    "security.yml": ("checks", {
+        "secrets": "secret scan",
+        "policy": "platform policy assertions",
+    }),
+    "terraform.yml": ("offline", {
+        "validate": "fmt / validate / tflint",
+        "test": "terraform test",
+    }),
 }
+
+#: The folded job of each workflow, by file name.
+FOLDED_HOSTS = {name: host for name, (host, _) in FOLDED.items()}
 
 #: Every check name these three workflows reported on a pull request before
 #: CI-FOLD, read from main at a5831dd. Each must still be a job's name.
@@ -82,14 +95,6 @@ NAMES_BEFORE = {
         "fmt / validate / tflint", "terraform test", "plan (not run on a pull request)", "checkov",
     },
 }
-
-#: Self-hosted job definitions a same-repository pull request reaching every
-#: job runs, per workflow (a matrix counts once: the unit and vitest shards
-#: are untouched, so they add the same number before and after).
-VMS_BEFORE = {"application.yml": 15, "security.yml": 4, "terraform.yml": 4}
-VMS_AFTER = {"application.yml": 10, "security.yml": 3, "terraform.yml": 2}
-#: The claim in docs/ci.md and the pull request: this many fewer VMs a run.
-FEWER_VMS = 8
 
 needs_jq = pytest.mark.skipif(
     shutil.which("jq") is None or shutil.which("bash") is None, reason="the verdict step needs bash and jq"
@@ -112,14 +117,23 @@ def _needs(job: dict) -> list[str]:
     return [needs] if isinstance(needs, str) else list(needs)
 
 
-def _keeper_condition(name: str, job_id: str) -> str:
-    """The old job's own condition: the keeper's `if` after `always() && `,
-    before the lane clause every job ends with (test_fast_checks_on_lane_prs.py)."""
-    condition = without_lane_clause(_jobs(name)[job_id].get("if"))
-    assert condition == "always()" or condition.startswith("always() && "), f"{job_id}: {condition} {PATCH_NOTE}"
-    return condition.removeprefix("always()").removeprefix(" && ")
+def host_job(name: str) -> dict:
+    host = FOLDED_HOSTS[name]
+    jobs = _jobs(name)
+    assert host in jobs, f"{name} has no `{host}` job {PATCH_NOTE}"
+    return jobs[host]
 
 
+def check_steps(name: str, job_id: str) -> list[dict]:
+    """The steps that run old job `job_id`'s check, in its folded job."""
+    steps = [s for s in host_job(name).get("steps") or [] if str(s.get("id", "")).startswith(f"{job_id}-")]
+    assert steps, f"{name}: no `{job_id}-*` step in `{FOLDED_HOSTS[name]}` {PATCH_NOTE}"
+    return steps
+
+
+# ---------------------------------------------------------------------------
+# 0. Every required check name still exists as a job name.
+# ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # 1. Every required check name still exists as a job name.
 # ---------------------------------------------------------------------------
@@ -155,7 +169,7 @@ def test_every_check_name_from_before_the_fold_still_reports(name):
 
 
 # ---------------------------------------------------------------------------
-# 2. Each name-keeper runs hosted and fails when its folded step failed.
+# 1. Each name-keeper fails when its folded check did not pass.
 # ---------------------------------------------------------------------------
 KEEPERS = [(file, job_id, check) for file, (_, keep) in FOLDED.items() for job_id, check in keep.items()]
 
@@ -187,54 +201,6 @@ def test_a_name_keeper_runs_hosted_and_reads_only_its_own_verdict(file, job_id, 
     # The folded job publishes that verdict under the keeper's own id.
     outputs = host_job(file).get("outputs") or {}
     assert outputs.get(job_id) == "${{ steps.verdict.outputs.%s }}" % job_id, outputs
-
-
-def _run_keeper(file: str, job_id: str, verdict: str, folded: str) -> subprocess.CompletedProcess:
-    host_job(file)  # names the unapplied patch, rather than failing on the old job's many steps
-    (step,) = _jobs(file)[job_id]["steps"]
-    env = {**os.environ, "CHECK": step["env"]["CHECK"], "VERDICT": verdict, "FOLDED": folded}
-    for leak in ("GITHUB_ACTIONS", "GITHUB_STEP_SUMMARY", "GITHUB_OUTPUT"):
-        env.pop(leak, None)
-    return subprocess.run(["bash", "-c", step["run"]], env=env, capture_output=True, text=True, timeout=30,
-                          check=False)
-
-
-@pytest.mark.parametrize("file, job_id, check", KEEPERS)
-@pytest.mark.parametrize("verdict, folded", [
-    ("failure", "failure"),
-    ("skipped", "success"),   # reached, but none of its steps ran
-    ("", "failure"),           # the folded job died before its verdict step
-    ("", "cancelled"),
-    ("", "skipped"),           # the folded job never ran
-    ("Success", "success"),    # exact, not case-folded
-])
-def test_a_name_keeper_fails_whenever_its_folded_check_did_not_pass(file, job_id, check, verdict, folded):
-    """A name-keeper must never pass when its folded step failed.
-    MUTATION: compare `!= "failure"` instead of `== "success"`, or read the
-    folded job's result instead of the check's verdict."""
-    proc = _run_keeper(file, job_id, verdict, folded)
-    assert proc.returncode != 0, (verdict, folded, proc.stdout)
-    assert f"'{check}' did not pass" in proc.stdout, proc.stdout
-
-
-@pytest.mark.parametrize("file, job_id, check", KEEPERS)
-def test_a_name_keeper_passes_when_its_folded_check_passed(file, job_id, check):
-    """The control: the keeper can come out green. A sibling check's failure
-    fails the folded job, and the run through ci-gate, but not this name.
-    MUTATION: make the keeper fail on anything."""
-    for folded in ("success", "failure"):
-        proc = _run_keeper(file, job_id, "success", folded)
-        assert proc.returncode == 0, (folded, proc.stdout + proc.stderr)
-
-
-@pytest.mark.parametrize("file, job_id", sorted((f, j) for f, ids in MOVED_HOSTED.items() for j in ids))
-def test_the_jobs_that_only_read_needs_run_hosted(file, job_id):
-    """MUTATION: put `format / unit tests` back on the pool expression, or
-    give a moved job a checkout."""
-    job = _jobs(file)[job_id]
-    assert job.get("runs-on") == HOSTED, f"{file}:{job_id} runs on {job.get('runs-on')!r} {PATCH_NOTE}"
-    for step in job.get("steps") or []:
-        assert "uses" not in step, (job_id, step)
 
 
 # ---------------------------------------------------------------------------
@@ -271,62 +237,44 @@ def test_every_folded_step_belongs_to_one_check_or_the_shared_setup(file):
     assert kinds[0] == "setup" and "setup" not in kinds[kinds.index("other"):], kinds
 
 
-def test_each_application_check_runs_on_its_old_condition_only():
-    """A check skipped by reuse, or not reached by the change, must not run
-    in the folded job either. MUTATION: drop the `ruff` reuse clause from its
-    step's `if`."""
-    for job_id in FOLDED["application.yml"][1]:
-        condition = _keeper_condition("application.yml", job_id)
-        own = f"{ci_reuse.reach_if(job_id)} && !contains(fromJSON(needs.changes.outputs.reused || '[]'), '{job_id}')"
-        assert condition == own, (job_id, condition)
-        for step in check_steps("application.yml", job_id):
-            assert condition in str(step.get("if")), (step["id"], step.get("if"))
-
-
-def _evaluate(expression: str, app: str, python: str, reused: set[str]) -> bool:
-    """The subset of GitHub's expression language these `if:`s use."""
-    py = expression.removeprefix("always() && ")
-    py = re.sub(r"!contains\(fromJSON\(needs\.changes\.outputs\.reused \|\| '\[\]'\), '([\w-]+)'\)",
-                lambda m: repr(m.group(1) not in reused), py)
-    py = py.replace("needs.changes.outputs.app", repr(app)).replace("needs.changes.outputs.python", repr(python))
-    py = py.replace("&&", " and ").replace("||", " or ")
-    assert re.fullmatch(r"[\s()'\w=!.-]+", py), py
-    return bool(eval(py))  # noqa: S307 -- built above from literals only
-
-
-def test_the_folded_job_runs_exactly_when_one_of_its_checks_would():
-    """Over every reach and reuse combination. MUTATION: drop the
-    `python-checks` arm from `quick-checks`' `if`."""
-    host_if = without_lane_clause(host_job("application.yml")["if"])
-    keep = list(FOLDED["application.yml"][1])
-    conditions = [_keeper_condition("application.yml", k) for k in keep]
-    seen = set()
-    for app, python in itertools.product(("true", "false"), ("all", "selected", "subset", "none")):
-        for n in range(len(keep) + 1):
-            for reused in itertools.combinations(keep, n):
-                wanted = any(_evaluate(c, app, python, set(reused)) for c in conditions)
-                assert _evaluate(host_if, app, python, set(reused)) == wanted, (app, python, reused)
-                seen.add(wanted)
-    assert seen == {True, False}, "the control: the job is both run and skipped somewhere"
-
-
-# --- the verdict step, run -------------------------------------------------
-def _verdict(file: str, steps: dict[str, str], tmp_path: Path) -> dict[str, str]:
-    step = host_job(file)["steps"][-1]
-    out = tmp_path / "out"
-    out.write_text("")
-    env = {**os.environ, "STEPS": json.dumps({k: {"outcome": v, "conclusion": v, "outputs": {}}
-                                              for k, v in steps.items()}),
-           "CHECKS": step["env"]["CHECKS"], "GITHUB_OUTPUT": str(out)}
-    env.pop("GITHUB_ACTIONS", None)
-    proc = subprocess.run(["bash", "-c", step["run"]], env=env, capture_output=True, text=True, timeout=30,
+def _run_keeper(file: str, job_id: str, verdict: str, folded: str) -> subprocess.CompletedProcess:
+    host, keep = FOLDED[file]
+    script = run_block(file, job_id, f"the folded check passed in `{host}`")
+    # The step's env: CHECK is the keeper's own name, VERDICT its folded
+    # job's output for it, FOLDED that job's result.
+    env = {**os.environ, "CHECK": keep[job_id], "VERDICT": verdict, "FOLDED": folded}
+    for leak in ("GITHUB_ACTIONS", "GITHUB_STEP_SUMMARY", "GITHUB_OUTPUT"):
+        env.pop(leak, None)
+    return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30,
                           check=False)
-    assert proc.returncode == 0, proc.stderr
-    return dict(line.split("=", 1) for line in out.read_text().splitlines())
 
 
-def _all(file: str, outcome: str = "success") -> dict[str, str]:
-    return {str(s["id"]): outcome for s in host_job(file)["steps"] if s.get("id") and s["id"] != "verdict"}
+@pytest.mark.parametrize("file, job_id, check", KEEPERS)
+@pytest.mark.parametrize("verdict, folded", [
+    ("failure", "failure"),
+    ("skipped", "success"),   # reached, but none of its steps ran
+    ("", "failure"),           # the folded job died before its verdict step
+    ("", "cancelled"),
+    ("", "skipped"),           # the folded job never ran
+    ("Success", "success"),    # exact, not case-folded
+])
+def test_a_name_keeper_fails_whenever_its_folded_check_did_not_pass(file, job_id, check, verdict, folded):
+    """A name-keeper must never pass when its folded step failed.
+    MUTATION: compare `!= "failure"` instead of `== "success"`, or read the
+    folded job's result instead of the check's verdict."""
+    proc = _run_keeper(file, job_id, verdict, folded)
+    assert proc.returncode != 0, (verdict, folded, proc.stdout)
+    assert f"'{check}' did not pass" in proc.stdout, proc.stdout
+
+
+@pytest.mark.parametrize("file, job_id, check", KEEPERS)
+def test_a_name_keeper_passes_when_its_folded_check_passed(file, job_id, check):
+    """The control: the keeper can come out green. A sibling check's failure
+    fails the folded job, and the run through ci-gate, but not this name.
+    MUTATION: make the keeper fail on anything."""
+    for folded in ("success", "failure"):
+        proc = _run_keeper(file, job_id, "success", folded)
+        assert proc.returncode == 0, (folded, proc.stdout + proc.stderr)
 
 
 def test_the_verdict_rule_is_written_once_in_three_places():
@@ -335,16 +283,45 @@ def test_the_verdict_rule_is_written_once_in_three_places():
     assert len(set(runs.values())) == 1, runs
 
 
+# ---------------------------------------------------------------------------
+# 2. The verdict step, run.
+# ---------------------------------------------------------------------------
+def _steps(file: str, outcome: str = "success") -> dict[str, str]:
+    """A folded job's steps as the verdict reads them: a shared setup step,
+    then two steps per check, keyed `<check>-<n>`."""
+    steps = {"setup-tools": outcome}
+    for job_id in FOLDED[file][1]:
+        steps[f"{job_id}-one"] = outcome
+        steps[f"{job_id}-two"] = outcome
+    return steps
+
+
+def _verdict(file: str, steps: dict[str, str], tmp_path: Path) -> dict[str, str]:
+    host, keep = FOLDED[file]
+    script = run_block(file, host, "verdict")
+    out = tmp_path / "out"
+    out.write_text("")
+    # The step's env: STEPS is toJSON(steps), CHECKS the folded job ids.
+    env = {**os.environ, "STEPS": json.dumps({k: {"outcome": v, "conclusion": v, "outputs": {}}
+                                              for k, v in steps.items()}),
+           "CHECKS": " ".join(keep), "GITHUB_OUTPUT": str(out)}
+    env.pop("GITHUB_ACTIONS", None)
+    proc = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30,
+                          check=False)
+    assert proc.returncode == 0, proc.stderr
+    return dict(line.split("=", 1) for line in out.read_text().splitlines())
+
+
 @needs_jq
 @pytest.mark.parametrize("file", sorted(FOLDED))
 def test_the_verdict_names_the_failed_check_and_only_it(file, tmp_path):
     """MUTATION: let a failed step read as `skipped`, or blame every check."""
     keep = FOLDED[file][1]
-    assert _verdict(file, _all(file), tmp_path) == {k: "success" for k in keep}
+    assert _verdict(file, _steps(file), tmp_path) == {k: "success" for k in keep}
     for failed in keep:
         for bad in ("failure", "cancelled"):
-            steps = _all(file)
-            steps[str(check_steps(file, failed)[-1]["id"])] = bad
+            steps = _steps(file)
+            steps[f"{failed}-two"] = bad
             got = _verdict(file, steps, tmp_path)
             assert got == {k: ("failure" if k == failed else "success") for k in keep}, (failed, bad, got)
 
@@ -355,77 +332,19 @@ def test_a_failed_setup_fails_every_check_and_an_unreached_check_is_skipped(file
     """MUTATION: ignore the setup steps, or call a check none of whose steps
     ran `success`."""
     keep = FOLDED[file][1]
-    steps = _all(file)
-    setup = next(k for k in steps if k.startswith("setup-"))
-    steps[setup] = "failure"
+    steps = _steps(file)
+    steps["setup-tools"] = "failure"
     assert _verdict(file, steps, tmp_path) == {k: "failure" for k in keep}
     # A job lost before its setup reported anything is no pass either.
     assert _verdict(file, {}, tmp_path) == {k: "failure" for k in keep}
     for unreached in keep:
-        steps = _all(file)
-        for step in check_steps(file, unreached):
-            steps[str(step["id"])] = "skipped"
+        steps = _steps(file)
+        steps[f"{unreached}-one"] = steps[f"{unreached}-two"] = "skipped"
         got = _verdict(file, steps, tmp_path)
         assert got[unreached] == "skipped", got
     # A check with one step skipped by its own `if` (a cached download, the
     # contract check off a pull request) and the rest passed is a pass.
-    if file == "application.yml":
-        steps = _all(file)
-        steps["workflows-download"] = "skipped"
-        steps["python-checks-contract"] = "skipped"
-        assert _verdict(file, steps, tmp_path) == {k: "success" for k in keep}
-
-
-# ---------------------------------------------------------------------------
-# 4. The self-hosted job count per pull-request run drops by the claim.
-# ---------------------------------------------------------------------------
-def _on_the_pool(job: dict) -> bool:
-    runs_on = job.get("runs-on")
-    return not (isinstance(runs_on, str) and runs_on == HOSTED)
-
-
-def _pool_jobs_on_a_pull_request(file: str) -> list[str]:
-    """Self-hosted jobs a same-repository pull request can start. A job whose
-    `if` rules a pull request out is left out: application.yml's `build` and
-    `plugin-tag` (a push to main only) among them."""
-    found = []
-    for job_id, job in _jobs(file).items():
-        condition = str(job.get("if") or "")
-        # `${{ !cancelled() && <rest> }}` gates on <rest> for the event: the
-        # status function says nothing about which event runs the job.
-        condition = re.sub(r"^\$\{\{\s*(.*?)\s*\}\}$", r"\1", condition.strip(), flags=re.S)
-        condition = re.sub(r"^!cancelled\(\)\s*&&\s*", "", condition)
-        if "!= 'pull_request'" in condition or ("pull_request" not in condition and "schedule" in condition):
-            continue
-        if re.fullmatch(r"github\.event_name == 'push' && [^|]*", condition):
-            continue
-        if _on_the_pool(job):
-            found.append(job_id)
-    return found
-
-
-def test_a_pull_request_run_uses_the_claimed_number_fewer_vms():
-    """MUTATION: put a name-keeper back on the pool, or unfold a check."""
-    now = {file: len(_pool_jobs_on_a_pull_request(file)) for file in VMS_BEFORE}
-    assert now == VMS_AFTER, f"{now} {PATCH_NOTE}"
-    assert sum(VMS_BEFORE.values()) - sum(now.values()) == FEWER_VMS, now
-    # The heavy jobs are untouched: still on the pool.
-    app = _jobs("application.yml")
-    for job_id in ("shell", "changes", "python-unit", "ui-build", "ui-tests", "integration", "build-check",
-                   "tested-tree", "ci-gate"):
-        assert _on_the_pool(app[job_id]), job_id
-    assert _on_the_pool(_jobs("security.yml")["iac"]) and _on_the_pool(_jobs("terraform.yml")["checkov"])
-
-
-def test_the_doc_states_the_counts_this_file_holds():
-    """MUTATION: change a count in docs/ci.md, or VMS_AFTER, alone."""
-    text = CI_DOC.read_text()
-    match = re.search(r"^### Sub-minute checks share a job\n(.*?)(?=^#{2,3} )", text, re.DOTALL | re.MULTILINE)
-    assert match, "docs/ci.md has no section `Sub-minute checks share a job`"
-    section = match.group(1)
-    for file in VMS_BEFORE:
-        assert re.search(rf"`{re.escape(file)}`\s*\|\s*{VMS_BEFORE[file]}\s*\|\s*{VMS_AFTER[file]}\s*\|", section), file
-    total = rf"\*\*{sum(VMS_BEFORE.values())}\*\*\s*\|\s*\*\*{sum(VMS_AFTER.values())}\*\*"
-    assert re.search(total, section), "the totals row"
-    assert f"{FEWER_VMS} fewer" in section
-    assert "name-keeper" in section and HOSTED in section
+    steps = _steps(file)
+    for job_id in keep:
+        steps[f"{job_id}-one"] = "skipped"
+    assert _verdict(file, steps, tmp_path) == {k: "success" for k in keep}

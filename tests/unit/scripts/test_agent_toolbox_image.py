@@ -33,7 +33,6 @@ WHAT IS ASSERTED, and why each one is a test and not a review comment:
     install path is real, not a TODO -- so whichever vendor ships a clean
     release first leaves the hold alone, as trivy did -- and no tool is
     installed by default at a release the scan recorded as failing;
-  * docs/versions.md states the same versions the Dockerfile pins.
 
 NOT asserted: that the pinned versions are free of advisories. That is a fact
 about a vulnerability database on a date; the release's trivy step decides it.
@@ -53,7 +52,6 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 DOCKERFILE = REPO / "images" / "agent-runtime-base" / "Dockerfile"
-VERSIONS_DOC = REPO / "docs" / "versions.md"
 
 #: BUILD_PROMPT_V2 §2.12, in the order it lists them.
 REQUIRED_TOOLS = (
@@ -353,21 +351,11 @@ def test_each_hold_defaults_off_while_its_tool_has_no_clean_release() -> None:
     assert visited == len(MAY_BE_HELD)
 
 
-def test_the_combined_hold_argument_is_gone_from_the_dockerfile_and_docs() -> None:
-    files = [
-        DOCKERFILE,
-        VERSIONS_DOC,
-        REPO / "docs" / "worker-images.md",
-        REPO / "docs" / "BUILD_PROMPT_V2.md",
-    ]
-    visited = 0
-    for path in files:
-        assert COMBINED_HOLD_ARG not in path.read_text(), (
-            f"{path.relative_to(REPO)} still names {COMBINED_HOLD_ARG}; the hold is "
-            f"{sorted(HOLD_ARG_OF.values())}, one per tool"
-        )
-        visited += 1
-    assert visited == len(files) == 4
+def test_the_combined_hold_argument_is_gone_from_the_dockerfile() -> None:
+    assert COMBINED_HOLD_ARG not in DOCKERFILE.read_text(), (
+        f"the Dockerfile still names {COMBINED_HOLD_ARG}; the hold is "
+        f"{sorted(HOLD_ARG_OF.values())}, one per tool"
+    )
 
 
 def _fake_tools(bin_dir: Path, names: list[str], pg_major: str = POSTGRES_MAJOR) -> None:
@@ -657,41 +645,6 @@ def test_checkov_is_isolated_from_the_workers_python() -> None:
     assert "UV_PYTHON_DOWNLOADS=never" in text, "use the image's interpreter, never fetch one"
     for i in runs:
         assert not re.search(r"pip install[^&]*checkov", _shell_text(i)), "checkov via pip"
-
-
-# --------------------------------------------------------------------------- #
-# docs/versions.md says what the Dockerfile pins.
-# --------------------------------------------------------------------------- #
-
-#: tool name in the doc's table -> the Dockerfile ARG that pins it.
-DOC_ROWS = {
-    "gh": "GH_VERSION",
-    "gcloud": "GCLOUD_VERSION",
-    "kubectl": "KUBECTL_VERSION",
-    "terraform": "TERRAFORM_VERSION",
-    "tofu": "TOFU_VERSION",
-    "tflint": "TFLINT_VERSION",
-    "checkov": "CHECKOV_VERSION",
-    "trivy": "TRIVY_VERSION",
-    "shellcheck": "SHELLCHECK_VERSION",
-    "docker": "DOCKER_CLI_VERSION",
-    "pgvector": "PGVECTOR_MIN_VERSION",
-}
-
-
-def test_versions_doc_lists_the_image_toolbox_at_the_pinned_versions() -> None:
-    doc = VERSIONS_DOC.read_text()
-    section = doc.split("### Agent image toolbox", 1)
-    assert len(section) == 2, "docs/versions.md needs an 'Agent image toolbox' section"
-    body = section[1].split("\n## ", 1)[0].split("\n### ", 1)[0]
-    args = _arg_defaults(_runtime_stage())
-    for tool, var in DOC_ROWS.items():
-        row = re.search(rf"^\|\s*`{re.escape(tool)}`\s*\|\s*\*\*([^*]+)\*\*", body, flags=re.M)
-        assert row, f"no row for `{tool}` in the agent image toolbox table"
-        want = _arg_value(args[var]).split("-")[0]
-        assert row.group(1).strip() == want, (
-            f"docs/versions.md says {tool} {row.group(1)}, the Dockerfile pins {want}"
-        )
 
 
 # --------------------------------------------------------------------------- #

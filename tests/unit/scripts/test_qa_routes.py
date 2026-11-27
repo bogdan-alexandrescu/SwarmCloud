@@ -4,8 +4,7 @@
 per capture step. A tab missing from it is a page no QA run ever looks at, and
 nothing in the run would say so: the sweep finds no defects on a screen it
 never opened, which is CLAUDE.md's "empty output is not success". So this
-holds the list to the console's own declarations, the way test_issue_forms.py
-holds the issue forms:
+holds the list to the console's own declarations:
 
 * every `SECTIONS` tab in App.tsx is a route, and every route names a tab,
   pane or page that exists;

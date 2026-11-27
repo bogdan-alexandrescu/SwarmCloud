@@ -11,7 +11,8 @@ registry login, no GCP authentication and no secret, in the order main uses
 job, never pulled), and so runs the same Dockerfile steps -- the self-tests
 among them -- that main's Cloud Build runs.
 
-The properties asserted here, each against the REAL script and workflow:
+The properties asserted here, each against the REAL script and the
+workflow's own shell (its published run blocks):
 
   * `build-images.sh --build-only --local` calls `docker buildx build` and
     nothing that talks to a registry: no push, no login, no registry output,
@@ -25,9 +26,10 @@ The properties asserted here, each against the REAL script and workflow:
     workflow restates none of them;
   * a checked-in cloudbuild.yaml (swarm-verify) is replayed step by step,
     minus its push;
-  * the workflow job: buildx, no `--push`, no login, no `id-token`, no
-    `secrets.`, no `vars.GCP_PR_BUILD_*`; a fork's pull request and a change
-    that reaches no image skip in seconds; one that reaches an image builds;
+  * the workflow job's steps: a fork's pull request and a change that
+    reaches no image skip in seconds; one that reaches an image builds; the
+    `changes` job's images step answers the same, and says build whenever it
+    cannot tell;
   * ci-gate fails when this job failed.
 
 WHAT THIS CANNOT PROVE: that BuildKit resolves the base through the
@@ -52,13 +54,13 @@ from pathlib import Path
 import pytest
 import yaml
 
+from .ci_run_blocks import run_block
 from .test_build_images_pr_check import _env, _sandbox
 from .test_ci_gate import judge
 from .test_fast_checks_on_lane_prs import without_lane_clause
 
 REPO = Path(__file__).resolve().parents[3]
 WORKFLOW = REPO / ".github" / "workflows" / "application.yml"
-CI_DOC = REPO / "docs" / "ci.md"
 TAG = "feed00c0ffee"
 JOB = "build-check"
 
@@ -393,12 +395,6 @@ def _job() -> dict:
     return yaml.safe_load(WORKFLOW.read_text())["jobs"][JOB]
 
 
-def _step(job: dict, step_id: str) -> dict:
-    hits = [s for s in job["steps"] if s.get("id") == step_id]
-    assert len(hits) == 1, f"expected one step with id {step_id}"
-    return hits[0]
-
-
 def test_the_job_builds_with_buildx_and_pushes_logs_in_and_authenticates_nowhere():
     job = _job()
     text = json.dumps(job)
@@ -418,24 +414,7 @@ def test_the_job_builds_with_buildx_and_pushes_logs_in_and_authenticates_nowhere
     assert checkouts and all(s.get("with", {}).get("persist-credentials") is False for s in checkouts), checkouts
 
 
-def test_the_workflow_restates_no_self_test():
-    """The self-tests are read from the Dockerfiles by the script; the job
-    names none of them."""
-    runs = "\n".join(str(s.get("run", "")) for s in _job()["steps"])
-    for literal in ("--self-test", "--lsp-self-test", "playwright", "chromium", "swarm-repo-"):
-        assert literal not in runs, f"{JOB} restates {literal!r}"
-
-
-def test_no_pull_request_identity_is_left_anywhere():
-    for path in (WORKFLOW, CI_DOC, REPO / "scripts" / "build-images.sh"):
-        assert "GCP_PR_BUILD" not in path.read_text(), f"{path.name} still describes the pull-request identity"
-    doc = CI_DOC.read_text()
-    section = doc.split("## Images are built on a pull request, without pushing", 1)[1].split("\n## ", 1)[0]
-    assert "no Google identity" in section and "shared project" in section, section[:2000]
-    assert "docker buildx" in section, section[:2000]
-
-
-def _run_step(step: dict, cwd: Path, tmp_path: Path, **env: str) -> tuple[subprocess.CompletedProcess, dict, str]:
+def _run_step(run: str, cwd: Path, tmp_path: Path, **env: str) -> tuple[subprocess.CompletedProcess, dict, str]:
     out = tmp_path / "github_output"
     summary = tmp_path / "summary.md"
     temp = tmp_path / "runner_temp"
@@ -451,16 +430,14 @@ def _run_step(step: dict, cwd: Path, tmp_path: Path, **env: str) -> tuple[subpro
         "NO_COLOR": "1",
         **env,
     }
-    proc = subprocess.run(["bash", "-c", step["run"]], cwd=cwd, env=full, capture_output=True,
+    proc = subprocess.run(["bash", "-c", run], cwd=cwd, env=full, capture_output=True,
                           text=True, timeout=120, check=False)
     outputs = dict(line.split("=", 1) for line in out.read_text().splitlines() if "=" in line)
     return proc, outputs, summary.read_text()
 
 
 def test_a_fork_pull_request_skips_before_checking_anything_out(tmp_path):
-    job = _job()
-    scope = _step(job, "scope")
-    assert "checkout" not in str(job["steps"][0].get("uses", "")), "the fork check comes before the checkout"
+    scope = run_block("application.yml", JOB, "scope")
     empty = tmp_path / "nothing-here"
     empty.mkdir()
     started = time.monotonic()
@@ -469,9 +446,6 @@ def test_a_fork_pull_request_skips_before_checking_anything_out(tmp_path):
     assert time.monotonic() - started < 10
     assert outputs.get("build") == "false", outputs
     assert "fork" in summary.lower(), summary
-    # Every later step is gated on it.
-    for step in job["steps"][1:]:
-        assert "steps.scope.outputs.build" in str(step.get("if", "")) or "steps.plan.outputs.build" in str(step.get("if", "")), step
     # The control: the same repository proceeds.
     proc, outputs, _ = _run_step(scope, empty, tmp_path, HEAD_REPO="owner/swarm", REPOSITORY="owner/swarm")
     assert proc.returncode == 0, proc.stderr
@@ -508,7 +482,7 @@ def test_the_plan_builds_only_when_an_image_input_changed(tmp_path, change, expe
     _git(root, "add", "-A")
     _git(root, "commit", "-q", "-m", "head")
     head = _git(root, "rev-parse", "HEAD")
-    proc, outputs, summary = _run_step(_step(_job(), "plan"), root, tmp_path, BASE_SHA=base, HEAD_SHA=head)
+    proc, outputs, summary = _run_step(run_block("application.yml", JOB, "plan"), root, tmp_path, BASE_SHA=base, HEAD_SHA=head)
     assert proc.returncode == 0, proc.stderr
     assert outputs.get("images", "") == expected, outputs
     assert outputs.get("build") == ("true" if expected else "false"), outputs
@@ -528,18 +502,14 @@ def test_the_plan_builds_only_when_an_image_input_changed(tmp_path, change, expe
     assert gate.get("images") == ("true" if expected else "false"), (gate, proc.stdout)
 
 
-def _changes_images_step() -> dict:
-    (step,) = [s for s in yaml.safe_load(WORKFLOW.read_text())["jobs"]["changes"]["steps"] if s.get("id") == "images"]
-    return step
+def _changes_images_step() -> str:
+    return run_block("application.yml", "changes", "images")
 
 
 def test_the_build_check_is_skipped_only_on_the_changes_jobs_no(tmp_path):
-    """The job's `if:` reads the `changes` job's `images` output, and that
-    output says build whenever it cannot tell. MUTATION: gate the job on `app`
-    again, or answer `false` off a pull request or on an unreadable diff."""
-    jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
-    assert without_lane_clause(jobs[JOB]["if"]) == "needs.changes.outputs.full == 'true' && github.event_name == 'pull_request' && needs.changes.outputs.images == 'true'"
-    assert jobs["changes"]["outputs"]["images"].replace(" ", "") == "${{steps.images.outputs.images}}"
+    """The `changes` job's `images` output, which the job's `if:` reads, says
+    build whenever it cannot tell. MUTATION: answer `false` off a pull request
+    or on an unreadable diff."""
     step = _changes_images_step()
     empty = tmp_path / "not-a-repo"
     empty.mkdir()
@@ -552,12 +522,10 @@ def test_the_build_check_is_skipped_only_on_the_changes_jobs_no(tmp_path):
 
 
 def test_ci_gate_fails_when_the_build_check_failed(tmp_path):
-    """ci-gate needs every job of application.yml and judges their results,
-    so a red image build holds the pull request."""
+    """ci-gate judges the results of the jobs it needs, so a red image build
+    holds the pull request."""
     job_id = JOB
-    needs = yaml.safe_load(WORKFLOW.read_text())["jobs"]["ci-gate"]["needs"]
-    assert job_id in needs, "the gate does not wait for the image build"
-    results = {name: "success" for name in needs}
+    results = {name: "success" for name in ("changes", "python-unit", "ui-tests", job_id)}
     results[job_id] = "failure"
     proc = judge(tmp_path, "ci-gate", results)
     assert proc.returncode != 0, proc.stdout

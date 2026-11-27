@@ -43,9 +43,6 @@ REPO = Path(__file__).resolve().parents[3]
 PROFILE = "indexer"
 PINNED_MODEL = "claude-opus-5-5"
 LOCALS = REPO / "terraform/infra/locals.tf"
-REQUESTS = REPO / "docs/contract-change-requests.md"
-
-
 @pytest.fixture
 def tenant() -> Tenant:
     return Tenant(
@@ -111,15 +108,3 @@ def test_terraform_keeps_the_indexer_cloud_run_jobs_as_the_rollback():
     fallback = re.search(r"^  cloud_run_fallback_profiles = \[([^\]]*)\]", text, re.M)
     assert fallback, "cloud_run_fallback_profiles is missing: the switch would destroy the indexer Jobs"
     assert f'"{PROFILE}"' in fallback.group(1)
-
-
-def test_request_63_records_the_owners_acceptance_and_the_rollback():
-    text = REQUESTS.read_text(encoding="utf-8")
-    start = text.index("## 63. ")
-    end = text.find("\n## 63. ", start)
-    section = text[start:end if end != -1 else len(text)]
-    # scripts/lib/check-frozen-contract.sh passes a diff under
-    # apps/common/swarm_common/ only beside an added line holding this phrase.
-    assert "accepted by the owner" in section.lower()
-    assert "#939" in section
-    assert "CLOUD_RUN_JOB" in section, "the rollback (backend back to CLOUD_RUN_JOB) must be recorded"

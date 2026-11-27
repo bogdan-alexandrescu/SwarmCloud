@@ -1,8 +1,8 @@
 // THE USER GUIDE AT /guide (Guide.tsx; source docs/user-guide/*.md).
 //
-// What this holds:
-//   * the console's copy (guidePages.ts) is the Markdown, byte for byte, so a
-//     page edited in docs/ and not synced fails here with the command to run;
+// What this holds (on the console's copy, guidePages.ts, never on docs/: a test
+// reads only its own tree, issue 71; that the copy is the Markdown byte for
+// byte is `node apps/swarm-ui/guide-sync.mjs --check`, a CI command):
 //   * every console path the guide links still opens a page, and every `/sc`
 //     verb and `/sc:` command it names still exists in the plugin -- a renamed
 //     page or a dropped verb fails here, naming the guide page that says it;
@@ -11,7 +11,7 @@
 //
 // BREAK IT: rename `/config/github` in paths.ts, or drop the `inputs` row from
 // plugin/skills/sc/SKILL.md, and "every console path" or "every /sc verb" fails.
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
@@ -21,20 +21,12 @@ import { GuideScreen, guideHref, guidePages, guideSlugFrom, parseMarkdown } from
 import { pathToAddress } from '../paths'
 
 const REPO = join(__dirname, '..', '..', '..', '..')
-const GUIDE_DIR = join(REPO, 'docs', 'user-guide')
-const SYNC = 'node apps/swarm-ui/guide-sync.mjs'
 
 afterEach(() => {
   cleanup()
   vi.unstubAllEnvs()
   window.history.replaceState(null, '', '/')
 })
-
-function markdownFiles(): string[] {
-  return readdirSync(GUIDE_DIR)
-    .filter((n) => n.endsWith('.md'))
-    .sort()
-}
 
 /** Every link target in every page, with the page it is on. */
 function links(): { page: string; href: string }[] {
@@ -69,19 +61,10 @@ function scVerbs(): Set<string> {
 }
 
 describe('the console carries the guide as written', () => {
-  it('is the Markdown under docs/user-guide, byte for byte', () => {
-    const files = markdownFiles()
-    expect(files.length, 'docs/user-guide holds no page').toBeGreaterThan(5)
-    expect(Object.keys(GUIDE_SOURCES).sort(), `guidePages.ts lists other pages than docs/user-guide: run ${SYNC}`).toEqual(
-      files.map((n) => n.slice(0, -3)),
-    )
-    for (const n of files) {
-      expect(GUIDE_SOURCES[n.slice(0, -3)], `${n} differs from guidePages.ts: run ${SYNC}`).toBe(readFileSync(join(GUIDE_DIR, n), 'utf8'))
-    }
-  })
-
   it('has an index that links every page, each page titled', () => {
     const pages = guidePages()
+    // A walk over no page passes hardest: the copy carries the guide's pages.
+    expect(pages.length, 'guidePages.ts holds no page').toBeGreaterThan(5)
     expect(pages[0]?.slug).toBe('index')
     const index = GUIDE_SOURCES.index ?? ''
     for (const p of pages) {

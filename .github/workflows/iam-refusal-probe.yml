@@ -57,8 +57,8 @@ concurrency:
 # (id-token) runs on the self-hosted runner pool's VMs through the one guarded
 # `runs-on` expression: a fork's pull request, or the repo variable
 # SELF_HOSTED_CI set to `off` (the capacity escape hatch), sends it to
-# GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted is listed,
-# with why, in tests/unit/scripts/test_fork_prs_off_self_hosted.py.
+# GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted says why in
+# its own comment.
 jobs:
   probe:
     name: deployer is refused an unlisted role

@@ -13,9 +13,7 @@ its favour. What is held here:
   * a builder GKE pod renders 8 / 12 CPU and 16 GiB, and a claude-code step
     at any other stage renders exactly what it rendered before;
   * a builder lease takes 2 units of every compute pool and 1 of each
-    provider pool, all at once at lease time (invariants 2 and 3);
-  * docs/contract-change-requests.md records 135 as accepted (DONE) and 134
-    as declined.
+    provider pool, all at once at lease time (invariants 2 and 3).
 
 No cloud, no emulator.
 """
@@ -57,8 +55,6 @@ from swarm_common.states import TaskState  # noqa: E402
 from scheduler import sizes  # noqa: E402
 from scheduler.dispatch import GkeJobDispatcher, GkeTarget  # noqa: E402
 
-REPO = Path(__file__).resolve().parents[3]
-REQUESTS = REPO / "docs" / "contract-change-requests.md"
 
 TENANT = "eng"
 BACKEND = "GKE_AUTOPILOT"
@@ -252,25 +248,3 @@ def test_a_builder_lease_that_does_not_fit_one_pool_takes_nothing_anywhere():
     for name in required:
         assert db.docs[f"pools/{name}"]["active"] == 0, name
     assert db.docs[f"tasks/{task.id}"]["state"] == TaskState.READY.value
-
-
-# --- the register ----------------------------------------------------------------
-
-
-def _row(number: int) -> str:
-    text = REQUESTS.read_text(encoding="utf-8")
-    (row,) = [line for line in text.splitlines() if line.startswith(f"| {number} |")]
-    return row
-
-
-def test_request_135_is_recorded_as_accepted_and_done():
-    row = _row(135)
-    # MUTATION: drop "accepted by the owner" and check-frozen-contract.sh
-    # refuses this pull request's swarm_common diff.
-    assert "accepted by the owner" in row.lower()
-    assert "DONE" in row
-
-
-def test_request_134_is_recorded_as_declined():
-    row = _row(134)
-    assert "DECLINED" in row and "135" in row

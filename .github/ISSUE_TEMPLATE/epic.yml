@@ -10,8 +10,7 @@
 # not the record -- and CLAUDE.md's closing rule, which reconciles the boxes in
 # the comments against anything the body lists, would find two boxes no comment
 # matches on every epic. The rules are in the markdown element below, which
-# GitHub shows to the filer and never submits. A test fails on any task item
-# this form would write: tests/unit/scripts/test_issue_forms.py.
+# GitHub shows to the filer and never submits. This form writes no task item.
 name: Epic — one wave's findings
 description: Mechanical defects a wave of lanes found outside their own files. Each finding is a comment, not a line in this body.
 title: "[epic] Wave YYYY-MM-DD out-of-territory findings"

@@ -10,7 +10,8 @@ gs:// address, dev-iam would read it empty and the plan the owner reviewed
 would never apply. The output is the path under the bucket, and dev-iam
 rebuilds the address from its own TF_STATE_BUCKET.
 
-These run the two steps themselves, with a fake gcloud, and model GitHub's
+These run the two steps themselves, as published in
+scripts/generated/ci-run-blocks.json, with a fake gcloud, and model GitHub's
 rule: every output that contains the bucket is dropped before the next job.
 """
 
@@ -24,6 +25,8 @@ from pathlib import Path
 
 import pytest
 import yaml
+
+from .ci_run_blocks import run_block
 
 REPO = Path(__file__).resolve().parents[3]
 ACTION = REPO / ".github" / "actions" / "release-apply" / "action.yml"
@@ -109,8 +112,7 @@ def _run(script: str, env: dict, cwd: Path) -> subprocess.CompletedProcess:
 
 
 def _held(box: dict) -> dict[str, str]:
-    step = _step(_load(ACTION)["runs"]["steps"], id="held")
-    proc = _run(step["run"], box["env"], box["tmp"])
+    proc = _run(run_block(".github/actions/release-apply/action.yml", None, "held"), box["env"], box["tmp"])
     assert proc.returncode == 0, proc.stderr
     return _outputs(Path(box["env"]["GITHUB_OUTPUT"]))
 
@@ -152,13 +154,12 @@ def test_dev_iam_rebuilds_the_address_and_applies_exactly_the_held_plan(box):
     reviewed = (box["tf_root"] / "plan.tfplan").read_bytes()
     (box["tf_root"] / "plan.tfplan").unlink()
 
-    steps = _load(RELEASE)["jobs"]["infrastructure-iam"]["steps"]
     env = {**box["env"], "PLAN_PATH": outputs.get("path", ""), "PLAN_SHA256": outputs.get("sha256", "")}
-    fetch = _run(_step(steps, name="fetch the plan the owner reviewed")["run"], env, box["tmp"])
+    fetch = _run(run_block("release.yml", "infrastructure-iam", "fetch the plan the owner reviewed"), env, box["tmp"])
     assert fetch.returncode == 0, fetch.stdout + fetch.stderr
     assert (box["tf_root"] / "plan.tfplan").read_bytes() == reviewed
 
-    drop = _run(_step(steps, name="drop the held plan")["run"], env, box["tmp"])
+    drop = _run(run_block("release.yml", "infrastructure-iam", "drop the held plan"), env, box["tmp"])
     assert drop.returncode == 0, drop.stdout + drop.stderr
     assert not (Path(box["env"]["FAKE_GCS"]) / bucket / outputs["path"]).exists()
     log = Path(box["env"]["FAKE_GCLOUD_LOG"]).read_text(encoding="utf-8")
@@ -174,9 +175,8 @@ NOT_A_HELD_PLAN = ["", "plans/", "../plan.tfplan", "plans/../infra/dev/plan.tfpl
 @pytest.mark.parametrize("plan_path", NOT_A_HELD_PLAN)
 def test_dev_iam_never_drops_anything_but_a_held_plan(box, plan_path: str):
     """An empty path must not become the bucket's root."""
-    steps = _load(RELEASE)["jobs"]["infrastructure-iam"]["steps"]
     env = {**box["env"], "PLAN_PATH": plan_path}
-    drop = _run(_step(steps, name="drop the held plan")["run"], env, box["tmp"])
+    drop = _run(run_block("release.yml", "infrastructure-iam", "drop the held plan"), env, box["tmp"])
     assert drop.returncode != 0
     assert not Path(box["env"]["FAKE_GCLOUD_LOG"]).exists()
 
@@ -185,9 +185,8 @@ def test_dev_iam_never_drops_anything_but_a_held_plan(box, plan_path: str):
 def test_dev_iam_never_fetches_anything_but_a_held_plan(box, plan_path: str):
     """The deploy identity reads the whole state bucket: a path that is not a
     held plan is refused before any copy, not after the sha256 check."""
-    steps = _load(RELEASE)["jobs"]["infrastructure-iam"]["steps"]
     env = {**box["env"], "PLAN_PATH": plan_path, "PLAN_SHA256": "0" * 64}
-    fetch = _run(_step(steps, name="fetch the plan the owner reviewed")["run"], env, box["tmp"])
+    fetch = _run(run_block("release.yml", "infrastructure-iam", "fetch the plan the owner reviewed"), env, box["tmp"])
     assert fetch.returncode != 0
     assert not Path(box["env"]["FAKE_GCLOUD_LOG"]).exists()
     assert box["env"]["TF_STATE_BUCKET"] not in fetch.stdout + fetch.stderr

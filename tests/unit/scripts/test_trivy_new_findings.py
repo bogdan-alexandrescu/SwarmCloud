@@ -7,8 +7,15 @@ compares a head scan with the base branch's scan of the same target by
 (class, target, rule id, package) -- never by line -- and the `filesystem` job
 in .github/workflows/security.yml gates on it, while still uploading SARIF.
 
-These tests run the comparison on Trivy JSON fixtures (no trivy, no network)
-and hold the workflow to calling it.
+These tests run the comparison on Trivy JSON fixtures (no trivy, no network),
+and the job's DB-download step (its published run block, ci_run_blocks)
+against a fake trivy. FIVE TESTS READ security.yml: the scan job gating on new
+findings and uploading its report, every checkout keeping no credential, the
+checkout holding the history the merge base needs, the secret scan reading
+the branch a pull request targets, and the scans after the DB download using
+its DB while a finding still fails the job. They hold CI security decisions
+the owner kept on 2026-11-25, so this file is on scripts/check_test_reads.py's
+SECURITY_GUARDS list for those five alone.
 """
 
 from __future__ import annotations
@@ -23,6 +30,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+from .ci_run_blocks import run_block
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "trivy-new-findings.sh"
@@ -690,15 +699,7 @@ if [ "${calls}" -le "${FAKE_DB_FAILS:-0}" ]; then echo "FATAL 404 Not Found" >&2
 """
 
 
-def _db_step() -> dict[str, Any]:
-    steps = _filesystem_steps()
-    found = [s for s in steps if "--download-db-only" in str(s.get("run", ""))]
-    assert len(found) == 1, "the filesystem job downloads the vulnerability DB in one step of its own"
-    return found[0]
-
-
 def _download(tmp_path: Path, *, fails: int = 0, down: str = "none") -> tuple[subprocess.CompletedProcess[str], list[str], list[str]]:
-    step = _db_step()
     bindir = tmp_path / "bin"
     bindir.mkdir()
     (bindir / "trivy").write_text(FAKE_DB_TRIVY)
@@ -707,10 +708,10 @@ def _download(tmp_path: Path, *, fails: int = 0, down: str = "none") -> tuple[su
     for tool in ("trivy", "sleep"):
         (bindir / tool).chmod(0o755)
     env = {k: v for k, v in os.environ.items() if not k.startswith(("SWARM_", "TRIVY_"))}
-    env.update({str(k): str(v) for k, v in (step.get("env") or {}).items()})
+    env.update(DB_MIRROR=MIRROR_DB, DB_UPSTREAM=UPSTREAM_DB)
     env.update(PATH=f"{bindir}{os.pathsep}{env.get('PATH', '')}", FAKE_TRIVY_LOG=str(tmp_path / "trivy.log"),
                FAKE_SLEEP_LOG=str(tmp_path / "sleep.log"), FAKE_DB_FAILS=str(fails), FAKE_DB_DOWN=down)
-    result = subprocess.run(["bash", "-c", str(step["run"])], cwd=tmp_path, capture_output=True,
+    result = subprocess.run(["bash", "-c", run_block("security.yml", "filesystem", "download the trivy vulnerability DB")], cwd=tmp_path, capture_output=True,
                             text=True, env=env, timeout=60, check=False)
     log = tmp_path / "trivy.log"
     sleeps = tmp_path / "sleep.log"
@@ -745,6 +746,13 @@ def test_both_db_repositories_down_fails_the_job(tmp_path):
     assert result.returncode != 0, result.stdout + result.stderr
     assert len(calls) == 4 and UPSTREAM_DB in calls[3], calls
     assert "::error::" in result.stdout
+
+
+def _db_step() -> dict[str, Any]:
+    steps = _filesystem_steps()
+    found = [s for s in steps if "--download-db-only" in str(s.get("run", ""))]
+    assert len(found) == 1, "the filesystem job downloads the vulnerability DB in one step of its own"
+    return found[0]
 
 
 def test_the_scans_after_the_download_use_its_db_and_findings_still_fail_the_job():

@@ -15,7 +15,6 @@ so a copy added later is found.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from swarm_common.states import EventType
@@ -67,21 +66,6 @@ def test_swarm_api_serves_all_seven_after_the_four_stages():
     assert STARTUP_STEPS == STEPS
     assert STAGE_EVENTS == ("lease_acquired", "dispatched", "starting", "running")
     assert ALL_STEPS == STAGE_EVENTS + STEPS
-
-
-def test_the_contract_request_is_recorded_as_accepted_and_applied():
-    text = (REPO / "docs" / "contract-change-requests.md").read_text(encoding="utf-8")
-    heading = (
-        "## 74. `states.py`: `EventType.STARTUP_PROGRESS`, the browser agent's "
-        "start-up steps (STARTUP-API)"
-    )
-    assert heading in text
-    entry = text.split(heading, 1)[1]
-    assert "ACCEPTED by the owner 2026-10-13" in entry.split("###", 1)[0]
-    assert "APPLIED" in entry.split("###", 1)[0]
-    for section in ("### Why", "### The change", "### Rollback", "### What it would break"):
-        assert section in entry, section
-    assert re.search(r"^\| 74 \|", text, re.MULTILINE), "the index has no row for 74"
 
 
 def test_no_shell_or_jq_copy_of_the_event_types_exists():

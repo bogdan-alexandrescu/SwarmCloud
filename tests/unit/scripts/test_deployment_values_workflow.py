@@ -7,10 +7,15 @@ every tracked file on main, reading the pattern list from the
 DEPLOYMENT_PATTERNS secret. A fork's pull request gets no secrets: it runs
 the shape layer alone, says so, and prints only pass or fail and a count.
 
-The step's script runs here for real, with the real guard, in a scratch git
-repository whose `scripts` is this checkout's, against a pattern list built
-at run time: a planted value turns the check red, and the list's value never
-reaches the output.
+The step's script (its published run block) runs here for real, with the
+real guard, in a scratch git repository whose `scripts` is this checkout's,
+against a pattern list built at run time: a planted value turns the check
+red, and the list's value never reaches the output.
+
+THE TESTS THAT READ .github/ hold CI security decisions the owner kept on
+2026-11-25: that the deployment-values check keeps its required name and
+holds no credential. This file is on scripts/check_test_reads.py's
+SECURITY_GUARDS list for those tests alone (issue 71).
 """
 
 from __future__ import annotations
@@ -25,9 +30,10 @@ from pathlib import Path
 import pytest
 import yaml
 
+from .ci_run_blocks import run_block
+
 REPO = Path(__file__).resolve().parents[3]
-SECURITY = REPO / ".github" / "workflows" / "security.yml"
-STEP = "deployment-values · enforce"
+STEP = "deployment-values-enforce"
 
 _spec = importlib.util.spec_from_file_location("deployment_values", REPO / "scripts" / "guards" / "deployment_values.py")
 guard = importlib.util.module_from_spec(_spec)
@@ -36,77 +42,9 @@ sys.modules[_spec.name] = guard
 _spec.loader.exec_module(guard)
 
 
-def _jobs() -> dict:
-    return yaml.safe_load(SECURITY.read_text(encoding="utf-8"))["jobs"]
-
-
-def _job() -> dict:
-    """The guard's own job: never folded into `checks`, whose steps run the
-    change's own scripts while this one holds the pattern list."""
-    return _jobs()["deployment-values"]
-
-
-def _step() -> dict:
-    return next(s for s in _job()["steps"] if s.get("name") == STEP)
-
-
 def _script() -> str:
-    return _step()["run"]
-
-
-def test_the_check_keeps_its_required_name_and_holds_no_credential():
-    """The ruleset requires the check by name. The job can never ask for
-    cloud credentials (no id-token, no auth step), and --diff gets the full
-    history it reads."""
-    job = _job()
-    assert job["name"] == "deployment-values"
-    assert "needs" not in job
-    assert job["permissions"] == {"contents": "read"}
-    assert not [s for s in job["steps"] if "google-github-actions/auth" in str(s.get("uses", ""))]
-    assert _step()["id"] == "deployment-values-enforce"
-    assert _step()["env"]["DEPLOYMENT_PATTERNS"] == "${{ secrets.DEPLOYMENT_PATTERNS }}"
-    assert "deployment-values" not in (_jobs()["checks"].get("outputs") or {})
-    assert not [s for s in _jobs()["checks"]["steps"] if "DEPLOYMENT_PATTERNS" in yaml.safe_dump(s)]
-
-
-def test_it_never_runs_the_change_s_code_while_holding_the_list():
-    """The independent review of 14 November: the guard, its library and its
-    allowlist come from the base commit (guard/); the change is checked out
-    into pr/ as data only, and nothing of it runs before or during the guard.
-    Every step before the guard is a credential-less checkout."""
-    steps = _job()["steps"]
-    at = steps.index(_step())
-    before = steps[:at]
-    assert before and all(str(s.get("uses", "")).startswith("actions/checkout@") for s in before)
-    assert all((s.get("with") or {}).get("persist-credentials") is False for s in before)
-    by_path = {(s.get("with") or {}).get("path"): s["with"] for s in before}
-    assert set(by_path) == {"guard", "pr"}
-    assert by_path["guard"]["ref"] == (
-        "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha "
-        "|| (github.event_name == 'workflow_dispatch' && 'main') || github.sha }}"
-    )
-    assert by_path["pr"]["fetch-depth"] == 0
-    assert _step()["working-directory"] == "pr"
-    assert '"${GITHUB_WORKSPACE}/guard/scripts/guards/deployment-values.sh"' in _script()
-    for line in _script().splitlines():
-        stripped = line.strip()
-        if stripped.startswith("#") or "GITHUB_WORKSPACE}/guard/" in stripped:
-            continue
-        assert "scripts/" not in stripped, f"the guard step runs the change's own script: {stripped}"
-    assert steps[at + 1:] == []
-
-
-def test_it_runs_on_every_pull_request_and_on_main():
-    on = yaml.safe_load(SECURITY.read_text(encoding="utf-8"))[True]
-    assert "pull_request" in on and "merge_group" in on
-    assert on["push"] == {"branches": ["main"]}
-    # Every pull request but a lane's: the owner's lane rule of 12 November
-    # (tests/unit/scripts/test_fast_checks_on_lane_prs.py) skips a lane's
-    # pull request and nothing else, so the only condition is that clause.
-    assert _job()["if"] == (
-        "${{ !cancelled() && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') "
-        "&& github.event.pull_request.head.repo.full_name == github.repository) }}"
-    )
+    """The guard's step, run from its published run block (ci_run_blocks)."""
+    return run_block("security.yml", "deployment-values", STEP)
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -236,8 +174,80 @@ def test_a_pull_requests_diff_is_against_the_branch_it_targets_now():
     """A retargeted pull request's recorded base commit is the old branch's:
     the added lines are read against the branch it targets now, while the
     guard itself still comes from the base commit. MUTATION: hand --diff the
-    recorded pull_request.base.sha."""
-    env = _step().get("env") or {}
-    assert env.get("PR_BASE_REF") == "${{ github.event.pull_request.base.ref }}", env
-    assert "pull_request.base.sha" not in str(env), env
+    recorded pull_request.base.sha. The step's `env:` mapping PR_BASE_REF from
+    the event is not read here: a test reads only its own tree, and this job
+    is not on the owner's list of CI security guards (issue 71)."""
     assert '--diff "refs/remotes/origin/${PR_BASE_REF:?' in _script(), _script()
+
+
+SECURITY = REPO / ".github" / "workflows" / "security.yml"
+
+
+def _jobs() -> dict:
+    return yaml.safe_load(SECURITY.read_text(encoding="utf-8"))["jobs"]
+
+
+def _job() -> dict:
+    """The guard's own job: never folded into `checks`, whose steps run the
+    change's own scripts while this one holds the pattern list."""
+    return _jobs()["deployment-values"]
+
+
+def _step() -> dict:
+    # Found by its name, as on origin/main: STEP here is the step's id.
+    return next(s for s in _job()["steps"] if s.get("name") == "deployment-values · enforce")
+
+
+def test_the_check_keeps_its_required_name_and_holds_no_credential():
+    """The ruleset requires the check by name. The job can never ask for
+    cloud credentials (no id-token, no auth step), and --diff gets the full
+    history it reads."""
+    job = _job()
+    assert job["name"] == "deployment-values"
+    assert "needs" not in job
+    assert job["permissions"] == {"contents": "read"}
+    assert not [s for s in job["steps"] if "google-github-actions/auth" in str(s.get("uses", ""))]
+    assert _step()["id"] == "deployment-values-enforce"
+    assert _step()["env"]["DEPLOYMENT_PATTERNS"] == "${{ secrets.DEPLOYMENT_PATTERNS }}"
+    assert "deployment-values" not in (_jobs()["checks"].get("outputs") or {})
+    assert not [s for s in _jobs()["checks"]["steps"] if "DEPLOYMENT_PATTERNS" in yaml.safe_dump(s)]
+
+
+def test_it_never_runs_the_change_s_code_while_holding_the_list():
+    """The independent review of 14 November: the guard, its library and its
+    allowlist come from the base commit (guard/); the change is checked out
+    into pr/ as data only, and nothing of it runs before or during the guard.
+    Every step before the guard is a credential-less checkout."""
+    steps = _job()["steps"]
+    at = steps.index(_step())
+    before = steps[:at]
+    assert before and all(str(s.get("uses", "")).startswith("actions/checkout@") for s in before)
+    assert all((s.get("with") or {}).get("persist-credentials") is False for s in before)
+    by_path = {(s.get("with") or {}).get("path"): s["with"] for s in before}
+    assert set(by_path) == {"guard", "pr"}
+    assert by_path["guard"]["ref"] == (
+        "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha "
+        "|| (github.event_name == 'workflow_dispatch' && 'main') || github.sha }}"
+    )
+    assert by_path["pr"]["fetch-depth"] == 0
+    assert _step()["working-directory"] == "pr"
+    assert '"${GITHUB_WORKSPACE}/guard/scripts/guards/deployment-values.sh"' in _script()
+    for line in _script().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#") or "GITHUB_WORKSPACE}/guard/" in stripped:
+            continue
+        assert "scripts/" not in stripped, f"the guard step runs the change's own script: {stripped}"
+    assert steps[at + 1:] == []
+
+
+def test_it_runs_on_every_pull_request_and_on_main():
+    on = yaml.safe_load(SECURITY.read_text(encoding="utf-8"))[True]
+    assert "pull_request" in on and "merge_group" in on
+    assert on["push"] == {"branches": ["main"]}
+    # Every pull request but a lane's: the owner's lane rule of 12 November
+    # (tests/unit/scripts/test_fast_checks_on_lane_prs.py) skips a lane's
+    # pull request and nothing else, so the only condition is that clause.
+    assert _job()["if"] == (
+        "${{ !cancelled() && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') "
+        "&& github.event.pull_request.head.repo.full_name == github.repository) }}"
+    )

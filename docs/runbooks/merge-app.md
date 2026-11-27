@@ -47,9 +47,11 @@ workflow file.
 job, and `runner-fallback.yml`'s `judge` mints it with **variables** write
 only, to flip the `SELF_HOSTED_CI` repository variable that the GITHUB_TOKEN
 has no scope for ([docs/ci.md](../ci.md), "Two tokens"). The App must hold the
-union of what every one of them asks for: the table in step 1, which
-`tests/unit/scripts/test_merge_app_permissions_doc.py` holds to every
-`permission-*` input of every token mint that uses `MERGE_APP_ID`.
+union of what every one of them asks for: the table in step 1, which must
+cover every `permission-*` input of every token mint that uses
+`MERGE_APP_ID`. No test reads this runbook or the workflows to check it
+([why](../ci.md#a-test-reads-only-its-own-tree)): a change to a mint's
+permissions updates the table in the same pull request.
 
 Measured 2026-10-23 to 2026-10-26 (findings F12, F14 and F15 of the merge-App permissions review): this
 runbook listed Contents, Pull requests and Workflows only, the App was set up

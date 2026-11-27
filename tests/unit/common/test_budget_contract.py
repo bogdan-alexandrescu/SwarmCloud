@@ -16,7 +16,6 @@ from __future__ import annotations
 import json
 from dataclasses import fields
 from datetime import datetime, timezone
-from pathlib import Path
 
 import pytest
 
@@ -31,7 +30,6 @@ from swarm_common.specsign import (
 )
 from swarm_common.states import EventType
 
-REQUESTS = Path(__file__).resolve().parents[3] / "docs" / "contract-change-requests.md"
 
 DOC = {
     "tenant_id": "eng",
@@ -118,15 +116,3 @@ def test_119_the_budget_block_covers_its_unit_and_amount():
     forged = canonical_settings_block(tenant_id="eng", block="budget",
                                       fields={"unit": "usd", "amount": 2000})
     assert forged != out
-
-
-def test_each_request_is_marked_applied():
-    text = REQUESTS.read_text()
-    for number in (118, 119, 120, 121):
-        row = next(line for line in text.splitlines() if line.startswith(f"| {number} |"))
-        # MUTATION: leave a row "Not applied" and this names it.
-        assert "APPLIED 2026-10-27" in row and "Not applied" not in row, number
-        section = text.split(f"\n## {number}. ", 1)[1].split("\n## ", 1)[0]
-        # scripts/lib/check-frozen-contract.sh passes a swarm_common diff only on an
-        # added line saying "accepted by the owner"; this status line is that line.
-        assert section.splitlines()[2].startswith("**Status:** ACCEPTED by the owner"), number

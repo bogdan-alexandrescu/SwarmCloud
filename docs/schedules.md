@@ -158,9 +158,8 @@ compared with them.
   §8.1 in §0.1, check 3.
 * **The console's Work section has ten tabs:** Agents, Workflows, Runs,
   Timeline, Repositories, Setup, Access and the three Submit screens
-  (`apps/swarm-ui/src/App.tsx` `SECTIONS`).
-  `tests/unit/scripts/test_issue_forms.py` binds the issue forms' "Where" list
-  to that array.
+  (`apps/swarm-ui/src/App.tsx` `SECTIONS`); the issue forms' "Where" list
+  follows that array.
 * **No cron library is a dependency** of any app.
 
 ### 0.1 Lane S0's results, 2026-10-08, against `main` (`ce68220`)

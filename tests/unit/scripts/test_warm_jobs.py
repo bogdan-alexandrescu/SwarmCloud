@@ -28,9 +28,7 @@ PATH serving a job listing:
   * (archived issue 888 box 94, measured 2026-10-27) that skip counts any successful
     execution on the digest, however old and whether a warm run or a tenant
     task, because the cached import was measured to hold across every
-    same-digest idle gap that exists; the script's header cites that
-    measurement (docs/ci-warm-jobs-measurement.md) instead of calling the
-    premise unmeasured.
+    same-digest idle gap that exists.
 """
 
 from __future__ import annotations
@@ -382,15 +380,3 @@ def test_an_old_tenant_task_on_the_same_digest_still_skips_the_job(world):
     assert proc.returncode == 0, proc.stderr
     assert _executed(world) == []
     assert "skipped swarm-job-acme-claude-code" in proc.stderr, proc.stderr
-
-
-def test_the_skip_rule_cites_its_measurement_and_no_longer_calls_it_unmeasured():
-    header = SCRIPT.read_text().split("\nset -euo pipefail", 1)[0]
-    assert "UNMEASURED" not in header, "the skip's premise was measured on 2026-10-27 (#888)"
-    assert "docs/ci-warm-jobs-measurement.md" in header
-    doc = (REPO / "docs" / "ci-warm-jobs-measurement.md").read_text()
-    # The read time, the longest same-digest gap on a runner, and what it read.
-    assert "2026-10-27" in doc and "05:52" in doc and "06:12" in doc
-    assert "13.7 h" in doc and "1.00-2.49 s" in doc
-    # The gap nobody could measure is stated as such, not glossed.
-    assert "24 h or more" in doc

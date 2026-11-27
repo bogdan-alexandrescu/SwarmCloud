@@ -6,8 +6,7 @@ flag and user agent. swarm-api cannot import the worker, so it restates the
 names twice (`swarm_api.qaspec.PRESETS`, what a QA target's `widths` may name,
 and `swarm_api.live.LIVE_PRESETS`, the console's switcher catalogue); the
 `swarm-handoff device` help in `agent_worker.handoff.AGENT_GUIDE` is read off
-the source; `swarm_qa`'s TO_THE_END_PRESETS names a subset; and two docs write
-the list out for a reader. A preset added to one copy only is a width a target
+the source; and `swarm_qa`'s TO_THE_END_PRESETS names a subset. A preset added to one copy only is a width a target
 is refused, a device the console never offers, or one the agent is never told
 about -- so this names the copy and the preset it is missing or adds.
 """
@@ -26,8 +25,6 @@ from swarm_api import qaspec
 
 REPO = Path(__file__).resolve().parents[3]
 SWARM_QA = REPO / "images" / "agent-runtime-browser" / "swarm_qa.py"
-BROWSER_QA_DOC = REPO / "docs" / "browser-qa.md"
-LIVE_BROWSER_DOC = REPO / "docs" / "design" / "live-browser.md"
 
 
 def _swarm_qa():
@@ -45,32 +42,12 @@ def _guide_list() -> list[str]:
     return [n.strip() for n in found.group(1).split(",")]
 
 
-def _browser_qa_doc_list() -> dict[str, tuple[int, int]]:
-    """docs/browser-qa.md's sentence: "switches between `desktop` (1440×900), ..."."""
-    text = " ".join(BROWSER_QA_DOC.read_text(encoding="utf-8").split())
-    found = re.search(r"switches between (.*?), and `browser_resize` is refused", text)
-    assert found is not None, "docs/browser-qa.md no longer lists the presets"
-    return {m[0]: (int(m[1]), int(m[2]))
-            for m in re.findall(r"`([a-z0-9-]+)` \((\d+)×(\d+)\)", found.group(1))}
-
-
-def _live_browser_doc_list() -> dict[str, tuple[int, int]]:
-    """docs/design/live-browser.md §6.1's bullet list under "The presets"."""
-    text = LIVE_BROWSER_DOC.read_text(encoding="utf-8")
-    start = text.index("* **The presets** are a fixed, named list in the gate:")
-    block = text[start:text.index("\n\n", start)]
-    return {m[0]: (int(m[1]), int(m[2]))
-            for m in re.findall(r"^  - `([a-z0-9-]+)` (\d+)×(\d+)", block, re.MULTILINE)}
-
-
 def test_every_list_names_the_gates_presets_and_no_other() -> None:
     gate = list(PRESETS)
     copies = {
         "swarm_api.qaspec.PRESETS": list(qaspec.PRESETS),
         "swarm_api.live.LIVE_PRESETS": [p["name"] for p in live_module.LIVE_PRESETS],
         "agent_worker.handoff.AGENT_GUIDE (swarm-handoff device)": _guide_list(),
-        "docs/browser-qa.md": list(_browser_qa_doc_list()),
-        "docs/design/live-browser.md §6.1": list(_live_browser_doc_list()),
     }
     # MUTATION: add a preset to presets.py alone, or to any one copy, and this
     # names the copy and the preset.
@@ -80,12 +57,6 @@ def test_every_list_names_the_gates_presets_and_no_other() -> None:
     assert drift == {}, drift
     for where, names in copies.items():
         assert names == gate, f"{where} lists the presets out of the gate's order: {names}"
-
-
-def test_the_docs_give_each_preset_the_gates_size() -> None:
-    gate = {p.name: (p.width, p.height) for p in PRESETS.values()}
-    assert _browser_qa_doc_list() == gate
-    assert _live_browser_doc_list() == gate
 
 
 def test_the_capture_tools_to_the_end_presets_are_the_gates() -> None:

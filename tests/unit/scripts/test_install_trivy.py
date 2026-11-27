@@ -1,4 +1,4 @@
-"""CI installs trivy from its GitHub release at a recorded sha256, never through trivy's own install.sh.
+"""scripts/install-trivy.sh installs trivy from its GitHub release at a recorded sha256, and refuses anything else.
 
 From v0.74.0 trivy's contrib/install.sh downloads the tarball from get.trivy.dev. On 3 November 2026 (from about
 21:55 universal time) that name stopped resolving, and every CI and release job that installed trivy failed before

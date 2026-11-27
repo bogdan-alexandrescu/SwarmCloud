@@ -1,41 +1,16 @@
-"""A lane's pull request runs no checks at all; any other pull request runs the
-fast checks only; the full suite runs on the merge train's pull request, on
-main and wherever `full-ci` asks for it.
-
-THE LANE RULE, the owner's direction of 12 November 2026 ("no testing on lane
-pull requests, only on the merge train's run on its way to main, with large
-merge trains, to cut CI wait time"; docs/ci.md "A lane's pull request runs no
-checks"). On a pull request whose head is a `swarm/` branch of this
-repository, every job of application.yml, security.yml and terraform.yml is
-skipped by its own `if:`, which ends `&& LANE_SKIP`, and ci-gate passes at
-once: it skips every step but its lane note. Each job's `if:` is evaluated
-here, the way GitHub does, on a lane's pull request (nothing runs), and on a
-`train/` pull request, a push to main, a fork's pull request, another branch's
-and a queue entry (exactly what the `if:` without the clause runs).
-
-THE FAST-CHECKS RULE, below, still holds for every other pull request.
+"""The aggregate gates and ci-gate's reuse verdict under the fast-checks rule.
 
 Owner decision 2026-11-11 ("skip pr testing and only run tests when merging to
 main", "Fast checks only on PRs"; docs/ci.md "What runs where"). Every HEAVY
-job of application.yml, terraform.yml and security.yml runs only when the run
-is not a pull request, or the pull request's head is a `train/` branch
-(scripts/merge-train.sh), or it carries the `full-ci` label.
+job of application.yml runs only when the run is not a pull request, or the
+pull request's head is a `train/` branch (scripts/merge-train.sh), or it
+carries the `full-ci` label; the rule is the `changes` job's `full` output.
 
-The properties held here, against the real workflow files:
-
-  * the rule is written ONCE, as the `changes` job's `full` output, and every
-    heavy job that can run on a pull request reads it first in its `if:`;
-  * a heavy job that never runs on any pull request (an image build, a
-    Terraform plan, the published-image scan) keeps its own main-only `if:`;
-  * no fast job reads it, and every job of the three files is classified, so a
-    new job must be put on one side or the other;
-  * the aggregate gates (`ci-gate`, `format / unit tests`,
-    `swarm-ui typecheck / component tests`) read a heavy job skipped by the
-    rule as a pass and a failed one as a failure, and ci-gate's reuse verdict
-    (scripts/lib/ci_reuse.py) does not mistake the skip for an unsourced one.
-
-The workflow lines ship as workflow-lines.patch, pushed by hand: until it is
-applied the workflow assertions here fail with PATCH_NOTE.
+Held here: the aggregate gates (`ci-gate`, `format / unit tests`,
+`swarm-ui typecheck / component tests`), their first step run from its
+published run block (ci_run_blocks), read a heavy job skipped by the rule as a
+pass and a failed one as a failure, and ci-gate's reuse verdict
+(scripts/lib/ci_reuse.py) does not mistake the skip for an unsourced one.
 """
 
 from __future__ import annotations
@@ -49,7 +24,10 @@ from pathlib import Path
 import pytest
 import yaml
 
+from .ci_run_blocks import run_block
 from .test_ci_reuse import reuse as ci_reuse
+
+FULL_IF = "needs.changes.outputs.full == 'true' && "
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -59,7 +37,6 @@ PATCH_NOTE = ("-- the workflow change of 'fast checks only on lane PRs' is not a
 
 FULL_OUTPUT = ("${{ (github.event_name != 'pull_request' || startsWith(github.head_ref, 'train/') "
                "|| contains(github.event.pull_request.labels.*.name, 'full-ci')) && 'true' || 'false' }}")
-FULL_IF = "needs.changes.outputs.full == 'true' && "
 
 #: Heavy jobs that run on a pull request, so they carry the rule.
 HEAVY_GATED = {
@@ -106,7 +83,6 @@ LANE_SKIP = ("!(github.event_name == 'pull_request' && startsWith(github.head_re
 LANE_GATE = ("application.yml", "ci-gate")
 THIS_REPO = "example-org/example-repo"
 
-
 def _jobs(name: str) -> dict:
     return yaml.safe_load((WORKFLOWS / name).read_text())["jobs"]
 
@@ -115,11 +91,17 @@ def _if(job: dict) -> str:
     return str(job.get("if", "")).removeprefix("${{").removesuffix("}}").strip()
 
 
-@pytest.mark.parametrize("name", sorted(FAST))
-def test_every_job_is_classified(name):
-    """MUTATION: add a job without saying whether it is heavy or fast."""
-    classified = set(HEAVY_GATED[name]) | HEAVY_MAIN_ONLY[name] | FAST[name] | AGGREGATE[name]
-    assert set(_jobs(name)) == classified, sorted(set(_jobs(name)) ^ classified)
+#: Each aggregate's `needs:` and the key of its first step, the verdict, whose
+#: `env` is `NEEDS: ${{ toJSON(needs) }}`.
+VERDICT = "every job this check stands for passed, or was skipped by its own if"
+AGGREGATES = {
+    "ci-gate": (["shell", "workflows", "ruff", "changes", "quick-checks", "python-checks", "python-unit",
+                 "ui-build", "ui-tests", "integration", "manifests", "build-check", "build", "tested-tree",
+                 "plugin-tag"],
+                "every job of this workflow passed, or was skipped by its own if"),
+    "python": (["changes", "python-checks", "python-unit"], VERDICT),
+    "ui": (["changes", "ui-build", "ui-tests"], VERDICT),
+}
 
 
 def test_the_rule_is_written_once_as_the_changes_job_s_output():
@@ -186,16 +168,15 @@ def _needs(job_ids, *, full: str, failed: str = "") -> dict:
 
 
 def _verdict(job_id: str, needs: dict) -> subprocess.CompletedProcess:
-    step = _jobs("application.yml")[job_id]["steps"][0]
-    assert step["env"]["NEEDS"] == "${{ toJSON(needs) }}", step["env"]
-    return subprocess.run(["bash", "-c", step["run"]], env={**os.environ, "NEEDS": json.dumps(needs)},
+    script = run_block("application.yml", job_id, AGGREGATES[job_id][1])
+    return subprocess.run(["bash", "-c", script], env={**os.environ, "NEEDS": json.dumps(needs)},
                           capture_output=True, text=True, timeout=60)
 
 
 @pytest.mark.parametrize("job_id", ["ci-gate", "python", "ui"])
 def test_an_aggregate_gate_passes_a_heavy_job_the_rule_skipped(job_id):
     """MUTATION: count `skipped` as a failure in the gate's first step."""
-    needs = _needs(_jobs("application.yml")[job_id]["needs"], full="false")
+    needs = _needs(AGGREGATES[job_id][0], full="false")
     proc = _verdict(job_id, needs)
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
@@ -205,7 +186,7 @@ def test_an_aggregate_gate_passes_a_heavy_job_the_rule_skipped(job_id):
                                              ("ui", "ui-tests")])
 def test_an_aggregate_gate_still_fails_a_heavy_job_that_ran_and_failed(job_id, failed):
     """MUTATION: pass every result the gate reads."""
-    needs = _needs(_jobs("application.yml")[job_id]["needs"], full="true", failed=failed)
+    needs = _needs(AGGREGATES[job_id][0], full="true", failed=failed)
     proc = _verdict(job_id, needs)
     assert proc.returncode == 1 and failed in proc.stdout, proc.stdout + proc.stderr
 
@@ -214,7 +195,7 @@ def test_the_reuse_verdict_passes_a_heavy_skip_only_when_the_rule_is_off():
     """With `full` false a skipped heavy job was not reached; with `full`
     true (or absent) the same skip has no source and fails the gate.
     MUTATION: read every heavy skip as a pass, or ignore `full`."""
-    jobs = _jobs("application.yml")["ci-gate"]["needs"]
+    jobs = AGGREGATES["ci-gate"][0]
     problems, _ = ci_reuse.gate(_needs(jobs, full="false"), "pull_request")
     assert problems == [], problems
     for full in ("true", ""):
@@ -224,15 +205,6 @@ def test_the_reuse_verdict_passes_a_heavy_skip_only_when_the_rule_is_off():
             del needs["changes"]["outputs"]["full"]
         problems, _ = ci_reuse.gate(needs, "pull_request")
         assert len(problems) == 1 and "python-unit" in problems[0], (full, problems)
-
-
-def test_docs_say_what_runs_where():
-    """MUTATION: drop the section, or the label's name from it."""
-    text = (ROOT / "docs" / "ci.md").read_text()
-    start = text.index("## What runs where")
-    section = text[start:text.index("\n## ", start + 1)]
-    for needle in ("full-ci", "train/", "lane's pull request", "main"):
-        assert needle in section, needle
 
 
 # --- a lane's pull request runs no checks (owner, 2026-11-12) ---------------
@@ -386,20 +358,6 @@ def test_every_other_event_runs_exactly_what_it_ran_before(event):
         assert _evaluate(condition, values) is expected, (event, name, job_id)
 
 
-@pytest.mark.parametrize("event", ["train", "main"])
-def test_a_train_s_pull_request_and_a_push_to_main_run_the_full_suite(event):
-    """MUTATION: skip a heavy job on the train, or on main."""
-    values = _values(event)
-    ran = {(n, j) for n, j, job in _all_jobs() if (n, j) != LANE_GATE and _evaluate(str(job.get("if", "true")), values)}
-    heavy = {("application.yml", j) for j in HEAVY_GATED["application.yml"]}
-    if event == "main":
-        heavy -= {("application.yml", "build-check")}  # a pull request's image check
-        heavy |= {("application.yml", "build"), ("terraform.yml", "plan")}
-    fast = {(n, j) for n, js in FAST.items() for j in js} - {("terraform.yml", "plan-not-run")}
-    assert heavy <= ran, sorted(heavy - ran)
-    assert fast <= ran, sorted(fast - ran)
-
-
 def test_ci_gate_runs_on_a_lane_s_pull_request_and_judges_nothing():
     """ci-gate still reports (it is a required check), starts as soon as the
     skipped jobs it needs are done, and every step but the lane note is
@@ -435,14 +393,3 @@ def test_the_lane_gate_s_first_step_is_still_the_needs_judgement():
     assert steps[0]["env"]["NEEDS"] == "${{ toJSON(needs) }}"
     assert steps[0]["if"] == "${{ " + LANE_SKIP + " }}"
     assert steps[-1]["if"] == "${{ " + LANE_SKIP[2:-1] + " }}"
-
-
-def test_docs_say_a_lane_s_pull_request_runs_no_checks_and_why():
-    """MUTATION: drop the subsection, its reason, or the gather it relies on."""
-    text = (ROOT / "docs" / "ci.md").read_text()
-    start = text.index("## What runs where")
-    section = text[start:text.index("\n## ", start + 1)]
-    assert "### A lane's pull request runs no checks" in section
-    for needle in ("swarm/", "CI wait time", "owner's direction", "ci-gate", "skipped", "train/",
-                   "8 pull requests", "15 minutes", "up to 40", LANE_SKIP):
-        assert needle in section, needle

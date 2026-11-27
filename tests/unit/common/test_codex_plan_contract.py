@@ -10,10 +10,7 @@ turn codex on once the pool lanes had merged. What is held here:
   * it is `available=True` with no `disabled_reason`: the broker leasing
     OpenAI plan accounts and the runner using them have merged;
   * the Terraform mirror's `secret_env` names the same three, each read from
-    the tenant's `openai` secret slot;
-  * docs/contract-change-requests.md records request 130 as applied in full,
-    on a line carrying "accepted by the owner", which is what
-    scripts/lib/check-frozen-contract.sh admits a `swarm_common` change on.
+    the tenant's `openai` secret slot.
 
 No cloud, no emulator: the catalogue is pure and the rest is text.
 """
@@ -25,7 +22,6 @@ from pathlib import Path
 from swarm_common.profiles import RUNNER_PROFILES
 
 REPO = Path(__file__).resolve().parents[3]
-REQUESTS = REPO / "docs" / "contract-change-requests.md"
 LOCALS = REPO / "terraform" / "infra" / "locals.tf"
 
 PLAN_NAMES = ("OPENAI_API_KEY", "CODEX_PLAN_ACCESS_TOKEN", "CODEX_PLAN_ACCOUNT_ID")
@@ -63,20 +59,3 @@ def test_the_terraform_mirror_names_the_same_three_secrets():
     for name in PLAN_NAMES:
         assert name in block, f"terraform/infra/locals.tf codex secret_env lacks {name}"
     assert '=> "openai"' in block
-
-
-def test_request_130_is_recorded_as_applied_in_full():
-    text = REQUESTS.read_text(encoding="utf-8")
-    (row,) = [line for line in text.splitlines() if line.startswith("| 130 |")]
-    # MUTATION: leave row 130 reading "open" and the index says the catalogue
-    # lacks a change it carries.
-    assert not row.rstrip().endswith("| open, REQUESTED 2026-11-01 by lane CODEX-PLAN-CONTRACT for the owner's shared ChatGPT-plan pool |")
-    # MUTATION: leave row 130 "ACCEPTED IN PART" and the index says codex is
-    # still held unavailable.
-    assert "accepted in part" not in row.lower()
-    assert "applied in full" in row.lower()
-    assert "2026-11-02" in row
-    assert "keep codex unavailable until the pool lanes land" in row
-    # MUTATION: drop "accepted by the owner" and check-frozen-contract.sh
-    # refuses this pull request's swarm_common diff.
-    assert "accepted by the owner" in row.lower()

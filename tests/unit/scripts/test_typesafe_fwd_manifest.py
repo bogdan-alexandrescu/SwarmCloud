@@ -1,5 +1,4 @@
-"""The TypeSafe forwarder's Kubernetes objects (docs/design/workspace-secrets.md
-§3.5; lane SEC-INJECT-A, part of archived issue 1347).
+"""The TypeSafe forwarder's Kubernetes objects (lane SEC-INJECT-A, part of archived issue 1347).
 
   * kubernetes/swarm-system/swarm-typesafe-fwd.yaml: everything in swarm-system,
     one replica, requests == limits (invariant 7), no Spot (invariant 6), the
@@ -8,8 +7,8 @@
   * its ingress: TCP 8080 from a pod labelled `swarm-typesafe: inject` in a
     tenant namespace, one peer with both selectors, and from nothing else;
   * the placeholders are exactly the ones terraform/infra/typesafe_fwd.tf
-    fills, and the setting it renders has exactly the keys §3.5 specifies for
-    the forwarder (an unknown key there fails closed).
+    fills, and the setting it renders has exactly the keys the forwarder
+    takes (an unknown key there fails closed).
 """
 
 from __future__ import annotations
@@ -23,7 +22,6 @@ import yaml
 REPO = Path(__file__).resolve().parents[3]
 TEMPLATE = REPO / "kubernetes" / "swarm-system" / "swarm-typesafe-fwd.yaml"
 FWD_TF = REPO / "terraform" / "infra" / "typesafe_fwd.tf"
-DESIGN = REPO / "docs" / "design" / "workspace-secrets.md"
 PORT = 8080
 POD_LABEL = {"swarm-typesafe": "inject"}
 NAME = "swarm-typesafe-fwd"
@@ -136,6 +134,3 @@ def test_the_rendered_setting_has_exactly_the_specified_keys():
     assert block, "typesafe_fwd.tf renders local.typesafe_fwd_config"
     keys = tuple(re.findall(r"^\s+([a-z_]+)\s+=", block.group(1), re.M))
     assert keys == CONFIG_KEYS
-    section = DESIGN.read_text().split("### 3.5", 1)[1].split("### 3.6", 1)[0]
-    for key in CONFIG_KEYS:
-        assert f"`{key}`" in section, key

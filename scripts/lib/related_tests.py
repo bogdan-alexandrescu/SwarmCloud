@@ -725,9 +725,9 @@ def python_related(root: Path, changed: list[str], graph: Graph | None = None,
     chosen.update(graph_tests(graph, [c for c in changed_py if c not in wide], sut.is_test, known))
     reached = sut.import_closure(root, changed_py, edges) if changed_py else set()
     chosen.update(r for r in reached if r in known)
-    # The same text rule as CI and changed-guards.sh (archived issue 2299): a test naming a
-    # doc that cites a changed path reaches the change through the doc.
-    virtual = sut.script_closure(root, sut.doc_closure(root, changed))
+    # The same text rule as CI and changed-guards.sh: a test naming a changed
+    # path or a script that names one. No doc is followed (issue 71).
+    virtual = sut.script_closure(root, changed)
     chosen |= _names_any(root, all_tests, chosen, virtual)
     capped = sut.fallback_reason(changed)
     if not capped and not pytest_weights(root)[0]:
