@@ -40,6 +40,7 @@ import { useNow } from './useNow'
 import { PlanThread, openComments, useBarRegistration, usePlanConversation, ReplanControls } from './PlanThread'
 import { PlanRevisionPicker } from './PlanRevisions'
 import { PlanEditorMount, useSavedOver } from './PlanEditor'
+import { PinnedDiagrams } from './PinnedDiagrams'
 import './styles/plan-document.css'
 
 type Json = Record<string, unknown>
@@ -400,7 +401,8 @@ export function PlanDocument({
   return (
     <section className="pd-doc" aria-label="The plan" data-testid="pd-doc" data-state={read?.status ?? 'ok'}>
       <ReadState read={read} onRead={onRead} />
-      {pinned}
+      {/* The "Pinned to the plan" strip, or the line naming the level that turned diagrams off (U8, §2.5). */}
+      {pinned ?? <PinnedDiagrams plan={plan} run={run} c={conversation} shownRevision={shownRev} />}
       {runId !== null && conversation.revisions.length > 0 && (
         <PlanRevisionPicker runId={runId} revisions={conversation.revisions} shown={shownRev} shownPlan={plan} complete={conversation.complete} />
       )}

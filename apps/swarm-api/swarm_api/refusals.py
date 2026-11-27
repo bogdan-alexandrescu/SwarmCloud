@@ -779,6 +779,19 @@ SWITCHES: dict[str, Switch] = {
         "review_usd ($25), Admin › Settings, is refused 429 naming which. On once the "
         "decision page shows both counts",
     ),
+    # The chat's model per plan (docs/design/plans-pipeline.md §7.8, lane P10
+    # PLANS-CHAT-MODEL-API), on `POST /v1/runs/{id}/plan:chat-model`, a route
+    # new with that lane. Off, a stronger class is recorded anyway: the next
+    # turn costs more, the plan and its digest are untouched. NOT here, and
+    # always on: `unknown_model_class` (established), the edit level
+    # (`edit_level_required`'s own switch) and the tenant check (404).
+    "chat_model_not_needed": Switch(
+        code="chat_model_not_needed",
+        why="a plan's chat model set to a class stronger (by its model_prices output price) "
+        "than the workspace's, when the plan's chat_model_suggestion does not suggest it, is "
+        "refused 422 in the suggestion's sentence. On once the decision page (lane U13) "
+        "offers a stronger class only as the suggestion's button",
+    ),
 }
 
 
