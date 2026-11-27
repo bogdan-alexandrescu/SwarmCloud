@@ -101,6 +101,15 @@ TEST_DIRECTORIES = ("__tests__", "tests")
 #: page is rendered whatever it is called (archived issue 2379, F03).
 TEST_FILE_MARKS = (".test.", ".spec.")
 TEST_FILE_MARK_PREFIX = "apps/swarm-ui/"
+#: The worker's `agent_worker.verdict.GENERATED_UI_PREFIXES`, restated.
+#: Generated console files are NOT UI either (issue 483): files a generator
+#: writes from swarm-api's OpenAPI document and constants. Nobody draws them,
+#: and gating them turned a plain-profile review's MERGE of an API change into
+#: NOT_YET, which sent it to a fix round that could change nothing. Only this
+#: directory: `apps/swarm-ui/src/types.ts`, every other application file, CSS,
+#: index.html, configs and all of `docs/web-ui/` stay gated, and a generated
+#: file changed beside application code leaves the lane gated on that code.
+GENERATED_UI_PREFIXES = ("apps/swarm-ui/src/generated/",)
 
 #: Task documents read per resolution: the parents and the `builds_on` chain
 #: behind them. A workflow has at most 50 parents per step; a chain longer
@@ -143,10 +152,13 @@ def is_test_path(path: str) -> bool:
 
 
 def is_ui_path(path: Any) -> bool:
-    """Whether a changed path is one a rendered review must see (test files are not)."""
+    """Whether a changed path is one a rendered review must see (test files
+    and generated console files are not)."""
     if not isinstance(path, str):
         return False
     text = path.lstrip("/")
+    if text.startswith(GENERATED_UI_PREFIXES):
+        return False
     return text.startswith(UI_PATH_PREFIXES) and not is_test_path(text)
 
 

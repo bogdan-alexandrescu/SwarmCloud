@@ -821,6 +821,14 @@ UI_PATH_PREFIXES = ("apps/swarm-ui/", "docs/web-ui/")
 TEST_DIRECTORIES = ("__tests__", "tests")
 TEST_FILE_MARKS = (".test.", ".spec.")
 TEST_FILE_MARK_PREFIX = "apps/swarm-ui/"
+#: Generated console files are NOT UI either (issue 483): files a generator
+#: writes from swarm-api's OpenAPI document and constants. Nobody draws them,
+#: and gating them turned a plain-profile review's MERGE of an API change into
+#: NOT_YET, which sent it to a fix round that could change nothing. Only this
+#: directory: `apps/swarm-ui/src/types.ts`, every other application file, CSS,
+#: index.html, configs and all of `docs/web-ui/` stay gated, and a generated
+#: file changed beside application code leaves the lane gated on that code.
+GENERATED_UI_PREFIXES = ("apps/swarm-ui/src/generated/",)
 #: The one profile that renders pages (contract request 108's browser runner).
 RENDERED_REVIEW_PROFILE = "claude-code-browser"
 #: What a rendered review leaves in its artifacts directory.
@@ -884,10 +892,13 @@ def is_test_path(path: str) -> bool:
 
 
 def is_ui_path(path: str) -> bool:
-    """Whether a repository-relative path is one a rendered review must see (tests are not)."""
+    """Whether a repository-relative path is one a rendered review must see
+    (tests and generated console files are not)."""
     if not isinstance(path, str):
         return False
     text = path.lstrip("/")
+    if text.startswith(GENERATED_UI_PREFIXES):
+        return False
     return text.startswith(UI_PATH_PREFIXES) and not is_test_path(text)
 
 

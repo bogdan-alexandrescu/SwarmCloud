@@ -56,6 +56,9 @@ POLICY = {"policy": "browser_if_ui", "browser": BROWSER, "code": CODE}
 UI_FILE = "apps/swarm-ui/src/pages/Agents.tsx"
 SCHEDULER_FILE = "apps/scheduler/scheduler/loop.py"
 UI_TEST_FILES = ("apps/swarm-ui/src/__tests__/Agents.test.tsx", "apps/swarm-ui/tests/e2e/a.ts")
+#: A console file the generator writes from swarm-api's OpenAPI document (issue 483).
+GENERATED_FILE = "apps/swarm-ui/src/generated/api-types.ts"
+API_FILE = "apps/swarm-api/swarm_api/x.py"
 
 
 def _git(*paths: str, truncated: bool = False) -> dict[str, Any]:
@@ -225,6 +228,23 @@ def test_a_test_only_ui_change_is_not_ui_for_the_resolver(db, make_scheduler):
 
     # MUTATION: count `__tests__/` or `tests/` as UI and this is the browser.
     assert db.docs["tasks/task_review"]["runner_profile"] == CODE
+
+
+def test_browser_if_ui_keeps_the_plain_profile_for_a_generated_only_lane(db, make_scheduler):
+    # Issue 483: an API change whose only console path is the generated
+    # types file is code-only for the resolver, as for the worker's gate.
+    _base(db)
+    own = [API_FILE, GENERATED_FILE]
+    _parent(db, "task_impl", {"git": {**_git(*own)["git"], "own_files": own,
+                                      "own_files_truncated": False}})
+    _review(db)
+
+    make_scheduler().release_dependants("task_impl")
+
+    # MUTATION: count apps/swarm-ui/src/generated/ as UI and this is the browser.
+    doc = db.docs["tasks/task_review"]
+    assert doc["runner_profile"] == CODE
+    assert doc["metadata"]["runtime"]["resolved"]["reason"] == "no_ui_paths"
 
 
 def test_a_test_only_ui_change_is_not_ui_for_the_gate():
@@ -615,9 +635,14 @@ def test_the_restated_constants_match_swarm_api():
     "apps/swarm-ui/src/testsuite/Panel.tsx", "apps/swarm-ui/src/App.test.tsx",
     "docs/web-ui/tests/a.html", "apps/swarm-ui-old/a.tsx", "tests/apps/swarm-ui/a.tsx", "",
     "apps/swarm-ui/src/views/Accounts.spec.tsx", "docs/web-ui/accounts.test.html",
+    # Issue 483: generated console files are not UI; a look-alike still is.
+    GENERATED_FILE, "/apps/swarm-ui/src/generated/constants/routes.json",
+    "apps/swarm-ui/src/generatedX.tsx", "apps/swarm-ui/src/types.ts",
+    "docs/web-ui/generated/a.html",
 ])
 def test_the_scheduler_and_the_gate_share_one_ui_path_rule(path):
     assert runtime_mod.UI_PATH_PREFIXES == verdict_mod.UI_PATH_PREFIXES
+    assert runtime_mod.GENERATED_UI_PREFIXES == verdict_mod.GENERATED_UI_PREFIXES
     assert runtime_mod.TEST_DIRECTORIES == verdict_mod.TEST_DIRECTORIES
     assert runtime_mod.TEST_FILE_MARKS == verdict_mod.TEST_FILE_MARKS
     assert runtime_mod.TEST_FILE_MARK_PREFIX == verdict_mod.TEST_FILE_MARK_PREFIX
