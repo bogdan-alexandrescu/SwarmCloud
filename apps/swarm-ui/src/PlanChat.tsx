@@ -206,7 +206,7 @@ function ChatDiagram({ turnId, d, ctx }: Readonly<{ turnId: string; d: PlanDiagr
       {ctx.mayEdit && (
         <span className="pt-acts">
           <Button kind="secondary" size="sm" busy={busy} aria-label="Pin to the plan" title="Pin to the plan: a new revision holding this diagram" onClick={() => void pin()}>
-            Pin
+            Pin to plan
           </Button>
         </span>
       )}
@@ -314,7 +314,7 @@ function Turn({ t, streamed, starting, ctx }: Readonly<{ t: Json; streamed: stri
       {state === 'answered' && answer !== null && !pinned && ctx.mayComment && id !== null && (
         <span className="pt-acts">
           <Button kind="ghost" size="sm" busy={busy} aria-label="Pin to the thread" title="Pin to the thread: a comment quoting this answer" onClick={() => void pin()}>
-            Pin
+            Pin to thread
           </Button>
         </span>
       )}
