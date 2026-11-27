@@ -37,7 +37,9 @@ def _run(**overrides) -> IssueRun:
 
 
 def test_the_outcome_is_the_runs_constant():
-    assert issueruns.OUTCOME_SUPERSEDED_BY_PERSON_PUSH == SUPERSEDED
+    # planhistory restates it, as it does already_on_main.
+    assert (issueruns.OUTCOME_SUPERSEDED_BY_PERSON_PUSH == SUPERSEDED
+            == planhistory._SUPERSEDED_BY_PERSON_PUSH)
 
 
 def test_the_status_comment_says_a_person_pushed_and_closes_nothing():

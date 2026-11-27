@@ -77,6 +77,9 @@ MAX_TITLE_CHARS = 120
 _REVIEW_REFUSAL = re.compile(r"review's verdict is|\bNOT_YET\b")
 #: A DONE run that changed nothing (`issueruns.OUTCOME_ALREADY_ON_MAIN`).
 _ALREADY_ON_MAIN = "already_on_main"
+#: A DONE run whose green head a person pushed
+#: (`issueruns.OUTCOME_SUPERSEDED_BY_PERSON_PUSH`).
+_SUPERSEDED_BY_PERSON_PUSH = "superseded_by_person_push"
 #: States that end a run (`issueruns.TERMINAL_RUN_STATES`, by value).
 _ENDED = frozenset({"DONE", "FAILED", "REJECTED", "CANCELLED", "NOT_READY"})
 
@@ -182,6 +185,9 @@ def ending(run: Any) -> tuple[str, str] | None:
         number = pull.get("number")
         if getattr(run, "outcome", None) == _ALREADY_ON_MAIN:
             return "done with no change: the work was already on the default branch", ""
+        if getattr(run, "outcome", None) == _SUPERSEDED_BY_PERSON_PUSH:
+            return "superseded by a person's push: its pull request green and left to them", (
+                f"pull request #{number}" if number else "")
         if pull.get("merged"):
             return "merged", f"pull request #{number}" if number else ""
         return "done, its pull request green but not merged", (

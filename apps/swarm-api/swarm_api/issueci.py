@@ -9,6 +9,9 @@
                                                                submitted; DONE once
                                                                GitHub says merged,
                                                                FAILED if it refused)
+    CHECKING  --green, `auto_merge`, a person pushed------->   DONE (outcome
+              the head                                         superseded_by_person_push,
+                                                               no merge submitted)
     CHECKING  --red, rounds left---------------------------->   FIXING (one continuation)
     CHECKING  --red, `fix_rounds` spent--------------------->   FAILED (failure_excerpt)
     CHECKING  --pending------------------------------------->   CHECKING
@@ -130,6 +133,16 @@ verdict: no merge, and `part of #N`. The loop's `review-fix:<k>` rounds push
 the pull request's head, so a head one of them pushed is the run's
 (`_loop_fix_heads`), bound by the same signed record.
 
+A PERSON'S HEAD IS THEIRS (archived issue 474). An `auto_merge` run green at a
+head none of its tasks pushed is FAILED "merge it yourself" -- unless a
+person pushed it: a plain lane a person dispatched onto the run's branch
+(`_person_lane_heads`), or a person on the pull request, its author or an
+assignee (`_persons_push`, the merge step's `_person_pusher` rule). Then the
+person read that head and took the pull request over, which is a decision,
+not a defect: DONE with `outcome: superseded_by_person_push`, no merge
+submitted, the pull request left to them, and failure-review skips it as
+`person_push`. Any other head is still FAILED and reviewed.
+
 ALREADY ON MAIN (archived issue 646, owner decision 2026-10-05). The build steps are
 compiled with `allow_empty_diff`, so a workflow whose agents found the work
 already on the default branch SUCCEEDS with no pull request: each build
@@ -221,6 +234,7 @@ from .issueruns import (
     MAX_VERIFICATION_BYTES,
     NO_CLOSING_KEYWORD,
     OUTCOME_ALREADY_ON_MAIN,
+    OUTCOME_SUPERSEDED_BY_PERSON_PUSH,
     REREVIEW_STEP,
     REVIEW_STEP,
     SECURITY_LENS_STEP,
@@ -251,7 +265,7 @@ from .schemas import WorkflowCreate
 from . import sessiontag
 from .validation import (
     DISPATCH_METADATA_KEY, FIX_LOOP_FIELD, FIX_LOOP_PROFILE, MERGE_METADATA_KEY, MERGE_STEP_ID,
-    SECURITY_VERDICT_FILE, IssueRef,
+    SECURITY_VERDICT_FILE, IssueRef, is_merge_step,
 )
 
 log = logging.getLogger(__name__)
@@ -354,6 +368,19 @@ MERGE_MAX_HEAD_UPDATES = 12
 GITHUB_COMMITTER_EMAIL = "noreply@github.com"
 #: What reading a commit and comparing it with the base asks of the credential.
 CONTENTS_READ = "contents: read"
+#: What reading the pull request's author and assignees asks of it.
+PULLS_READ = "pull_requests: read"
+#: The committer addresses the platform commits under when it names no
+#: person (`agent_worker.merge.PLATFORM_COMMITTER_EMAILS`), and how every
+#: commit the worker pushes ends its message
+#: (`agent_worker.merge.WORKER_COMMIT_LINE`): restated because the API image
+#: does not carry the worker, and held equal to both by a test. A head under
+#: either is the platform's, never a person's own push (`_persons_push`).
+PLATFORM_COMMITTER_EMAILS = frozenset({
+    "swarmcloud-agent@users.noreply.github.com",
+    "swarmcloud@users.noreply.github.com",
+})
+WORKER_COMMIT_LINE = "Made by the worker for task "
 
 #: The workflow states a round or the compiled workflow can end in.
 _ENDED = {
@@ -2311,6 +2338,18 @@ def pushing_task(
     return None
 
 
+def _read_commit(writer: GitHubWriter, ref: IssueRef, token: str, sha: str) -> Mapping[str, Any]:
+    """GitHub's `commits/<sha>` answer, with the run's own tenant's credential,
+    through the writer's transport (forgewrite has no public commit read).
+    Raises what the writer raises: `ForgeWriteNotFound` for a commit GitHub
+    does not have."""
+    data = writer._call(
+        "GET", writer._url(ref, f"commits/{quote(sha, safe='')}"), token,
+        f"the commit {ref.repository}@{sha[:12]}", needs=CONTENTS_READ,
+    )
+    return data if isinstance(data, Mapping) else {}
+
+
 def _base_merge_parent(
     writer: GitHubWriter, ref: IssueRef, token: str, *, sha: str, base: str
 ) -> tuple[str | None, str]:
@@ -2322,15 +2361,10 @@ def _base_merge_parent(
     (forgewrite has no public commit read; the worker's `ForgeMerger.commit`
     and `on_base` are the same two requests).
     """
-    what = f"the commit {ref.repository}@{sha[:12]}"
     try:
-        data = writer._call(
-            "GET", writer._url(ref, f"commits/{quote(sha, safe='')}"), token, what,
-            needs=CONTENTS_READ,
-        )
+        data = _read_commit(writer, ref, token, sha)
     except ForgeWriteNotFound:
         return None, f"{sha[:12]} is not a commit GitHub has"
-    data = data if isinstance(data, Mapping) else {}
     parents = [
         p.get("sha") for p in data.get("parents") or []
         if isinstance(p, Mapping) and isinstance(p.get("sha"), str) and p.get("sha")
@@ -2360,6 +2394,137 @@ def _base_merge_parent(
     if status not in ("behind", "identical"):
         return None, f"{sha[:12]}'s second parent is not on {base}"
     return parents[0], ""
+
+
+def _person_lane_heads(ctx: Any, tenant_id: str, run: IssueRun) -> dict[str, str]:
+    """The heads a person's plain lane on the run's branch pushed, newest first:
+    `{task id: pushed head}` (archived issue 474).
+
+    A plain lane is what `cifix.live_plain_continuation` reads: a task of
+    this tenant whose `metadata.dispatch.continues` or signed
+    `metadata.dispatch.publish_to_pr.task_id` is the integrator, that is not
+    a merge step and carries none of the platform writers' marks
+    (`cifix.PR_WRITER_KINDS`, `metadata.issue_run`; the worker's
+    `LANE_WRITER_MARKS`): each of those is the platform's, and its head is
+    this run's (`_pushing_task`) or a defect. It counts only when a person
+    submitted it (`memberships.is_person`). Unlike that read, an ended task
+    counts: the lane has ended by the time CI is green at its head.
+
+    Two reads, equality filters only (tenant, and the dispatch field -- the
+    built-in single-field indexes), each held to `cifix.CONTINUATIONS_READ`;
+    the tenant and the root are checked again in the application: a fake or
+    an index mistake must not make another tenant's task a candidate
+    (invariant 9).
+    """
+    from . import publishtopr
+    from .cifix import CONTINUATIONS_READ, ISSUE_RUN_METADATA_KEY, PR_WRITER_KINDS, TASKS
+    from .memberships import is_person
+
+    root = run.pr_task_id
+    if not root:
+        return {}
+    dispatch_path = f"metadata.{DISPATCH_METADATA_KEY}"
+    reads = (
+        ("continues", f"{dispatch_path}.continues"),
+        (publishtopr.DISPATCH_FIELD, f"{dispatch_path}.{publishtopr.DISPATCH_FIELD}.task_id"),
+    )
+    found: dict[str, tuple[Any, str]] = {}
+    for via, path in reads:
+        query = (
+            ctx.db.collection(TASKS)
+            .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+            .where(filter=FieldFilter(path, "==", root))
+            .limit(CONTINUATIONS_READ)
+        )
+        for snap in query.stream():
+            doc = snap.to_dict() or {}
+            metadata = doc.get("metadata") if isinstance(doc.get("metadata"), Mapping) else {}
+            dispatch = metadata.get(DISPATCH_METADATA_KEY)
+            dispatch = dispatch if isinstance(dispatch, Mapping) else {}
+            published = dispatch.get(publishtopr.DISPATCH_FIELD)
+            named = (dispatch.get("continues") if via == "continues"
+                     else published.get("task_id") if isinstance(published, Mapping) else None)
+            task_id = str(doc.get("id") or snap.id)
+            if (doc.get("tenant_id") != tenant_id or named != root or task_id == root
+                    or is_merge_step(doc.get("runner_profile"))
+                    or any(kind in metadata for kind in PR_WRITER_KINDS)
+                    or ISSUE_RUN_METADATA_KEY in metadata
+                    or not is_person(doc.get("submitted_by"))):
+                continue
+            summary = doc.get("result_summary")
+            git = summary.get("git") if isinstance(summary, Mapping) else None
+            pushed = git.get("pushed_head") if isinstance(git, Mapping) else None
+            if isinstance(pushed, str) and pushed:
+                found[task_id] = (doc.get("created_at"), pushed)
+    ordered = sorted(
+        found.items(),
+        key=lambda item: _aware(item[1][0]) or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    return {task_id: pushed for task_id, (_, pushed) in ordered}
+
+
+def _login(account: Any) -> str | None:
+    """A GitHub account's login when GitHub says it is a person's (`User`)."""
+    if not isinstance(account, Mapping) or account.get("type") != "User":
+        return None
+    login = account.get("login")
+    return login if isinstance(login, str) and login else None
+
+
+def _persons_push(
+    writer: GitHubWriter, ref: IssueRef, token: str, *, head: str, number: Any,
+) -> str | None:
+    """The login of the person on the pull request who made the commit at
+    `head`, or None (archived issue 474): the merge step's `_person_pusher`
+    rule, read here with the run's own tenant's credential.
+
+    A person's push is a commit of at most two parents that the platform did
+    not make -- not under one of its committer addresses
+    (`PLATFORM_COMMITTER_EMAILS`), its message not ending with the worker's
+    line (`WORKER_COMMIT_LINE`: a worker's commit is a person's only as
+    their lane's, `_person_lane_heads`) -- and that GitHub links to a `User`
+    account which is, case-insensitively, the pull request's author or one
+    of its assignees. GitHub commits a web-UI edit itself, so for those the
+    person is the commit's author. Anyone else is an unknown branch-mate.
+
+    A commit GitHub does not have names nobody; any other failed read
+    raises, for the caller's `_read_failed`.
+    """
+    try:
+        data = _read_commit(writer, ref, token, head)
+    except ForgeWriteNotFound:
+        return None
+    parents = [p for p in data.get("parents") or [] if isinstance(p, Mapping)]
+    if len(parents) > 2:
+        return None
+    detail = data.get("commit") if isinstance(data.get("commit"), Mapping) else {}
+    message = detail.get("message") if isinstance(detail.get("message"), str) else ""
+    lines = message.strip().splitlines()
+    if lines and lines[-1].startswith(WORKER_COMMIT_LINE):
+        return None
+    committer = detail.get("committer") if isinstance(detail.get("committer"), Mapping) else {}
+    email = committer.get("email") if isinstance(committer.get("email"), str) else ""
+    email = email.lower()
+    if email in PLATFORM_COMMITTER_EMAILS:
+        return None
+    login = _login(data.get("author") if email == GITHUB_COMMITTER_EMAIL else data.get("committer"))
+    if login is None or not isinstance(number, int) or isinstance(number, bool):
+        return None
+    try:
+        pull = writer._call(
+            "GET", writer._url(ref, f"pulls/{number}"), token,
+            f"{ref.repository}#{number}", needs=PULLS_READ,
+        )
+    except ForgeWriteNotFound:
+        return None
+    pull = pull if isinstance(pull, Mapping) else {}
+    people = {
+        person.lower() for person in (
+            _login(account) for account in [pull.get("user"), *(pull.get("assignees") or [])]
+        ) if person
+    }
+    return login if login.lower() in people else None
 
 
 def through_base_merges(
@@ -2715,9 +2880,15 @@ def _merge(
     CI -- goes through the ordinary loop above, and a pull request GitHub
     reports merged is DONE by `from_checks`' own first test. Every outcome
     that is not a merge is FAILED with its reason and the pull request left
-    open and green for a person: the review's verdict is not MERGE, the head
-    was not pushed by this run, or the merge step refused (its code and
-    message, from the worker). A merge is never resubmitted for the same head.
+    open and green for a person -- the review's verdict is not MERGE, the
+    head was not pushed by this run, or the merge step refused (its code and
+    message, from the worker) -- but one: a head a person pushed (archived
+    issue 474), through a plain lane they dispatched onto the run's branch
+    (`_person_lane_heads`) or as a person on the pull request
+    (`_persons_push`), is DONE with `outcome: superseded_by_person_push`,
+    no merge submitted: the person took the pull request over, and it is
+    theirs to merge. The verdicts are read first and still FAIL. A merge is
+    never resubmitted for the same head.
 
     THE MERGE STEP MOVES THE HEAD ITSELF. A branch that is behind its base is
     updated by the step through GitHub's `update-branch`, which makes a base
@@ -2754,6 +2925,17 @@ def _merge(
                 f"auto_merge did not merge pull request #{number}: {reason}. It is green at "
                 f"{head[:12]}; merge it yourself"
             )},
+        )
+
+    def _superseded(by: str) -> IssueRun:
+        # A person pushed the green head: their pull request now, merged by
+        # them. The one place this end is decided; no merge, no error.
+        log.info("issue run %s tenant=%s: head pushed by a person (%s), left to them",
+                 run.id, tenant_id, by)
+        return runs.transition(
+            tenant_id, run.id, RunState.DONE, by=ACTOR, from_states={RunState.CHECKING},
+            patch={"pull_request": record, "green_sha": head,
+                   "outcome": OUTCOME_SUPERSEDED_BY_PERSON_PUSH},
         )
 
     def _read_failed(exc: Exception) -> IssueRun:
@@ -2835,6 +3017,23 @@ def _merge(
     except Exception as exc:  # noqa: BLE001
         return _read_failed(exc)
     if pushed_by is None:
+        # Not this run's: a person's, or an unknown branch-mate's (archived issue 474).
+        lane_heads = _person_lane_heads(ctx, tenant_id, run)
+        try:
+            person: str | None = None
+            if lane_heads:
+                lane_of: dict[str, str] = {}
+                for task_id, pushed in lane_heads.items():
+                    lane_of.setdefault(pushed, task_id)
+                person, _ = through_base_merges(
+                    writer, run.issue, token, head=head, base=base, known=lane_of.get,
+                )
+            if person is None:
+                person = _persons_push(writer, run.issue, token, head=head, number=number)
+        except Exception as exc:  # noqa: BLE001
+            return _read_failed(exc)
+        if person is not None:
+            return _superseded(person)
         return _fail(
             f"its head {head[:12]} was not pushed by any of this run's tasks, nor reached "
             f"from one through GitHub's base merges ({not_ours})"
