@@ -1,6 +1,6 @@
 # source-text: contract - the forwarder's FQDN policy must name exactly the UPSTREAM_HOST and SECRET_MANAGER hosts its upstream.py and main.py dial
 """Where api.typesafe.ai is named as an egress destination, and where it is not
-(the TypeSafe egress allowlist; docs/runbooks/typesafe-egress.md; part of
+(the TypeSafe egress allowlist; part of
 archived issue 2688).
 
 The allowlist is TWO GKE FQDNNetworkPolicies and nothing else in kubernetes/:
@@ -29,8 +29,7 @@ allow-egress.yaml rule 4 still admits every tenant pod to the public internet
 on 443, and api.typesafe.ai answers from shared Cloudflare addresses, so an
 unlabelled pod's packets to it are not dropped. NetworkPolicies and
 FQDNNetworkPolicies are allow-only unions; there is no rule here that could
-take one host back out of rule 4. The runbook states the gap and the owner's
-question about closing it.
+take one host back out of rule 4. The runbook states the gap.
 
 No cluster, no credentials, no network.
 """
@@ -42,7 +41,6 @@ import fnmatch
 from pathlib import Path
 from typing import Any, Iterator
 
-import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parents[3]
@@ -52,8 +50,6 @@ FORWARDER_POLICY = POLICIES / "swarm-system-typesafe-fwd.yaml"
 DIRECT_POLICY = POLICIES / "fqdn" / "allow-typesafe-direct.yaml"
 FORWARDER = KUBERNETES / "swarm-system" / "swarm-typesafe-fwd.yaml"
 FORWARDER_APP = REPO / "apps" / "swarm-typesafe-fwd" / "swarm_typesafe_fwd"
-RUNBOOK = REPO / "docs" / "runbooks" / "typesafe-egress.md"
-DATA_FLOW = REPO / "docs" / "jev-data-flow.md"
 
 TYPESAFE = "api.typesafe.ai"
 #: A tenant template's namespace, as every file in network-policies/ spells it.
@@ -232,21 +228,3 @@ def test_the_forwarders_hosts_are_exactly_the_ones_its_code_dials():
     assert sorted(m["name"] for m in rule["matches"]) == sorted([upstream, secrets])
     assert rule["ports"] == [{"protocol": "TCP", "port": 443}]
 
-
-# --- the record ------------------------------------------------------------
-
-
-@pytest.mark.parametrize("phrase", [
-    "kubernetes/network-policies/swarm-system-typesafe-fwd.yaml",
-    "kubernetes/network-policies/fqdn/allow-typesafe-direct.yaml",
-    "swarm-jev: typesafe-direct",
-    "tests/unit/scripts/test_typesafe_egress_allowlist.py",
-])
-def test_the_runbook_and_the_data_flow_record_name_the_allowlist(phrase):
-    assert phrase in RUNBOOK.read_text()
-    assert phrase in DATA_FLOW.read_text()
-
-
-def test_the_data_flow_record_no_longer_says_no_allowlist_exists():
-    assert "no host allowlist exists for TypeSafe" not in DATA_FLOW.read_text()
-    assert "no Jev-specific egress rule exists" not in DATA_FLOW.read_text()

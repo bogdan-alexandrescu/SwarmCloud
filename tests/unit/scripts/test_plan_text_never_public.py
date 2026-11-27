@@ -1,18 +1,23 @@
-"""A Terraform plan's text never reaches a public log, summary or artifact.
+"""A Terraform plan's text never reaches a public run summary.
 
 This repository's Actions logs, run summaries and artifacts are public, and a
 plan's text prints attribute values from the private tfvars (members, domains,
-addresses). The workflows write it to `plan.txt` and print only its summary
-line (`Plan:` / `No changes`); the run summary lists resource addresses and
-actions from `plan.json`. The owner's pick, 2026-11-14.
-
-These read the workflow files as text: nothing runs.
+addresses). terraform.yml's summarise step prints the plan's summary line and
+lists resource addresses and actions from `plan.json`. The owner's pick,
+2026-11-14. This runs that step's shell, read through `ci_run_blocks`.
 """
 
 from __future__ import annotations
 
+import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
+
+from .ci_run_blocks import run_block
 
 ROOT = Path(__file__).resolve().parents[3]
 FILES = sorted([*(ROOT / ".github" / "workflows").glob("*.yml"), *(ROOT / ".github" / "actions").rglob("*.yml")])
@@ -26,18 +31,33 @@ def _texts() -> dict[str, str]:
     return {str(p.relative_to(ROOT)): _code(p.read_text(encoding="utf-8")) for p in FILES}
 
 
-def test_the_scan_reads_the_plan_steps() -> None:
-    """The workflows that plan are read, so an empty scan cannot pass."""
-    planning = [name for name, text in _texts().items() if "plan.txt" in text]
-    assert ".github/workflows/terraform.yml" in planning, planning
-    assert ".github/actions/release-apply/action.yml" in planning, planning
-
-
-def test_no_plan_output_is_teed_to_the_log() -> None:
-    """MUTATION: put back `-out=plan.tfplan -no-color | tee "${TF_ROOT}/plan.txt"`."""
-    bad = [(n, m.group(0)) for n, t in _texts().items()
-           for m in re.finditer(r"-out=\S*plan\.tfplan[^\n]*\|\s*tee\b[^\n]*", t)]
-    assert not bad, f"a plan's text goes to a public log: {bad}"
+@pytest.mark.skipif(shutil.which("jq") is None, reason="jq is required")
+def test_the_summary_prints_no_plan_text_and_masks_an_address_shaped_resource_key(tmp_path) -> None:
+    """The run summary lists changing resources' addresses, and an address can
+    carry an email as its key; the summary prints it masked, and of plan.txt
+    only the summary line.
+    MUTATION: drop the `gsub` from terraform.yml's summarise step, or print
+    plan.txt with `tail`."""
+    infra = tmp_path / "terraform" / "infra"
+    infra.mkdir(parents=True)
+    (infra / "plan.txt").write_text('  + member = "a-private-value"\nPlan: 0 to add, 0 to change, 1 to destroy.\n')
+    plan = {"resource_changes": [
+        {"address": 'module.m.google_monitoring_notification_channel.email["' + "someone" + "@example.com" + '"]',
+         "change": {"actions": ["delete"]}},
+        {"address": "data.google_project.p", "change": {"actions": ["read"]}},
+    ]}
+    (infra / "plan.json").write_text(json.dumps(plan))
+    script = re.sub(r"\$\{\{.*?\}\}", "dev", run_block("terraform.yml", "plan", "summarise"))
+    summary = tmp_path / "summary.md"
+    proc = subprocess.run(["bash", "-eo", "pipefail", "-c", script], cwd=tmp_path, capture_output=True, text=True,
+                          env={"PATH": "/usr/local/bin:/usr/bin:/bin", "GITHUB_STEP_SUMMARY": str(summary)},
+                          timeout=60, check=False)
+    assert proc.returncode == 0, proc.stderr
+    out = summary.read_text() + proc.stdout + proc.stderr
+    assert "@example.com" not in out and "a-private-value" not in out, out
+    assert "Plan: 0 to add, 0 to change, 1 to destroy." in out, out
+    assert 'delete module.m.google_monitoring_notification_channel.email["<an address>"]' in out, out
+    assert "data.google_project.p" not in out, out
 
 
 #: The only patterns a grep over plan.txt may print with: the summary line,
@@ -69,6 +89,20 @@ def test_no_plan_text_artifact_is_uploaded() -> None:
     assert not bad, f"a plan file is uploaded as an artifact, which is public: {bad}"
 
 
+def test_the_scan_reads_the_plan_steps() -> None:
+    """The workflows that plan are read, so an empty scan cannot pass."""
+    planning = [name for name, text in _texts().items() if "plan.txt" in text]
+    assert ".github/workflows/terraform.yml" in planning, planning
+    assert ".github/actions/release-apply/action.yml" in planning, planning
+
+
+def test_no_plan_output_is_teed_to_the_log() -> None:
+    """MUTATION: put back `-out=plan.tfplan -no-color | tee "${TF_ROOT}/plan.txt"`."""
+    bad = [(n, m.group(0)) for n, t in _texts().items()
+           for m in re.finditer(r"-out=\S*plan\.tfplan[^\n]*\|\s*tee\b[^\n]*", t)]
+    assert not bad, f"a plan's text goes to a public log: {bad}"
+
+
 def test_a_plans_stderr_goes_to_the_file_too() -> None:
     """A failed plan's diagnostics (stderr) quote the offending values, so the
     plan's stderr is redirected with its stdout, and only error headlines are printed.
@@ -78,6 +112,7 @@ def test_a_plans_stderr_goes_to_the_file_too() -> None:
     assert len(plans) >= 2, plans
     bad = [(n, line) for n, line in plans if not re.search(r"plan\.txt\"?\s+2>&1", line)]
     assert not bad, f"a plan's stderr reaches the public log: {bad}"
+
 
 
 def test_the_summary_masks_an_address_shaped_resource_key(tmp_path) -> None:

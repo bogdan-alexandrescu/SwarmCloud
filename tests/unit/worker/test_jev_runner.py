@@ -34,7 +34,6 @@ from typing import Any
 import pytest
 
 REPO = Path(__file__).resolve().parents[3]
-DESIGN_DOC = REPO / "docs" / "design" / "live-browser.md"
 LIFECYCLE = REPO / "apps" / "agent-worker" / "agent_worker" / "lifecycle.py"
 ENDPOINT = "http://127.0.0.1:9222"
 
@@ -481,15 +480,6 @@ def test_the_launcher_refuses_a_missing_file_without_starting_the_server(tmp_pat
 
 
 # --- the design doc ---------------------------------------------------------------
-
-
-def test_the_design_doc_has_the_jev_subsection():
-    text = DESIGN_DOC.read_text()
-    assert "### 3.2.5 jev-browser" in text
-    section = text.split("### 3.2.5 jev-browser", 1)[1].split("### 3.3", 1)[0]
-    for phrase in ("api.typesafe.ai", "jev_launch.py", "private/", "jev_unavailable",
-                   "typesafe_user_keys.tf", "same uid"):
-        assert phrase in section, phrase
 
 
 def test_the_status_route_names_jev_as_what_reads_the_key():

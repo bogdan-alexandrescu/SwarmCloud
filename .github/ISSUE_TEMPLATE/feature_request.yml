@@ -2,8 +2,7 @@
 # the shape is theirs, the content is SwarmCloud's. The rules around filing and
 # closing are in CLAUDE.md, "Issues".
 #
-# The `surface` options are held to the nav by
-# tests/unit/scripts/test_issue_forms.py, exactly as bug_report.yml's are.
+# The `surface` options follow the nav, exactly as bug_report.yml's do.
 name: Feature or change request
 description: Something SwarmCloud should do, or should do differently.
 title: "[feat] "

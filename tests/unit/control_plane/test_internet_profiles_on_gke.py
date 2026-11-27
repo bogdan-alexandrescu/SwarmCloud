@@ -46,9 +46,6 @@ REPO = Path(__file__).resolve().parents[3]
 MOVED = {"generic": 64, "codex": 65, "merge": 66}
 STAYING = ("mock", "post-verdict", "claude-code-review")
 LOCALS = REPO / "terraform/infra/locals.tf"
-REQUESTS = REPO / "docs/contract-change-requests.md"
-
-
 @pytest.fixture
 def tenant() -> Tenant:
     return Tenant(
@@ -119,17 +116,3 @@ def test_terraform_keeps_their_cloud_run_jobs_as_the_rollback(profile):
     fallback = re.search(r"^  cloud_run_fallback_profiles = \[([^\]]*)\]", text, re.M)
     assert fallback, "cloud_run_fallback_profiles is missing: the switch would destroy the Jobs"
     assert f'"{profile}"' in fallback.group(1)
-
-
-@pytest.mark.parametrize("profile,number", sorted(MOVED.items()))
-def test_each_request_records_the_owners_acceptance_and_the_rollback(profile, number):
-    text = REQUESTS.read_text(encoding="utf-8")
-    start = text.index(f"## {number}. ")
-    end = text.find("\n## ", start + 1)
-    section = text[start:end if end != -1 else len(text)]
-    # scripts/lib/check-frozen-contract.sh passes a diff under
-    # apps/common/swarm_common/ only beside an added line holding this phrase.
-    assert "accepted by the owner" in section.lower()
-    assert "#939" in section
-    assert f"`{profile}`" in section or f'"{profile}"' in section
-    assert "CLOUD_RUN_JOB" in section, "the rollback (backend back to CLOUD_RUN_JOB) must be recorded"

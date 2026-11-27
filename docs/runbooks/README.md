@@ -2,8 +2,8 @@
 
 One line per runbook in this directory, saying when to reach for it, in the
 order an operator meets them: set-up, then day-to-day, then incidents.
-[`tests/unit/scripts/test_runbook_index.py`](../../tests/unit/scripts/test_runbook_index.py)
-fails when a runbook is added or removed without this page following.
+Whoever adds or removes a runbook updates this page in the same change; no
+test reads it ([why](../ci.md#a-test-reads-only-its-own-tree)).
 
 ## Set-up
 

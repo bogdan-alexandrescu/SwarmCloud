@@ -225,8 +225,8 @@ concurrency:
 # left out on purpose: this workflow runs on pull_request_target (the base
 # branch's workflow file), workflow_run, check_suite and dispatch, and never
 # checks out or runs a pull request's code (test_auto_merge_workflow.py holds
-# that; test_fork_prs_off_self_hosted.py holds that it has no `pull_request`
-# trigger). Every job that stays hosted is listed, with why, in that test.
+# that; it has no `pull_request` trigger). Every job that stays hosted says
+# why in its own comment.
 jobs:
   enable:
     name: queue for auto-merge
@@ -241,7 +241,7 @@ jobs:
     # the rule admits them; a workflow_dispatch
     # from another branch is refused, and that is the point. `deployment:
     # false` (GitHub Actions, March 2026) reads the secrets without a
-    # deployment record on the pull request. test_repo_secrets_environment.py.
+    # deployment record on the pull request.
     environment:
       name: repo-secrets
       deployment: false

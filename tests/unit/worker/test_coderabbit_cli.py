@@ -51,8 +51,6 @@ REPO = Path(__file__).resolve().parents[3]
 IMAGE_DIR = REPO / "images" / "agent-runtime-base"
 DOCKERFILE = IMAGE_DIR / "Dockerfile"
 LAUNCHER = IMAGE_DIR / "coderabbit"
-DOC = REPO / "docs" / "worker-images.md"
-VERSIONS_DOC = REPO / "docs" / "versions.md"
 
 #: The pinned release. Its sha256 is the vendor's SHA256SUMS entry for
 #: coderabbit-linux-x64.zip, whose signature verified against the release key
@@ -130,22 +128,19 @@ def test_the_smoke_step_runs_the_cli_as_the_agent_user() -> None:
     assert "coderabbit" in smoke.group(1).split()
 
 
-def test_versions_doc_lists_the_cli_at_the_pinned_version() -> None:
-    body = VERSIONS_DOC.read_text().split("### Agent image toolbox", 1)[1].split("\n## ", 1)[0]
-    row = re.search(r"^\|\s*`coderabbit`\s*\|\s*\*\*([^*]+)\*\*", body, flags=re.M)
-    assert row and row.group(1).strip() == VERSION
+def test_the_launcher_reads_the_manifest_the_release_writes() -> None:
+    assert _launcher().MANIFEST_ENV == release_mod.MANIFEST_ENV
 
 
-def test_the_docs_name_the_secret_and_slot_the_launcher_reads() -> None:
-    launcher = _launcher()
-    section = DOC.read_text().split("## CodeRabbit", 1)
-    assert len(section) == 2, "docs/worker-images.md needs a '## CodeRabbit' section"
-    body = section[1].split("\n## ", 1)[0]
-    assert f"`{launcher.SECRET_NAME}`" in body
-    assert f"`{launcher.SLOT}`" in body
-    assert "coderabbit review" in body
-    assert "scripts/create-secrets.sh --stdin" in body
-    assert launcher.MANIFEST_ENV == release_mod.MANIFEST_ENV
+def test_the_launchers_secret_is_a_workspace_secret_name_and_the_vendors_is_not() -> None:
+    """The owner's 2026-11-12 comment on archived issue 2442: the key they hold is called
+    CODERABBIT_API_KEY, and claude-code-large lanes must review too."""
+    from swarm_api.workspace_secrets import NAME_PATTERN
+
+    # The upper-case name cannot be a workspace secret; the launcher's can.
+    assert not NAME_PATTERN.fullmatch("CODERABBIT_API_KEY")
+    assert NAME_PATTERN.fullmatch(_launcher().SECRET_NAME)
+    assert "claude-code-large" in RUNNER_PROFILES
 
 
 # --------------------------------------------------------------------------- #
@@ -257,26 +252,6 @@ def test_a_step_without_the_secret_runs_the_cli_keyless_and_says_so(tmp_path, ca
     assert "coderabbit-api-key" in err and "files" in err
     # MUTATION: drop claude-code-large from the hint -- a large lane's admin grants only claude-code.
     assert "profile:claude-code " in err and "profile:claude-code-large" in err, err
-
-
-def test_the_docs_map_coderabbit_api_key_and_name_the_large_profiles_own_grant() -> None:
-    """The owner's 2026-11-12 comment on archived issue 2442: the key they hold is called
-    CODERABBIT_API_KEY, and claude-code-large lanes must review too."""
-    from swarm_api.workspace_secrets import NAME_PATTERN
-
-    launcher = _launcher()
-    body = " ".join(DOC.read_text().split("## CodeRabbit", 1)[1].split("\n## ", 1)[0].split())
-    # The upper-case name cannot be a workspace secret; the launcher's can.
-    assert not NAME_PATTERN.fullmatch("CODERABBIT_API_KEY")
-    assert NAME_PATTERN.fullmatch(launcher.SECRET_NAME)
-    # MUTATION: delete the CODERABBIT_API_KEY paragraph -- this fails.
-    assert f"**`CODERABBIT_API_KEY` is `{launcher.SECRET_NAME}`.**" in body
-    assert "NAME_PATTERN" in body and "one-time link `/sc` mints" in body
-    assert "never in a brief" in body
-    # MUTATION: drop profile:claude-code-large from the grant step -- this fails.
-    assert "`profile:claude-code-large`" in body
-    assert "**`claude-code-large` is its own profile**" in body and "own grant in slot `files`" in body
-    assert "claude-code-large" in RUNNER_PROFILES
 
 
 def test_the_cli_environment_carries_no_manifest_and_switches_off_updates(tmp_path, capsys) -> None:

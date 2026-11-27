@@ -8,9 +8,10 @@ scripts/lib/resolve.sh (config_fetch), the read a laptop's `make tf-plan`
 makes, into the runner's temporary directory outside the checkout, and plans
 with that file.
 
-The fetch step runs here for real, against a local configuration directory
-standing in for the bucket (SWARM_DEPLOY_CONFIG_DIR, which config_fetch reads
-in place of gs://), with the placeholder project.
+The fetch step (its published run block, ci_run_blocks) runs here for real,
+against a local configuration directory standing in for the bucket
+(SWARM_DEPLOY_CONFIG_DIR, which config_fetch reads in place of gs://), with
+the placeholder project.
 """
 
 from __future__ import annotations
@@ -24,6 +25,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from .ci_run_blocks import run_block
+
 REPO = Path(__file__).resolve().parents[3]
 ACTION = REPO / ".github" / "actions" / "release-apply" / "action.yml"
 TERRAFORM = REPO / ".github" / "workflows" / "terraform.yml"
@@ -32,6 +35,12 @@ FETCH = "fetch this environment's tfvars"
 _spec = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
 placeholders = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(placeholders)
+
+
+def _fetch_step(where: str) -> str:
+    if where == "release-apply":
+        return run_block(".github/actions/release-apply/action.yml", None, FETCH)
+    return run_block("terraform.yml", "plan", FETCH)
 
 
 def _load(path: Path) -> dict:
@@ -131,7 +140,7 @@ def _run(script: str, env: dict) -> subprocess.CompletedProcess:
 
 @pytest.mark.parametrize("where", ["release-apply", "terraform.yml"])
 def test_the_fetch_step_passes_a_file_outside_the_checkout(runner: dict, where: str):
-    proc = _run(_named(_steps(where), FETCH)["run"], runner["env"])
+    proc = _run(_fetch_step(where), runner["env"])
     assert proc.returncode == 0, proc.stdout + proc.stderr
     lines = runner["github_env"].read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1 and lines[0].startswith("SWARM_TFVARS_FILE="), lines
@@ -146,7 +155,7 @@ def test_the_fetch_step_fails_when_the_environment_has_no_tfvars(runner: dict, w
     """No object, no plan: never an empty GITHUB_ENV line, never a tracked
     fallback."""
     runner["tfvars"].unlink()
-    proc = _run(_named(_steps(where), FETCH)["run"], runner["env"])
+    proc = _run(_fetch_step(where), runner["env"])
     assert proc.returncode != 0
     assert "dev.tfvars does not exist" in proc.stderr
     assert runner["github_env"].read_text(encoding="utf-8") == ""

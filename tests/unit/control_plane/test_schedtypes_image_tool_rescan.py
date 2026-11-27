@@ -238,7 +238,6 @@ def test_the_gate_sources_the_prompt_names_hold_the_gates_filter_on_main() -> No
     flags = (REPO_ROOT / "scripts/lib/image-scan.sh").read_text()
     # MUTATION: point GATE_SOURCES at a file that does not define image_scan_args and this fails.
     assert "image_scan_args()" in flags and "--ignore-unfixed" in flags
-    assert re.search(r"^\s*TRIVY_VERSION:", (REPO_ROOT / ".github/workflows/release.yml").read_text(), re.M)
 
 
 def test_the_prompt_asks_only_about_the_tools_it_is_given() -> None:

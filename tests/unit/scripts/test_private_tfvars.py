@@ -10,7 +10,7 @@ issue run touching infrastructure with DENY_LIST_UNSET, while the
 shared-project guard in the same job read the reviewed
 config/<env>/deny-list.json without trouble; and the alerts notified nobody.
 
-WHAT IS UNDER TEST is the shipped script and the shipped plan steps:
+WHAT IS UNDER TEST is the shipped script:
 
   * scripts/lib/private-tfvars.sh writes the reviewed list's entries, unchanged,
     as shared_deny_list, adds alert_emails from config/<env>/private.tfvars.json
@@ -18,10 +18,7 @@ WHAT IS UNDER TEST is the shipped script and the shipped plan steps:
   * the private file may set only the allowed keys, so it can never quietly
     override a tracked setting;
   * it stops and writes nothing when the list cannot be read, so a plan never
-    goes out with no list (that would turn the marker back to "0");
-  * the release's plan (release-apply, which release.yml and hotfix.yml both
-    run) and main's plan (terraform.yml) each write that file before planning
-    and pass it as a -var-file.
+    goes out with no list (that would turn the marker back to "0").
 """
 
 from __future__ import annotations

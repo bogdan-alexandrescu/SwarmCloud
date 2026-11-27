@@ -46,7 +46,7 @@ SWARM_NO_PROJECT=1
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 # The roots of main's check. application.yml's other shell steps walk the
-# same globs (tests/unit/scripts/test_shellcheck_ci.py holds the two equal).
+# same globs.
 SET_GLOBS=("scripts/*.sh" "scripts/lib/*.sh" "scripts/lib/guard-bin/*" "scripts/acceptance/*.sh" "scripts/acceptance/groups/*.sh")
 
 # A change to any of these changes how every file is checked.

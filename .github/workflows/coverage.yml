@@ -55,8 +55,8 @@ env:
   PYTHON_VERSION: "3.11"
 
 # RUNNERS. Every job holds no cloud identity, so each runs on the self-hosted
-# pool through the one guarded `runs-on` expression application.yml's jobs use
-# (tests/unit/scripts/test_fork_prs_off_self_hosted.py): a scheduled run
+# pool through the one guarded `runs-on` expression application.yml's jobs use:
+# a scheduled run
 # takes the pool, and SELF_HOSTED_CI=off sends it to ubuntu-24.04.
 jobs:
   # -------------------------------------------------------------------------

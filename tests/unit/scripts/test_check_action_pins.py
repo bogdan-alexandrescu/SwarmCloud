@@ -1,6 +1,6 @@
 """scripts/check-action-pins.sh: every third-party `uses:` in .github/ is
 pinned to a full commit SHA with its version in a trailing comment (audit,
-2026-11-21; the script's header says why), and quick-checks runs it.
+2026-11-21; the script's header says why).
 
 No network and no credentials: the script reads files only.
 """

@@ -178,25 +178,6 @@ def _jobs() -> dict:
     return yaml.safe_load(APPLICATION.read_text())["jobs"]
 
 
-def test_every_reusable_name_is_the_name_its_job_reports():
-    """The API is read by job name. MUTATION: rename a job without REUSABLE."""
-    jobs = _jobs()
-    for key, name in reuse.REUSABLE.items():
-        assert key in jobs, key
-        reported = str(jobs[key]["name"])
-        if key in reuse.MATRIX:
-            assert reported.startswith(name) and "${{ matrix.shard }}" in reported, (key, reported)
-        else:
-            assert reported == name, (key, reported)
-
-
-def test_every_reusable_job_is_skipped_when_it_is_reused():
-    jobs = _jobs()
-    for key in reuse.REUSABLE:
-        clause = "!contains(fromJSON(needs.changes.outputs.reused || '[]'), '%s')" % key
-        assert clause in str(jobs[key].get("if")), (key, jobs[key].get("if"))
-
-
 def test_main_and_a_same_repository_pull_request_look_up_and_everyone_records():
     """CI-TREE-REUSE (archived issue 1798). MUTATION: drop either half of the step's `if`,
     or let a fork's pull request look a record up."""

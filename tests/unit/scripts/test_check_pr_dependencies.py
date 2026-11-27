@@ -15,8 +15,9 @@ These tests RUN the script against a fake `gh`:
   names nothing: exit 2 and the refusal sentence on stdout;
 * an unreadable answer or a failed read: non-zero and not 2 -- fail closed.
 
-The workflow wiring, the gate's refusal and docs/ci.md's examples are held at
-the bottom. Nothing here touches the network.
+At the bottom, auto-merge.yml's own `gate` shell (from
+scripts/generated/ci-run-blocks.json) is run with a refusal handed in.
+Nothing here touches the network.
 """
 
 from __future__ import annotations
@@ -32,10 +33,11 @@ from pathlib import Path
 import pytest
 import yaml
 
+from .ci_run_blocks import run_block
+
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "check-pr-dependencies.sh"
 AUTO_MERGE = REPO / ".github" / "workflows" / "auto-merge.yml"
-CI_DOC = REPO / "docs" / "ci.md"
 THIS_REPO = "example-org/example-repo"
 SELF = 4242
 REFUSED = 2
@@ -43,6 +45,15 @@ REFUSED = 2
 pytestmark = pytest.mark.skipif(
     shutil.which("bash") is None or shutil.which("jq") is None, reason="bash and jq are required"
 )
+
+
+@pytest.fixture(scope="module")
+def enable() -> dict:
+    return yaml.safe_load(AUTO_MERGE.read_text())["jobs"]["enable"]
+
+
+def _ids(job: dict) -> list:
+    return [step.get("id") for step in job.get("steps") or []]
 
 
 def _first_effective_line(text: str) -> str:
@@ -442,20 +453,6 @@ def test_a_pull_request_number_that_is_not_a_number_is_refused(run_check, pr: st
     assert calls == "" and looked_up == []
 
 
-# ---------------------------------------------------------------------------
-# The workflow calls it before auto-merge is enabled
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="module")
-def enable() -> dict:
-    return yaml.safe_load(AUTO_MERGE.read_text())["jobs"]["enable"]
-
-
-def _ids(job: dict) -> list:
-    return [step.get("id") for step in job.get("steps") or []]
-
-
 def test_the_enable_job_runs_the_check_from_the_default_branch_before_the_gate(enable: dict):
     """Main's script, never the pull request's: pull_request_target holds a
     write token. MUTATION: move the check after the merge, or drop its `if:`."""
@@ -483,11 +480,16 @@ def test_the_gate_reads_the_checks_finding(enable: dict):
     assert 'refuse "${DEPENDENCY_REFUSAL}"' in gate["run"]
 
 
+# ---------------------------------------------------------------------------
+# auto-merge.yml's gate shell refuses on the check's finding
+# ---------------------------------------------------------------------------
+
+
 @pytest.fixture
-def run_gate_with_dependency(enable: dict, tmp_path: Path):
+def run_gate_with_dependency(tmp_path: Path):
     """The gate's own shell with a dependency refusal handed in, against a
     fake gh that records the label removal and the comment."""
-    script = enable["steps"][_ids(enable).index("gate")]["run"]
+    script = run_block("auto-merge.yml", "enable", "gate")
     bindir = tmp_path / "gate-bin"
     bindir.mkdir()
     fake = bindir / "gh"
@@ -560,43 +562,3 @@ def test_on_a_re_evaluation_a_refusal_drops_ready_and_disarms(run_check, run_gat
     assert f"pr edit {SELF} --remove-label ready" in calls, calls
     assert refusal in comments, comments
     assert "disarm=true" in output and "decision=merge" not in output, output
-
-
-# ---------------------------------------------------------------------------
-# The docs give the phrase the script reads
-# ---------------------------------------------------------------------------
-
-
-def _doc_section() -> str:
-    text = CI_DOC.read_text()
-    start = text.index("### Saying what a pull request depends on")
-    end = text.index("\n### ", start + 1)
-    return text[start:end]
-
-
-def test_docs_give_each_form_of_the_phrase_and_the_script_reads_each(run_check):
-    """The examples an author copies from docs/ci.md are the ones the script
-    matches. MUTATION: document `requires #N`, or drop a form from the script."""
-    section = _doc_section()
-    block = section.split("```text\n", 1)[1].split("```", 1)[0]
-    examples = [line.strip() for line in block.splitlines() if line.strip()]
-    assert len(examples) == 5, examples
-    for example in examples:
-        # The two cross-repository examples name `owner/repo`; file the open
-        # pull request under a real other repository so the read lands there.
-        if "owner/repo" in example:
-            body = example.replace("owner/repo", OTHER_REPO)
-            items = [_merged(840), _issue(840, pull=True, repo=OTHER_REPO)]
-            proc, _looked_up, calls = run_check(_pull(body), items)
-            assert proc.returncode == REFUSED, example
-            assert re.findall(r"^api repos/(\S+)/issues/(\d+)", calls, re.MULTILINE) == [(OTHER_REPO, "840")], example
-        else:
-            proc, looked_up, _calls = run_check(_pull(example), [_issue(840, pull=True)])
-            assert proc.returncode == REFUSED and looked_up == [840], example
-    assert "scripts/check-pr-dependencies.sh" in section
-    assert "Any case" in section
-
-
-def test_the_auto_merge_refusal_list_links_the_section():
-    text = CI_DOC.read_text()
-    assert "(#saying-what-a-pull-request-depends-on)" in text

@@ -1,23 +1,10 @@
-"""docs/runbooks/github-app.md registers the SwarmCloud GitHub App exactly as
-the Terraform and the scripts expect (docs/onboarding.md §3.4, lane OB2 of
-archived issue 780).
+"""The GitHub App secret slots Terraform declares and `scripts/create-secrets.sh
+--github-app` accepts (lane OB2 of archived issue 780).
 
-The runbook is what the owner follows by hand, once, at GitHub; the Terraform
-declares the slots its secrets land in, and `scripts/create-secrets.sh
---github-app` is the only way a value reaches them. Three places, one set of
-names, so these tests hold them together:
-
-  * every App secret slot Terraform declares is named in the runbook, and the
-    runbook names no slot Terraform does not declare;
-  * every command in the runbook that stores a value reads it from stdin, never
-    a file argument, and the script accepts exactly the slots Terraform
-    declares, refuses anything else, and refuses to create a slot Terraform
-    should have made;
-  * the registration settings the design fixes are in the runbook: the callback
-    URL on the console host, user authorisation during installation, expiring
-    user tokens, the D8 permission set plus Workflows and Actions write, no
-    webhook at registration;
-  * the non-secret settings land in tfvars variables that exist.
+Terraform declares the slots the App's secrets land in, and the script is the
+only way a value reaches them, so these tests hold them together: the script
+accepts exactly the slots Terraform declares, reads the value from stdin only,
+refuses anything else, and refuses to create a slot Terraform should have made.
 
 The script is run for real with a fake `gcloud` on PATH that records what it
 was asked to do. A value is built at runtime, never written here as a literal
@@ -26,7 +13,6 @@ was asked to do. A value is built at runtime, never written here as a literal
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import re
@@ -39,10 +25,6 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[3]
-_spec = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
-placeholders = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(placeholders)
-RUNBOOK = REPO / "docs" / "runbooks" / "github-app.md"
 SECRET_MODULE = REPO / "terraform" / "modules" / "secret_manager"
 INFRA = REPO / "terraform" / "infra"
 DEV_TFVARS = REPO / "terraform" / "environments" / "dev" / "dev.tfvars.example"
@@ -83,11 +65,6 @@ def _hooks_secret_ids() -> set[str]:
     return ids
 
 
-def _runbook() -> str:
-    assert RUNBOOK.exists(), "docs/runbooks/github-app.md does not exist"
-    return RUNBOOK.read_text()
-
-
 def test_terraform_declares_the_two_app_slots() -> None:
     # The control for the runbook comparison below: an empty scan would make
     # "the runbook names every slot" pass over nothing.
@@ -97,109 +74,20 @@ def test_terraform_declares_the_two_app_slots() -> None:
     }
 
 
-def test_the_runbook_names_every_slot_terraform_declares_and_no_other() -> None:
-    named = set(SLOT_RE.findall(_runbook()))
-    declared = _declared_slots() | _hooks_secret_ids()
-    assert declared <= named, f"runbook does not name {sorted(declared - named)}"
-    assert named <= declared, f"runbook names slots Terraform does not declare: {sorted(named - declared)}"
-
-
 def test_the_hooks_secret_is_an_app_secret_id() -> None:
     # The control: an id the slot pattern does not match would make the
     # comparison above hold without ever reading it.
     assert all(SLOT_RE.fullmatch(i) for i in _hooks_secret_ids()), _hooks_secret_ids()
 
 
-def test_step_9_names_the_webhook_secret_beside_the_output() -> None:
-    text = _runbook()
-    start = text.index("## Step 9:")
-    step = text[start:text.index("\n## ", start + 1)]
-    for secret_id in _hooks_secret_ids():
-        assert secret_id in step, f"Step 9 does not name {secret_id}"
-    assert "output github_hooks" in step
-
-
-def _store_commands(text: str) -> list[str]:
-    """The runbook's command lines that store an App secret (prose about the flag is not a command)."""
-    return [
-        line.strip()
-        for line in text.splitlines()
-        if line.strip().startswith("scripts/create-secrets.sh") and "--github-app" in line
-    ]
-
-
-def test_every_store_command_in_the_runbook_reads_stdin() -> None:
-    commands = _store_commands(_runbook())
-    slots = {m.group(1) for c in commands for m in [re.search(r"--github-app\s+([a-z-]+)", c)] if m}
-    assert slots == {"client-secret", "private-key"}, f"runbook store commands cover {sorted(slots)}"
-    for command in commands:
-        assert "--stdin" in command, f"store command without --stdin: {command}"
-        assert "--from-file" not in command, f"store command naming a file argument: {command}"
-
-
-@pytest.mark.parametrize(
-    "phrase",
-    [
-        f"https://{placeholders.CONSOLE_HOST}/onboarding/github/callback",
-        "Request user authorization (OAuth) during installation",
-        "Expire user authorization tokens",
-        "Contents: Read and write",
-        "Pull requests: Read and write",
-        "Issues: Read and write",
-        "Checks: Read-only",
-        "Metadata: Read-only",
-        # Added to the App on 2026-10-23 (archived issue 2029): the per-repository
-        # workflow-file push token. The old "No access" is not kept.
-        "Workflows: Read and write",
-        # mergewake.py re-runs a red CI run's failed jobs
-        # (GitHubWriter.rerun_failed_jobs, else GitHubWriter.rerun_job;
-        # forgewrite.ACTIONS_WRITE); held since before 2026-10-23.
-        "Actions: Read and write",
-        "Webhook",
-        "github_app_client_id",
-        "enable_forge_user_slots",
-        "enable_forge_refresh",
-        "swarm-forge-refresh",
-        "swarmForgeSlotCreator",
-        "swarmForgeSlotVersionManager",
-        "google_project_iam_member.forge_slot_version_manager",
-    ],
-)
-def test_the_runbook_states_each_fixed_setting(phrase: str) -> None:
-    assert phrase in _runbook(), f"runbook does not say {phrase!r}"
-
-
-def test_the_runbook_no_longer_says_workflows_no_access() -> None:
-    # The control for "Workflows: Read and write" above: a runbook that still
-    # carried the pre-2026-10-23 setting would tell the owner both.
-    assert "Workflows: No access" not in _runbook(), (
-        "runbook still says Workflows: No access; the App holds Read and write since 2026-10-23 (#2029)"
-    )
-
-
-def test_the_runbook_turns_the_webhook_off() -> None:
-    text = _runbook()
-    assert re.search(r"(?i)webhook[^\n]*\bactive\b[^\n]*\b(off|unticked|untick|clear)", text), (
-        "the runbook must say to untick the webhook's Active box: the design needs no webhook"
-    )
-
-
-def test_the_tfvars_the_runbook_names_exist() -> None:
+def test_the_tfvars_the_setup_names_exist() -> None:
     variables = (INFRA / "variables.tf").read_text() + "\n".join(
         p.read_text() for p in sorted(INFRA.glob("*.tf"))
     )
     for name in ("enable_github_app", "github_app_id", "github_app_client_id", "github_app_slug", "enable_forge_refresh"):
         assert f'variable "{name}"' in variables, f"terraform/infra declares no variable {name}"
-        assert name in _runbook(), f"runbook does not name the tfvars value {name}"
     dev = DEV_TFVARS.read_text()
     assert re.search(r"(?m)^github_app_client_id\s*=", dev), "dev.tfvars carries no github_app_client_id line"
-
-
-def test_the_runbook_carries_nothing_credential_shaped() -> None:
-    text = _runbook()
-    for prefix in ("ghp_", "gho_", "ghu_", "ghr_", "ghs_", "github_pat_"):
-        assert re.search(re.escape(prefix) + r"[A-Za-z0-9_]{8,}", text) is None, f"runbook carries a {prefix} token shape"
-    assert "BEGIN RSA" not in text and re.search(r"-----BEGIN [A-Z ]*PRIVATE KEY-----", text) is None
 
 
 # ---------------------------------------------------------------------------

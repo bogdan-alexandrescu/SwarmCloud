@@ -25,7 +25,6 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 COMMAND = REPO / "images" / "agent-runtime-browser" / "swarm-handoff"
-GUIDE_DOC = REPO / "docs" / "browser-qa.md"
 
 
 def _command():
@@ -273,16 +272,6 @@ def test_compare_needs_no_live_browser(tmp_path, monkeypatch, capsys):
     assert code == qa.EXIT_RETURNED and report["outcome"] == "compared"
 
 
-def test_the_lane_authors_section_names_the_profile_the_presets_and_the_command():
-    text = GUIDE_DOC.read_text(encoding="utf-8")
-    start = text.index("## 6. Rendering your own branch")
-    section = text[start:]
-    for needed in ("claude-code-browser", "swarm-handoff compare", "swarm-handoff device desktop",
-                   "swarm-handoff device phone-390", "phone-380", "swarm-handoff theme dark",
-                   "swarm-handoff theme light", "127.0.0.1", "no-auth", "Keycloak"):
-        assert needed in section, needed
-
-
 # -- the size cap (IMPLEMENT-RENDER-FINISH) ---------------------------------------
 #
 # The first continuation of this lane timed out at 7,200 s with four cores busy
@@ -446,16 +435,3 @@ def test_rows_only_the_frame_has_are_boxed_below_the_render(tmp_path, monkeypatc
     (box,) = report["boxes"]
     assert (box["x"], box["y"], box["width"], box["height"]) == (0, 120, 160, 40)
     assert Path(report["crop"]).is_file()
-
-
-def test_the_guide_reads_only_the_crop_of_a_frame_over_the_threshold():
-    text = GUIDE_DOC.read_text(encoding="utf-8")
-    start = text.index("### 6.5 ")
-    end = text.find("\n## ", start)
-    section = text[start:end if end != -1 else None]
-    assert "Open each diff image with `Read`" not in section
-    assert "Read only the crop of a frame over threshold" in section
-    assert "Sonnet child per screen" in section and "screen-review.md" in section
-    assert "model_class" in section and "sonnet" in section
-    # review.md names every frame and the child that read it.
-    assert "review.md" in section and "every frame" in section

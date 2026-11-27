@@ -11,10 +11,7 @@ images job runs this mode before the approval; the promotion after the
 approval runs the full script, scanning again.
 
 What makes the pre-approval step safe is this script's promise that
-`--scan-only` moves no tag. release.yml's own test
-(test_release_prod_gate.py) exempts a `push-images.sh --scan-only` step from
-the approval on exactly that promise, so it is asserted here against the real
-script, with the fake `gcloud` and `trivy` from
+`--scan-only` moves no tag, so it is asserted here against the real script, with the fake `gcloud` and `trivy` from
 test_push_images_promotes_recorded_digests.py:
 
   * every recorded digest is confirmed and scanned, as a promotion does;

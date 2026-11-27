@@ -1,14 +1,9 @@
-"""The tool versions CI installs are pinned, and pinned to what ships (audit,
-2026-11-21).
+"""The uv the project requires is the uv that ships (audit, 2026-11-21).
 
-  * uv: every astral-sh/setup-uv step in .github/ installs the uv the images
-    copy in (images/*/Dockerfile, `ARG UV_IMAGE=astral-sh/uv:<version>@...`),
-    and the root pyproject.toml's `[tool.uv] required-version` names the same
-    one, so a lock resolved or a sync made by any other uv is refused rather
-    than differ from CI's in silence.
-  * kubectl: every azure/setup-kubectl step names a version, a literal
-    `v<major>.<minor>.<patch>` or the workflow's `KUBECTL_VERSION`, which is
-    one. An old client silently drops manifest fields (CLAUDE.md).
+The root pyproject.toml's `[tool.uv] required-version` names the uv the images
+copy in (images/*/Dockerfile, `ARG UV_IMAGE=astral-sh/uv:<version>@...`), so a
+lock resolved or a sync made by any other uv is refused rather than differ
+from the images' in silence.
 """
 
 from __future__ import annotations
@@ -58,6 +53,7 @@ def test_every_setup_uv_installs_the_uv_the_images_run():
                 version = str((step.get("with") or {}).get("version", ""))
                 assert version == uv, f"{path.relative_to(REPO)}: setup-uv installs {version or 'its default'}, the images {uv}"
     assert seen >= 10, f"only {seen} setup-uv steps read"
+
 
 
 def test_the_project_requires_the_same_uv():

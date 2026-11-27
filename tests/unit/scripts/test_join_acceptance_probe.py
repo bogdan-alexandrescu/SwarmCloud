@@ -36,9 +36,7 @@ Google's token endpoint and swarm-api) and a fake `gcloud`, both on PATH:
   service's address the person is refused;
 * the probe SKIPs, naming what is missing, until its settings and the front
   door's URL are set, and never runs in the shared smoke tenant;
-* accept.yml runs it in the smoke job beside the roles probe, through
-  verify-remote.sh, which carries its settings into the execution;
-* the design records it as built.
+* verify-remote.sh carries its settings into the execution.
 """
 
 from __future__ import annotations
@@ -46,7 +44,6 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-import re
 import secrets
 import shutil
 import stat
@@ -67,7 +64,6 @@ _PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
 placeholder_deployment = _PLACEHOLDERS.deployment()
 GROUP = REPO / "scripts" / "acceptance" / "groups" / "join.sh"
 VERIFY_REMOTE = REPO / "scripts" / "verify-remote.sh"
-DESIGN = REPO / "docs" / "design" / "join-requests.md"
 TARGET = "acceptance/groups/join"
 #: The probe's settings: the test workspace, the platform-admin identity, the
 #: person who asks, and the Secret Manager secret holding that person's
@@ -655,20 +651,3 @@ def test_the_group_runs_on_its_own():
     assert GROUP.stat().st_mode & stat.S_IXUSR, "scripts/acceptance/groups/join.sh is not executable"
     assert GROUP.read_text().splitlines()[0] == "#!/usr/bin/env bash"
 
-
-# ---------------------------------------------------------------------------
-# The design says what was built
-# ---------------------------------------------------------------------------
-
-
-def test_the_design_records_what_each_lane_built():
-    text = DESIGN.read_text()
-    built = text[text.index("## 8."):]
-    assert "Nothing yet" not in built
-    for lane in ("JOIN-STORE", "JOIN-RESOLVE", "JOIN-API", "JOIN-BELL", "JOIN-UI-PERSON",
-                 "JOIN-WIRE", "JOIN-UI-ADMIN", "JOIN-INDEX", "JOIN-BELL-WIRE", "JOIN-DOCS-ACCEPT"):
-        assert f"**{lane}" in built, lane
-    # Each lane is named in words: an old issue or pull request number means
-    # nothing once the repository moves (docs/design/generic-repository.md, Q5).
-    assert not re.search(r"#\d", built), re.findall(r".{0,40}#\d+", built)
-    assert "`scripts/acceptance/groups/join.sh`" in built

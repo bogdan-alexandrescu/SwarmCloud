@@ -34,8 +34,6 @@ from __future__ import annotations
 
 import dataclasses
 import random
-import re
-from pathlib import Path
 
 import pytest
 
@@ -49,8 +47,6 @@ from swarm_common.profiles import (
     default_sizes,
     units_for,
 )
-
-REQUESTS = Path(__file__).resolve().parents[3] / "docs" / "contract-change-requests.md"
 
 
 def _table(**classes: ResourceSize) -> dict[str, ResourceSize]:
@@ -419,14 +415,3 @@ def test_whatever_check_size_accepts_is_inside_autopilots_ratio():
     # The control: the sweep reached both sides of the validator.
     assert visited == SWEEP
     assert 30 <= accepted <= visited - 30, (visited, accepted)
-
-
-def test_request_rs_2_is_filed_as_entry_109():
-    """The change the tests above hold has its entry, under the design's §5
-    name (CLAUDE.md rule 1)."""
-    text = REQUESTS.read_text(encoding="utf-8")
-    rows = [line for line in text.splitlines() if line.startswith("| 109 |")]
-    assert len(rows) == 1, rows
-    assert "SIZES-CONTRACT-2" in rows[0] and "RS-2" in rows[0]
-    assert "APPLIED" in rows[0]
-    assert re.search(r"^## 109\. .*\(SIZES-CONTRACT-2, runner sizes request RS-2, part of #1689\)$", text, re.M)

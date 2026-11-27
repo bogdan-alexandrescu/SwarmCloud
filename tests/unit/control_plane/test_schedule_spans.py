@@ -24,7 +24,6 @@ No cloud and no emulator: the in-memory Firestore and the real app.
 from __future__ import annotations
 
 from datetime import timedelta
-from pathlib import Path
 from typing import Any
 
 from swarm_api.issueruns import IssueRun, IssueRuns, RunState
@@ -280,29 +279,3 @@ def test_the_cost_read_keeps_the_task_cap(client, db, monkeypatch) -> None:
     costs = [f["items"][0]["cost"] for f in firings]
     assert [c["reported_usd"] for c in costs] == [1.0, 1.0, None, None, None]
     assert costs[2]["unread"] == schedule_routes._UNREAD_CAP
-
-
-# -- the docs guard: §7.1's route table lists `/spans` with what it reads -----
-
-SCHEDULES_DOC = Path(__file__).resolve().parents[3] / "docs" / "schedules.md"
-
-
-def _span_row() -> str:
-    text = SCHEDULES_DOC.read_text(encoding="utf-8")
-    start = text.index("### 7.1 Routes")
-    table = text[start: text.index("\n### ", start + 1)]
-    rows = [line for line in table.splitlines() if line.startswith("| `GET /v1/schedules/{id}/spans")]
-    assert len(rows) == 1, "docs/schedules.md §7.1 lists no `/spans` row"
-    return rows[0]
-
-
-def test_the_route_table_lists_spans_with_what_it_reads_and_its_cap() -> None:
-    row = _span_row()
-    # Its caps, as the route holds them.
-    assert f"at most {schedule_routes.SPAN_FIRINGS} firings" in row
-    assert f"{schedule_routes.SPAN_TASKS} agents" in row
-    assert f"{schedule_routes.SPAN_ATTEMPTS} attempts" in row
-    # What it reads and serves, and that it is the caller's tenant only.
-    for words in ("firing_id", "issue run", "attempts", "`cost`", "`issue`", "title",
-                  "`not_found`", "422", "404", "never $0"):
-        assert words in row, f"the `/spans` row does not say {words!r}"

@@ -21,8 +21,9 @@ THE FIX, held here:
 * on a non-zero exit verify-remote.sh describes the execution and reports a
   cancelled one as CANCELLED, apart from FAILED.
 
-The accept.yml steps are run here as written, by bash, against a fake
-`gcloud` on PATH: no network, no credentials.
+The accept.yml steps are run here as written (their shell, from the
+published run blocks), by bash, against a fake `gcloud` on PATH: no network,
+no credentials.
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ from pathlib import Path
 
 import pytest
 
-from .test_release_reuses_ci_images import _code, _workflow
+from .ci_run_blocks import run_block
 
 REPO = Path(__file__).resolve().parents[3]
 VERIFY_REMOTE = REPO / "scripts" / "verify-remote.sh"
@@ -142,22 +143,12 @@ def _cancelled(tmp_path: Path) -> list[str]:
     return path.read_text().split() if path.exists() else []
 
 
-def _jobs() -> dict:
-    return _workflow("accept.yml")["jobs"]
-
-
-def _cancel_steps(job: dict) -> list[dict]:
-    return [s for s in job.get("steps") or [] if "gcloud run jobs executions cancel" in _code(s.get("run", ""))]
-
-
-def _run_step(step: dict, tmp_path: Path, **extra: str) -> subprocess.CompletedProcess:
-    """The step's run: as GitHub runs it (`bash -e`), with its own env: and
-    the workflow's SWARM_VERIFY_ORIGIN for run 222."""
+def _run_step(run: str, tmp_path: Path, **extra: str) -> subprocess.CompletedProcess:
+    """A step's run: as GitHub runs it (`bash -e`), with the workflow's
+    SWARM_VERIFY_ORIGIN for run 222; the step's own env: is passed in extra."""
     env = _env(tmp_path, **{ORIGIN: "accept-222", "GITHUB_RUN_ID": "222"})
-    for key, value in (step.get("env") or {}).items():
-        env[key] = str(value)
     env.update(extra)
-    return subprocess.run(["bash", "-e", "-c", step["run"]], cwd=tmp_path, env=env,
+    return subprocess.run(["bash", "-e", "-c", run], cwd=tmp_path, env=env,
                           capture_output=True, text=True, timeout=60)
 
 
@@ -166,27 +157,11 @@ def _run_step(step: dict, tmp_path: Path, **extra: str) -> subprocess.CompletedP
 # ---------------------------------------------------------------------------
 
 
-def test_every_execution_an_accept_run_starts_is_marked_with_its_run_id():
-    """MUTATION: drop the workflow-level origin, or set it in one job only. An
-    execution started without it reads as an operator's and is never
-    cancelled by the next accept run's quiesce."""
-    workflow = _workflow("accept.yml")
-    assert workflow["env"][ORIGIN] == "accept-${{ github.run_id }}"
-    for job_id, job in workflow["jobs"].items():
-        assert ORIGIN not in (job.get("env") or {}), f"{job_id} overrides the run's origin"
-        for step in job.get("steps") or []:
-            code = _code(step.get("run", ""))
-            assert "gcloud run jobs execute " not in code, (
-                f"{job_id} executes a job directly: go through verify-remote.sh, which marks it")
-            if "verify-remote.sh" in code:
-                assert ORIGIN not in (step.get("env") or {}), f"{job_id} overrides the run's origin"
-
-
 def test_the_quiesce_step_cancels_only_other_accept_runs_executions(tmp_path):
     """MUTATION: list and cancel every running execution again (today's main):
     the operator's and the unmarked execution are cancelled and this fails."""
-    step = next(s for s in _jobs()["quiesce"]["steps"] if "swarm-verify executions still running" in str(s.get("name")))
-    proc = _run_step(step, tmp_path)
+    run = run_block("accept.yml", "quiesce", "cancel the swarm-verify executions still running")
+    proc = _run_step(run, tmp_path)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert _cancelled(tmp_path) == ["swarm-verify-old11"]
     out = proc.stdout + proc.stderr
@@ -199,9 +174,8 @@ def test_a_cleanup_step_cancels_only_its_own_runs_executions(job_id, tmp_path):
     """MUTATION: drop the origin test from a cleanup step. Every execution
     created after the job started -- the operator's among them -- is
     cancelled, not only this run's."""
-    steps = _cancel_steps(_jobs()[job_id])
-    assert len(steps) == 1, job_id
-    proc = _run_step(steps[0], tmp_path, STARTED="2026-10-28T10:01:00Z")
+    run = run_block("accept.yml", job_id, "cancel the executions this job started")
+    proc = _run_step(run, tmp_path, STARTED="2026-10-28T10:01:00Z")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert _cancelled(tmp_path) == ["swarm-verify-mine2"], job_id
 

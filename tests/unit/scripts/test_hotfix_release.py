@@ -10,19 +10,26 @@ merged with the `hotfix` label; it runs release.yml's own stages
 (.github/actions/release-*), skips verify, warm, acceptance, the GKE proof and
 the plugin tag, and FAILS on a plan that changes IAM.
 
-What this file holds, modelled on test_release_prod_gate.py and
-test_release_dev_iam_gate.py:
+What this file holds: the two scripts the lane runs, against fakes.
 
 * the gate (scripts/lib/hotfix-gate.sh) proceeds only for a MERGED pull
-  request into main carrying the label, and nothing that promotes, applies or
-  deploys starts unless it did;
-* an IAM-changing plan fails the hotfix before anything is applied, and the
-  normal release still holds it for dev-iam;
+  request into main carrying the label, and fails rather than guess when
+  GitHub does not answer;
 * scripts/lib/release-order.sh, which both lanes use, refuses a commit that is
   not a descendant of what is already promoted or applied (green,
   "superseded"), and its lock is exclusive;
-* release.yml keeps its prod gate and its dev-iam gate after its steps moved
-  into the composite actions, and both lanes run the same ones.
+* both scripts are executable and shellcheck-clean.
+
+And hotfix.yml's gates, read from the workflow (the release guards' model in
+test_release_prod_gate.py): it runs on main only, its gate reads the label
+and mints no Google identity, nothing prod-facing starts unless the gate
+proceeds, it is dev-only and names no environment, it ships only CI's
+images, an IAM plan fails it before anything is applied, and release.yml
+keeps its prod and dev-iam gates with both lanes running the same stages.
+They hold CI security decisions the owner kept on 2026-11-25, so this file
+is on scripts/check_test_reads.py's SECURITY_GUARDS list for those tests
+alone; the lane's operational pins (the state-lock wait, history depth,
+the dev-only ordering in the composites) stay deleted (issue 71).
 
 WHAT THIS CANNOT PROVE: that GitHub runs the workflows as read, that `gcloud
 storage cp --if-generation-match=0` is atomic (GCS documents it as a
@@ -40,6 +47,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -55,7 +63,6 @@ from .test_release_prod_gate import (
     _shell,
 )
 from .test_release_reuses_ci_images import (
-    REPO,
     _code,
     _evaluate,
     _load_workflow,
@@ -66,293 +73,9 @@ from .test_release_reuses_ci_images import (
     _workflow,
 )
 
+REPO = Path(__file__).resolve().parents[3]
 GATE_SH = REPO / "scripts" / "lib" / "hotfix-gate.sh"
 ORDER_SH = REPO / "scripts" / "lib" / "release-order.sh"
-ACTIONS = REPO / ".github" / "actions"
-
-PUSH = {
-    "github.event_name": "push",
-    "github.ref": "refs/heads/main",
-    "github.event.inputs.environment": None,
-    "github.event.inputs.skip_build": None,
-}
-DISPATCH = {**PUSH, "github.event_name": "workflow_dispatch"}
-
-
-def _hotfix() -> dict:
-    return _workflow("hotfix.yml")
-
-
-def _jobs() -> dict:
-    return _hotfix()["jobs"]
-
-
-# ---------------------------------------------------------------------------
-# The workflow's shape
-
-
-def test_it_runs_on_main_only_and_never_on_a_pull_request():
-    on = _hotfix()["on"]
-    assert set(on) == {"push", "workflow_dispatch"}, f"hotfix.yml triggers on {sorted(on)}"
-    assert on["push"]["branches"] == ["main"]
-    # Wherever a release path changes, so a hotfix is possible wherever a
-    # change can reach dev. release.yml has run on every push to main since
-    # 2026-10-26 (#2438, test_release_newest_only.py); these are the paths
-    # it filtered on until then.
-    release_paths = {
-        "apps/**", "images/**", "terraform/**", "kubernetes/**", "scripts/**",
-        ".trivyignore.yaml", ".github/workflows/release.yml", ".github/actions/release-*/**",
-    }
-    assert release_paths <= set(on["push"]["paths"]), sorted(release_paths - set(on["push"]["paths"]))
-    assert ".github/workflows/hotfix.yml" in on["push"]["paths"]
-
-
-def test_the_concurrency_group_is_on_the_work_jobs_and_never_on_the_gate_or_the_workflow():
-    # An ordinary push's gate-only run must not enter the group: GitHub keeps
-    # one pending run per group, and it would displace a queued hotfix.
-    assert "concurrency" not in _hotfix(), _hotfix().get("concurrency")
-    jobs = _jobs()
-    assert "concurrency" not in jobs["gate"]
-    work = [name for name in jobs if name != "gate"]
-    assert work, "no work jobs"
-    for name in work:
-        assert jobs[name].get("concurrency") == {"group": "hotfix-dev", "cancel-in-progress": False}, name
-    # Every work job runs only on the gate's proceed output: the first
-    # directly, the rest through the chain of needs.
-    assert jobs["images"]["needs"] == ["gate"]
-    assert jobs["images"]["if"] == "needs.gate.outputs.proceed == 'true'"
-
-    def reaches_images(name):
-        needs = jobs[name].get("needs") or []
-        needs = [needs] if isinstance(needs, str) else needs
-        return name == "images" or any(reaches_images(n) for n in needs)
-
-    for name in work:
-        assert reaches_images(name), name
-    assert "release-" not in str(_workflow("release.yml")["concurrency"]["group"]).replace("release-${{", "")
-
-
-def test_the_gate_reads_the_label_and_mints_no_google_identity():
-    job = _jobs()["gate"]
-    assert job.get("if") == "github.ref == 'refs/heads/main'"
-    assert "id-token" not in (job.get("permissions") or {}), job.get("permissions")
-    assert (job.get("permissions") or {}).get("pull-requests") == "read"
-    runs = [_code(s.get("run", "")) for s in job["steps"]]
-    called = [r for r in runs if "hotfix-gate.sh" in r]
-    assert len(called) == 1 and "--label hotfix" in called[0], runs
-    assert '>> "$GITHUB_OUTPUT"' in called[0]
-    assert job["outputs"]["proceed"] == "${{ steps.label.outputs.proceed }}"
-
-
-@pytest.fixture
-def gated(monkeypatch):
-    """The prod-gate model, taught the one step output hotfix.yml's job
-    conditions read."""
-    monkeypatch.setitem(gate_model.STEP_OUTPUTS, ("gate", "proceed"), ("true", "false", ""))
-    # `images`' `after` step: a build a newer push cancelled
-    # (test_hotfix_superseded.py).
-    monkeypatch.setitem(gate_model.STEP_OUTPUTS, ("images", "superseded"), ("true", "false"))
-    return _jobs()
-
-
-@pytest.mark.parametrize("ctx", [PUSH, DISPATCH], ids=["push", "dispatch"])
-def test_nothing_prod_facing_starts_unless_the_gate_proceeds(gated, ctx):
-    """MUTATION: drop `if: needs.gate.outputs.proceed == 'true'` from `images`,
-    or give `promote` an `always()`."""
-    jobs = gated
-    facing = sorted({j for what in PROD_FACING for j in _holders(jobs, what)})
-    assert {"promote", "infrastructure", "deploy"} <= set(facing), facing
-    for job_id in facing:
-        assert "gate" in _upstream(jobs, job_id), f"hotfix.yml's {job_id} does not wait for the gate"
-    tried = 0
-    for results, outs in _attempts(jobs, ctx):
-        if outs["gate"].get("proceed") == "true" and results["gate"] == "success":
-            continue
-        tried += 1
-        started = [j for j in facing if results[j] != "skipped"]
-        assert not started, f"with the gate {results['gate']} and proceed={outs['gate'].get('proceed')!r}: {results}"
-    assert tried
-
-
-@pytest.mark.parametrize("ctx", [PUSH, DISPATCH], ids=["push", "dispatch"])
-def test_a_labelled_commit_reaches_every_stage(gated, ctx):
-    jobs = gated
-    clean = [
-        r for r, o in _attempts(jobs, ctx, endings=("success",))
-        if o["gate"].get("proceed") == "true" and o["images"].get("superseded") != "true"
-    ]
-    assert clean
-    for results in clean:
-        assert all(r == "success" for r in results.values()), results
-
-
-def test_it_is_dev_only_and_names_no_environment():
-    """No approval to wait for -- and so nothing that could reach prod, or
-    stand in for dev-iam."""
-    for job_id, job in _jobs().items():
-        assert job.get("environment") is None, f"hotfix.yml's {job_id} names an environment"
-        if job_id != "gate":
-            assert (job.get("env") or {}).get("ENVIRONMENT") == "dev", f"hotfix.yml's {job_id} is not pinned to dev"
-
-
-def test_it_obtains_ci_s_record_and_never_builds():
-    hotfix = _hotfix()
-    builds = list(_steps(hotfix, "build-images.sh"))
-    assert len(builds) == 1
-    for event in ("push", "workflow_dispatch"):
-        assert _reuse_mode(builds[0][3], event) == "only"
-
-
-def test_it_skips_what_the_normal_release_of_the_same_push_still_runs():
-    """verify (CI's record implies it passed), warm, acceptance, the GKE proof
-    and the plugin tag -- all still run by release.yml (verify on a dispatch)
-    or by accept.yml after it."""
-    jobs = _jobs()
-    code = "\n".join(_code(s.get("run", "")) for job in jobs.values() for s in job.get("steps") or [])
-    for absent in ("pytest", "warm-jobs.sh", "acceptance/", "prove-gke-dispatch", "git push", "tag -a"):
-        assert absent not in code, f"hotfix.yml runs {absent!r}"
-    for present in ("push-images.sh", "plan-guard.sh", "--classify-iam", "deploy.sh --verify-only", "smoke-test"):
-        assert present in code, f"hotfix.yml never runs {present!r}"
-    # release.yml, and since 2026-10-08 accept.yml, which runs when the
-    # release of the same push completes (cut A of the release timing report).
-    rcode = "\n".join(
-        _code(s.get("run", ""))
-        for name in ("release.yml", "accept.yml")
-        for job in _workflow(name)["jobs"].values()
-        for s in job.get("steps") or []
-    )
-    for kept in ("pytest tests/unit", "warm-jobs.sh", "acceptance/", "prove-gke-dispatch"):
-        assert kept in rcode, f"neither release.yml nor accept.yml runs {kept!r}; the hotfix lane relies on it"
-
-
-def test_the_hotfix_waits_longer_for_terraform_s_state_lock():
-    applies = [s for s in _jobs()["infrastructure"]["steps"] if PROD_FACING["applies"](_shell(s))]
-    assert len(applies) == 1
-    assert "'900s'" in str(applies[0].get("env")), applies[0].get("env")
-
-
-# ---------------------------------------------------------------------------
-# A plan that changes IAM
-
-
-def _infra_steps(workflow: str) -> list[dict]:
-    return _workflow(workflow)["jobs"]["infrastructure"]["steps"]
-
-
-def _runs_step(step: dict, iam: str, environment: str = "dev") -> bool:
-    text = _condition("step", step.get("if"))
-    values = {
-        "env.ENVIRONMENT": environment,
-        "github.event.inputs.environment": environment,
-        "steps.iam.outputs.iam": iam,
-        "steps.order.outputs.superseded": "false",
-        "always()": True,
-        "success()": True,
-        "cancelled()": False,
-    }
-    return bool(_evaluate("${{ " + text + " }}", **values))
-
-
-def _refusal(steps: list[dict]) -> list[dict]:
-    return [s for s in steps if re.search(r"(^|\n)\s*exit\s+1\s*$", _shell(s).rstrip()) and "dev-iam" in _shell(s)]
-
-
-@pytest.mark.parametrize("iam", ["true", "false", ""])
-def test_an_iam_plan_fails_the_hotfix_before_anything_is_applied(iam):
-    """MUTATION: condition the refusal on `inputs.lane == 'release'`, or let
-    the apply step run on 'true'."""
-    steps = _infra_steps("hotfix.yml")
-    refusal = _refusal(steps)
-    assert len(refusal) == 1, "the hotfix lane has no step that refuses an IAM plan and names dev-iam"
-    message = _shell(refusal[0])
-    assert "release.yml" in message and "dev-iam" in message
-    applies = [i for i, s in enumerate(steps) if PROD_FACING["applies"](_shell(s))]
-    assert len(applies) == 1
-    assert steps.index(refusal[0]) < applies[0], "the refusal comes after the apply"
-    assert _runs_step(refusal[0], iam) is (iam == "true")
-    assert _runs_step(steps[applies[0]], iam) is (iam == "false")
-    held = [s for s in steps if s.get("id") == "held"]
-    assert held and not _runs_step(held[0], iam), "the hotfix lane holds a plan for a dev-iam job it does not have"
-
-
-def test_the_hotfix_has_no_dev_iam_job():
-    for ctx in (PUSH, DISPATCH):
-        named = [j for j, job in _jobs().items() if _environment(job, ctx) == DEV_IAM_ENVIRONMENT]
-        assert not named
-
-
-@pytest.mark.parametrize("environment", ["dev", "prod"])
-def test_the_normal_release_still_holds_an_iam_plan_for_dev_iam(environment):
-    steps = _infra_steps("release.yml")
-    refusal = _refusal(steps)
-    assert len(refusal) == 1
-    assert not _runs_step(refusal[0], "true", environment), "release.yml refuses the IAM plan dev-iam should review"
-    held = [s for s in steps if s.get("id") == "held"]
-    assert len(held) == 1 and _runs_step(held[0], "true", environment)
-
-
-# ---------------------------------------------------------------------------
-# release.yml after its steps moved into the composite actions
-
-
-def test_release_yml_keeps_its_prod_gate_and_its_dev_iam_gate():
-    jobs = _workflow("release.yml")["jobs"]
-    for ctx in PROD_RELEASES.values():
-        assert [j for j, job in jobs.items() if _environment(job, ctx) == "prod"] == ["approval"]
-    assert [j for j, job in jobs.items() if _environment(job, PUSH) == DEV_IAM_ENVIRONMENT] == ["infrastructure-iam"]
-    assert _needs(jobs["promote"]) == ["build", "approval"]
-    assert "approval" in _needs(jobs["infrastructure"]) and "approval" in _needs(jobs["deploy"])
-    assert "infrastructure-iam" in _needs(jobs["deploy"])
-    for what in PROD_FACING:
-        assert _holders(jobs, what), f"no step of release.yml {what} once its composite actions are flattened"
-
-
-def _composites(workflow: str) -> dict[str, set[str]]:
-    raw = _load_workflow(workflow)
-    used: dict[str, set[str]] = {}
-    for job_id, job in raw["jobs"].items():
-        for step in job.get("steps") or []:
-            uses = str(step.get("uses", ""))
-            if uses.startswith("./.github/actions/"):
-                used.setdefault(uses, set()).add(job_id)
-    return used
-
-
-def test_both_lanes_run_the_same_stages():
-    """One copy of the steps. MUTATION: inline a stage's steps back into
-    either workflow."""
-    release, hotfix = _composites("release.yml"), _composites("hotfix.yml")
-    stages = {f"./.github/actions/{p.name}" for p in ACTIONS.iterdir() if p.name.startswith("release-")}
-    assert stages == set(release) == set(hotfix), (stages, release, hotfix)
-    for uses in stages:
-        assert len(release[uses]) == 1 and len(hotfix[uses]) == 1, (uses, release[uses], hotfix[uses])
-
-
-def test_no_composite_names_vars_or_an_environment():
-    """A composite action cannot read `vars`, and the gates stay in the
-    workflows."""
-    for path in sorted(ACTIONS.glob("release-*/action.yml")):
-        body = path.read_text().split("\nruns:\n", 1)[1]
-        code = "\n".join(l for l in body.splitlines() if not l.lstrip().startswith("#"))
-        expressions = re.findall(r"\$\{\{.*?\}\}", code, re.S) + re.findall(r"^\s*if:.*$", code, re.M)
-        assert not any(re.search(r"\bvars\.", e) for e in expressions), f"{path} reads vars"
-        assert "environment:" not in re.sub(r"--environment", "", code).replace("environment: ${{", ""), path
-
-
-@pytest.mark.parametrize("name", ["TERRAFORM_VERSION", "PYTHON_VERSION", "TF_ROOT", "TRIVY_VERSION"])
-def test_the_two_lanes_pin_the_same_tools(name):
-    release, hotfix = _workflow("release.yml")["env"], _hotfix()["env"]
-    assert release[name] == hotfix[name], f"{name}: release.yml {release[name]!r}, hotfix.yml {hotfix[name]!r}"
-
-
-@pytest.mark.parametrize("workflow", ["release.yml", "hotfix.yml"])
-def test_every_job_that_orders_the_release_reads_main_s_history(workflow):
-    raw = _load_workflow(workflow)
-    for job_id, job in _workflow(workflow)["jobs"].items():
-        if "release-order.sh" not in "\n".join(_code(s.get("run", "")) for s in job.get("steps") or []):
-            continue
-        checkout = next(s for s in raw["jobs"][job_id]["steps"] if str(s.get("uses", "")).startswith("actions/checkout@"))
-        assert (checkout.get("with") or {}).get("fetch-depth") == 0, f"{workflow}'s {job_id} orders with a shallow clone"
 
 
 def test_every_lock_is_released_whatever_happened():
@@ -731,27 +454,263 @@ def test_the_scripts_are_executable_and_shellcheck_clean(script):
     assert proc.returncode == 0, proc.stdout
 
 
-def test_every_step_reading_the_order_runs_on_dev_only_in_the_composites():
-    """Ordering prod would refuse a deliberate rollback. In the shared stages
-    every lock, check and record is conditioned on a non-prod environment."""
-    for workflow in ("release.yml",):
-        for job_id, job in _workflow(workflow)["jobs"].items():
-            if job_id == "infrastructure-iam":
-                continue  # never runs on prod (test_release_dev_iam_gate.py)
-            for step in job.get("steps") or []:
-                code = _code(step.get("run", ""))
-                if re.search(r"release-order\.sh (lock|check|record)\b", code):
-                    for ctx in PROD_RELEASES.values():
-                        values = {
-                            **ctx,
-                            "env.ENVIRONMENT": "prod",
-                            "always()": True,
-                            "success()": True,
-                            "cancelled()": False,
-                            "steps.promote.outcome": "success",
-                            "steps.apply.outcome": "success",
-                        }
-                        text = _condition(f"{job_id} {step.get('name')}", step.get("if"))
-                        assert not _evaluate("${{ " + text + " }}", **values), (
-                            f"release.yml's {job_id} step {step.get('name')!r} orders a prod release"
-                        )
+ACTIONS = REPO / ".github" / "actions"
+
+
+PUSH = {
+    "github.event_name": "push",
+    "github.ref": "refs/heads/main",
+    "github.event.inputs.environment": None,
+    "github.event.inputs.skip_build": None,
+}
+
+
+DISPATCH = {**PUSH, "github.event_name": "workflow_dispatch"}
+
+
+def _hotfix() -> dict:
+    return _workflow("hotfix.yml")
+
+
+def _jobs() -> dict:
+    return _hotfix()["jobs"]
+
+
+def test_it_runs_on_main_only_and_never_on_a_pull_request():
+    on = _hotfix()["on"]
+    assert set(on) == {"push", "workflow_dispatch"}, f"hotfix.yml triggers on {sorted(on)}"
+    assert on["push"]["branches"] == ["main"]
+    # Wherever a release path changes, so a hotfix is possible wherever a
+    # change can reach dev. release.yml has run on every push to main since
+    # 2026-10-26 (#2438, test_release_newest_only.py); these are the paths
+    # it filtered on until then.
+    release_paths = {
+        "apps/**", "images/**", "terraform/**", "kubernetes/**", "scripts/**",
+        ".trivyignore.yaml", ".github/workflows/release.yml", ".github/actions/release-*/**",
+    }
+    assert release_paths <= set(on["push"]["paths"]), sorted(release_paths - set(on["push"]["paths"]))
+    assert ".github/workflows/hotfix.yml" in on["push"]["paths"]
+
+
+def test_the_concurrency_group_is_on_the_work_jobs_and_never_on_the_gate_or_the_workflow():
+    # An ordinary push's gate-only run must not enter the group: GitHub keeps
+    # one pending run per group, and it would displace a queued hotfix.
+    assert "concurrency" not in _hotfix(), _hotfix().get("concurrency")
+    jobs = _jobs()
+    assert "concurrency" not in jobs["gate"]
+    work = [name for name in jobs if name != "gate"]
+    assert work, "no work jobs"
+    for name in work:
+        assert jobs[name].get("concurrency") == {"group": "hotfix-dev", "cancel-in-progress": False}, name
+    # Every work job runs only on the gate's proceed output: the first
+    # directly, the rest through the chain of needs.
+    assert jobs["images"]["needs"] == ["gate"]
+    assert jobs["images"]["if"] == "needs.gate.outputs.proceed == 'true'"
+
+    def reaches_images(name):
+        needs = jobs[name].get("needs") or []
+        needs = [needs] if isinstance(needs, str) else needs
+        return name == "images" or any(reaches_images(n) for n in needs)
+
+    for name in work:
+        assert reaches_images(name), name
+    assert "release-" not in str(_workflow("release.yml")["concurrency"]["group"]).replace("release-${{", "")
+
+
+def test_the_gate_reads_the_label_and_mints_no_google_identity():
+    job = _jobs()["gate"]
+    assert job.get("if") == "github.ref == 'refs/heads/main'"
+    assert "id-token" not in (job.get("permissions") or {}), job.get("permissions")
+    assert (job.get("permissions") or {}).get("pull-requests") == "read"
+    runs = [_code(s.get("run", "")) for s in job["steps"]]
+    called = [r for r in runs if "hotfix-gate.sh" in r]
+    assert len(called) == 1 and "--label hotfix" in called[0], runs
+    assert '>> "$GITHUB_OUTPUT"' in called[0]
+    assert job["outputs"]["proceed"] == "${{ steps.label.outputs.proceed }}"
+
+
+@pytest.fixture
+def gated(monkeypatch):
+    """The prod-gate model, taught the one step output hotfix.yml's job
+    conditions read."""
+    monkeypatch.setitem(gate_model.STEP_OUTPUTS, ("gate", "proceed"), ("true", "false", ""))
+    # `images`' `after` step: a build a newer push cancelled
+    # (test_hotfix_superseded.py).
+    monkeypatch.setitem(gate_model.STEP_OUTPUTS, ("images", "superseded"), ("true", "false"))
+    return _jobs()
+
+
+@pytest.mark.parametrize("ctx", [PUSH, DISPATCH], ids=["push", "dispatch"])
+def test_nothing_prod_facing_starts_unless_the_gate_proceeds(gated, ctx):
+    """MUTATION: drop `if: needs.gate.outputs.proceed == 'true'` from `images`,
+    or give `promote` an `always()`."""
+    jobs = gated
+    facing = sorted({j for what in PROD_FACING for j in _holders(jobs, what)})
+    assert {"promote", "infrastructure", "deploy"} <= set(facing), facing
+    for job_id in facing:
+        assert "gate" in _upstream(jobs, job_id), f"hotfix.yml's {job_id} does not wait for the gate"
+    tried = 0
+    for results, outs in _attempts(jobs, ctx):
+        if outs["gate"].get("proceed") == "true" and results["gate"] == "success":
+            continue
+        tried += 1
+        started = [j for j in facing if results[j] != "skipped"]
+        assert not started, f"with the gate {results['gate']} and proceed={outs['gate'].get('proceed')!r}: {results}"
+    assert tried
+
+
+@pytest.mark.parametrize("ctx", [PUSH, DISPATCH], ids=["push", "dispatch"])
+def test_a_labelled_commit_reaches_every_stage(gated, ctx):
+    jobs = gated
+    clean = [
+        r for r, o in _attempts(jobs, ctx, endings=("success",))
+        if o["gate"].get("proceed") == "true" and o["images"].get("superseded") != "true"
+    ]
+    assert clean
+    for results in clean:
+        assert all(r == "success" for r in results.values()), results
+
+
+def test_it_is_dev_only_and_names_no_environment():
+    """No approval to wait for -- and so nothing that could reach prod, or
+    stand in for dev-iam."""
+    for job_id, job in _jobs().items():
+        assert job.get("environment") is None, f"hotfix.yml's {job_id} names an environment"
+        if job_id != "gate":
+            assert (job.get("env") or {}).get("ENVIRONMENT") == "dev", f"hotfix.yml's {job_id} is not pinned to dev"
+
+
+def test_it_obtains_ci_s_record_and_never_builds():
+    hotfix = _hotfix()
+    builds = list(_steps(hotfix, "build-images.sh"))
+    assert len(builds) == 1
+    for event in ("push", "workflow_dispatch"):
+        assert _reuse_mode(builds[0][3], event) == "only"
+
+
+def test_it_skips_what_the_normal_release_of_the_same_push_still_runs():
+    """verify (CI's record implies it passed), warm, acceptance, the GKE proof
+    and the plugin tag -- all still run by release.yml (verify on a dispatch)
+    or by accept.yml after it."""
+    jobs = _jobs()
+    code = "\n".join(_code(s.get("run", "")) for job in jobs.values() for s in job.get("steps") or [])
+    for absent in ("pytest", "warm-jobs.sh", "acceptance/", "prove-gke-dispatch", "git push", "tag -a"):
+        assert absent not in code, f"hotfix.yml runs {absent!r}"
+    for present in ("push-images.sh", "plan-guard.sh", "--classify-iam", "deploy.sh --verify-only", "smoke-test"):
+        assert present in code, f"hotfix.yml never runs {present!r}"
+    # release.yml, and since 2026-10-08 accept.yml, which runs when the
+    # release of the same push completes (cut A of the release timing report).
+    rcode = "\n".join(
+        _code(s.get("run", ""))
+        for name in ("release.yml", "accept.yml")
+        for job in _workflow(name)["jobs"].values()
+        for s in job.get("steps") or []
+    )
+    for kept in ("pytest tests/unit", "warm-jobs.sh", "acceptance/", "prove-gke-dispatch"):
+        assert kept in rcode, f"neither release.yml nor accept.yml runs {kept!r}; the hotfix lane relies on it"
+
+
+def _infra_steps(workflow: str) -> list[dict]:
+    return _workflow(workflow)["jobs"]["infrastructure"]["steps"]
+
+
+def _runs_step(step: dict, iam: str, environment: str = "dev") -> bool:
+    text = _condition("step", step.get("if"))
+    values = {
+        "env.ENVIRONMENT": environment,
+        "github.event.inputs.environment": environment,
+        "steps.iam.outputs.iam": iam,
+        "steps.order.outputs.superseded": "false",
+        "always()": True,
+        "success()": True,
+        "cancelled()": False,
+    }
+    return bool(_evaluate("${{ " + text + " }}", **values))
+
+
+def _refusal(steps: list[dict]) -> list[dict]:
+    return [s for s in steps if re.search(r"(^|\n)\s*exit\s+1\s*$", _shell(s).rstrip()) and "dev-iam" in _shell(s)]
+
+
+@pytest.mark.parametrize("iam", ["true", "false", ""])
+def test_an_iam_plan_fails_the_hotfix_before_anything_is_applied(iam):
+    """MUTATION: condition the refusal on `inputs.lane == 'release'`, or let
+    the apply step run on 'true'."""
+    steps = _infra_steps("hotfix.yml")
+    refusal = _refusal(steps)
+    assert len(refusal) == 1, "the hotfix lane has no step that refuses an IAM plan and names dev-iam"
+    message = _shell(refusal[0])
+    assert "release.yml" in message and "dev-iam" in message
+    applies = [i for i, s in enumerate(steps) if PROD_FACING["applies"](_shell(s))]
+    assert len(applies) == 1
+    assert steps.index(refusal[0]) < applies[0], "the refusal comes after the apply"
+    assert _runs_step(refusal[0], iam) is (iam == "true")
+    assert _runs_step(steps[applies[0]], iam) is (iam == "false")
+    held = [s for s in steps if s.get("id") == "held"]
+    assert held and not _runs_step(held[0], iam), "the hotfix lane holds a plan for a dev-iam job it does not have"
+
+
+def test_the_hotfix_has_no_dev_iam_job():
+    for ctx in (PUSH, DISPATCH):
+        named = [j for j, job in _jobs().items() if _environment(job, ctx) == DEV_IAM_ENVIRONMENT]
+        assert not named
+
+
+@pytest.mark.parametrize("environment", ["dev", "prod"])
+def test_the_normal_release_still_holds_an_iam_plan_for_dev_iam(environment):
+    steps = _infra_steps("release.yml")
+    refusal = _refusal(steps)
+    assert len(refusal) == 1
+    assert not _runs_step(refusal[0], "true", environment), "release.yml refuses the IAM plan dev-iam should review"
+    held = [s for s in steps if s.get("id") == "held"]
+    assert len(held) == 1 and _runs_step(held[0], "true", environment)
+
+
+def test_release_yml_keeps_its_prod_gate_and_its_dev_iam_gate():
+    jobs = _workflow("release.yml")["jobs"]
+    for ctx in PROD_RELEASES.values():
+        assert [j for j, job in jobs.items() if _environment(job, ctx) == "prod"] == ["approval"]
+    assert [j for j, job in jobs.items() if _environment(job, PUSH) == DEV_IAM_ENVIRONMENT] == ["infrastructure-iam"]
+    assert _needs(jobs["promote"]) == ["build", "approval"]
+    assert "approval" in _needs(jobs["infrastructure"]) and "approval" in _needs(jobs["deploy"])
+    assert "infrastructure-iam" in _needs(jobs["deploy"])
+    for what in PROD_FACING:
+        assert _holders(jobs, what), f"no step of release.yml {what} once its composite actions are flattened"
+
+
+def _composites(workflow: str) -> dict[str, set[str]]:
+    raw = _load_workflow(workflow)
+    used: dict[str, set[str]] = {}
+    for job_id, job in raw["jobs"].items():
+        for step in job.get("steps") or []:
+            uses = str(step.get("uses", ""))
+            if uses.startswith("./.github/actions/"):
+                used.setdefault(uses, set()).add(job_id)
+    return used
+
+
+@pytest.mark.parametrize("name", ["TERRAFORM_VERSION", "PYTHON_VERSION", "TF_ROOT", "TRIVY_VERSION"])
+def test_the_two_lanes_pin_the_same_tools(name):
+    release, hotfix = _workflow("release.yml")["env"], _hotfix()["env"]
+    assert release[name] == hotfix[name], f"{name}: release.yml {release[name]!r}, hotfix.yml {hotfix[name]!r}"
+
+
+def test_both_lanes_run_the_same_stages():
+    """One copy of the steps. MUTATION: inline a stage's steps back into
+    either workflow."""
+    release, hotfix = _composites("release.yml"), _composites("hotfix.yml")
+    stages = {f"./.github/actions/{p.name}" for p in ACTIONS.iterdir() if p.name.startswith("release-")}
+    assert stages == set(release) == set(hotfix), (stages, release, hotfix)
+    for uses in stages:
+        assert len(release[uses]) == 1 and len(hotfix[uses]) == 1, (uses, release[uses], hotfix[uses])
+
+
+def test_no_composite_names_vars_or_an_environment():
+    """A composite action cannot read `vars`, and the gates stay in the
+    workflows."""
+    for path in sorted(ACTIONS.glob("release-*/action.yml")):
+        body = path.read_text().split("\nruns:\n", 1)[1]
+        code = "\n".join(l for l in body.splitlines() if not l.lstrip().startswith("#"))
+        expressions = re.findall(r"\$\{\{.*?\}\}", code, re.S) + re.findall(r"^\s*if:.*$", code, re.M)
+        assert not any(re.search(r"\bvars\.", e) for e in expressions), f"{path} reads vars"
+        assert "environment:" not in re.sub(r"--environment", "", code).replace("environment: ${{", ""), path

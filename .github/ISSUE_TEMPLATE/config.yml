@@ -5,9 +5,8 @@
 # with --body-file bypasses the forms, so it writes its body in the form's
 # sections (CLAUDE.md, "Issues").
 #
-# Every url below is a blob/ or tree/ link on main, and
-# tests/unit/scripts/test_issue_forms.py fails if what it points at is not in
-# the repository -- a contact link is the one place a reporter is sent before
+# Every url below is a blob/ or tree/ link on main, and what it points at
+# must be in the repository -- a contact link is the one place a reporter is sent before
 # they have filed anything, so a dead one costs the report.
 blank_issues_enabled: true
 contact_links:

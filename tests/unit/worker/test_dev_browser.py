@@ -41,7 +41,6 @@ DOCKERFILE = IMAGE_DIR / "Dockerfile"
 WRAPPER = IMAGE_DIR / "dev-browser"
 SELFTEST = IMAGE_DIR / "selftest.py"
 MANIFEST = REPO / "images" / "agent-runtime-base" / "tool-mirror.sha256"
-DESIGN_DOC = REPO / "docs" / "design" / "live-browser.md"
 
 ENDPOINT = "http://127.0.0.1:9222"
 #: What the wrapper connects to: the endpoint with dev-browser's client tag,
@@ -298,16 +297,3 @@ def test_the_self_test_proves_the_wrapper_and_the_pin():
     steps = _instructions(DOCKERFILE.read_text())
     run = [s for s in steps if s.startswith("RUN ") and "selftest.py" in s]
     assert len(run) == 1 and 'DEV_BROWSER_VERSION="${DEV_BROWSER_VERSION}"' in run[0]
-
-
-def test_the_design_doc_records_why_attach_only_and_the_size():
-    text = DESIGN_DOC.read_text()
-    m = re.search(r"^#+ .*dev-browser \(opt-in\).*$", text, re.M)
-    assert m, "docs/design/live-browser.md has a 'dev-browser (opt-in)' subsection"
-    section = text[m.end():]
-    nxt = re.search(r"^#{1,3} ", section, re.M)
-    section = section[: nxt.start()] if nxt else section
-    assert "attach" in section.lower()
-    assert "not a sandbox" in " ".join(section.split())
-    assert "MiB" in section  # the size delta
-    assert "separate lane" in " ".join(section.split())

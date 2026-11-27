@@ -5,8 +5,8 @@ own (owner request: ci-gate.yml held a runner for the whole of CI while it
 polled). It `needs:` every other job there but the two that only keep an old
 check name, and judges their results itself
 (test_unit_shards.py runs that step), then runs scripts/ci-gate.sh for
-terraform.yml alone -- `CI_GATE_WORKFLOWS`, read below from the workflow, so
-the script is tested here in the configuration CI runs it in.
+terraform.yml alone -- `CI_GATE_WORKFLOWS`, which the tests below set as the
+gate job does, so the script is tested in the configuration CI runs it in.
 
 WHY IT EXISTS. Owner decision, 2026-09-29: main's ruleset (main-protection,
 looked up by name) requires only security.yml's four checks, because application.yml
@@ -17,7 +17,8 @@ runs on every pull request and every push to main, waits for the runs of those
 two workflows at the same head commit, and passes only when every one of them
 that ran passed. It is what the ruleset can require in their place.
 
-The properties asserted here, against the REAL script with a fake `gh`:
+The properties asserted here, against the REAL script with a fake `gh` and
+workflow files written under tmp_path (CI_GATE_WORKFLOW_DIR):
 
   * the path lists come from the workflow files themselves -- the script reads
     them, and what it reads equals what PyYAML reads -- so there is no second
@@ -35,24 +36,28 @@ The properties asserted here, against the REAL script with a fake `gh`:
     fails the gate (the settle window);
   * runs of another event at the same commit are not this gate's business;
   * an unreadable API is never read as a pass;
-  * the workflow's shape: its job is named exactly `ci-gate`, it runs on every
-    pull request (no filter of its own) and on push to main, it holds only
-    read permissions, and no `${{ }}` reaches a `run:`;
-  * docs/ci.md carries the exact ruleset PUT that adds `ci-gate`, keeping the
-    four security checks and the ruleset's other rules, with no check pinned.
+  * the gate job's own judgement of its `needs`, run from its published shell
+    (scripts/generated/ci-run-blocks.json).
+
+The pins on the workflow's shape and on docs/ci.md's ruleset body were
+deleted by issue 71.
 
 WHAT THIS CANNOT PROVE: that GitHub's API answers in the shape the fake serves
 (workflow runs filtered by head_sha and event, each carrying its workflow
 `path`; a run's jobs with `filter=latest`). Only a real pull request exercises
 the real API -- this pull request's own `ci-gate` run is the first.
+
+THE TESTS THAT READ .github/ hold CI security decisions the owner kept on
+2026-11-25: that ci-gate needs every other job of its workflow, holds read
+permissions only, and gates every path-filtered workflow. This file is on
+scripts/check_test_reads.py's SECURITY_GUARDS list for those tests alone
+(issue 71).
 """
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -61,52 +66,90 @@ from pathlib import Path
 import pytest
 import yaml
 
-from .application_paths import app_paths, reaches
-from .ci_fold_layout import FOLDED_HOSTS, check_steps
+from .ci_run_blocks import run_block
 from .test_fast_checks_on_lane_prs import without_lane_clause
 
 REPO = Path(__file__).resolve().parents[3]
-WORKFLOWS = REPO / ".github" / "workflows"
 SCRIPT = REPO / "scripts" / "ci-gate.sh"
-GATE_WORKFLOW = WORKFLOWS / "application.yml"
-CI_DOC = REPO / "docs" / "ci.md"
 OWNER_REPO = "owner/swarm"
 SHA = "c0ffee" * 6 + "abcd"
-RULESET_NAME = "main-protection"
-
-_spec = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
-placeholders = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(placeholders)
+#: What the gate job hands the script (its `wait` step's env).
+GATED_IN_CI = "terraform.yml"
 
 pytestmark = pytest.mark.skipif(
     shutil.which("jq") is None or shutil.which("bash") is None,
     reason="the gate needs bash and jq",
 )
 
+#: Workflow files the script reads, in the shapes it models: a path-filtered
+#: pull_request (with a comment between items, the case most parsers get
+#: wrong), an unfiltered one, and one with no push trigger.
+FIXTURE_WORKFLOWS = {
+    "terraform.yml": """name: terraform
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "terraform/**"
+      - "tests/terraform/**"
+      # the plan guard terraform.yml's checks run
+      - "scripts/lib/plan-guard.sh"
+      - "scripts/lib/destroy-guard.jq"
+      - ".github/workflows/terraform.yml"
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: "true"
+""",
+    "application.yml": """name: application
+on:
+  pull_request:
+  push:
+    branches: [main]
+  merge_group:
+jobs:
+  ci-gate:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: "true"
+""",
+    "security.yml": """name: security
+on:
+  pull_request:
+  schedule:
+    - cron: "0 5 * * *"
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: "true"
+""",
+}
 
-def _workflow(path: Path) -> dict:
-    data = yaml.safe_load(path.read_text())
-    # PyYAML reads the bare key `on` as the boolean True.
-    if True in data:
-        data["on"] = data.pop(True)
-    return data
+#: terraform.yml's jobs as a pull request runs them: `plan` refuses
+#: pull_request by its `if:` and is skipped.
+TF_JOBS = {
+    "offline checks (fmt / validate / tflint, terraform test)": "success",
+    "fmt / validate / tflint": "success",
+    "terraform test": "success",
+    "plan (not run on a pull request)": "success",
+    "checkov": "success",
+    "plan (dev)": "skipped",
+}
 
 
-def gate_job() -> dict:
-    """application.yml's `ci-gate` job."""
-    return _workflow(GATE_WORKFLOW)["jobs"]["ci-gate"]
-
-
-def wait_step() -> dict:
-    (step,) = [s for s in gate_job()["steps"] if "ci-gate.sh wait" in str(s.get("run", ""))]
-    return step
-
-
-def gated_in_ci() -> str:
-    """The CI_GATE_WORKFLOWS the gate job hands the script."""
-    value = str((wait_step().get("env") or {}).get("CI_GATE_WORKFLOWS") or "")
-    assert value.split(), "the gate job does not say which workflows the script waits on"
-    return value
+def _workflow_dir(tmp_path: Path) -> Path:
+    root = tmp_path / "workflows"
+    if not root.exists():
+        root.mkdir(parents=True)
+        for name, body in FIXTURE_WORKFLOWS.items():
+            (root / name).write_text(body)
+    return root
 
 
 def _base_env(tmp_path: Path) -> dict:
@@ -119,7 +162,8 @@ def _base_env(tmp_path: Path) -> dict:
         "NO_COLOR": "1",
         "GITHUB_REPOSITORY": OWNER_REPO,
         # As the gate job runs it.
-        "CI_GATE_WORKFLOWS": gated_in_ci(),
+        "CI_GATE_WORKFLOWS": GATED_IN_CI,
+        "CI_GATE_WORKFLOW_DIR": str(_workflow_dir(tmp_path)),
     }
     # This suite runs INSIDE GitHub Actions in CI; nothing here may annotate or
     # write to the real job's summary, or reach the real API with its token.
@@ -142,13 +186,16 @@ def gate(tmp_path: Path, *args: str, env: dict | None = None) -> subprocess.Comp
 # ---------------------------------------------------------------------------
 # The path lists are read from the workflow files, and read correctly.
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("name", ["application.yml", "terraform.yml", "security.yml"])
+@pytest.mark.parametrize("name", sorted(FIXTURE_WORKFLOWS))
 @pytest.mark.parametrize("event", ["pull_request", "push", "schedule", "no_such_event"])
 def test_the_script_reads_each_workflows_paths_exactly_as_yaml_does(tmp_path, name, event):
     """MUTATION: hard-code a path list in the script, or drop a pattern while
     parsing (a comment between items is the case most parsers get wrong)."""
-    on = _workflow(WORKFLOWS / name)["on"]
-    proc = gate(tmp_path, "paths", "--workflow", str(WORKFLOWS / name), "--event", event)
+    path = _workflow_dir(tmp_path) / name
+    data = yaml.safe_load(path.read_text())
+    # PyYAML reads the bare key `on` as the boolean True.
+    on = data.get("on", data.get(True))
+    proc = gate(tmp_path, "paths", "--workflow", str(path), "--event", event)
     assert proc.returncode == 0, proc.stderr
     lines = proc.stdout.splitlines()
     if event not in on:
@@ -160,30 +207,15 @@ def test_the_script_reads_each_workflows_paths_exactly_as_yaml_does(tmp_path, na
         return
     assert lines[0] == "paths", lines
     assert lines[1:] == [str(p) for p in trigger["paths"]], lines
-    # The control: the real pull_request lists are long; an empty read is a bug.
+    # The control: the pull_request list is long; an empty read is a bug.
     assert len(lines) > 3
 
 
-def test_every_path_filtered_workflow_is_gated_and_security_is_not(tmp_path):
-    """A new path-filtered workflow must come under the gate, or its failures
-    hold nothing. security.yml is required directly and is not gated, and
-    application.yml -- which carries the gate and runs on every pull request --
-    is judged by the gate job's `needs`, never waited on (it would wait for
-    itself). MUTATION: put application.yml back in CI_GATE_WORKFLOWS, or give
-    application.yml's pull_request trigger a path filter again."""
+def test_the_script_waits_on_the_workflows_it_is_handed(tmp_path):
+    """MUTATION: ignore CI_GATE_WORKFLOWS for a built-in list."""
     proc = gate(tmp_path, "workflows")
     assert proc.returncode == 0, proc.stderr
-    gated = set(proc.stdout.split())
-    filtered = set()
-    for path in WORKFLOWS.glob("*.yml"):
-        trigger = _workflow(path)["on"]
-        if isinstance(trigger, dict) and isinstance(trigger.get("pull_request"), dict):
-            if "paths" in trigger["pull_request"] or "paths-ignore" in trigger["pull_request"]:
-                filtered.add(path.name)
-    assert filtered == {"terraform.yml"}, filtered  # the control
-    assert gated == filtered, gated
-    assert "security.yml" not in gated
-    assert "application.yml" not in gated
+    assert proc.stdout.split() == ["terraform.yml"], proc.stdout
 
 
 @pytest.mark.parametrize(
@@ -335,21 +367,8 @@ sys.exit(2)
 '''
 
 
-def workflow_jobs(name: str, **override: str) -> list[dict]:
-    """A workflow's jobs as a pull request runs them: a job whose `if:` refuses
-    pull_request (terraform.yml's `plan`) is skipped by it."""
-    jobs = []
-    for job_id, job in _workflow(WORKFLOWS / name)["jobs"].items():
-        label = str(job.get("name") or job_id)
-        condition = str(job.get("if") or "")
-        conclusion = "skipped" if "!= 'pull_request'" in condition else "success"
-        jobs.append({"name": label, "conclusion": override.get(label, conclusion)})
-    assert any(j["conclusion"] == "skipped" for j in jobs), "the control: a pull request skips a job by its if:"
-    return jobs
-
-
 def tf_jobs(**override: str) -> list[dict]:
-    return workflow_jobs("terraform.yml", **override)
+    return [{"name": name, "conclusion": override.get(name, conclusion)} for name, conclusion in TF_JOBS.items()]
 
 
 def run(run_id: int, workflow: str = "terraform.yml", **extra) -> dict:
@@ -508,8 +527,7 @@ def test_a_run_the_paths_did_not_predict_still_counts_when_it_fails(tmp_path):
 def test_a_late_unpredicted_failing_run_is_caught_inside_the_settle_window(tmp_path):
     """Nothing expected, so without a settle window the gate would pass on its
     first look. The gate job sets the window to zero because it starts after
-    the event's runs exist (test_unit_shards.py holds that reason); the
-    script's window still works when asked for. MUTATION: ignore CI_GATE_SETTLE."""
+    the event's runs exist; the script's window still works when asked for. MUTATION: ignore CI_GATE_SETTLE."""
     world = {"runs": [run(2, appears_after=3, conclusion="failure",
                           jobs=tf_jobs(**{"terraform test": "failure"}))]}
     proc, _ = wait(tmp_path, world, ["LICENSE"], CI_GATE_SETTLE="2")
@@ -547,6 +565,132 @@ def test_a_run_still_going_past_the_wait_fails(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# The gate's own judgement of application.yml's jobs, run as the runner runs it.
+# ---------------------------------------------------------------------------
+#: Each job that judges its `needs`, and the key of its judging step.
+JUDGES = {
+    "ci-gate": "every job of this workflow passed, or was skipped by its own if",
+    "python": "every job this check stands for passed, or was skipped by its own if",
+    "ui": "every job this check stands for passed, or was skipped by its own if",
+}
+
+
+def judge_step(job_id: str) -> dict:
+    job = _workflow(GATE_WORKFLOW)["jobs"][job_id]
+    steps = [s for s in job["steps"] if "NEEDS" in (s.get("env") or {})]
+    assert len(steps) == 1, f"{job_id} has no single step reading `needs`"
+    assert steps[0]["env"]["NEEDS"].replace(" ", "") == "${{toJSON(needs)}}", steps[0]["env"]
+    return steps[0]
+
+
+def judge(tmp_path: Path, job_id: str, results: dict[str, str]) -> subprocess.CompletedProcess:
+    """Run `job_id`'s needs-reading step with `needs.<job>.result` = results
+    (the step's env: NEEDS is `toJSON(needs)`)."""
+    body = tmp_path / f"judge-{job_id}.sh"
+    body.write_text(run_block("application.yml", job_id, JUDGES[job_id]))
+    needs = {name: {"result": result, "outputs": {}} for name, result in results.items()}
+    env = {**_base_env(tmp_path), "NEEDS": json.dumps(needs)}
+    return subprocess.run(["bash", "-e", str(body)], env=env, capture_output=True, text=True, timeout=60, check=False)
+
+
+def _all_needs(job_id: str) -> dict[str, str]:
+    """The jobs a judge needs, each concluded `success`: `changes` and the
+    checks below it."""
+    return {name: "success" for name in ("changes", "python-unit", "ui-tests", "build-check")}
+
+
+@pytest.mark.parametrize("job_id", sorted(JUDGES))
+def test_every_need_passing_or_skipped_by_its_if_passes(tmp_path, job_id):
+    proc = judge(tmp_path, job_id, _all_needs(job_id))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    # A docs-only pull request: everything but `changes` skipped.
+    skipped = {name: ("success" if name == "changes" else "skipped") for name in _all_needs(job_id)}
+    proc = judge(tmp_path, job_id, skipped)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+@pytest.mark.parametrize("job_id", sorted(JUDGES))
+@pytest.mark.parametrize("result", ["failure", "cancelled"])
+def test_any_need_failed_or_cancelled_fails_by_name(tmp_path, job_id, result):
+    """MUTATION: count only `failure`, or read `cancelled` as passed."""
+    needs = _all_needs(job_id)
+    victim = sorted(n for n in needs if n != "changes")[-1]
+    needs[victim] = result
+    proc = judge(tmp_path, job_id, needs)
+    assert proc.returncode != 0, proc.stdout
+    assert f"{victim} ({result})" in proc.stdout, proc.stdout
+
+
+@pytest.mark.parametrize("job_id", sorted(JUDGES))
+def test_a_skip_under_a_changes_job_that_did_not_succeed_fails(tmp_path, job_id):
+    """Everything skipped because `changes` never ran is not a pass.
+    MUTATION: drop the `changes` check from the step."""
+    needs = {name: "skipped" for name in _all_needs(job_id)}
+    proc = judge(tmp_path, job_id, needs)
+    assert proc.returncode != 0, proc.stdout
+    assert "changes" in proc.stdout
+
+
+def test_the_three_judgements_are_one_text():
+    """Three copies of one rule are kept identical, so one is never fixed alone."""
+    runs = {job_id: judge_step(job_id)["run"] for job_id in ("ci-gate", "python", "ui")}
+    assert len(set(runs.values())) == 1, runs
+
+
+def test_the_script_follows_the_house_rules():
+    text = SCRIPT.read_text()
+    first = next(
+        line for i, line in enumerate(text.splitlines())
+        if not (i == 0 and line.startswith("#!")) and line.strip() and not line.lstrip().startswith("#")
+    )
+    assert first == "set -euo pipefail", first
+    assert text.startswith("#!/usr/bin/env bash\n")
+    assert 'lib/common.sh"' in text
+    assert os.access(SCRIPT, os.X_OK), "scripts/ci-gate.sh is not executable"
+
+
+WORKFLOWS = REPO / ".github" / "workflows"
+
+
+GATE_WORKFLOW = WORKFLOWS / "application.yml"
+
+
+def _workflow(path: Path) -> dict:
+    data = yaml.safe_load(path.read_text())
+    # PyYAML reads the bare key `on` as the boolean True.
+    if True in data:
+        data["on"] = data.pop(True)
+    return data
+
+
+def gate_job() -> dict:
+    """application.yml's `ci-gate` job."""
+    return _workflow(GATE_WORKFLOW)["jobs"]["ci-gate"]
+
+
+def test_every_path_filtered_workflow_is_gated_and_security_is_not(tmp_path):
+    """A new path-filtered workflow must come under the gate, or its failures
+    hold nothing. security.yml is required directly and is not gated, and
+    application.yml -- which carries the gate and runs on every pull request --
+    is judged by the gate job's `needs`, never waited on (it would wait for
+    itself). MUTATION: put application.yml back in CI_GATE_WORKFLOWS, or give
+    application.yml's pull_request trigger a path filter again."""
+    proc = gate(tmp_path, "workflows")
+    assert proc.returncode == 0, proc.stderr
+    gated = set(proc.stdout.split())
+    filtered = set()
+    for path in WORKFLOWS.glob("*.yml"):
+        trigger = _workflow(path)["on"]
+        if isinstance(trigger, dict) and isinstance(trigger.get("pull_request"), dict):
+            if "paths" in trigger["pull_request"] or "paths-ignore" in trigger["pull_request"]:
+                filtered.add(path.name)
+    assert filtered == {"terraform.yml"}, filtered  # the control
+    assert gated == filtered, gated
+    assert "security.yml" not in gated
+    assert "application.yml" not in gated
+
+
+# ---------------------------------------------------------------------------
 # The workflow's shape.
 # ---------------------------------------------------------------------------
 def test_the_gate_job_is_named_ci_gate_and_always_runs():
@@ -581,9 +725,6 @@ def test_the_gate_job_is_named_ci_gate_and_always_runs():
     assert producers == [("application.yml", "ci-gate")], producers
 
 
-#: The jobs that only keep an old check name: each judges its `needs` and runs
-#: nothing else. The gate does not wait for them (2026-10-09: one runner queue
-#: fewer on the critical path, docs/ci.md "Where pull-request CI time goes").
 NAME_KEEPERS = {"python", "ui"}
 
 
@@ -635,157 +776,3 @@ def test_no_expression_is_interpolated_into_a_run_block():
     # The changed files come from `git diff base...head`; a shallow clone has neither.
     assert (checkout.get("with") or {}).get("fetch-depth") == 0, checkout
     assert (checkout.get("with") or {}).get("persist-credentials") is False, checkout
-
-
-def test_the_gate_waits_without_a_settle_window_only_because_it_starts_late():
-    """CI_GATE_SETTLE is zero in the gate job: it starts only after `changes`
-    -- a job of a run the same event created -- has finished, so terraform.yml's
-    run already exists. That holds only while the gate needs `changes`.
-    MUTATION: drop `changes` from the gate's needs while keeping the zero."""
-    env = wait_step().get("env") or {}
-    if str(env.get("CI_GATE_SETTLE", "60")) == "0":
-        assert "changes" in gate_job()["needs"]
-
-
-# ---------------------------------------------------------------------------
-# The gate's own judgement of application.yml's jobs, run as the runner runs it.
-# ---------------------------------------------------------------------------
-def judge_step(job_id: str) -> dict:
-    job = _workflow(GATE_WORKFLOW)["jobs"][job_id]
-    steps = [s for s in job["steps"] if "NEEDS" in (s.get("env") or {})]
-    assert len(steps) == 1, f"{job_id} has no single step reading `needs`"
-    assert steps[0]["env"]["NEEDS"].replace(" ", "") == "${{toJSON(needs)}}", steps[0]["env"]
-    return steps[0]
-
-
-def judge(tmp_path: Path, job_id: str, results: dict[str, str]) -> subprocess.CompletedProcess:
-    """Run `job_id`'s needs-reading step with `needs.<job>.result` = results."""
-    body = tmp_path / f"judge-{job_id}.sh"
-    body.write_text(str(judge_step(job_id)["run"]))
-    needs = {name: {"result": result, "outputs": {}} for name, result in results.items()}
-    env = {**_base_env(tmp_path), "NEEDS": json.dumps(needs)}
-    return subprocess.run(["bash", "-e", str(body)], env=env, capture_output=True, text=True, timeout=60, check=False)
-
-
-def _all_needs(job_id: str) -> dict[str, str]:
-    """Every job `job_id` needs, each concluded `success`."""
-    needs = _workflow(GATE_WORKFLOW)["jobs"][job_id]["needs"]
-    needs = [needs] if isinstance(needs, str) else needs
-    return {name: "success" for name in needs}
-
-
-@pytest.mark.parametrize("job_id", ["ci-gate", "python", "ui"])
-def test_every_need_passing_or_skipped_by_its_if_passes(tmp_path, job_id):
-    proc = judge(tmp_path, job_id, _all_needs(job_id))
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    # A docs-only pull request: everything but `changes` skipped.
-    skipped = {name: ("success" if name == "changes" else "skipped") for name in _all_needs(job_id)}
-    proc = judge(tmp_path, job_id, skipped)
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-
-
-@pytest.mark.parametrize("job_id", ["ci-gate", "python", "ui"])
-@pytest.mark.parametrize("result", ["failure", "cancelled"])
-def test_any_need_failed_or_cancelled_fails_by_name(tmp_path, job_id, result):
-    """MUTATION: count only `failure`, or read `cancelled` as passed."""
-    needs = _all_needs(job_id)
-    victim = sorted(n for n in needs if n != "changes")[-1]
-    needs[victim] = result
-    proc = judge(tmp_path, job_id, needs)
-    assert proc.returncode != 0, proc.stdout
-    assert f"{victim} ({result})" in proc.stdout, proc.stdout
-
-
-@pytest.mark.parametrize("job_id", ["ci-gate", "python", "ui"])
-def test_a_skip_under_a_changes_job_that_did_not_succeed_fails(tmp_path, job_id):
-    """Everything skipped because `changes` never ran is not a pass.
-    MUTATION: drop the `changes` check from the step."""
-    needs = {name: "skipped" for name in _all_needs(job_id)}
-    proc = judge(tmp_path, job_id, needs)
-    assert proc.returncode != 0, proc.stdout
-    assert "changes" in proc.stdout
-
-
-def test_the_three_judgements_are_one_text():
-    """Three copies of one rule are kept identical, so one is never fixed alone."""
-    runs = {job_id: judge_step(job_id)["run"] for job_id in ("ci-gate", "python", "ui")}
-    assert len(set(runs.values())) == 1, runs
-
-
-def test_the_script_follows_the_house_rules():
-    text = SCRIPT.read_text()
-    first = next(
-        line for i, line in enumerate(text.splitlines())
-        if not (i == 0 and line.startswith("#!")) and line.strip() and not line.lstrip().startswith("#")
-    )
-    assert first == "set -euo pipefail", first
-    assert text.startswith("#!/usr/bin/env bash\n")
-    assert 'lib/common.sh"' in text
-    assert os.access(SCRIPT, os.X_OK), "scripts/ci-gate.sh is not executable"
-
-
-# ---------------------------------------------------------------------------
-# The owner's step: the ruleset PUT in docs/ci.md.
-# ---------------------------------------------------------------------------
-def _always_run_checks() -> set[str]:
-    names = set()
-    for job_id, job in (_workflow(WORKFLOWS / "security.yml").get("jobs") or {}).items():
-        # The job security.yml's sub-minute checks are folded into reports no
-        # required name; its name-keepers do (CI-FOLD, test_ci_fold.py).
-        if job_id == FOLDED_HOSTS["security.yml"]:
-            continue
-        # Which events it runs on, read before the lane clause every job ends
-        # with (test_fast_checks_on_lane_prs.py), which names pull_request.
-        condition = without_lane_clause(job.get("if"), required=False)
-        if "!= 'pull_request'" in condition or ("pull_request" not in condition and "schedule" in condition):
-            continue
-        names.add(str(job.get("name") or job_id))
-    return names
-
-
-def test_docs_carry_the_ruleset_put_that_adds_ci_gate():
-    """MUTATION: drop a security check from the body, drop a rule the live
-    ruleset has, or pin a check the owner decided to leave unpinned."""
-    text = CI_DOC.read_text()
-    match = re.search(
-        r"```bash\n(RULESET_ID=\"\$\(gh api repos/" + re.escape(placeholders.GITHUB_REPOSITORY)
-        + r"/rulesets --jq '\.\[\] \| select\(\.name==\"" + re.escape(RULESET_NAME)
-        + r"\"\) \| \.id'\)\"\n"
-        r"gh api -X PUT repos/" + re.escape(placeholders.GITHUB_REPOSITORY) + r"/rulesets/\"\$RULESET_ID\".*?)```",
-        text,
-        re.DOTALL,
-    )
-    assert match, "docs/ci.md does not carry the ruleset `gh api -X PUT` command"
-    payload_match = re.search(r"<<'JSON'\n(.*?)\nJSON", match.group(1), re.DOTALL)
-    assert payload_match, match.group(1)
-    body = json.loads(payload_match.group(1))
-    assert body["name"] == "main-protection" and body["target"] == "branch" and body["enforcement"] == "active", body
-    assert body["conditions"]["ref_name"]["include"] == ["~DEFAULT_BRANCH"], body["conditions"]
-    rules = {rule["type"]: rule for rule in body["rules"]}
-    assert {"deletion", "non_fast_forward", "pull_request", "required_status_checks"} <= set(rules), rules
-    checks = rules["required_status_checks"]["parameters"]["required_status_checks"]
-    contexts = {c["context"] for c in checks}
-    always = _always_run_checks()
-    assert always, "the control: security.yml has always-run jobs"
-    assert contexts == always | {"ci-gate"}, contexts
-    # Owner decision, 2026-09-29: no check is pinned to an integration_id;
-    # the body restates the live ruleset and adds only ci-gate.
-    assert all(set(c) == {"context"} for c in checks), checks
-    assert rules["required_status_checks"]["parameters"]["strict_required_status_checks_policy"] is False
-
-
-def test_a_pull_request_touching_only_the_gate_runs_its_tests_and_actionlint():
-    """Owner decision, 2026-09-29: a pull request changing only the gate runs
-    its tests and lints its workflow. The gate is application.yml's own job
-    now, so actionlint reads it with application.yml, and the script is under
-    scripts/**. MUTATION: drop either path, or application.yml from actionlint."""
-    assert reaches("scripts/ci-gate.sh"), app_paths()
-    assert reaches(".github/workflows/application.yml"), app_paths()
-    lint = [
-        step.get("run") or ""
-        # The `release workflow wiring (actionlint) · ...` steps of
-        # `quick-checks` since CI-FOLD (archived issue 1799).
-        for step in check_steps("application.yml", "workflows")
-        if "actionlint" in (step.get("run") or "")
-    ]
-    assert any(".github/workflows/application.yml" in run for run in lint), lint

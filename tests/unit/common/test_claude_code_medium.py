@@ -14,9 +14,7 @@ measured without page cache, 96% fit 6 CPU and 16 GiB and only 31 needed
   * its GKE pod has memory and ephemeral storage `requests == limits`, CPU
     request <= limit <= CPU_BURST_MAX_RATIO x request (invariant 7);
   * a claude-code-medium task is admitted against `resource:medium` and
-    `runner:claude-code-medium`, all or nothing, at 2 units per compute pool;
-  * docs/contract-change-requests.md records request 147 as accepted by the
-    owner, which is what scripts/lib/check-frozen-contract.sh admits on.
+    `runner:claude-code-medium`, all or nothing, at 2 units per compute pool.
 
 No cloud, no emulator.
 """
@@ -56,8 +54,6 @@ from swarm_common.states import TaskState  # noqa: E402
 from scheduler import sizes  # noqa: E402
 from scheduler.dispatch import GkeJobDispatcher, GkeTarget  # noqa: E402
 
-REPO = Path(__file__).resolve().parents[3]
-REQUESTS = REPO / "docs" / "contract-change-requests.md"
 
 NAME = "claude-code-medium"
 TENANT = "eng"
@@ -244,12 +240,3 @@ def test_a_claude_code_medium_task_is_admitted_against_the_medium_pool():
                                  backend=BACKEND, config=AdmissionConfig(), now=ADMIT_AT)
     for pool in ("global", f"tenant:{TENANT}", "resource:medium", f"runner:{NAME}", f"backend:{BACKEND}"):
         assert db.docs[f"pools/{pool}"]["active"] == 2, pool
-
-
-def test_request_147_is_recorded_as_accepted_by_the_owner():
-    text = REQUESTS.read_text(encoding="utf-8")
-    (row,) = [line for line in text.splitlines() if line.startswith("| 147 |")]
-    assert "claude-code-medium" in row and "`medium`" in row
-    # MUTATION: drop "accepted by the owner" and check-frozen-contract.sh
-    # refuses this pull request's swarm_common diff.
-    assert "accepted by the owner" in row.lower()

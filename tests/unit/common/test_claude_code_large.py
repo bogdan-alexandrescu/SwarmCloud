@@ -13,10 +13,7 @@ gave an agent more of either. What is held here:
   * its rendered GKE pod has memory `requests == limits` at 32 GiB
     (invariant 7), and admission charges it the `large` class's 4 units;
   * every other profile is unchanged: the same names, and each one's class,
-    backend, timeout, checkpoint interval and availability;
-  * docs/contract-change-requests.md records request 113 as applied, on a line
-    carrying "accepted by the owner", which is what
-    scripts/lib/check-frozen-contract.sh admits a `swarm_common` change on.
+    backend, timeout, checkpoint interval and availability.
 
 No cloud, no emulator: the catalogue is pure, and the manifest is rendered by
 the scheduler's dispatcher with a stand-in batch API it never calls.
@@ -25,7 +22,6 @@ the scheduler's dispatcher with a stand-in batch API it never calls.
 from __future__ import annotations
 
 import dataclasses
-import re
 import sys
 from pathlib import Path
 
@@ -50,9 +46,6 @@ from swarm_common.profiles import (  # noqa: E402
 
 from scheduler.dispatch import GkeJobDispatcher, GkeTarget  # noqa: E402
 
-REPO = Path(__file__).resolve().parents[3]
-REQUESTS = REPO / "docs" / "contract-change-requests.md"
-RUNNER_SIZES = REPO / "docs" / "design" / "runner-sizes.md"
 
 NAME = "claude-code-large"
 
@@ -197,24 +190,3 @@ def test_its_gke_pod_holds_32_gib_with_memory_requests_equal_to_limits(tenant):
     # four-hour agent away mid-run.
     assert job["spec"]["template"]["metadata"]["annotations"][
         "cluster-autoscaler.kubernetes.io/safe-to-evict"] == "false"
-
-
-def test_request_113_is_recorded_as_applied_with_the_owners_acceptance():
-    text = REQUESTS.read_text(encoding="utf-8")
-    (row,) = [line for line in text.splitlines() if line.startswith("| 113 |")]
-    # MUTATION: leave row 113 reading "Not yet applied" and the index says the
-    # catalogue lacks a profile it has.
-    assert "APPLIED by the pull request that adds this line" in row
-    assert "Not yet applied" not in row
-    # MUTATION: drop "accepted by the owner" from the row and
-    # check-frozen-contract.sh refuses this pull request's swarm_common diff.
-    assert "accepted by the owner" in row.lower()
-
-
-def test_runner_sizes_lists_the_profile_on_gke_at_the_large_class():
-    text = RUNNER_SIZES.read_text(encoding="utf-8")
-    section = text.split("### 1a.3 Which profiles run where", 1)[1].split("### 1a.4", 1)[0]
-    (gke,) = [line for line in section.splitlines() if line.startswith("| GKE Autopilot |")]
-    # MUTATION: leave §1a.3's GKE row without the profile and the doc that
-    # says which profile runs where is wrong about one of them.
-    assert re.search(r"`claude-code-large` \(large\b", gke), gke

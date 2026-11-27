@@ -47,7 +47,6 @@ BROWSER = IMAGES / "agent-runtime-browser" / "Dockerfile"
 INDEXER = IMAGES / "agent-runtime-indexer" / "Dockerfile"
 LIGHTPANDA = IMAGES / "agent-runtime-lightpanda" / "Dockerfile"
 RELEASE_IMAGES = REPO / ".github" / "actions" / "release-images" / "action.yml"
-RELEASE_PROMOTE = REPO / ".github" / "actions" / "release-promote" / "action.yml"
 
 
 def _instructions(path: Path) -> list[str]:
@@ -159,10 +158,3 @@ def test_the_gate_holds_the_release_and_is_bounded():
     assert gate["run"].lstrip().startswith("timeout ")
     for needle in ("print-access-token", "ACCESS_TOKEN", "Bearer"):
         assert needle not in gate["run"] + str(gate.get("env", {}))
-
-
-def test_the_size_record_after_the_promotion_still_cannot_hold_the_release():
-    # `--manifest` now exits 1 on a repeated layer too; after the promotion
-    # that is a red step on the release page, never a held release.
-    size = [s for s in _steps(RELEASE_PROMOTE) if "image-sizes.sh --manifest" in s.get("run", "")]
-    assert len(size) == 1 and size[0].get("continue-on-error") is True, size

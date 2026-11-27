@@ -169,71 +169,24 @@ def test_the_live_only_list_covers_every_command_but_compare_and_serve() -> None
     assert sorted(listed) == sorted([a[0] for a in LIVE_ONLY] + ["compare", "serve"]), listed
 
 
-# --- docs/browser-qa.md: the recipe for a step without a live browser --------
-
-DOC = REPO / "docs" / "browser-qa.md"
-SUBSECTION = "### On a step without a live browser (claude-code, claude-code-large)"
+# --- a step without a live browser: what the tools take ----------------------
 
 
-def _recipe() -> str:
-    text = DOC.read_text()
-    assert text.count(SUBSECTION) == 1
-    body = text.split(SUBSECTION, 1)[1]
-    return body.split("\n### ", 1)[0]
-
-
-def test_the_recipe_follows_section_6_2_and_stays_inside_section_6() -> None:
-    text = DOC.read_text()
-    assert text.index("### 6.2 ") < text.index(SUBSECTION) < text.index("### 6.3 ")
-
-
-def test_the_recipe_names_only_flags_swarm_handoff_accepts() -> None:
-    recipe = _recipe()
+def test_compare_accepts_the_name_top_only_and_threshold_flags() -> None:
     out = subprocess.run(
         [sys.executable, str(COMMAND), "compare", "--help"], capture_output=True, text=True, check=True
     ).stdout
     accepted = set(re.findall(r"--[a-z][a-z-]*", out))
     assert {"--name", "--top-only", "--threshold"} <= accepted
-    used = set()
-    for line in recipe.splitlines():
-        if "swarm-handoff compare" in line or line.strip().startswith("design/frames"):
-            used |= set(re.findall(r"(?<!\S)--[a-z][a-z-]*", line))
-    assert {"--name", "--top-only"} <= used
-    assert used <= accepted
-    commands = set(re.findall(r"swarm-handoff ([a-z-]+)", recipe))
-    assert commands == {"compare"}
 
 
-def test_the_recipe_commands_are_the_ones_the_playwright_cli_and_the_tool_take() -> None:
-    recipe = _recipe()
-    assert "npx playwright install chromium" in recipe
-    assert "--with-deps" in recipe  # named only to forbid it
-    assert re.search(r"[Nn]ever `--with-deps`", recipe)
-    for flag in ("--color-scheme", "--viewport-size"):
-        assert flag in recipe
-    assert "--viewport-size 1440,900" in recipe and "--viewport-size 390,844" in recipe
-    assert '"$scheme"' in recipe and "for scheme in light dark" in recipe
-    assert "--full-page" in recipe and "Do not pass `--full-page`" in recipe
-    assert "git worktree add" in recipe and "origin/main" in recipe
-    assert "CREATE EXTENSION" in recipe and "127.0.0.1:5432" in recipe
-    assert ".swarm/test-services.toml" in recipe
-
-
-def test_the_recipe_names_the_git_fetch_tool_and_its_one_depth() -> None:
-    recipe = _recipe()
+def test_the_git_fetch_tool_takes_a_ref() -> None:
     gittools = (REPO / "apps" / "agent-worker" / "agent_worker" / "gittools.py").read_text()
     assert '"git_fetch"' in gittools and 'args["ref"]' in gittools
-    assert '`git_fetch` tool with `{"ref": "main", "depth": 1}`' in recipe
-    runner_doc = (REPO / "docs" / "runner-git-tools.md").read_text()
-    assert "`git_fetch {\"ref\": \"main\", \"depth\": 1}`" in runner_doc
-    assert "worker-images.md#coderabbit" in recipe
-    assert "## CodeRabbit" in (REPO / "docs" / "worker-images.md").read_text()
 
 
-def test_the_recipe_keeps_the_no_browser_in_the_base_image_decision() -> None:
-    recipe = _recipe()
-    assert "no browser binary" in recipe
-    assert "claude-code-browser" in recipe
+def test_the_base_image_installs_no_browser() -> None:
+    # A browser belongs to claude-code-browser's image, never the base image.
     dockerfile = (REPO / "images" / "agent-runtime-base" / "Dockerfile").read_text()
     code = "\n".join(ln for ln in dockerfile.splitlines() if not ln.lstrip().startswith("#"))
     assert "playwright install" not in code

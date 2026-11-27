@@ -167,9 +167,3 @@ def test_the_script_is_shellcheck_clean():
     result = subprocess.run(["shellcheck", "-x", str(SCRIPT)], cwd=ROOT, capture_output=True, text=True,
                             timeout=60, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
-
-
-def test_docs_ci_says_why_it_moved_and_how_it_comes_back():
-    text = (ROOT / "docs" / "ci.md").read_text()
-    assert "accept-live-browser-streak.sh" in text
-    assert "18 of 34" in text, "the doc must keep the numbers the move was decided on"

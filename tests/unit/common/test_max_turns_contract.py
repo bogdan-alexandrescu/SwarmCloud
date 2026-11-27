@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import fields, replace
-from pathlib import Path
 
 import pytest
 
@@ -25,7 +24,6 @@ from swarm_common.models import Task, WorkflowStep
 from swarm_common.profiles import RUNNER_PROFILES
 from swarm_common.specsign import SpecNotCanonical, canonical_step_spec, signing_format
 
-REQUESTS = Path(__file__).resolve().parents[3] / "docs" / "contract-change-requests.md"
 
 DOC = {
     "tenant_id": "eng",
@@ -111,12 +109,3 @@ def test_a_cap_rewritten_to_a_float_has_no_canonical_form():
 def test_older_formats_bytes_do_not_change():
     for spec_format in (1, 2, 3, 4, 5, 6):
         assert b'"max_turns"' not in canonical_step_spec(DOC, task_id="t", spec_format=spec_format)
-
-
-def test_the_request_is_marked_accepted_and_applied():
-    text = REQUESTS.read_text()
-    row = next(line for line in text.splitlines() if line.startswith("| 133 |"))
-    assert "ACCEPTED by the owner" in row and "APPLIED 2026-11-02" in row
-    assert "owner accepted 2 November 2026" in row and "REQUESTED for the owner" not in row
-    section = text.split("\n## 133. ", 1)[1].split("\n## ", 1)[0]
-    assert section.splitlines()[2].startswith("**Status:** ACCEPTED by the owner")

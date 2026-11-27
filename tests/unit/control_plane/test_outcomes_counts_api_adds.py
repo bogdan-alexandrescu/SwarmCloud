@@ -25,12 +25,10 @@ Offline: pure folds, FakeFirestore, a fixed clock.
 from __future__ import annotations
 
 from datetime import timedelta
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from swarm_api import outcomes
 from swarm_api.groups import StaticGroups
 from swarm_api.main import create_app
 from swarm_api.outcomes import (
@@ -55,9 +53,6 @@ from .test_outcomes_counts_rollup import (
     _fold,
     _task,
 )
-
-DOC = Path(__file__).resolve().parents[3] / "docs" / "outcomes.md"
-
 
 def _agents(spec):
     """(id, profile, days before T_SUBMIT, attempts) -> ended tuples and arrivals."""
@@ -238,20 +233,3 @@ def test_a_mock_agent_holds_no_account_and_a_claude_agent_with_no_event_is_not_r
     timeline = {r["key"] for r in folded["groups"]["rows"]}
     assert timeline == {HOLDS_NO_ACCOUNT, NOT_RECORDED, "acct-claude-01"}
 
-
-# --------------------------------------------------------------------------
-# The doc says what the route serves
-# --------------------------------------------------------------------------
-
-def test_the_doc_names_every_field_this_lane_added():
-    text = DOC.read_text(encoding="utf-8")
-    for needle in (
-        "`usage.breakdowns`", "`series`", "`measured`", "`cost.estimated`",
-        f'"{HOLDS_NO_ACCOUNT}"', f'"{OTHER_KEYS}"', f"{USAGE_SERIES_NAMED} busiest",
-        *(f"`{name}`" for name in USAGE_BREAKDOWNS),
-    ):
-        # MUTATION: ship the fields without documenting them and this fails.
-        assert needle in text, needle
-    # MUTATION: leave `group` in the doc's list of what keys the cache.
-    assert "tz, filters, kind, group, compare" not in text
-    assert outcomes.Params.canonical.__doc__ and "group" in outcomes.Params.canonical.__doc__
