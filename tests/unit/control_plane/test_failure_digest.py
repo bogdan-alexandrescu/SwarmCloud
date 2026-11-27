@@ -238,6 +238,32 @@ _case(fd.PERSON_READY_REMOVAL,
        task("agent-said-ready", last_error="ready_removed_by_person")])
 
 
+_case(fd.PERSON_CLOSE,
+      # issue 473: a person closed the merge step's own pull request unmerged,
+      # outside the workflow. The worker (`merge._closed_outside`) ends the step
+      # CANCELLED merge_refused with this refusal code; the step's end is right.
+      [task("closed-by-hand", state="CANCELLED", runner_profile="merge", end_cause="merge_refused",
+            result_summary={"merge": {"refusal": {
+                "code": "pull_request_closed",
+                "message": "pull request #7 was closed without merging, outside the workflow; "
+                           "there is nothing left to merge"}}})],
+      # A step started against a pull request already closed (or not its own)
+      # is `run.refuse` -- FAILED with the same code -- and a defect to read; so
+      # is a post-verdict refusal with that code, a CANCELLED merge step whose
+      # code is another and only whose message names it, and a step that only
+      # names the string in `last_error`.
+      [task("closed-before", runner_profile="merge", end_cause="merge_refused",
+            result_summary={"merge": {"refusal": {"code": "pull_request_closed",
+                                                  "message": "pull request #7 is closed"}}}),
+       task("verdict-closed", runner_profile="post-verdict", end_cause="verdict_refused",
+            result_summary={"verdict": {"refusal": {"code": "pull_request_closed"}}}),
+       task("cancelled-head-moved", state="CANCELLED", runner_profile="merge",
+            end_cause="merge_refused",
+            result_summary={"merge": {"refusal": {"code": "head_moved",
+                                                  "message": "pull_request_closed"}}}),
+       task("agent-said-closed", last_error="pull_request_closed")])
+
+
 @pytest.mark.parametrize("rule", fd.SKIP_RULES)
 def test_each_skip_rule_skips_exactly_its_case_and_names_itself(rule: str):
     skipped, control, extra = CASES[rule]
@@ -257,11 +283,11 @@ def test_each_skip_rule_skips_exactly_its_case_and_names_itself(rule: str):
     assert not ids & reviewed_ids(digest)
 
 
-def test_the_rules_are_the_designs_eight_and_no_others():
+def test_the_rules_are_the_designs_nine_and_no_others():
     # MUTATION: a rule added (or one the agent could add) changes this tuple.
     assert fd.SKIP_RULES == ("self", "acceptance_deliberate", "verify_fence", "person_cancel",
                              "question_unanswered", "fix_round_live", "person_push",
-                             "person_ready_removal")
+                             "person_ready_removal", "person_close")
 
 
 def test_a_workflow_failed_only_by_a_person_push_is_skipped_with_its_step():
@@ -298,6 +324,33 @@ def test_the_ready_removal_code_is_the_one_the_worker_writes():
 
     # MUTATION: rename either side's string and this fails.
     assert fd.READY_REMOVED_BY_PERSON == merge.READY_REMOVED_BY_PERSON == "ready_removed_by_person"
+
+
+def test_a_workflow_failed_only_by_a_persons_close_is_skipped_with_its_step():
+    """issue 473: the workflow FAILED only because a person closed its merge
+    step's pull request unmerged is not reviewed either."""
+    step = task("merge-step", state="CANCELLED", runner_profile="merge", end_cause="merge_refused",
+                workflow_id="wf_close",
+                result_summary={"merge": {"refusal": {"code": "pull_request_closed"}}})
+    workflow = {"workflow_id": "wf_close", "tenant_id": OTHER, "state": "FAILED",
+                "updated_at": at(1), "steps": [{"step_id": "merge", "task_id": "merge-step"}]}
+    digest = build(docs_of(step, workflows=[workflow]))
+    # MUTATION: drop the PERSON_CLOSE branch of `skip_rule` and both are reviewed.
+    assert reviewed_ids(digest) == set()
+    assert set(digest.skipped[fd.PERSON_CLOSE]) == {"merge-step", "wf_close"}
+
+
+def test_the_pull_request_closed_code_is_the_one_the_worker_writes():
+    """issue 473: the digest's constant is held equal to the worker's refusal
+    code, and to what `merge._closed_outside` really writes on a CANCELLED end."""
+    from agent_worker import merge
+    from swarm_common.states import TaskState
+
+    # MUTATION: rename either side's string and this fails.
+    assert fd.PULL_REQUEST_CLOSED == merge.PULL_REQUEST_CLOSED == "pull_request_closed"
+    outcome = merge._closed_outside({}, 7)
+    assert outcome.state is TaskState.CANCELLED
+    assert outcome.summary["refusal"]["code"] == fd.PULL_REQUEST_CLOSED
 
 
 # --------------------------------------------------------------------------
