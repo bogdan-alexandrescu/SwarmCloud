@@ -500,6 +500,14 @@ MAX_VERIFICATION_BYTES = 64 * 1024
 MAX_VERIFICATION_CHARS = 20_000
 #: `IssueRun.outcome` of a DONE run whose build found nothing to change.
 OUTCOME_ALREADY_ON_MAIN = "already_on_main"
+#: `IssueRun.outcome` of an `auto_merge` run whose green head a person pushed
+#: (archived issue 474): a person on the pull request, or a plain lane a
+#: person dispatched onto the run's branch. The run submitted no merge; the
+#: pull request is left open and green for that person, who took it over
+#: (`issueci._merge`). The merge step's end for the same decision; held
+#: equal to `failuredigest.SUPERSEDED_BY_PERSON_PUSH` and
+#: `agent_worker.merge.SUPERSEDED_BY_PERSON_PUSH` by a test.
+OUTCOME_SUPERSEDED_BY_PERSON_PUSH = "superseded_by_person_push"
 
 #: In every prompt this module and the CI loop compile. Only the pull
 #: request's keyword block, written by the API from the review's per-
@@ -565,7 +573,9 @@ RUN_TRANSITIONS: dict[RunState, frozenset[RunState]] = {
         {RunState.CHECKING, RunState.DONE, RunState.FAILED, RunState.CANCELLED}
     ),
     # CI at the head: green -> DONE, red -> FIXING (a round submitted) or
-    # FAILED at the cap, pending -> stays.
+    # FAILED at the cap, pending -> stays. An `auto_merge` run green at a
+    # head a person pushed is DONE too, with `outcome:
+    # superseded_by_person_push` and no merge (archived issue 474).
     RunState.CHECKING: frozenset(
         {RunState.FIXING, RunState.DONE, RunState.FAILED, RunState.CANCELLED}
     ),
@@ -4860,8 +4870,10 @@ class IssueRun:
     merge: dict[str, Any] | None = None
     # -- a run whose build changed nothing (archived issue 646). All optional, so a run
     # stored before them reads as one that opened a pull request.
-    #: How a DONE run ended, beyond its state: `OUTCOME_ALREADY_ON_MAIN`, set
-    #: by the transition to DONE; None for a run that opened a pull request.
+    #: How a DONE run ended, beyond its state: `OUTCOME_ALREADY_ON_MAIN`, or
+    #: `OUTCOME_SUPERSEDED_BY_PERSON_PUSH` (an `auto_merge` run green at a
+    #: head a person pushed, left to them), set by the transition to DONE;
+    #: None for a run that opened a pull request and ended any other way.
     outcome: str | None = None
     #: The build steps' verification tables, redacted and bounded
     #: (`verification_text`); what the verification comment quotes.

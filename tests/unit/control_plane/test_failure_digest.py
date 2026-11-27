@@ -292,6 +292,55 @@ def test_a_workflow_failed_only_by_a_persons_ready_removal_is_skipped_with_its_s
     assert set(digest.skipped[fd.PERSON_READY_REMOVAL]) == {"merge-step", "wf_ready"}
 
 
+def test_an_issue_run_a_persons_push_superseded_is_skipped_as_person_push():
+    """archived issue 474: an issue run whose green head a person pushed ends
+    `superseded_by_person_push`; failure-review never reviews it, whatever its
+    state, while a FAILED run with no outcome and the same sentence is."""
+    sentence = ("auto_merge did not merge pull request #7: its head abc was not pushed by "
+                "any of this run's tasks. It is green at abc; merge it yourself")
+    done = {"id": "run_done", "tenant_id": OTHER, "state": "DONE",
+            "outcome": "superseded_by_person_push", "updated_at": at(1)}
+    failed = {"id": "run_failed", "tenant_id": OTHER, "state": "FAILED",
+              "outcome": "superseded_by_person_push", "error": sentence, "updated_at": at(1)}
+    control = {"id": "run_control", "tenant_id": OTHER, "state": "FAILED",
+               "error": sentence, "updated_at": at(1)}
+    old = {"id": "run_old", "tenant_id": OTHER, "state": "DONE",
+           "outcome": "superseded_by_person_push", "updated_at": at(200)}
+
+    digest = build(docs_of(runs=[done, failed, control, old]))
+
+    # MUTATION: drop the superseded-run branch of `build`'s parent pass and
+    # run_failed is reviewed and nothing is counted.
+    assert set(digest.skipped[fd.PERSON_PUSH]) == {"run_done", "run_failed"}
+    assert reviewed_ids(digest) == {"run_control"}
+
+
+def test_a_superseded_runs_own_failed_step_is_reviewed_without_the_runs_flag():
+    step = task("step", workflow_id="wf_1", metadata={"issue_run": "run_1"})
+    run = {"id": "run_1", "tenant_id": OTHER, "state": "FAILED", "updated_at": at(1),
+           "workflow_id": "wf_1", "outcome": "superseded_by_person_push"}
+
+    digest = build(docs_of(step, runs=[run]))
+
+    assert reviewed_ids(digest) == {"step"}
+    assert "issue_run_failed" not in _entries(digest)["step"]
+    assert digest.skipped[fd.PERSON_PUSH] == ["run_1"]
+
+
+def test_the_superseded_outcome_and_the_restated_worker_facts_are_the_workers():
+    """archived issue 474: one string, three modules; and what the issue run
+    restates of the worker's person-push rule is the worker's."""
+    from agent_worker import merge
+    from swarm_api import issueci, issueruns
+
+    # MUTATION: rename any side's string and this fails.
+    assert (fd.SUPERSEDED_BY_PERSON_PUSH == issueruns.OUTCOME_SUPERSEDED_BY_PERSON_PUSH
+            == merge.SUPERSEDED_BY_PERSON_PUSH == "superseded_by_person_push")
+    assert issueci.PLATFORM_COMMITTER_EMAILS == merge.PLATFORM_COMMITTER_EMAILS
+    assert issueci.WORKER_COMMIT_LINE == merge.WORKER_COMMIT_LINE
+    assert issueci.GITHUB_COMMITTER_EMAIL == merge.GITHUB_COMMITTER_EMAIL
+
+
 def test_the_ready_removal_code_is_the_one_the_worker_writes():
     """archived issue 3602: the digest's constant is held equal to the worker's refusal code."""
     from agent_worker import merge

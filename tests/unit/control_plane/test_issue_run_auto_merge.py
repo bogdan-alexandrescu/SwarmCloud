@@ -471,6 +471,250 @@ def test_a_conflict_fix_of_another_tenant_is_not_merged(client, db, objects, wri
 
 
 
+# --------------------------------------------------------------------------
+# archived issue 474: a person's green head ends the run superseded, not FAILED
+# --------------------------------------------------------------------------
+
+PERSON_LANE_TASK = "task_" + "e7" * 10
+PERSON_LANE_WORKFLOW = "wf_" + "e7" * 10
+PERSON = "alice@example.com"
+#: The GitHub login of a person on the pull request, and of one who is not.
+PERSON_LOGIN = "person-on-the-pull"
+STRANGER_LOGIN = "someone-else"
+SUPERSEDED = "superseded_by_person_push"
+
+
+def _person_lane(db, running: dict, *, via: str = "continues", tenant_id: str | None = None,
+                 submitted_by: str = PERSON, root: str | None = None,
+                 marks: dict | None = None) -> dict:
+    """A plain lane a person dispatched onto the run's branch, ended, that
+    pushed SHA_B: a task of its own workflow whose `metadata.dispatch`
+    continues the integrator (`via="continues"`) or publishes to its pull
+    request (`via="publish_to_pr"`), carrying no writer's mark."""
+    integrator = _step_task(db, running["workflow_id"], issueruns.FIX_STEP)
+    target = root or integrator["id"]
+    dispatch: dict = {"strategy": "direct-pr"}
+    if via == "continues":
+        dispatch["continues"] = target
+    else:
+        dispatch["publish_to_pr"] = {"task_id": target}
+    task = copy.deepcopy(integrator)
+    task.update({
+        "id": PERSON_LANE_TASK, "tenant_id": tenant_id or integrator["tenant_id"],
+        "workflow_id": PERSON_LANE_WORKFLOW, "state": "SUCCEEDED",
+        "submitted_by": submitted_by, "runner_profile": "claude-code",
+        "result_summary": {"git": {"pushed_head": SHA_B}},
+        "metadata": {"dispatch": dispatch, **(marks or {})},
+    })
+    db.docs[f"tasks/{PERSON_LANE_TASK}"] = task
+    return task
+
+
+def _green_at_b(writes) -> None:
+    writes.open_pull(PR, SHA_B)
+    writes.check(SHA_B, "unit", "success")
+
+
+def _superseded(run: dict) -> None:
+    assert run["state"] == "DONE", run.get("error")
+    assert run["outcome"] == SUPERSEDED
+    assert not run.get("error")
+    assert run["green_sha"] == SHA_B
+
+
+def test_a_head_a_persons_continuation_of_the_integrator_pushed_supersedes_the_run(
+    client, db, objects, writes, clock,
+):
+    """archived issue 474: a person continued the run's branch and the head
+    their lane pushed is green. That is their pull request now: the run ends
+    DONE `superseded_by_person_push` and submits no merge.
+
+    MUTATION: drop `_person_lane_heads` from `issueci._merge` -- the run
+    FAILs "not pushed by any of this run's tasks"."""
+    running = _checking(client, db, objects, writes)
+    _person_lane(db, running)
+    _green_at_b(writes)
+
+    run = _read(client, clock, running["id"])
+
+    _superseded(run)
+    assert _merge_workflows(db) == []
+    assert issueruns.IssueRun.from_firestore(_stored(db, running["id"])).outcome == SUPERSEDED
+
+
+def test_a_head_a_persons_publish_to_pr_lane_pushed_supersedes_the_run(
+    client, db, objects, writes, clock,
+):
+    """The other plain lane `cifix.live_plain_continuation` reads:
+    `metadata.dispatch.publish_to_pr.task_id` names the integrator."""
+    running = _checking(client, db, objects, writes)
+    _person_lane(db, running, via="publish_to_pr")
+    _green_at_b(writes)
+
+    run = _read(client, clock, running["id"])
+
+    _superseded(run)
+    assert _merge_workflows(db) == []
+
+
+def test_a_base_merge_on_a_persons_lane_head_still_supersedes_the_run(
+    client, db, objects, writes, clock,
+):
+    """GitHub's own base merge on top of the lane's head is still the lane's."""
+    running = _checking(client, db, objects, writes)
+    _person_lane(db, running)
+    merged = "9" * 40
+    writes.commit_bodies[merged] = {
+        "sha": merged, "parents": [{"sha": SHA_B}, {"sha": "8" * 40}],
+        "commit": {"message": "Merge branch 'main'",
+                   "committer": {"email": "noreply@github.com"},
+                   "verification": {"verified": True}},
+    }
+    writes.on_base.add("8" * 40)
+    writes.open_pull(PR, merged)
+    writes.check(merged, "unit", "success")
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "DONE", run.get("error")
+    assert run["outcome"] == SUPERSEDED and run["green_sha"] == merged
+    assert _merge_workflows(db) == []
+
+
+@pytest.mark.parametrize("lane", [
+    pytest.param({"submitted_by": "ci-bot@example-project.iam.gserviceaccount.com"},
+                 id="a-service-account-lane"),
+    pytest.param({"tenant_id": "research"}, id="another-tenants-lane"),
+    pytest.param({"root": "task_" + "d" * 20}, id="a-lane-of-another-task"),
+    pytest.param({"marks": {"issue_run": "ir_" + "0" * 20}}, id="an-issue-run-step"),
+    pytest.param({"marks": {"fix_loop_round": {"round": 1}}}, id="a-fix-loop-round"),
+    pytest.param({"marks": {"ci_fix": {"pull_request": PR}}}, id="a-ci-fix"),
+])
+def test_a_head_no_persons_lane_pushed_still_fails(client, db, objects, writes, clock, lane):
+    """Invariant 9 and the writers' own gates: another tenant's task, a
+    service account's lane, a lane of another branch and a platform writer's
+    task name no person, and the head is refused as before.
+
+    MUTATION: drop the tenant, root, submitter or writer-mark check from
+    `issueci._person_lane_heads`."""
+    running = _checking(client, db, objects, writes)
+    _person_lane(db, running, **lane)
+    _refused(client, db, writes, clock, running)
+
+
+def test_a_not_yet_review_still_fails_on_its_verdict_at_a_persons_lane_head(
+    client, db, objects, writes, clock,
+):
+    """The verdict is read first: a person's push does not end a run the
+    review refused any other way than FAILED on that verdict."""
+    running = _checking(client, db, objects, writes, verdict="NOT_YET")
+    _person_lane(db, running)
+    _green_at_b(writes)
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "FAILED"
+    assert "NOT_YET, not MERGE" in run["error"]
+    assert not run.get("outcome")
+    assert _merge_workflows(db) == []
+
+
+def _persons_commit(writes, *, login: str = PERSON_LOGIN, message: str = "Tidy the fix",
+                    parents: int = 1, email: str = "someone@example.com",
+                    kind: str = "User") -> None:
+    writes.commit_bodies[SHA_B] = {
+        "sha": SHA_B,
+        "parents": [{"sha": c * 40} for c in "a76"[:parents]],
+        "commit": {"message": message, "committer": {"email": email},
+                   "verification": {"verified": False}},
+        "committer": {"login": login, "type": kind},
+        "author": {"login": login, "type": kind},
+    }
+
+
+@pytest.mark.parametrize("on_pull", ["author", "assignee"])
+def test_a_head_a_person_on_the_pull_request_committed_supersedes_the_run(
+    client, db, objects, writes, clock, on_pull,
+):
+    """A person on the pull request -- its author or an assignee -- pushed
+    the green head themselves: the run ends superseded, no merge submitted.
+
+    MUTATION: drop the commit read from `issueci._merge` -- the run FAILs."""
+    running = _checking(client, db, objects, writes)
+    _green_at_b(writes)
+    _persons_commit(writes)
+    person = {"login": PERSON_LOGIN.upper(), "type": "User"}
+    if on_pull == "author":
+        writes.pulls[PR]["user"] = person
+    else:
+        writes.pulls[PR]["user"] = {"login": "swarm-bot", "type": "Bot"}
+        writes.pulls[PR]["assignees"] = [person]
+
+    run = _read(client, clock, running["id"])
+
+    _superseded(run)
+    assert _merge_workflows(db) == []
+
+
+def test_a_github_web_edit_by_the_pull_requests_author_supersedes_the_run(
+    client, db, objects, writes, clock,
+):
+    """GitHub commits a web-UI edit itself: the person is the commit's author."""
+    running = _checking(client, db, objects, writes)
+    _green_at_b(writes)
+    _persons_commit(writes, email="noreply@github.com")
+    writes.commit_bodies[SHA_B]["committer"] = {"login": "web-flow", "type": "User"}
+    writes.pulls[PR]["user"] = {"login": PERSON_LOGIN, "type": "User"}
+
+    run = _read(client, clock, running["id"])
+
+    _superseded(run)
+
+
+@pytest.mark.parametrize("commit", [
+    pytest.param({"login": STRANGER_LOGIN}, id="an-unknown-branch-mate"),
+    pytest.param({"message": "Fix it\n\nMade by the worker for task task_" + "1" * 20 + "."},
+                 id="a-worker-commit-and-no-lane"),
+    pytest.param({"email": "swarmcloud-agent@users.noreply.github.com"},
+                 id="the-platforms-committer"),
+    pytest.param({"kind": "Bot"}, id="a-bot-account"),
+    pytest.param({"parents": 3}, id="an-octopus-merge"),
+])
+def test_a_head_nobody_on_the_pull_request_committed_still_fails(
+    client, db, objects, writes, clock, commit,
+):
+    """Anyone else is an unknown branch-mate, and a platform commit is a
+    defect for failure-review: today's refusal, unchanged."""
+    running = _checking(client, db, objects, writes)
+    _green_at_b(writes)
+    _persons_commit(writes, **commit)
+    writes.pulls[PR]["user"] = {"login": PERSON_LOGIN, "type": "User"}
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "FAILED"
+    assert "not pushed by any of this run's tasks" in run["error"]
+    assert not run.get("outcome")
+    assert _merge_workflows(db) == []
+
+
+def test_an_unread_head_commit_is_read_again_not_failed_or_superseded(
+    client, db, objects, writes, clock,
+):
+    """GitHub did not answer the read of who pushed: CHECKING, read next visit."""
+    running = _checking(client, db, objects, writes)
+    _green_at_b(writes)
+    _persons_commit(writes)
+    writes.pulls[PR]["user"] = {"login": PERSON_LOGIN, "type": "User"}
+    writes.refuse[("GET", f"/repos/example-org/widgets/commits/{SHA_B}")] = 502
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "CHECKING", run.get("error")
+    assert not run.get("outcome")
+    assert _merge_workflows(db) == []
+
+
 @pytest.fixture(autouse=True)
 def _members_hold_grants(db):
     """archived issue 780 OB7: a person's task on GitHub needs their grant. This file is about

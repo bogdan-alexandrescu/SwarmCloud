@@ -61,6 +61,7 @@ from .issueruns import (
     AUTO_APPROVER,
     MAX_VERIFICATION_CHARS,
     OUTCOME_ALREADY_ON_MAIN,
+    OUTCOME_SUPERSEDED_BY_PERSON_PUSH,
     VERIFICATION_FILE,
     IssueRun,
     RunState,
@@ -547,6 +548,8 @@ def status_phase(run: IssueRun) -> str:
     if run.state == RunState.DONE:
         if run.outcome == OUTCOME_ALREADY_ON_MAIN:
             return "already done on main"
+        if run.outcome == OUTCOME_SUPERSEDED_BY_PERSON_PUSH:
+            return "checks green, left to the person who pushed"
         if pull.get("merged"):
             return "merged"
         if checks == "green":
@@ -633,6 +636,11 @@ def render_status_comment(
                 )
     if run.outcome == OUTCOME_ALREADY_ON_MAIN:
         out.append(f"- **Outcome:** `{OUTCOME_ALREADY_ON_MAIN}` -- " + _closing_words(run))
+    if run.outcome == OUTCOME_SUPERSEDED_BY_PERSON_PUSH:
+        out.append(
+            f"- **Outcome:** `{OUTCOME_SUPERSEDED_BY_PERSON_PUSH}` -- a person pushed the "
+            "green head, so this run submitted no merge: the pull request is theirs to merge"
+        )
     if run.ci_fix_round:
         out.append(f"- **CI fix round:** {run.ci_fix_round} of {run.fix_rounds}")
     if run.state == RunState.PLANNED and run.plan_digest:

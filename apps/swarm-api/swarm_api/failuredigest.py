@@ -48,7 +48,9 @@ under its name in `skipped`. No rule exists that the agent can add:
                          ended because of one, and a workflow failed only by them
   fix_round_live         a running fix round already covers it
   person_push            a merge step a person's push superseded, and a
-                         workflow failed only because of one
+                         workflow failed only because of one; and an issue
+                         run whose green head a person pushed (`outcome:
+                         superseded_by_person_push`, archived issue 474)
   person_ready_removal   a merge step whose train-parked pull request a person
                          took `ready` off (archived issue 3602), and a workflow failed only
                          because of one
@@ -181,7 +183,11 @@ QUESTION_UNANSWERED_ERROR = "owner question unanswered"
 #: has no member for it -- and the same string as the end cause, which is
 #: what contract request SUPERSEDED_BY_PERSON_PUSH asks for, so the rule
 #: needs no change when it lands. An unknown branch-mate's head is
-#: `head_moved`, and reviewed.
+#: `head_moved`, and reviewed. The same string is an issue run's `outcome`
+#: (`issueruns.OUTCOME_SUPERSEDED_BY_PERSON_PUSH`, archived issue 474): an
+#: `auto_merge` run whose green head a person pushed, which submitted no
+#: merge. `build`'s parent pass counts it here whatever its state, and
+#: never reviews it or flags its steps with it.
 SUPERSEDED_BY_PERSON_PUSH = "superseded_by_person_push"
 #: §2 `person_ready_removal` (archived issue 3602): a merge step whose train-parked pull
 #: request a person took `ready` off by hand -- a deliberate decision, not a
@@ -991,6 +997,14 @@ def build(docs: Documents, *, since: datetime, until: datetime, firing_id: str,
     extra: list[tuple[str, Mapping[str, Any], dict[str, Any]]] = []
     for kind, parents in (("workflow", docs.workflows), ("issue_run", docs.runs)):
         for parent_id, parent in sorted(parents.items()):
+            if kind == "issue_run" and parent.get("outcome") == SUPERSEDED_BY_PERSON_PUSH:
+                # A person's push ended it (archived issue 474): skipped, never
+                # an entry nor a flag on its steps; a step of its that failed
+                # on its own is still reviewed above.
+                if _in_window(parent.get("completed_at") or parent.get("updated_at"),
+                              since, until):
+                    skipped[PERSON_PUSH].append(parent_id)
+                continue
             if not _parent_failed(kind, parent, since, until):
                 continue
             members = _members(kind, parent_id, parent, docs)
