@@ -368,7 +368,9 @@ round kind.
   * The re-review's profile resolves from the same list at submission, by
     `browser_if_ui`'s rule. A round is a lone step, so the scheduler has no
     parent to resolve it from. A list naming a UI path (test files are not
-    UI) raises the re-review to `claude-code-browser`, the platform's
+    UI, and neither are generated console files under
+    `apps/swarm-ui/src/generated/`, which a generator writes from
+    swarm-api's OpenAPI document and nobody draws, issue 483) raises the re-review to `claude-code-browser`, the platform's
     constant, whatever profile the first review ran on; any other list keeps
     the review's. A signed `re_review.runner_profile` wins, except on a round
     that answers "not reviewed rendered" (§4.4): a profile that cannot render
@@ -407,13 +409,15 @@ After each `re-review:k` ends, swarm-api reads its `verdict.json`:
 * through the size-capped, tenant-checked, redacted artifact read that
   `verdictpublish` uses for the gated fix's verdict (invariant 9);
 * parsed with `verdictpublish.parse_verdict`, which reads only `verdict`,
-  `findings` and the skipped review's reason. Other keys a review writes
+  `findings` and the skipped review's reason; the loop also reads
+  `rendered_review`, the worker's gate's record of a MERGE it rewrote
+  (issue 483, below). Other keys a review writes
   (`minors`, `checks`, `needs_owner`, `open_questions`, ...) are ignored;
 * with what the redaction masked judged by key (issue 338). The read returns
   the masked text, never the raw bytes. A mask (`********`) in a key the loop
   does not read is logged, by key name, and the file is read: it cannot
   change the verdict, because MERGE must still be literally in the masked
-  text. A mask in `verdict`, `findings` or the skipped reason refuses the
+  text. A mask in `verdict`, `findings`, the skipped reason or `rendered_review` refuses the
   file, `review_unreadable`, naming the key. The publish path is different:
   it writes text to a forge, so it still refuses a file with any mask;
 * only after verifying the round's spec signature and its
@@ -425,6 +429,7 @@ After each `re-review:k` ends, swarm-api reads its `verdict.json`:
 | `review` (round 0) was skipped by the worker for nothing to change (`result_summary.skipped`: the build ended `no_change`, so no agent ran and no `verdict.json` exists) and no head was pushed | nothing to review and nothing to fix: no round, and no verdict recorded -- it is never read as MERGE. The merge step behind the loop is then promoted, and the worker skips it in turn, because the pull request it would merge was never pushed (issue 392) | SUCCEEDED, `phase: "nothing_to_change"`, `rounds: 0`, `verdict`, `final_review` and `final_head` null |
 | `re-review:k` says MERGE | records `final_review: <task>`, `final_head` | **SUCCEEDED** |
 | `review` (round 0) says NOT_YET and every blocking finding is the rendered-review gate's (its text starts "not reviewed rendered", written by the gate or by the review) | submits `re-review:1` on `claude-code-browser` at the head the review judged (under `integrate`, the declared fix's, which rightly changed nothing), instead of a fix: no code change answers it (issue 393). It is round 1 of `max_rounds` | stays parked |
+| `review` (round 0) or `re-review:k` says NOT_YET because the worker's gate rewrote its MERGE (its `rendered_review` record says `verdict_given` MERGE and `verdict` NOT_YET, and a blocking finding starts "not reviewed rendered"), whatever other findings it carried | read as blocked only by the gate, so the rows above and below for that case apply: a rendered re-review of the same head, never a fix. The review gave MERGE, so the findings the gate carried beside its reason were not blockers and no fix answers them; before issue 483 they made the loop run a fix, which changed nothing and parked `fix_changed_nothing` for a person. They stay in the round's findings, so the rendered re-review sees them. A NOT_YET the review wrote itself with the gate's words beside a real blocker has no such record and still goes through the fix | as the rows for the gate's finding |
 | `re-review:k` says NOT_YET only for the gate's finding, k < `max_rounds`, and it was not itself answering one | submits `re-review:k+1` on `claude-code-browser` at the same head, instead of a fix | stays parked |
 | `re-review:k` was answering the gate's finding (its signed `answers_not_rendered`) and is blocked only by it again | it could not render either, and another look at the same head would only repeat it | PARKED `HUMAN_REQUIRED`, `park_phase: "fix_changed_nothing"`, `code: "not_rendered"` |
 | `re-review:k` says NOT_YET with any other finding, k < `max_rounds` | claims and submits `review-fix:k+1` | stays parked |
@@ -436,6 +441,13 @@ After each `re-review:k` ends, swarm-api reads its `verdict.json`:
 | the round's submission was refused (submitter left the tenant, or a 422) | recorded on the round as `error` | PARKED `HUMAN_REQUIRED`, `park_phase: "round_refused"` |
 | the pull request was merged or closed outside the workflow | read once per wake, the `_ended_outside` idea | SUCCEEDED ("merged outside") or CANCELLED |
 | the pull request's head moved to a commit no round pushed (a person pushed) | the next round starts from the new head, and the re-review judges it | as above |
+
+The `rendered_review` record (issue 483) is written by the review's own
+worker, but `verdict.json` is tenant-writable, so the loop could be shown a
+forged one. Trusting it is safe: it can only turn a fix round into a browser
+re-review of the same head, which counts against `max_rounds` like any round,
+and the loop still ends MERGE only on a rendered review's own MERGE, which
+the worker's gate binds through the re-review's signed `rendered_review_paths`.
 
 Every `HUMAN_REQUIRED` ending names its reason in the loop's
 `result_summary.fix_loop`:

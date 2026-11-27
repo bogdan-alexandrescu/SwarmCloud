@@ -319,3 +319,83 @@ def test_a_lane_whose_own_ui_change_is_only_a_vitest_file_keeps_its_merge(
     assert _uploaded_verdict(store) == json.loads(MERGE)
     assert "rendered_review" not in doc["result_summary"]
     assert "claude-code-browser" not in runner_inputs[-1]["prompt"]
+
+
+# ---------------------------------------------------------------------------
+# A generated console file is not UI (issue 483)
+# ---------------------------------------------------------------------------
+
+GENERATED_FILE = "apps/swarm-ui/src/generated/api-types.ts"
+GENERATED_ONLY_PATCH = UI_PATCH.replace("apps/swarm-ui/src/App.tsx", GENERATED_FILE)
+
+
+def test_a_generated_console_file_is_not_a_ui_path():
+    # Issue 483: a file the generator writes from swarm-api's OpenAPI document
+    # is drawn by nobody; gating it sent an API change to a fix round that
+    # could change nothing.
+    # MUTATION: drop the generated-prefix exemption in is_ui_path and these are UI.
+    for path in (GENERATED_FILE, "/apps/swarm-ui/src/generated/constants/routes.json"):
+        assert not verdict_mod.is_ui_path(path), path
+    # Only that directory: a look-alike, the hand-written types and a docs
+    # page under a `generated/` directory stay gated.
+    for path in ("apps/swarm-ui/src/generatedX.tsx", "apps/swarm-ui/src/types.ts",
+                 "docs/web-ui/generated/a.html"):
+        assert verdict_mod.is_ui_path(path), path
+    assert verdict_mod.ui_paths_in_patch(GENERATED_ONLY_PATCH) == []
+    files = {"git": {"files": [{"path": GENERATED_FILE}], "files_truncated": False}}
+    assert verdict_mod.ui_paths_in_files(files) == ([], False)
+    assert verdict_mod.ui_paths_in_own_files(_own([GENERATED_FILE])) == ([], False)
+    assert verdict_mod.ui_paths_in_dispatch(
+        {verdict_mod.RENDERED_REVIEW_PATHS_KEY: [GENERATED_FILE]}) == ([], False)
+
+
+def test_a_lane_whose_only_console_path_is_generated_keeps_its_merge(
+    db, store, worker_factory, runner_inputs
+):
+    # The 2026-11-25 lane: swarm-api code, a unit test and the generated types.
+    patch = (GENERATED_ONLY_PATCH + PLAIN_PATCH.replace(
+        "apps/scheduler/scheduler/drain.py", "apps/swarm-api/swarm_api/x.py")
+        + PLAIN_PATCH.replace("apps/scheduler/scheduler/drain.py",
+                              "tests/unit/control_plane/test_x.py"))
+    doc = _review(db, worker_factory, patch)
+
+    # MUTATION: count apps/swarm-ui/src/generated/ as UI and this reads NOT_YET.
+    assert _uploaded_verdict(store) == json.loads(MERGE)
+    assert "rendered_review" not in doc["result_summary"]
+    assert "claude-code-browser" not in runner_inputs[-1]["prompt"]
+
+
+def test_a_generated_file_beside_application_code_is_still_gated(
+    db, store, worker_factory
+):
+    doc = _review(db, worker_factory, GENERATED_ONLY_PATCH + UI_PATCH)
+
+    uploaded = _uploaded_verdict(store)
+    assert uploaded["verdict"] == "NOT_YET"
+    assert uploaded["findings"][0].startswith("not reviewed rendered: ")
+    # The lane is gated on the application code, not on the generated file.
+    assert doc["result_summary"]["rendered_review"]["ui_paths"] == ["apps/swarm-ui/src/App.tsx"]
+
+
+def test_a_rewritten_merge_records_what_the_review_gave(tmp_path):
+    # The fix loop (swarm_api.fixloop.read_verdict) reads this record to tell
+    # the gate's rewrite of a MERGE from a NOT_YET the review wrote (issue 483).
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    path = artifacts / "verdict.json"
+    path.write_text(json.dumps({"verdict": "MERGE", "findings": [
+        "a docstring typo", {"summary": "an unused import"}]}))
+
+    record = verdict_mod.gate_rendered_review(
+        path, ui_paths=["apps/swarm-ui/src/X.tsx"], runner_profile="claude-code",
+        artifacts=artifacts)
+
+    written = json.loads(path.read_text())
+    assert written["verdict"] == "NOT_YET"
+    assert written["findings"] == [record["reason"], "a docstring typo",
+                                   {"summary": "an unused import"}]
+    assert record["reason"].startswith(verdict_mod.NOT_REVIEWED_RENDERED)
+    kept = written[verdict_mod.RENDERED_REVIEW_KEY]
+    assert verdict_mod.RENDERED_REVIEW_KEY == "rendered_review"
+    assert kept["verdict_given"] == "MERGE" and kept["verdict"] == "NOT_YET"
+    assert kept["reason"] == record["reason"]

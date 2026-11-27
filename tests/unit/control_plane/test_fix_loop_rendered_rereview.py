@@ -27,6 +27,7 @@ No credentials, no network, no emulator.
 
 from __future__ import annotations
 
+import secrets
 from typing import Any
 
 import pytest
@@ -54,6 +55,20 @@ WRITTEN = {"verdict": "NOT_YET", "findings": [
 ]}
 MIXED = {"verdict": "NOT_YET", "findings": [
     GATED, {"summary": "the cache never expires entries", "severity": "blocker"}]}
+#: The gate's rewrite of a MERGE that carried the review's own findings
+#: (issue 483): plain, not marked minor, as a MERGE's findings are, with the
+#: record the worker's gate writes beside them.
+REWRITTEN_WITH_FINDINGS = {
+    "verdict": "NOT_YET",
+    "findings": [GATED, "a docstring typo", {"summary": "an unused import"}],
+    "rendered_review": {
+        "ui_paths": [UI_FILE], "verdict_given": "MERGE", "verdict": "NOT_YET",
+        "missing": ["ran on runner profile 'claude-code', not 'claude-code-browser'",
+                    "no image under shots/ in its artifacts"],
+        "reason": GATED,
+    },
+}
+GENERATED_FILE = "apps/swarm-ui/src/generated/api-types.ts"
 
 
 def integrate(client, db, objects, *, review: Any = REWRITTEN, fix_head: str = IMPL_HEAD,
@@ -201,6 +216,84 @@ def test_a_later_re_review_that_was_not_rendered_gets_one_more_look_not_a_fix(
 
 
 # --------------------------------------------------------------------------
+# 2b. The gate's rewrite of a MERGE that carried its own findings (issue 483)
+# --------------------------------------------------------------------------
+
+def test_a_rewritten_merge_that_carries_findings_gets_a_browser_re_review(
+        loop_client, db, objects):
+    loop = integrate(loop_client, db, objects, review=REWRITTEN_WITH_FINDINGS)
+
+    # MUTATION: ignore the record and this parks `fix_changed_nothing`.
+    assert_running(loop, "re-review:1")
+    task_id = round_task(loop, "re-review:1")
+    task = loop.doc(task_id=task_id)
+    assert task["repository_ref"] == IMPL_HEAD
+    assert task["runner_profile"] == BROWSER
+    assert SIGNER.verifies(task, task_id)
+    signed = task["metadata"]["dispatch"]["fix_loop_round"]
+    assert signed[fixloop.ANSWERS_NOT_RENDERED] is True
+    assert signed["head"] == IMPL_HEAD
+    # The carried findings stay in the round, so the rendered review sees them.
+    prompt = task["input"]["prompt"]
+    assert "a docstring typo" in prompt and "an unused import" in prompt
+    assert "no fix was pushed" in prompt
+
+
+def test_a_rewritten_merge_with_findings_under_direct_pr_starts_re_review_1(
+        loop_client, db, objects):
+    loop = Loop(loop_client, db, direct_spec())
+    finish(db, objects, loop.tasks["implement"],
+           git=pushed(loop.tasks["implement"], IMPL_HEAD, [UI_FILE]))
+    finish(db, objects, loop.tasks["review"], verdict=REWRITTEN_WITH_FINDINGS)
+    park_running(loop)
+    push(loop_client, loop.tasks["review"])
+
+    # MUTATION: ignore the record and this is review-fix:1.
+    assert_running(loop, "re-review:1")
+    task = loop.doc(task_id=round_task(loop, "re-review:1"))
+    assert task["runner_profile"] == BROWSER and task["repository_ref"] == IMPL_HEAD
+
+
+def test_a_later_rewritten_merge_gets_one_more_look_then_parks_not_rendered(
+        loop_client, db, objects):
+    loop = integrate(loop_client, db, objects, review=NOT_YET, fix_head=FIX_HEAD)
+    end_round(loop_client, db, objects, loop, "re-review:1", REWRITTEN_WITH_FINDINGS)
+
+    assert_running(loop, "re-review:1", "re-review:2")
+    task = loop.doc(task_id=round_task(loop, "re-review:2"))
+    assert task["runner_profile"] == BROWSER and task["repository_ref"] == FIX_HEAD
+
+    end_round(loop_client, db, objects, loop, "re-review:2", REWRITTEN_WITH_FINDINGS)
+    doc = loop.doc()
+    assert doc["park_reason"] == ParkReason.HUMAN_REQUIRED.value
+    assert fixloop.park_detail_of(doc)["code"] == "not_rendered"
+
+    response = loop_client.post(f"/v1/workflows/{loop.workflow_id}/fix-loop/rounds",
+                                headers=auth_header("alice"), json={"rounds": 1})
+    assert response.status_code == 200, response.text
+    assert_running(loop, "re-review:1", "re-review:2", "re-review:3")
+    task = loop.doc(task_id=round_task(loop, "re-review:3"))
+    assert task["runner_profile"] == BROWSER and task["repository_ref"] == FIX_HEAD
+
+
+def test_a_masked_rendered_review_record_refuses_the_verdict_naming_it(
+        loop_client, db, objects):
+    record = {**REWRITTEN_WITH_FINDINGS["rendered_review"],
+              "reason": f"token: {secrets.token_hex(16)}"}
+    loop = integrate(loop_client, db, objects,
+                     review={**REWRITTEN_WITH_FINDINGS, "rendered_review": record,
+                             "findings": ["a docstring typo"]})
+
+    doc = loop.doc()
+    # MUTATION: leave the key out of READ_VERDICT_KEYS and the file is read.
+    assert fixloop.park_phase_of(doc) == "review_unreadable"
+    detail = fixloop.park_detail_of(doc)
+    assert detail["code"] == "credential"
+    assert list(detail["keys"]) == ["rendered_review"]
+    assert "rendered_review" in fixloop.READ_VERDICT_KEYS
+
+
+# --------------------------------------------------------------------------
 # 3. Every other outcome, as before
 # --------------------------------------------------------------------------
 
@@ -231,7 +324,15 @@ def test_a_real_blocker_beside_it_under_direct_pr_starts_review_fix_1(loop_clien
     {"verdict": "NOT_YET", "findings": []},
     # Past the bound on kept findings, still a finding.
     {"verdict": "NOT_YET", "findings": [GATED] * fixloop.MAX_FINDINGS + ["a real defect"]},
-], ids=["real", "mixed", "unreadable-finding", "none", "past-the-bound"])
+    # Issue 483: only a record of the gate's rewrite of a MERGE counts.
+    {**REWRITTEN_WITH_FINDINGS, "rendered_review": {
+        **REWRITTEN_WITH_FINDINGS["rendered_review"], "verdict_given": "NOT_YET"}},
+    {**REWRITTEN_WITH_FINDINGS, "rendered_review": "MERGE"},
+    {**REWRITTEN_WITH_FINDINGS, "rendered_review": [{"verdict_given": "MERGE"}]},
+    # The record with no finding of the gate's beside it is not the gate's.
+    {**REWRITTEN_WITH_FINDINGS, "findings": ["a docstring typo"]},
+], ids=["real", "mixed", "unreadable-finding", "none", "past-the-bound",
+        "record-given-not-yet", "record-a-string", "record-a-list", "record-no-gate-finding"])
 def test_a_fix_that_changed_nothing_for_any_other_verdict_still_parks(
         loop_client, db, objects, review):
     loop = integrate(loop_client, db, objects, review=review)
@@ -262,6 +363,17 @@ def test_a_code_only_lanes_re_review_keeps_the_reviews_profile(loop_client, db, 
     loop = integrate(loop_client, db, objects, review=NOT_YET, fix_head=FIX_HEAD, files=files)
 
     assert _re_review(loop)["runner_profile"] == "mock"
+
+
+def test_a_generated_only_lanes_re_review_is_not_gated(loop_client, db, objects):
+    # Issue 483: the API change's lane, whose only console path is generated.
+    loop = integrate(loop_client, db, objects, review=NOT_YET, fix_head=FIX_HEAD,
+                     files=["apps/swarm-api/x.py", GENERATED_FILE])
+
+    task = _re_review(loop)
+    # MUTATION: count apps/swarm-ui/src/generated/ as UI and this is the browser.
+    assert task["runner_profile"] == "mock"
+    assert worker_verdict.ui_paths_in_dispatch(task["metadata"]["dispatch"]) == ([], False)
 
 
 def test_a_lane_whose_list_cannot_be_built_is_read_as_ui(loop_client, db, objects):
@@ -334,5 +446,14 @@ def test_the_restated_rule_is_the_workers():
     for path in (UI_FILE, "/docs/web-ui/a.html", "docs/web-ui/a.test.html",
                  "docs/web-ui/tests/a.html", "apps/swarm-ui/src/App.test.tsx",
                  "apps/swarm-ui/src/a.spec.ts", "apps/swarm-ui/src/__tests__/a.tsx",
-                 "apps/swarm-ui/index.html", "apps/swarm-api/x.py", "", None, 7):
+                 "apps/swarm-ui/index.html", "apps/swarm-api/x.py", "", None, 7,
+                 # Issue 483: generated console files are not UI; a look-alike is.
+                 GENERATED_FILE, "/apps/swarm-ui/src/generated/constants/routes.json",
+                 "apps/swarm-ui/src/generatedX.tsx", "apps/swarm-ui/src/types.ts",
+                 "docs/web-ui/generated/a.html"):
         assert reviewgate.is_ui_path(path) is worker_verdict.is_ui_path(path), path
+    assert reviewgate.GENERATED_UI_PREFIXES == worker_verdict.GENERATED_UI_PREFIXES
+    assert reviewgate.UI_PATH_PREFIXES == worker_verdict.UI_PATH_PREFIXES
+    assert not reviewgate.is_ui_path(GENERATED_FILE)
+    assert reviewgate.is_ui_path("apps/swarm-ui/src/types.ts")
+    assert fixloop.RENDERED_REVIEW_KEY == worker_verdict.RENDERED_REVIEW_KEY

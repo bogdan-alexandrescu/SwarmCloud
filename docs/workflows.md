@@ -2023,6 +2023,21 @@ everyone sees it.
   Application code, CSS, `index.html`, configs and all of `docs/web-ui/`
   still do, and a test changed beside application code leaves the lane
   gated on that code.
+* **A generated console file is not a UI path** (issue 483). On 2026-11-25 a
+  review on `claude-code` gave MERGE, with two minor findings, for an API
+  change: swarm-api code, a unit test and
+  `apps/swarm-ui/src/generated/api-types.ts`, which a generator writes from
+  swarm-api's OpenAPI document. The gate rewrote the MERGE to NOT_YET,
+  carrying the two findings beside its reason; the fix loop read that as a
+  real blocker and ran a fix, which had nothing to change, so the loop parked
+  `fix_changed_nothing` for a person. Nobody draws a generated file, and a
+  browser has nothing to look at in it, so a path under
+  `apps/swarm-ui/src/generated/` does not gate (`GENERATED_UI_PREFIXES`, the
+  same in the worker's gate, the scheduler's `browser_if_ui` and swarm-api's
+  fix loop). Only that directory: `apps/swarm-ui/src/types.ts`, every other
+  application file, CSS, `index.html`, configs and all of `docs/web-ui/`
+  still gate, and a generated file changed beside application code leaves
+  the lane gated on that code.
 * **The rule is in the review's own prompt.** The worker appends it, naming
   the UI paths and the profile the step runs on, so a reviewer knows before
   it writes a verdict that MERGE from anywhere but a rendered review will not

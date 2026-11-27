@@ -23,6 +23,10 @@ review that says MERGE ends the loop with no round. A review blocked ONLY by
 the worker's rendered-review gate ("not reviewed rendered") is answered by a
 re-review of the same head on the browser profile, never by a fix; it is a
 round like any other, and one that could not render either parks (issue 393).
+The gate's rewrite of a MERGE counts as blocked only by the gate whatever
+findings the review carried beside it, read from the worker's `rendered_review`
+record (`verdict_given` MERGE): a MERGE's findings block nothing, so a fix
+would change nothing (issue 483).
 
 THE DECISION TABLE (§4.4) is `_decide`. Every ending that needs a person parks
 the loop HUMAN_REQUIRED -- a field write on a PARKED task -- with a
@@ -355,6 +359,9 @@ class Verdict:
     skipped: str | None = None
     #: Every blocking finding, those past the bound included, is the worker's
     #: rendered-review gate's: no fix can answer it, a rendered review can (issue 393).
+    #: Also set when the gate rewrote a MERGE (its `rendered_review` record says
+    #: `verdict_given` MERGE) whatever findings it carried: a MERGE's own
+    #: findings block nothing, so it is blocked only by the gate (issue 483).
     rendered_only: bool = False
     #: At least one is: whatever else is fixed, the next review must render.
     must_render: bool = False
@@ -414,11 +421,24 @@ def _minor_items(items: list[Any]) -> tuple[Minor, ...]:
     return tuple(out[:MAX_MINORS])
 
 
+#: Where the worker's rendered-review gate records its rewrite of a MERGE in
+#: verdict.json: `{"verdict_given": "MERGE", "verdict": "NOT_YET", "missing",
+#: "reason", "ui_paths"}`. `agent_worker.verdict.RENDERED_REVIEW_KEY`, restated
+#: because swarm-api cannot import the worker; held equal by the test.
+RENDERED_REVIEW_KEY = "rendered_review"
+#: The record's values that say the gate rewrote a MERGE (issue 483).
+RENDERED_REVIEW_GIVEN = "MERGE"
+RENDERED_REVIEW_WRITTEN = "NOT_YET"
+
 #: The top-level keys of a verdict file the loop reads: the verdict, its
-#: findings and the skipped review's reason (`parse_verdict`). A mask in any
-#: other key (`minors` as a top-level list, `checks`, `needs_owner`,
-#: `open_questions`, ...) cannot change what the loop decides (issue 338).
-READ_VERDICT_KEYS = ("verdict", "findings", SKIPPED_REASON_KEY)
+#: findings, the skipped review's reason (`parse_verdict`) and the gate's
+#: record of a rewritten MERGE (RENDERED_REVIEW_KEY, issue 483), which decides
+#: whether the next round is a fix or a rendered re-review. A mask in any of
+#: them refuses the file and names the key (invariant 9: the read stays the
+#: API's tenant-checked, redacted read). A mask in any other key (`minors` as
+#: a top-level list, `checks`, `needs_owner`, `open_questions`, ...) cannot
+#: change what the loop decides (issue 338).
+READ_VERDICT_KEYS = ("verdict", "findings", SKIPPED_REASON_KEY, RENDERED_REVIEW_KEY)
 
 
 class VerdictDecline(Decline):
@@ -475,11 +495,32 @@ def read_verdict(ctx: Any, tenant_id: str, task_id: str) -> Verdict:
     texts = [_finding_text(i) for i in items if not _is_minor(i)]
     blocking = [t for t in texts if t]
     not_yet = read.verdict == "NOT_YET"
+    must_render = not_yet and any(map(_not_rendered, texts))
+    # A finding with no text to read is not the gate's.
+    rendered_only = not_yet and bool(texts) and all(map(_not_rendered, texts))
+    if must_render and _gate_rewrote_merge(document):
+        # Issue 483: the worker's gate rewrote a MERGE and carried the
+        # review's own findings beside its reason. A MERGE's findings are not
+        # blockers, so no fix answers this verdict: only a rendered review of
+        # the same head does. Trusting the record is safe though verdict.json
+        # is tenant-writable: it can only turn a fix round into a browser
+        # re-review of the same head, which counts against max_rounds, and a
+        # MERGE still needs a rendered review's own MERGE (the worker's gate
+        # binds that re-review through its signed rendered_review_paths).
+        rendered_only = True
     return Verdict(verdict=read.verdict, findings=tuple(blocking[:MAX_FINDINGS]),
                    minors=read.minors, minor_items=_minor_items(items), skipped=read.skipped,
-                   # A finding with no text to read is not the gate's.
-                   rendered_only=not_yet and bool(texts) and all(map(_not_rendered, texts)),
-                   must_render=not_yet and any(map(_not_rendered, texts)))
+                   rendered_only=rendered_only, must_render=must_render)
+
+
+def _gate_rewrote_merge(document: Any) -> bool:
+    """Whether a verdict file carries the worker's record of its
+    rendered-review gate rewriting a MERGE to NOT_YET (RENDERED_REVIEW_KEY,
+    `agent_worker.verdict.gate_rendered_review`'s record), exactly."""
+    record = document.get(RENDERED_REVIEW_KEY) if isinstance(document, dict) else None
+    return (isinstance(record, dict)
+            and record.get("verdict_given") == RENDERED_REVIEW_GIVEN
+            and record.get("verdict") == RENDERED_REVIEW_WRITTEN)
 
 
 # --------------------------------------------------------------------------

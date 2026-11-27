@@ -260,6 +260,15 @@ UI_PATH_PREFIXES = ("apps/swarm-ui/", "docs/web-ui/")
 TEST_DIRECTORIES = ("__tests__", "tests")
 TEST_FILE_MARKS = (".test.", ".spec.")
 TEST_FILE_MARK_PREFIX = "apps/swarm-ui/"
+#: The worker's `agent_worker.verdict.GENERATED_UI_PREFIXES`, restated.
+#: Generated console files are NOT UI either (issue 483): files a generator
+#: writes from swarm-api's OpenAPI document and constants. Nobody draws them,
+#: and gating them turned a plain-profile review's MERGE of an API change into
+#: NOT_YET, which sent it to a fix round that could change nothing. Only this
+#: directory: `apps/swarm-ui/src/types.ts`, every other application file, CSS,
+#: index.html, configs and all of `docs/web-ui/` stay gated, and a generated
+#: file changed beside application code leaves the lane gated on that code.
+GENERATED_UI_PREFIXES = ("apps/swarm-ui/src/generated/",)
 
 #: Task documents read per decision, as in `scheduler.runtime.MAX_DOCUMENTS_READ`.
 MAX_DOCUMENTS_READ = 40
@@ -287,11 +296,13 @@ COUNTED_HANDOFFS = ("swarm-work.patch", VERDICT_FILE)
 
 
 def is_ui_path(path: Any) -> bool:
-    """Whether a changed path is one a rendered review must see (test files are
-    not): `agent_worker.verdict.is_ui_path`, restated."""
+    """Whether a changed path is one a rendered review must see (test files and
+    generated console files are not): `agent_worker.verdict.is_ui_path`, restated."""
     if not isinstance(path, str):
         return False
     text = path.lstrip("/")
+    if text.startswith(GENERATED_UI_PREFIXES):
+        return False
     parts = text.split("/")
     if any(part in TEST_DIRECTORIES for part in parts[:-1]):
         return False
