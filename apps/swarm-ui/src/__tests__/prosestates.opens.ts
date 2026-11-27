@@ -116,6 +116,7 @@ export const OPENS: Readonly<Record<string, readonly string[]>> = {
   'voice/projects-delete': ['components/Overlay.tsx <Dialog>#1', 'components/Overlay.tsx role=dialog#1', 'voice/Projects.tsx <TypedConfirm>#1'],
   'voice/roster-chip': ['voice/Roster.tsx role=dialog#1'],
   'voice/settings-delete-key': ['voice/Settings.tsx role=dialog#1'],
+  'work/diagrams-large': ['PinnedDiagrams.tsx <Dialog>#1', 'components/Overlay.tsx role=dialog#1'],
   'work/interview-design': ['InterviewPage.tsx role=dialog#1'],
   'work/outcomes-picker': ['Activity.tsx details#1'],
   'work/timeline-filtered-empty': ['TimelineLanes.tsx details#1'],

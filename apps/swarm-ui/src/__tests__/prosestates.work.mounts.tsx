@@ -10,6 +10,8 @@ import { vi } from 'vitest'
 import { RunnerPicker, type ProviderKeys } from '../RunnerPicker'
 import type { RunnerProfile } from '../types'
 import { NeedsYou, type NeedItem } from '../work/NeedsYou'
+import { PinnedDiagrams } from '../PinnedDiagrams'
+import type { Conversation } from '../PlanThread'
 
 const KEYS: ProviderKeys = { kind: 'read', registered: new Map([['anthropic', true]]) }
 
@@ -196,4 +198,23 @@ export async function mountTenantsRequested(): Promise<ReactElement> {
   })
   const { TenantsScreen } = await import('../Activity')
   return <TenantsScreen />
+}
+
+// ------------------------------------------------------------ diagrams off
+
+const NO_THREAD: Conversation = {
+  runId: 'run_d', thread: [], revisions: [], complete: true, replan: null, may: { comment: false, edit: false },
+  mayDiagram: false, diagramsOn: false, current: null, pinned: null, tab: null, capped: null,
+  addEntry: () => undefined, setReplan: () => undefined, setPinned: () => undefined, showTab: () => undefined, setCapped: () => undefined,
+}
+
+/** The plan page's diagrams strip for a run planned with diagrams off: its one-line chip, the reason behind its (i). */
+export function mountDiagramsOff(): ReactElement {
+  return <PinnedDiagrams plan={{}} run={{ plan_settings: { diagrams: false, from: 'workspace' } }} c={NO_THREAD} shownRevision={1} />
+}
+
+/** The strip with one pinned diagram; Open large draws it in a dialog (the diagram's source is drawn by the renderer, here a short flowchart). */
+export function mountPinnedDiagram(): ReactElement {
+  const plan = { diagrams: [{ diagram_id: 'd-one', kind: 'flow', title: 'Overlap read', source: 'flowchart TD\n  A --> B', explains: { part: 'plan' } }] }
+  return <PinnedDiagrams plan={plan} run={{ plan_settings: { diagrams: true, from: 'workspace' } }} c={NO_THREAD} shownRevision={1} />
 }

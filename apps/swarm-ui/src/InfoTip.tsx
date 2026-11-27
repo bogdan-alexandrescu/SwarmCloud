@@ -1,4 +1,5 @@
-import { useId, useState } from 'react'
+import { useId, useLayoutEffect, useRef, useState } from 'react'
+import { placeTipIn } from './tipPlacement'
 import { buttonClass } from './components'
 
 /**
@@ -20,8 +21,14 @@ import { buttonClass } from './components'
 export function InfoTip({ about, tip, end = false }: { about: string; tip: string; end?: boolean }) {
   const id = useId()
   const [open, setOpen] = useState(false)
+  const host = useRef<HTMLSpanElement | null>(null)
+  const tipEl = useRef<HTMLSpanElement | null>(null)
+  // Before the first paint of an opened tip: inside its clip container, never widening a scroller.
+  useLayoutEffect(() => {
+    if (open && host.current !== null && tipEl.current !== null) placeTipIn(host.current, tipEl.current, end)
+  }, [open, end])
   return (
-    <span className="c-tip-host info-tip" style={{ marginBlock: -6, verticalAlign: 'middle' }} onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
+    <span ref={host} className="c-tip-host info-tip" style={{ marginBlock: -6, verticalAlign: 'middle' }} onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
       <button
         type="button"
         className={buttonClass({ kind: 'ghost', size: 'sm', iconOnly: true })}
@@ -39,7 +46,7 @@ export function InfoTip({ about, tip, end = false }: { about: string; tip: strin
           <path d="M12 11v5.5M12 7.75v.01" />
         </svg>
       </button>
-      <span role="tooltip" id={id} className="c-tip" data-help-description="" hidden={!open} style={end ? { left: 'auto', right: 0 } : undefined}>
+      <span ref={tipEl} role="tooltip" id={id} className="c-tip" data-help-description="" hidden={!open} style={end ? { left: 'auto', right: 0 } : undefined}>
         {tip}
       </span>
     </span>

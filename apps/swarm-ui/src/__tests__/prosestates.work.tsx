@@ -15,7 +15,9 @@ import { fold } from './prosestates.agent'
 import {
   WORKFLOW_REFUSAL_MESSAGE,
   mountAwaitInput,
+  mountDiagramsOff,
   mountHeldRunners,
+  mountPinnedDiagram,
   mountQuestion,
   mountTenantsRequested,
   mountWorkflowRefused,
@@ -268,6 +270,23 @@ export const WORK: readonly ProseState[] = [
     shows: 'details.sbf-runners-more[open]',
     mount: mountHeldRunners,
     act: () => fold('body', 'Other runners'),
+  },
+  {
+    key: 'work/diagrams-off',
+    group: 'work',
+    files: ['PinnedDiagrams.tsx'],
+    shows: '.pp-off:has(.c-tip:not([hidden]))',
+    moved: ['Diagrams in plans were off for this workspace when this run was planned: the planner drew none, and none is asked for or pinned on this page.'],
+    mount: mountDiagramsOff,
+    act: () => click('.pp-off button[aria-label="About diagrams off"]'),
+  },
+  {
+    key: 'work/diagrams-large',
+    group: 'work',
+    files: ['PinnedDiagrams.tsx'],
+    shows: '[role="dialog"]',
+    mount: mountPinnedDiagram,
+    act: () => click('.pp-large'),
   },
   {
     key: 'submit-workflow/waits-for',
