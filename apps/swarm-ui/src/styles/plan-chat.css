@@ -1,0 +1,45 @@
+/* The plan review chat (PlanChat.tsx, docs/design/plans-pipeline.md §7, §7.8,
+   §2.5 `DC:D8a`-`DC:D8c`, `DC:D7c`). A right-hand column on the decision page;
+   its mount (the page-head button, the folded margin, the phone's sheet) is
+   lane U9b's, in plan-document.css. Every colour is a console token, so light
+   and dark follow the theme; nothing is wider than its column, and an
+   agent's text wraps anywhere and keeps its line breaks, because it is drawn
+   as text. The head's spend turns amber from 80% of the cap and red at it. */
+
+.pc-column {
+  display: grid; align-content: start; gap: 10px; box-sizing: border-box;
+  width: 100%; max-width: 100%; min-width: 0; padding: 10px 12px;
+  background: var(--surface-2); border: 1px solid var(--line-soft); border-radius: 10px;
+}
+.pc-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
+.pc-title { font-weight: 600; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.pc-model-slot { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; }
+.pc-spend {
+  margin-left: auto; font-family: var(--mono); font-size: var(--t-micro); line-height: var(--lh-micro);
+  color: var(--text-dim); overflow-wrap: anywhere;
+}
+.pc-spend[data-level='near'] { color: var(--warn-ink); }
+.pc-spend[data-level='cap'] { color: var(--bad-ink); }
+
+.pc-turns { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; min-width: 0; }
+.pc-turn {
+  display: grid; gap: 4px; min-width: 0; padding: 8px 10px;
+  font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere;
+  background: var(--surface); border: 1px solid var(--line-soft); border-radius: 8px;
+}
+.pc-text { margin: 0; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.pc-ask { color: var(--text-dim); }
+.pc-dropped { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.pc-model { font-family: var(--mono); font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); overflow-wrap: anywhere; }
+.pc-diagram { display: grid; gap: 6px; min-width: 0; max-width: 100%; overflow-x: auto; }
+.pc-proposal {
+  display: grid; gap: 6px; min-width: 0; padding: 6px 8px;
+  border: 1px dashed color-mix(in srgb, var(--info) 45%, transparent); border-radius: 8px;
+}
+.pc-why { min-width: 0; overflow-wrap: anywhere; }
+.pc-compose { display: grid; gap: 6px; min-width: 0; }
+
+@media (max-width: 640px) {
+  .pc-column { padding: 8px; border-radius: 0; }
+  .pc-spend { margin-left: 0; }
+}
