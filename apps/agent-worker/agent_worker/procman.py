@@ -72,6 +72,12 @@ TAIL_KEEP_BYTES = 1024 * 1024
 #: sent SIGTERM, before what is left of the group is killed; and again, once
 #: it has been, before a reader whose pipe is still held is told to stop.
 LEFTOVER_GRACE_SECONDS = 2.0
+#: How often the descendant sweep (`ChildProcess.terminate(sweep_descendants=
+#: True)`) reads /proc while it waits for what it signalled to exit.
+SWEEP_POLL_SECONDS = 0.05
+#: How many SIGKILL-and-read rounds the sweep makes before it reports the
+#: survivors: 20 x 50 ms, a second, which a fork racing the kill cannot outlast.
+SWEEP_VERIFY_ROUNDS = 20
 #: How often a reader waiting on a quiet pipe looks at its stop flag.
 READ_POLL_SECONDS = 0.2
 
@@ -308,6 +314,127 @@ def validate_argv(argv: Sequence[str]) -> list[str]:
     return out
 
 
+@dataclass(frozen=True)
+class ProcEntry:
+    """One process as the descendant sweep sees it, from /proc/<pid>/stat.
+
+    The command name, never argv: an argv can carry a secret, and a survivor
+    is logged. `starttime` (clock ticks since boot) tells a pid from the
+    process that later took it."""
+
+    pid: int
+    ppid: int
+    pgid: int
+    sid: int
+    starttime: int
+    state: str
+    name: str
+
+
+def read_proc_table(proc_root: str = "/proc") -> dict[int, ProcEntry]:
+    """Every process in `proc_root`, by pid.
+
+    `/proc/<pid>/stat` is split after the LAST ')' (the name may hold one):
+    state is field 3, ppid 4, pgid 5, session 6, starttime 22. An entry that
+    vanishes mid-read is a process exiting and is skipped; `proc_root` itself
+    failing to list raises `ProcessTableUnreadable`.
+    """
+    try:
+        entries = os.listdir(proc_root)
+    except OSError as exc:
+        raise ProcessTableUnreadable(exc.errno, f"cannot list {proc_root}: {exc.strerror}") from exc
+    table: dict[int, ProcEntry] = {}
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"{proc_root}/{entry}/stat", encoding="utf-8", errors="replace") as fh:
+                raw = fh.read()
+            close = raw.rindex(")")
+            fields = raw[close + 2 :].split()
+            table[int(entry)] = ProcEntry(
+                pid=int(entry),
+                ppid=int(fields[1]),
+                pgid=int(fields[2]),
+                sid=int(fields[3]),
+                starttime=int(fields[19]),
+                state=fields[0],
+                name=raw[raw.find("(") + 1 : close],
+            )
+        except (OSError, ValueError, IndexError):
+            continue
+    return table
+
+
+def _descendants(roots: set[int], table: dict[int, ProcEntry]) -> set[int]:
+    children: dict[int, list[int]] = {}
+    for entry in table.values():
+        children.setdefault(entry.ppid, []).append(entry.pid)
+    seen: set[int] = set()
+    stack = [child for root in roots for child in children.get(root, ())]
+    while stack:
+        pid = stack.pop()
+        if pid in seen or pid in roots:
+            continue
+        seen.add(pid)
+        stack.extend(children.get(pid, ()))
+    return seen
+
+
+def descendants_of(root_pid: int, table: dict[int, ProcEntry]) -> dict[int, ProcEntry]:
+    """`root_pid`'s live descendants by parent pid, each with its ids; not the root."""
+    return {
+        pid: table[pid]
+        for pid in _descendants({root_pid}, table)
+        if table[pid].state != "Z"
+    }
+
+
+def sweep_targets(
+    snapshot: dict[int, ProcEntry],
+    table: dict[int, ProcEntry],
+    *,
+    protected_pids: set[int],
+    protected_groups: set[int],
+) -> dict[int, ProcEntry]:
+    """The live processes in `table` the sweep stops, given what `snapshot` recorded.
+
+    A target is a process that is a snapshot entry with the SAME start time
+    (a pid reused since is not), or whose group or session is one the
+    snapshot recorded, or that descends from a target. A recorded group or
+    session id whose leader pid is now a DIFFERENT process (other start time)
+    was emptied and reused, and no longer counts. Never a zombie (already
+    dead), a protected pid, or a process whose group or session is protected.
+    """
+    ids = {e.pgid for e in snapshot.values()} | {e.sid for e in snapshot.values()}
+    for gid in list(ids):
+        leader, recorded = table.get(gid), snapshot.get(gid)
+        if leader is not None and recorded is not None and leader.starttime != recorded.starttime:
+            ids.discard(gid)
+    ids -= protected_groups
+
+    def allowed(entry: ProcEntry) -> bool:
+        return (
+            entry.state != "Z"
+            and entry.pid not in protected_pids
+            and entry.pgid not in protected_groups
+            and entry.sid not in protected_groups
+        )
+
+    roots = {
+        pid
+        for pid, entry in table.items()
+        if allowed(entry)
+        and (
+            (pid in snapshot and snapshot[pid].starttime == entry.starttime)
+            or entry.pgid in ids
+            or entry.sid in ids
+        )
+    }
+    found = roots | _descendants(roots, table)
+    return {pid: table[pid] for pid in found if allowed(table[pid])}
+
+
 class ChildProcess:
     """A started runner child, supervised by the worker's main loop."""
 
@@ -472,20 +599,156 @@ class ChildProcess:
             except (ProcessLookupError, OSError):
                 pass
 
-    def terminate(self, grace_seconds: float, *, reason: str = "terminated") -> None:
-        """SIGTERM the process group, then SIGKILL anything still alive."""
+    def terminate(
+        self,
+        grace_seconds: float,
+        *,
+        reason: str = "terminated",
+        sweep_descendants: bool = False,
+    ) -> tuple[int, ...]:
+        """SIGTERM the process group, then SIGKILL anything still alive.
+
+        With `sweep_descendants` (issue 492) it also stops what the child
+        started in OTHER process groups and sessions -- claude-code runs each
+        Bash tool command in its own -- which the group signal never reaches:
+        the child's descendants are snapshotted while it is alive (and again
+        right after the SIGTERM), and once it is dead `_sweep` stops them.
+        Returns the pids that survived the sweep; `()` when it was clean, was
+        not asked for, or there was nothing to stop. Never raises over /proc.
+        """
         if self._proc is None or self._proc.poll() is not None:
-            return
+            return ()
+        snapshot = self._snapshot() if sweep_descendants else {}
         self._log.warning("terminating child", reason=reason, pid=self._proc.pid, grace=grace_seconds)
         self._signal_group(signal.SIGTERM)
-        if self.wait(grace_seconds) is not None:
-            return
-        self._log.error(
-            "child ignored SIGTERM; escalating to SIGKILL", pid=self._proc.pid, reason=reason
+        if sweep_descendants:
+            snapshot.update(self._snapshot())
+        if self.wait(grace_seconds) is None:
+            self._log.error(
+                "child ignored SIGTERM; escalating to SIGKILL", pid=self._proc.pid, reason=reason
+            )
+            self._killed = True
+            self._signal_group(signal.SIGKILL)
+            self.wait(10)
+        if not sweep_descendants:
+            return ()
+        return self._sweep(snapshot, reason=reason)
+
+    def _snapshot(self) -> dict[int, ProcEntry]:
+        """The child and its live descendants by parent pid; {} when /proc cannot be read.
+
+        The child's own entry is kept so its start time tells its group and
+        session ids from a later process that took its pid."""
+        assert self._proc is not None
+        try:
+            table = read_proc_table()
+            snapshot = descendants_of(self._proc.pid, table)
+            if self._proc.pid in table:
+                snapshot[self._proc.pid] = table[self._proc.pid]
+            return snapshot
+        except OSError as exc:
+            self._log.warning(
+                "could not read the process table to find what the child started; "
+                "a command it left in another session is not stopped here",
+                pid=self._proc.pid,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return {}
+
+    def _protected(self) -> tuple[set[int], set[int]]:
+        """(pids, group and session ids) the sweep never signals.
+
+        Pid 1, this process (the runner, or the worker when it is the caller)
+        and its parent; this process's own group and session, which are also
+        the child's parent's group. A target in one of those groups or
+        sessions is skipped by pid as well.
+        """
+        pids = {1, os.getpid(), os.getppid()}
+        groups: set[int] = {1}
+        for read in (lambda: os.getpgid(0), lambda: os.getsid(0)):
+            try:
+                groups.add(read())
+            except OSError:
+                pass
+        return pids, groups
+
+    def _sweep(self, snapshot: dict[int, ProcEntry], *, reason: str) -> tuple[int, ...]:
+        """Stop what `snapshot` recorded, once the child is dead; return the survivors.
+
+        SIGTERM every target -- `killpg` for a group the snapshot recorded,
+        `os.kill` by pid otherwise -- give them `LEFTOVER_GRACE_SECONDS`,
+        SIGKILL what is left, then read /proc again for up to
+        `SWEEP_VERIFY_ROUNDS` rounds. Never `os.kill(-1, ...)`: from the
+        runner that would hit the worker. Logs command names only, never an
+        argv or an environment: an argv can carry a secret.
+        """
+        if not snapshot:
+            return ()
+        assert self._proc is not None
+        protected_pids, protected_groups = self._protected()
+        recorded_groups = {e.pgid for e in snapshot.values()} - protected_groups
+
+        def targets() -> dict[int, ProcEntry]:
+            return sweep_targets(
+                snapshot, read_proc_table(),
+                protected_pids=protected_pids, protected_groups=protected_groups,
+            )
+
+        def signal_all(found: dict[int, ProcEntry], sig: int) -> None:
+            for pgid in sorted({e.pgid for e in found.values()} & recorded_groups):
+                try:
+                    os.killpg(pgid, sig)
+                except OSError:
+                    pass
+            for pid, entry in found.items():
+                if entry.pgid in recorded_groups:
+                    continue
+                try:
+                    os.kill(pid, sig)
+                except OSError:
+                    pass
+
+        try:
+            found = targets()
+            if not found:
+                return ()
+            groups = {e.pgid for e in found.values()}
+            stopped = len(found)
+            signal_all(found, signal.SIGTERM)
+            deadline = time.monotonic() + LEFTOVER_GRACE_SECONDS
+            while found and time.monotonic() < deadline:
+                time.sleep(SWEEP_POLL_SECONDS)
+                found = targets()
+            rounds = 0
+            while found and rounds < SWEEP_VERIFY_ROUNDS:
+                signal_all(found, signal.SIGKILL)
+                time.sleep(SWEEP_POLL_SECONDS)
+                found = targets()
+                rounds += 1
+        except OSError as exc:
+            self._log.warning(
+                "could not read the process table while stopping what the child left in "
+                "other sessions; what is left is stopped by the pre-publish reap or the pod's end",
+                pid=self._proc.pid,
+                reason=reason,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return ()
+        self._log.info(
+            "stopped what the child left in other sessions and process groups",
+            pid=self._proc.pid,
+            reason=reason,
+            groups=len(groups),
+            processes=stopped,
         )
-        self._killed = True
-        self._signal_group(signal.SIGKILL)
-        self.wait(10)
+        if found:
+            self._log.error(
+                "processes the child started are still alive after SIGKILL",
+                pid=self._proc.pid,
+                reason=reason,
+                survivors=[{"pid": pid, "name": e.name} for pid, e in sorted(found.items())],
+            )
+        return tuple(sorted(found))
 
     def mark_timed_out(self) -> None:
         self._timed_out = True

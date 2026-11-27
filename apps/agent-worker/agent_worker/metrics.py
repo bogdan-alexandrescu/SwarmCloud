@@ -579,6 +579,17 @@ class ProcessInfo:
     pgid: int
     rss_bytes: int
     name: str
+    #: The owner (`st_uid` of /proc/<pid>), or None when it could not be read:
+    #: an orphan under pid 1 is a candidate only when it is this uid's
+    #: (`memory_guard_victim`, issue 492).
+    uid: int | None = None
+
+
+def _proc_uid(entry: Path) -> int | None:
+    try:
+        return entry.stat().st_uid
+    except OSError:
+        return None
 
 
 def _proc_ids(entry: Path) -> tuple[int, int, int, str]:
@@ -607,20 +618,33 @@ def proc_process_table() -> list[ProcessInfo]:
             pid, ppid, pgid, name = _proc_ids(entry)
         except (OSError, ValueError, IndexError):
             continue  # exited between the listing and the read
-        out.append(ProcessInfo(pid=pid, ppid=ppid, pgid=pgid, rss_bytes=_proc_rss(pid), name=name))
+        out.append(ProcessInfo(pid=pid, ppid=ppid, pgid=pgid, rss_bytes=_proc_rss(pid), name=name,
+                               uid=_proc_uid(entry)))
     return out
 
 
 def memory_guard_victim(table: Sequence[ProcessInfo], runner_pid: int) -> ProcessInfo | None:
-    """The agent process to sacrifice: the largest-RSS one of the runner's.
+    """The agent process to sacrifice: the largest-RSS one of the agent's.
 
-    The runner's are its descendants by parent pid and the members of its
-    process group (procman starts it with `start_new_session`, so the group is
-    the runner's own; a dev server that double-forks to init stays in it).
-    Never this worker, the runner, or the runner's direct children -- the
-    agent CLI, whose death ends the attempt as surely as the OOM killer would.
-    None when nothing is left to choose.
+    The agent's are:
+
+      * the runner's descendants by parent pid and the members of its process
+        group (procman starts it with `start_new_session`, so the group is
+        the runner's own; a dev server that double-forks to init stays in it);
+      * every process of THIS uid re-parented to pid 1, other than this
+        worker, and what descends from it (issue 492). Claude Code runs each
+        Bash tool command in its own session and group; when its CLI is
+        stopped, a command the stop missed lives on under pid 1 (tini), in
+        neither the runner's tree nor its group, still holding its memory --
+        and the guard used to kill the fresh session's commands instead. A
+        row whose uid is unknown is not such an orphan, and when this worker
+        IS pid 1 (no tini) its children are its own helpers: none is added.
+
+    Never this worker, pid 1, the runner, or the runner's direct children --
+    the agent CLI, whose death ends the attempt as surely as the OOM killer
+    would. None when nothing is left to choose.
     """
+    me = os.getpid()
     by_pid = {p.pid: p for p in table}
     children: dict[int, list[int]] = {}
     for p in table:
@@ -628,7 +652,13 @@ def memory_guard_victim(table: Sequence[ProcessInfo], runner_pid: int) -> Proces
     runner = by_pid.get(runner_pid)
     group = runner.pgid if runner is not None else runner_pid
     agents: set[int] = {p.pid for p in table if p.pgid == group}
-    stack, seen = [runner_pid], set()
+    roots = [runner_pid]
+    if me != 1:
+        uid = os.getuid()
+        roots.extend(
+            p.pid for p in table if p.ppid == 1 and p.uid is not None and p.uid == uid and p.pid != me
+        )
+    stack, seen = roots, {me}
     while stack:
         pid = stack.pop()
         if pid in seen:
@@ -636,7 +666,7 @@ def memory_guard_victim(table: Sequence[ProcessInfo], runner_pid: int) -> Proces
         seen.add(pid)
         agents.add(pid)
         stack.extend(children.get(pid, ()))
-    protected = {os.getpid(), runner_pid, *children.get(runner_pid, ())}
+    protected = {me, 1, runner_pid, *children.get(runner_pid, ())}
     candidates = [by_pid[pid] for pid in agents - protected if pid in by_pid and by_pid[pid].rss_bytes > 0]
     if not candidates:
         return None

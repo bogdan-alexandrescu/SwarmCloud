@@ -1044,6 +1044,14 @@ def _run_watched(
         stdin_data=stdin_data,
     )
     child.start()
+
+    def stop_cli(*, reason: str) -> None:
+        # Every stop here also ends the commands the CLI left in other
+        # sessions (issue 492): claude-code runs each Bash tool command in its
+        # own, the group signal misses it, and once the CLI is dead it holds
+        # its memory through the passes or the checkpoint that follow.
+        child.terminate(limits.grace_seconds, reason=reason, sweep_descendants=True)
+
     deadline = time.monotonic() + limits.timeout_seconds
     soft_deadline = (
         deadline - wrap_up_seconds if wrap_up_seconds > 0 and watcher is not None else None
@@ -1070,7 +1078,7 @@ def _run_watched(
                 turns=budget.meter.turns,
                 tokens=budget.meter.tokens(),
             )
-            child.terminate(limits.grace_seconds, reason=f"budget ({spent})")
+            stop_cli(reason=f"budget ({spent})")
             break
         if stop is not None:
             assert watcher is not None
@@ -1079,7 +1087,7 @@ def _run_watched(
                 reason=stop,
                 turns=watcher.turns,
             )
-            child.terminate(limits.grace_seconds, reason=f"account swap ({stop})")
+            stop_cli(reason=f"account swap ({stop})")
             break
         if full:
             assert ceiling is not None
@@ -1091,15 +1099,15 @@ def _run_watched(
                 context_tokens=ceiling.context_tokens,
                 tool_calls=ceiling.tool_calls,
             )
-            child.terminate(limits.grace_seconds, reason=f"context ceiling ({ceiling.stopped_for})")
+            stop_cli(reason=f"context ceiling ({ceiling.stopped_for})")
             break
         if ctx.stop_requested:
-            child.terminate(limits.grace_seconds, reason="runner asked to stop")
+            stop_cli(reason="runner asked to stop")
             break
         now = time.monotonic()
         if now >= deadline:
             child.mark_timed_out()
-            child.terminate(limits.grace_seconds, reason="timeout")
+            stop_cli(reason="timeout")
             break
         if soft_deadline is not None and now >= soft_deadline:
             assert watcher is not None
@@ -1116,7 +1124,7 @@ def _run_watched(
                     remaining_seconds=round(deadline - now, 1),
                 )
                 watcher.stopped_to_wrap_up = True
-                child.terminate(limits.grace_seconds, reason="wrap-up")
+                stop_cli(reason="wrap-up")
                 break
     result = child.finish()
     if watcher is not None:
