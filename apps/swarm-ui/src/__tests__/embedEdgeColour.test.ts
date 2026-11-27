@@ -33,19 +33,24 @@ function framedConsole({
   const events = new EventTarget()
   const scheme = new EventTarget()
   const self = {}
+  // The real document's listeners, so an event dispatched on an element in it
+  // reaches what the watcher registered in the capture phase.
+  const doc = {
+    referrer,
+    body: document.body,
+    documentElement: document.documentElement,
+    createElement: document.createElement.bind(document),
+    elementsFromPoint: () => stack,
+    addEventListener: document.addEventListener.bind(document),
+    removeEventListener: document.removeEventListener.bind(document),
+  }
   const win: EdgeWindow = {
     parent: { postMessage },
     self,
     top: own ? self : {},
     location: { hostname: `console.${PARENT}`, protocol: 'https:' },
     innerHeight: 800,
-    document: {
-      referrer,
-      body: document.body,
-      documentElement: document.documentElement,
-      createElement: document.createElement.bind(document),
-      elementsFromPoint: () => stack,
-    },
+    document: doc,
     getComputedStyle: (element) => window.getComputedStyle(element),
     matchMedia: () =>
       ({
@@ -203,6 +208,26 @@ describe('the console tells the hub framing it the colour of its left edge', () 
       [30, 30, 30],
     ])
   })
+
+  it.each(['transitionend', 'scroll', 'load'])(
+    'reads the edge again after a %s anywhere in the page, which changes no DOM',
+    async (type) => {
+      const light = layer({ backgroundColor: 'rgb(255, 255, 255)' })
+      const dark = layer({ backgroundColor: 'rgb(16, 16, 16)' })
+      const stack: Element[] = [light]
+      const { win, postMessage } = framedConsole({ stack })
+      dispose = watchEmbedderEdgeColour(win)
+      await settle()
+
+      stack[0] = dark
+      dark.dispatchEvent(new Event(type, { bubbles: false }))
+      await settle()
+      expect(reported(postMessage)).toEqual([
+        [255, 255, 255],
+        [16, 16, 16],
+      ])
+    },
+  )
 
   it('stops watching once disposed', async () => {
     const sidebar = layer({ backgroundColor: 'rgb(255, 255, 255)' })
