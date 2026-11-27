@@ -17,16 +17,19 @@ and `result_summary` gets each stop's turn, tokens, tool calls and why.
 from __future__ import annotations
 
 import json
+import os
 import secrets as pysecrets
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from agent_worker.runners import ceiling, claude_code
-from agent_worker.runners.base import RunnerContext
+from agent_worker.runners.base import RunnerContext, RunnerFailure
 from agent_worker.runners.cliagent import (
     FINISH_PROMPT,
     RESUME_REASON_ENV,
@@ -44,16 +47,41 @@ from test_cli_prompt_names_time_limit import without_limit_line
 #: turn it got to print. `pause` is slept before each boundary, `hold` instead
 #: from turn `hold_from` on. `creations`, when given, is each turn's
 #: `cache_creation_input_tokens` (0 otherwise).
+#:
+#: `spawn` (issue 492): on that start it first starts a long `sleep` in its
+#: OWN session holding none of its pipes, as claude-code runs a Bash tool
+#: command, and appends the pid to `$HOME/spawned`. Every start records which
+#: of those pids are alive as it begins (`alive_at_start`); alive means a
+#: /proc entry that is not a zombie, since a killed orphan may stay one where
+#: pid 1 does not reap and `os.kill(pid, 0)` succeeds on a zombie.
 FAKE_CLI = r"""#!{python}
-import json, os, sys, time
+import json, os, subprocess, sys, time
 home = os.environ["HOME"]
 stdin = sys.stdin.read()
+
+def alive(pid):
+    try:
+        raw = open(f"/proc/{{pid}}/stat").read()
+    except OSError:
+        return False
+    return raw[raw.rindex(")") + 2:].split()[0] != "Z"
+
+spawned_path = os.path.join(home, "spawned")
+spawned = ([int(x) for x in open(spawned_path).read().split()]
+           if os.path.exists(spawned_path) else [])
 starts = os.path.join(home, "starts.jsonl")
 n = sum(1 for _ in open(starts)) if os.path.exists(starts) else 0
 with open(starts, "a") as f:
-    f.write(json.dumps({{"argv": sys.argv[1:], "stdin": stdin}}) + "\n")
+    f.write(json.dumps({{"argv": sys.argv[1:], "stdin": stdin,
+                        "alive_at_start": [p for p in spawned if alive(p)]}}) + "\n")
 plan = json.load(open(os.path.join(home, "plan.json")))
 step = plan[min(n, len(plan) - 1)]
+if step.get("spawn"):
+    command = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"],
+                               start_new_session=True, stdin=subprocess.DEVNULL,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    with open(spawned_path, "a") as f:
+        f.write(f"{{command.pid}}\n")
 sid = sys.argv[sys.argv.index("--resume") + 1] if "--resume" in sys.argv else f"sess-{{n:04d}}-abcdef"
 print(json.dumps({{"type": "system", "subtype": "init", "session_id": sid}}), flush=True)
 contexts = step["contexts"]
@@ -117,6 +145,41 @@ def _starts(ctx: RunnerContext) -> list[dict[str, Any]]:
 
 
 SMALL = {"contexts": [1_000, 2_000, 3_000]}
+
+
+def _alive(pid: int) -> bool:
+    """A /proc entry that is not a zombie (as test_memory_guard.py reads it)."""
+    try:
+        raw = (Path("/proc") / str(pid) / "stat").read_text()
+    except OSError:
+        return False
+    return raw[raw.rindex(")") + 2 :].split()[0] != "Z"
+
+
+def _spawned(ctx: RunnerContext) -> list[int]:
+    path = ctx.work_dir / "spawned"
+    return [int(x) for x in path.read_text().split()] if path.exists() else []
+
+
+@pytest.fixture
+def reap_spawned(ctx, request):
+    """SIGKILL every command a fake CLI spawned, so a red run leaks nothing."""
+
+    def reap() -> None:
+        for pid in _spawned(ctx):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+    request.addfinalizer(reap)
+
+
+def _gone(pid: int, seconds: float = 5.0) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline and _alive(pid):
+        time.sleep(0.05)
+    return not _alive(pid)
 
 
 def test_a_turn_past_200k_stops_at_that_boundary_and_a_fresh_session_follows(ctx):
@@ -580,3 +643,57 @@ def test_a_ceiling_stop_remembers_the_session_it_ended(ctx, monkeypatch):
 ])
 def test_the_worker_reads_the_swap_path_off_the_channel(channel, record):
     assert ceiling.swap_path_of(channel) == record
+
+
+# A STOPPED SESSION'S LEFTOVER COMMANDS ARE STOPPED TOO (issue 492). Claude
+# Code runs each Bash tool command in its own session and process group, so
+# stopping the CLI's group left the command running under pid 1, holding its
+# memory while the fresh session started its own, until the container was
+# OOM-killed. The runner's stop now sweeps what the CLI started.
+
+
+def test_a_command_the_stopped_session_left_running_is_gone_before_the_fresh_session_starts(
+    ctx, reap_spawned
+):
+    if not Path("/proc/self/stat").exists():
+        pytest.skip("no procfs")
+    _plan(ctx, {"contexts": [50_000, 210_000, 220_000, 230_000], "pause": 0.5, "spawn": True},
+          SMALL)
+    out = run_cli_agent(ctx, _spec())
+
+    (command,) = _spawned(ctx)
+    first, second = _starts(ctx)
+    assert first["alive_at_start"] == []
+    (stop,) = out["context_ceiling"]["stops"]
+    assert stop["at"] == ceiling.AT_TURN_BOUNDARY
+    assert second["stdin"].startswith("CONTEXT CEILING HANDOFF")
+    # MUTATION: stop only the CLI's process group and the command is alive
+    # here, holding its memory while the fresh session works.
+    assert second["alive_at_start"] == [], "the stopped session's command outlived the stop"
+    assert _gone(command)
+
+
+def test_a_command_the_session_stopped_for_an_account_swap_left_running_is_gone_after_the_swap(
+    ctx, monkeypatch, reap_spawned
+):
+    if not Path("/proc/self/stat").exists():
+        pytest.skip("no procfs")
+    session = _resume_from(ctx, monkeypatch, 60_000)
+    channel = _channel(ctx, monkeypatch)
+    move = channel.parent / "move.json"
+    move.write_text("{}")
+    monkeypatch.setenv("SWARM_ACCOUNT_MOVE", str(move))
+    _plan(ctx, {"contexts": [2_000, 3_000, 4_000, 5_000], "pause": 0.5, "spawn": True}, SMALL)
+    with pytest.raises(RunnerFailure, match="move to another account"):
+        run_cli_agent(ctx, _spec())
+    assert _swap_path(channel) == ceiling.SWAP_RESUMED
+    (command,) = _spawned(ctx)
+    # MUTATION: stop only the CLI's process group and the command is alive.
+    assert _gone(command, seconds=0.0), "the swapped session's command outlived the stop"
+
+    # The worker moved the hold; the runner resumes the session on the new account.
+    move.unlink()
+    run_cli_agent(ctx, _spec())
+    first, second = _starts(ctx)
+    assert second["argv"][second["argv"].index("--resume") + 1] == session
+    assert second["alive_at_start"] == []

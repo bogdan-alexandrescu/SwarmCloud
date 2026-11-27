@@ -188,6 +188,75 @@ def test_a_process_in_the_runners_group_but_reparented_away_is_still_a_candidate
     assert kills.sent == [(3000, signal.SIGKILL)]
 
 
+# AN ORPHAN UNDER PID 1 IS A CANDIDATE (issue 492). A Bash tool command runs in
+# its own session; when its CLI is stopped it is re-parented to pid 1 (tini)
+# and is in neither the runner's tree nor its group. The guard used to pass it
+# over and kill the fresh session's commands instead, while the orphan kept
+# its memory. A process of this uid under pid 1 that is not the worker, and
+# what descends from it, is now a candidate.
+
+
+def test_an_orphan_of_this_uid_under_pid_1_is_the_victim():
+    from agent_worker.metrics import ProcessInfo, memory_guard_victim
+
+    orphan = ProcessInfo(pid=3000, ppid=1, pgid=3000, uid=os.getuid(), rss_bytes=6 * GIB,
+                         name="node")
+    table = _tree() + [orphan]
+    kills = Kills()
+    sampler = _sampler(fraction_of_max=0.97, table=lambda: table, kill=kills)
+
+    # MUTATION: consider only the runner's tree and group and this is PYTEST.
+    assert memory_guard_victim(table, RUNNER) == orphan
+    sampler.sample_once()
+    assert kills.sent == [(3000, signal.SIGKILL)]
+
+
+def test_what_an_orphan_started_is_the_victim_when_it_is_the_largest():
+    from agent_worker.metrics import ProcessInfo, memory_guard_victim
+
+    table = _tree() + [
+        ProcessInfo(pid=3000, ppid=1, pgid=3000, uid=os.getuid(), rss_bytes=1 * GIB,
+                    name="bash"),
+        ProcessInfo(pid=3001, ppid=3000, pgid=3001, rss_bytes=7 * GIB, name="tsc"),
+    ]
+
+    assert memory_guard_victim(table, RUNNER).pid == 3001
+
+
+@pytest.mark.parametrize("uid", ["another", None], ids=["another-uid", "unknown-uid"])
+def test_an_orphan_of_another_or_an_unknown_uid_is_never_chosen(uid):
+    from agent_worker.metrics import ProcessInfo, memory_guard_victim
+
+    table = _tree() + [
+        ProcessInfo(pid=3000, ppid=1, pgid=3000, rss_bytes=20 * GIB, name="other",
+                    uid=os.getuid() + 1 if uid == "another" else None),
+    ]
+
+    assert memory_guard_victim(table, RUNNER).pid == PYTEST
+
+
+def test_the_worker_the_runner_and_its_children_are_never_chosen_with_this_uid():
+    from agent_worker.metrics import ProcessInfo, memory_guard_victim
+
+    me = os.getuid()
+    worker = os.getpid()
+    table = [
+        ProcessInfo(pid=worker, ppid=1, pgid=worker, uid=me, rss_bytes=30 * GIB, name="python"),
+        ProcessInfo(pid=RUNNER, ppid=worker, pgid=RUNNER, uid=me, rss_bytes=29 * GIB,
+                    name="python"),
+        ProcessInfo(pid=CLI, ppid=RUNNER, pgid=RUNNER, uid=me, rss_bytes=28 * GIB,
+                    name="claude"),
+        # The worker's own helper, beside the runner: not the agent's.
+        ProcessInfo(pid=OUTSIDER + 1, ppid=worker, pgid=worker, uid=me, rss_bytes=27 * GIB,
+                    name="git"),
+        ProcessInfo(pid=1, ppid=0, pgid=1, uid=me, rss_bytes=26 * GIB, name="tini"),
+        ProcessInfo(pid=3000, ppid=1, pgid=3000, uid=me, rss_bytes=1 * GIB, name="node"),
+    ]
+
+    assert memory_guard_victim(table, RUNNER).pid == 3000
+    assert memory_guard_victim(table[:5], RUNNER) is None
+
+
 def test_with_no_candidate_nothing_is_killed_and_nothing_raises():
     from agent_worker.metrics import ProcessInfo
 
@@ -340,6 +409,7 @@ def test_the_proc_table_reads_pid_ppid_pgid_rss_and_name_of_this_process():
     assert mine.pgid == os.getpgid(0)
     assert mine.rss_bytes > 0
     assert mine.name
+    assert mine.uid == os.getuid()
 
 
 def _children_of(pid: int) -> list[int]:
