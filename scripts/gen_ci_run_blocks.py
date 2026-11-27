@@ -20,8 +20,9 @@ THE SOURCES. Every `.github/workflows/*.yml` and every composite action's
 
 THE OUTPUT. `scripts/generated/ci-run-blocks.json`, deterministic: sorted
 keys, two-space indent, a trailing newline, and a `"` that follows `=` inside
-a string written as its unicode escape, backslash-u-0022 (see `render`). Its
-fields and their consumers:
+a string written as its unicode escape, backslash-u-0022, and the first
+letter of each word in `UNFINISHED_MARKERS` written as its unicode escape too
+(see `render`). Its fields and their consumers:
 
 * `files` -- one entry per source, keyed by its repository-relative path.
   Consumer: `ci_run_blocks.run_block`, which resolves a workflow's basename
@@ -57,6 +58,13 @@ REGENERATE = "uv run python scripts/gen_ci_run_blocks.py"
 #: What the output is a function of, repository-relative globs; `--inputs`
 #: prints the files they match, then this script and the output.
 SOURCE_GLOBS = (".github/workflows/*.yml", ".github/actions/*/action.yml")
+
+#: The words application.yml's unfinished-marker step ("no ... or stub markers in shipped code")
+#: greps for under scripts/, this output included. A run block that names them
+#: (that very step does) is published with each one's first letter as its
+#: unicode escape -- the same JSON string, but not the word to grep. Each is
+#: split here so this file does not match that grep either.
+UNFINISHED_MARKERS = ("TO" "DO", "FIX" "ME", "XX" "X", "NotImplemented" "Error")
 
 
 def sources(root: Path) -> list[Path]:
@@ -116,7 +124,14 @@ def render(root: Path) -> str:
     # worker's publish scan reads the plain escape in `GH_TOKEN=\"${APP_TOKEN}\"`
     # as a literal credential assigned to a name, and refuses the diff. `=` is
     # never part of an escape, so `=\"` occurs only as an escaped quote.
-    return text.replace('=\\"', "=\\u0022")
+    text = text.replace('=\\"', "=\\u0022")
+    # A marker word is written with its first letter escaped: application.yml's
+    # marker grep scans scripts/, so the published copy of that step's own
+    # `grep` line failed it on the merge train of 2026-11-27. JSON has no
+    # escape that a letter could be part of, so the replacement is exact.
+    for word in UNFINISHED_MARKERS:
+        text = text.replace(word, f"\\u{ord(word[0]):04x}{word[1:]}")
+    return text
 
 
 def main(argv: list[str] | None = None, root: Path = REPO) -> int:

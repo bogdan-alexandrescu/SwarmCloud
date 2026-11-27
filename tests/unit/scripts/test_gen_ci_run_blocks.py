@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import textwrap
 from pathlib import Path
 
@@ -128,7 +129,26 @@ def test_the_output_is_deterministic_sorted_and_ends_in_a_newline(root: Path):
     assert first == gen.render(root)
     assert first.endswith("}\n") and not first.endswith("\n\n")
     canonical = json.dumps(json.loads(first), indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    assert json.loads(first) == json.loads(canonical)
+    for word in gen.UNFINISHED_MARKERS:
+        canonical = canonical.replace(word, f"\\u{ord(word[0]):04x}{word[1:]}")
     assert first == canonical.replace('=\\"', "=\\u0022")
+
+
+def test_a_marker_word_is_written_with_its_first_letter_escaped(root: Path):
+    """application.yml's marker step greps scripts/ -- this output included --
+    for the words as whole words, so a published run block that names them
+    (that step's own grep line) failed it. Each word reads back unchanged.
+    MUTATION: drop the marker loop in `render` (the plain words are back)."""
+    assert len(gen.UNFINISHED_MARKERS) == 4
+    grep = "grep -rnIE '\\b(" + "|".join(gen.UNFINISHED_MARKERS) + ")\\b' apps scripts"
+    workflow = root / ".github" / "workflows" / "gate.yml"
+    workflow.write_text(workflow.read_text().replace("echo nameless", grep))
+    text = gen.render(root)
+    pattern = re.compile(r"\b(" + "|".join(gen.UNFINISHED_MARKERS) + r")\b")
+    assert not pattern.search(text), text
+    steps = json.loads(text)["files"][".github/workflows/gate.yml"]["jobs"]["enable"]["steps"]
+    assert steps["step-5"]["run"] == grep
 
 
 def test_a_quote_after_an_equals_sign_is_written_as_its_unicode_escape(root: Path):
