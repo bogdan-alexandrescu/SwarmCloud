@@ -25,7 +25,9 @@ and while its session can still be continued, the claude-code runner
    `lifecycle.Worker._adopt_rebase_base`), so main's newer commits are not
    republished as the lane's.
 2. RUNS A FIXED CHECK SET, LIMITED TO WHAT THE DIFF TOUCHES (`select_checks`):
-   for any change, the deployment-values guard from the base commit's copy
+   first, for a step that publishes onto an existing pull request, whether
+   the commit its publish folds into touches a workflow path
+   (`WORKFLOW_FILES_CHECK`, issue 472); for any change, the deployment-values guard from the base commit's copy
    over the added lines and `scripts/publish-scan.sh` (the train's other
    ejections, owner's plan 2026-11-23: `DEPLOYMENT_VALUES_CHECK`); the
    generated API types' drift check when the change touches a file the
@@ -291,6 +293,13 @@ RUNNER_DEADLINE_ENV = "SWARM_RUNNER_DEADLINE_EPOCH"
 CLONE_BASE_ENV = "SWARM_CLONE_BASE"
 #: `gitops.EMPTY_CLONE_BASE`, restated for the same reason.
 EMPTY_BASE = "empty"
+#: `publishpr.ONTO_PR_ENV`, restated for the same reason (issue 472,
+#: task_3162ecbd, 2026-11-25): "1" for a step that publishes onto an EXISTING
+#: pull request's branch, which selects `WORKFLOW_FILES_CHECK`.
+ONTO_PR_ENV = "SWARM_PUBLISH_ONTO_PR"
+#: `lifecycle.WORKFLOW_PATHSPECS`, restated for the same reason: the paths
+#: whose change the worker's publish refuses for an onto-PR step.
+WORKFLOW_PATHSPECS = (".github/workflows", ".github/actions")
 #: Set by the worker to the branch the clone left HEAD on (`lifecycle.
 #: START_BRANCH_ENV`, `Worker._start_branch`); unset for a clone at a commit.
 #: The gate's moved-HEAD finding names it (`moved_head`, `moved_prompt`).
@@ -428,6 +437,21 @@ DEPLOYMENT_VALUES_HOST_ADVICE = (
     "example.net) or drop the URL here; a public host this repository really needs "
     "has to land on main first, in its own small pull request that adds it to "
     "placeholders.json, before a change that names it.")
+#: THE ONTO-PR WORKFLOW PATHS (issue 472, task_3162ecbd, 2026-11-25). A step
+#: that publishes onto an existing pull request is refused WHOLE at publish
+#: (`publish_to_pr_workflow_files`) when its change touches
+#: `WORKFLOW_PATHSPECS`: the tenant token has no `workflow` scope.
+#: task_3162ecbd worked 40 minutes on pull request 356, deleted one line of
+#: terraform.yml and lost the lot after its turn. This check asks the same
+#: question first, while a fix turn can still put the paths back. It reads
+#: the ONE commit the publish folds such a step into (`_workflow_files`), not
+#: the round's changed files: after a merge of main the gate diffs from the
+#: merge base, where the pull request's OWN earlier workflow change shows.
+WORKFLOW_FILES_CHECK = "onto-pr-workflow-files"
+#: Its own small budget: a handful of git commands, well under a second.
+WORKFLOW_FILES_BUDGET_SECONDS = 30.0
+#: The paths the fix turn is shown, each with its remedy; the rest counted.
+WORKFLOW_FILES_SHOWN = 20
 PUBLISH_SCAN_CHECK = "publish-scan"
 PUBLISH_SCAN_SCRIPT = "scripts/publish-scan.sh"
 #: `scripts/publish-scan.sh`'s exits: 1 a hit, 2 the scan could not run.
@@ -2342,6 +2366,83 @@ def _deployment_values(base: str) -> Callable[[Runner, Path, Mapping[str, str], 
     return run
 
 
+def _workflow_files(clone_base: str) -> Callable[[Runner, Path, Mapping[str, str], float],
+                                                 tuple[str, str]]:
+    """`WORKFLOW_FILES_CHECK`: would the ONE commit the worker's publish makes
+    of an onto-PR step (`gitops.fold_agent_commits`: everything it commits --
+    HEAD's tree plus uncommitted and untracked files, `worktree_tree` -- with
+    the clone base and, after a merge of the default branch, that merge's base
+    as parents) differ from EVERY parent under `WORKFLOW_PATHSPECS`? The
+    commit is made with `commit-tree` and read with the same combined
+    `git log` the publish reads; HEAD, the index and the branch never move.
+    Listed paths are FAILED, each with the command that puts it back; git
+    failing to answer is ERROR, never PASSED."""
+    def run(runner: Runner, repo: Path, env: Mapping[str, str], timeout: float
+            ) -> tuple[str, str]:
+        git_env = {**env, "GIT_AUTHOR_NAME": "prepublish",
+                   "GIT_AUTHOR_EMAIL": "prepublish@example.invalid",
+                   "GIT_COMMITTER_NAME": "prepublish",
+                   "GIT_COMMITTER_EMAIL": "prepublish@example.invalid"}
+        resolved = _git(repo, "rev-parse", "--verify", "--quiet", f"{clone_base}^{{commit}}",
+                        runner=runner, env=env)
+        base = resolved.output.strip()
+        if resolved.code != 0 or not base:
+            return ERROR, f"git could not resolve the clone base {clone_base[:40]!r}"
+        tree = worktree_tree(repo, runner=runner, env=env)
+        if tree is None:
+            return ERROR, "git could not write the tree the publish would commit"
+        parents = ["-p", base]
+        merged = merged_main_base(repo, base, runner=runner, env=env)
+        if merged is not None:
+            # The fold keeps every merged branch as a parent: a path that is
+            # main's, unchanged by the lane, is no change of the lane's.
+            parents += ["-p", merged]
+        made = _git(repo, "commit-tree", tree, *parents, "-m",
+                    "prepublish: the commit the onto-PR publish would fold",
+                    runner=runner, env=git_env)
+        folded = made.output.strip()
+        if made.code != 0 or not folded:
+            return ERROR, "git could not build the folded commit: " + made.output.strip()[-500:]
+        # Bounded by the parents, as `lifecycle.Worker._workflow_paths` is:
+        # `log -1 <commit> -- <paths>` alone walks back to the last commit
+        # that touched them, which is the pull request's own.
+        negatives = [base, *([merged] if merged is not None else [])]
+        listed = _git(repo, "-c", "core.quotePath=false", "log", "--format=",
+                      "--name-only", "--no-renames", "--diff-merges=combined", folded,
+                      "--not", *negatives, "--", *WORKFLOW_PATHSPECS, runner=runner, env=env)
+        if listed.code != 0:
+            return ERROR, "git could not list the workflow paths: " + listed.output.strip()[-500:]
+        paths = sorted({p.strip() for p in listed.output.splitlines() if p.strip()})
+        if not paths:
+            return PASSED, ("nothing under " + " or ".join(WORKFLOW_PATHSPECS)
+                            + " differs from the pull request's head")
+        shown = paths[:WORKFLOW_FILES_SHOWN]
+        at_base = _git(repo, "-c", "core.quotePath=false", "ls-tree", "-r", "--name-only",
+                       base, "--", *shown, runner=runner, env=env)
+        if at_base.code != 0:
+            return ERROR, "git could not read the clone base's tree: " + at_base.output[-500:]
+        present = {p.strip() for p in at_base.output.splitlines() if p.strip()}
+        lines = [
+            "This step publishes onto an existing pull request's branch, and its change "
+            "touches " + " or ".join(WORKFLOW_PATHSPECS) + ". The worker refuses the WHOLE "
+            "publish when it does (publish_to_pr_workflow_files: a workflow change cannot be "
+            "pushed onto an existing pull request), so every one of these paths must be "
+            f"exactly as it is at the commit you started on ({base}). Run, then commit:",
+        ]
+        for path in shown:
+            if path in present:
+                lines.append(f"- {path}: git checkout {base} -- {path}")
+            else:
+                lines.append(f"- {path}: git rm -f --ignore-unmatch {path} "
+                             "(an untracked file: delete it)")
+        if len(paths) > len(shown):
+            lines.append(f"- and {len(paths) - len(shown)} more under the same paths")
+        lines.append("If the work really needs such a change, describe it in "
+                     "$SWARM_ARTIFACTS_DIR/pr-body.md for a person to make.")
+        return FAILED, "\n".join(lines)
+    return run
+
+
 def _publish_scan(base: str) -> Callable[[Runner, Path, Mapping[str, str], float],
                                          tuple[str, str]]:
     """The worker's own publish credential scan over what the change adds
@@ -2469,6 +2570,17 @@ def select_checks(repo: Path, files: Sequence[str], *, base: str,
     if not files:
         return checks
 
+    # First, for an onto-PR step only (issue 472, task_3162ecbd): a failure
+    # here refuses the whole publish, whatever the other checks say. Never
+    # with an empty clone base: no pull request's head to compare with.
+    clone_base = (env.get(CLONE_BASE_ENV) or "").strip()
+    if (env.get(ONTO_PR_ENV) or "").strip() == "1" and clone_base and clone_base != EMPTY_BASE:
+        prefixes = tuple(f"{spec}/" for spec in WORKFLOW_PATHSPECS)
+        checks.append(Check(
+            WORKFLOW_FILES_CHECK, tuple(f for f in files if f.startswith(prefixes)),
+            "git log --diff-merges=combined <the folded commit> --not <its parents> -- "
+            + " ".join(WORKFLOW_PATHSPECS),
+            run=_workflow_files(clone_base), budget=WORKFLOW_FILES_BUDGET_SECONDS))
     if (repo / DEPLOYMENT_VALUES_SCRIPT).is_file():
         checks.append(Check(DEPLOYMENT_VALUES_CHECK, tuple(files),
                             f"bash <base>:{DEPLOYMENT_VALUES_SCRIPT} --diff {base} --mode enforce",
