@@ -34,7 +34,7 @@ from typing import Any
 
 import pytest
 
-from agent_worker import lifecycle, prepublish
+from agent_worker import lifecycle, prepublish, publishpr
 from agent_worker.gitmcp import server as shim
 from agent_worker.gittools import GitTools
 from agent_worker.logs import build_logger
@@ -385,6 +385,148 @@ def test_uncommitted_and_untracked_files_are_checked_too(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# An onto-PR step and the workflow paths (issue 472, task_3162ecbd)
+# ---------------------------------------------------------------------------
+#
+# A step that publishes onto an EXISTING pull request's branch is refused at
+# publish, whole, when its change touches .github/workflows or
+# .github/actions (`publish_to_pr_workflow_files`). The check asks what the
+# worker's publish will ask after it folds the step's commits into one: does
+# that one commit differ, under those paths, from every parent it would have?
+
+ONTO_PR = "SWARM_PUBLISH_ONTO_PR"
+WORKFLOW = ".github/workflows/ci.yml"
+ACTION = ".github/actions/setup/action.yml"
+
+
+def _pr_repo(tmp_path: Path) -> tuple[Path, str]:
+    """A checkout whose base already holds a workflow and an action."""
+    repo, _ = _repo(tmp_path)
+    _change(repo, WORKFLOW, "on: push\n", commit=False)
+    _change(repo, ACTION, "runs: {using: composite}\n")
+    return repo, _git(repo, "rev-parse", "HEAD")
+
+
+def _onto_pr_env(tmp_path: Path, base: str) -> dict[str, str]:
+    return {**_env(tmp_path, _tools(tmp_path)), prepublish.CLONE_BASE_ENV: base, ONTO_PR: "1"}
+
+
+def _statuses(record: dict, name: str) -> list[str]:
+    return [c["status"] for r in record["rounds"] for c in r if c["name"] == name]
+
+
+def test_an_onto_pr_change_to_a_workflow_fails_and_takes_one_fix_turn(tmp_path):
+    repo, base = _pr_repo(tmp_path)
+    env = _onto_pr_env(tmp_path, base)
+    _change(repo, WORKFLOW, "on: [push, pull_request]\n")
+
+    def restore() -> None:
+        _git(repo, "checkout", base, "--", WORKFLOW)
+        _git(repo, "commit", "-q", "-m", "restore the workflow")
+
+    turns = Turns(restore)
+    record = _gate(repo, tmp_path, env, turns).run()
+
+    assert len(turns.prompts) == 1, "a failing check gets ONE fix turn"
+    prompt = turns.prompts[0]
+    assert prepublish.WORKFLOW_FILES_CHECK in prompt and WORKFLOW in prompt
+    assert f"git checkout {base} -- {WORKFLOW}" in prompt, prompt
+    assert "publish_to_pr_workflow_files" in prompt, prompt
+    assert _statuses(record, prepublish.WORKFLOW_FILES_CHECK)[0] == "failed"
+    assert record["fix_turn"] is True
+    assert record["failed"] == [] and record["pr_section"] is False
+    assert _section(tmp_path) is None
+
+
+def test_uncommitted_and_untracked_action_files_fail_the_check(tmp_path):
+    """The worker commits them at publish, so they are part of what ships."""
+    repo, base = _pr_repo(tmp_path)
+    env = _onto_pr_env(tmp_path, base)
+    _change(repo, ACTION, "runs: {using: node20}\n", commit=False)
+    _change(repo, ".github/actions/extra/action.yml", "runs: {}\n", commit=False)
+    turns = Turns(lambda: None)  # the agent does not fix it
+    record = _gate(repo, tmp_path, env, turns).run()
+
+    assert _statuses(record, prepublish.WORKFLOW_FILES_CHECK) == ["failed", "failed"]
+    assert len(turns.prompts) == 1
+    prompt = turns.prompts[0]
+    assert f"git checkout {base} -- {ACTION}" in prompt, prompt
+    assert "git rm -f --ignore-unmatch .github/actions/extra/action.yml" in prompt, prompt
+    assert prepublish.WORKFLOW_FILES_CHECK in record["failed"]
+    section = _section(tmp_path) or ""
+    assert ACTION in section
+
+
+def test_a_touch_restored_by_a_later_commit_passes_with_no_turn(tmp_path):
+    """The publish folds an onto-PR step's commits into one, so a restored
+    path is no change at all -- unlike a per-commit listing."""
+    repo, base = _pr_repo(tmp_path)
+    env = _onto_pr_env(tmp_path, base)
+    _change(repo, WORKFLOW, "on: [push, pull_request]\n")
+    _git(repo, "checkout", base, "--", WORKFLOW)
+    _git(repo, "commit", "-q", "-m", "restore the workflow")
+    _change(repo, "docs/notes.md", "a note\n")
+    turns = Turns()
+    record = _gate(repo, tmp_path, env, turns).run()
+    assert _statuses(record, prepublish.WORKFLOW_FILES_CHECK) == ["passed"]
+    assert turns.prompts == [] and record["fix_turn"] is False
+
+
+def test_the_check_is_selected_only_for_an_onto_pr_step(tmp_path):
+    repo, base = _pr_repo(tmp_path)
+    _change(repo, WORKFLOW, "on: [push, pull_request]\n")
+    files = [WORKFLOW]
+    plain = _env(tmp_path, _tools(tmp_path), **{prepublish.CLONE_BASE_ENV: base})
+    assert prepublish.WORKFLOW_FILES_CHECK not in _names(
+        prepublish.select_checks(repo, files, base=base, env=plain))
+    for value in ("0", ""):
+        assert prepublish.WORKFLOW_FILES_CHECK not in _names(prepublish.select_checks(
+            repo, files, base=base, env={**plain, ONTO_PR: value}))
+    empty = {**plain, prepublish.CLONE_BASE_ENV: prepublish.EMPTY_BASE, ONTO_PR: "1"}
+    assert prepublish.WORKFLOW_FILES_CHECK not in _names(
+        prepublish.select_checks(repo, files, base=base, env=empty))
+    onto = {**plain, ONTO_PR: "1"}
+    assert _names(prepublish.select_checks(repo, files, base=base, env=onto))[0] == \
+        prepublish.WORKFLOW_FILES_CHECK
+
+
+def test_a_merge_of_main_over_the_pull_requests_own_workflow_change_passes(tmp_path):
+    """The pull request already changed one workflow (pull request 356 added
+    a line to terraform.yml); main changed another; the lane merges main and
+    touches no workflow itself. Diffed from the merge base, the pull
+    request's own change shows -- the check must not read that diff."""
+    repo, _ = _pr_repo(tmp_path)
+    _git(repo, "checkout", "-q", "-b", "pr")
+    _change(repo, ".github/workflows/terraform.yml", "on: push\njobs: {}\n")
+    clone_base = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    _change(repo, WORKFLOW, "on: [push, merge_group]\n")
+    main = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "update-ref", "refs/remotes/origin/main", main)
+    _git(repo, "checkout", "-q", "pr")
+    _git(repo, "merge", "-q", "--no-edit", "--no-ff", main)
+    _change(repo, "docs/notes.md", "the lane's own work\n")
+    env = _onto_pr_env(tmp_path, clone_base)
+    turns = Turns()
+    record = _gate(repo, tmp_path, env, turns).run()
+    assert record["base"] == main, "the gate diffs from the merged main"
+    assert _statuses(record, prepublish.WORKFLOW_FILES_CHECK) == ["passed"]
+    assert turns.prompts == [] and record["failed"] == []
+
+
+def test_git_unable_to_resolve_the_clone_base_is_an_error_never_a_pass(tmp_path):
+    repo, base = _pr_repo(tmp_path)
+    _change(repo, WORKFLOW, "on: [push, pull_request]\n")
+    env = {**_onto_pr_env(tmp_path, base), prepublish.CLONE_BASE_ENV: "0" * 40}
+    (check,) = [c for c in prepublish.select_checks(repo, [WORKFLOW], base=base, env=env)
+                if c.name == prepublish.WORKFLOW_FILES_CHECK]
+    assert check.run is not None
+    status, output = check.run(prepublish.run_command, repo, env, 60.0)
+    assert status == prepublish.ERROR, output
+    assert output.strip()
+
+
+# ---------------------------------------------------------------------------
 # The rebase, and one conflict turn
 # ---------------------------------------------------------------------------
 
@@ -510,6 +652,11 @@ def test_the_runner_and_the_worker_agree_on_the_names():
     assert prepublish.PREPUBLISH_BASE_ENV == lifecycle.PREPUBLISH_BASE_ENV
     assert prepublish.CLONE_BASE_ENV == lifecycle.CLONE_BASE_ENV
     assert claude_code.SPEC.prepublish is True
+    # Issue 472: the variable the worker sets for an onto-PR step, spelled
+    # three times (the runner never imports the worker), and the pathspecs
+    # the gate asks about are the ones the worker's publish refuses on.
+    assert prepublish.ONTO_PR_ENV == cliagent.ONTO_PR_ENV == publishpr.ONTO_PR_ENV
+    assert prepublish.WORKFLOW_PATHSPECS == lifecycle.WORKFLOW_PATHSPECS
 
 
 # ---------------------------------------------------------------------------

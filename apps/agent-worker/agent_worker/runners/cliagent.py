@@ -1774,6 +1774,38 @@ def step_publishes(environ: Mapping[str, str]) -> bool:
     return (environ.get(STEP_PUBLISHES_ENV) or "").strip() != "0"
 
 
+#: WHETHER THIS STEP PUBLISHES ONTO AN EXISTING PULL REQUEST (issue 472,
+#: task_3162ecbd, 2026-11-25). `publishpr.ONTO_PR_ENV`, restated because the
+#: runner never imports the worker (as `prepublish.CLONE_BASE_ENV` is). The
+#: worker sets it to "1" for a step whose signed dispatch block carries
+#: `publish_to_pr`; every other step has it unset.
+ONTO_PR_ENV = "SWARM_PUBLISH_ONTO_PR"
+
+#: Said to an onto-PR step right after PUBLISH_PARAGRAPH (issue 472,
+#: task_3162ecbd, 2026-11-25). The worker refuses such a step's WHOLE publish
+#: (`publish_to_pr_workflow_files`) when its change touches either path: the
+#: tenant token has no `workflow` scope. task_3162ecbd worked 40 minutes on
+#: pull request 356, deleted one line of .github/workflows/terraform.yml, and
+#: lost the lot, because nothing had told it. "even to undo something the pull
+#: request itself changed": that step's deletion was such an undo. The
+#: pre-publish gate's `onto-pr-workflow-files` check holds the same rule.
+ONTO_PR_WORKFLOW_PARAGRAPH = (
+    "This step's commits are added to an existing pull request's branch. Leave "
+    "everything under .github/workflows and .github/actions exactly as it is at the "
+    "commit you started on: do not edit, add, delete, rename or revert a file there, "
+    "even to undo something the pull request itself changed. The worker cannot push "
+    "a workflow change onto an existing pull request and refuses the WHOLE publish, "
+    "so all of this step's work would be lost. If the work really needs such a "
+    "change, describe it in $SWARM_ARTIFACTS_DIR/pr-body.md for a person to make."
+)
+
+
+def publishes_onto_pr(environ: Mapping[str, str]) -> bool:
+    """True only when the worker said this step publishes onto an existing
+    pull request ("1"): any other value, or none, is a step that does not."""
+    return (environ.get(ONTO_PR_ENV) or "").strip() == "1"
+
+
 def checkout_head(repo: Path, env: Mapping[str, str]) -> str | None:
     """The checkout's HEAD commit, or None: an empty clone has none, and a git
     that failed is not read as one."""
@@ -2292,11 +2324,17 @@ def run_cli_agent(
         # (`step_publishes`): 88 of 90 measured steps wrote pr-title.txt
         # and pr-body.md because this paragraph asked, where no pull
         # request was ever opened.
+        # An onto-PR step is also told, right after, to leave the workflow
+        # paths alone (issue 472, task_3162ecbd): its publish is refused
+        # whole otherwise. Any other step's prompt is byte-identical.
+        said = [PUBLISH_PARAGRAPH, *([ONTO_PR_WORKFLOW_PARAGRAPH]
+                                     if publishes_onto_pr(os.environ) else [])]
         if spec.system_prompt_flag:
-            standing.append(PUBLISH_PARAGRAPH)
+            standing.extend(said)
         else:
-            task_prompt = f"{task_prompt}\n\n{PUBLISH_PARAGRAPH}"
-            first_prompt = f"{first_prompt}\n\n{PUBLISH_PARAGRAPH}"
+            for paragraph in said:
+                task_prompt = f"{task_prompt}\n\n{paragraph}"
+                first_prompt = f"{first_prompt}\n\n{paragraph}"
     if standing and spec.system_prompt_flag:
         # In EVERY start of this step: the first, a resume, a finish pass and
         # a fresh session from a handoff all start from `base_argv`, so each
@@ -3479,6 +3517,11 @@ def run_prepublish_gate(
     rebase_ref = os.environ.get(prepublish.PREPUBLISH_BASE_ENV, "").strip()
     if rebase_ref:
         check_env[prepublish.PREPUBLISH_BASE_ENV] = rebase_ref
+    # The onto-PR flag reaches the gate's checks even when the agent's env
+    # lacks it (issue 472, task_3162ecbd): it selects `onto-pr-workflow-files`.
+    onto_pr = os.environ.get(prepublish.ONTO_PR_ENV, "").strip()
+    if onto_pr:
+        check_env[prepublish.ONTO_PR_ENV] = onto_pr
     spool = os.environ.get(gitmcp_server.SPOOL_ENV, "").strip()
     submit: Callable[..., dict[str, Any]] | None = None
     if spool:

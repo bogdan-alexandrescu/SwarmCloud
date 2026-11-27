@@ -1627,8 +1627,19 @@ class GitPublishMixin:
                 # A merged branch the forge already holds stays a parent
                 # whatever its commits say: it is published already (archived issue 3359).
                 on_forge = self._forge_holder(url=url, token=token)
+                # AN ONTO-PR STEP THAT TOUCHED A WORKFLOW PATH IS FOLDED (issue
+                # 472, task_3162ecbd, 2026-11-25): the workflow listing below
+                # names a path for every commit that touches it, so a touch the
+                # agent later restored would refuse the publish if its commits
+                # were kept. Folded, the check after `_check_pull_before_push`
+                # reads one commit and refuses only a net workflow change
+                # (`publishpr.WORKFLOW_TOUCH_FOLDED` says why in full).
+                fold_touch = publishpr_mod.folds_for_workflow_touch(
+                    onto_pr, self._workflow_paths(publish_repo, floor=scan_floor)
+                    if onto_pr is not None else [],
+                )
                 try:
-                    replayed = replay_agent_commits(
+                    replayed = None if fold_touch else replay_agent_commits(
                         repo=publish_repo,
                         base=self._publish_base,
                         keep=new_sha,
@@ -1657,6 +1668,8 @@ class GitPublishMixin:
                         kept = replayed
                         out["agent_commits_kept"] = kept
                     else:
+                        if fold_touch:
+                            out[publishpr_mod.WORKFLOW_TOUCH_FOLDED] = True
                         replaced = fold_agent_commits(
                             repo=publish_repo,
                             base=self._publish_base,

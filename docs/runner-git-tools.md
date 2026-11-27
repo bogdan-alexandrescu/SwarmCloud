@@ -575,6 +575,40 @@ file `main` also changed, where that version is already on origin. It goes
 out on the worker's own push; if GitHub refuses that for the `workflow`
 scope, the publish fails as any refused push does, the work kept.
 
+**A step that publishes onto an existing pull request cannot change a
+workflow file, and is told so before its turn ends** (issue 472). A
+`publish_to_pr` step pushes onto another task's branch, the pull request's
+head. `git_push_branch` pushes only a task's **own** branch, and the tenant
+token has no `workflow` scope, so there is no route that could carry such a
+step's workflow change: `_publish_git` refuses the whole publish with
+`publish_to_pr_workflow_files`, pushes nothing, fails the step and leaves the
+change as `workflow-lines.patch`. That refusal is right and stays. What was
+wrong is that nothing told the agent, and it learnt after its turn was over:
+task_3162ecbd (2026-11-25) worked 40 minutes on pull request 356, deleted one
+line of `.github/workflows/terraform.yml`, and the publish refused the whole
+branch, its real fix with it. The worker now sets `SWARM_PUBLISH_ONTO_PR=1`
+(`publishpr.ONTO_PR_ENV`) for exactly such a step -- from the signed
+dispatch block, never from `input` -- so the runner can say so in its prompt
+and the pre-publish gate can fail while the change still touches those
+paths, which the agent then restores in the gate's fix turn.
+
+**Such a step's commits are folded when any of them touches those paths.**
+The listing above names a path for **every** new commit that touches it, and
+the publish otherwise keeps each agent commit (archived issue 242). So a
+commit that changed a workflow file and a later commit that put it back were
+both listed, and the publish was refused although the branch's net change
+left the file alone: restoring the file did not help. When a `publish_to_pr`
+step's new commits list a workflow path, the worker does not replay them; it
+folds them into one worker commit (`gitops.fold_agent_commits`, the same
+fold a leak in a kept commit takes, every merged branch kept as a parent)
+and records `workflow_touch_folded` in the publish result. The listing then
+reads that one commit: a NET workflow change is refused exactly as before,
+and a change the agent restored is no longer listed, so the worker's own
+push goes ahead, leased on the pull request's head. This is the one case in
+which the agent's commits are not kept, and it is a case that published
+nothing at all before. A step that is not onto a pull request is untouched:
+its commits are replayed and a workflow change goes to the broker.
+
 ## 2. The credential
 
 ### 2.1 Which one: the agent's own forge slot, read by swarm-api

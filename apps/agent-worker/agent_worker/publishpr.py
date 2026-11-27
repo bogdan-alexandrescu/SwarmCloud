@@ -54,6 +54,43 @@ TASK_ID_RE = re.compile(r"^task_[0-9a-f]{20}$")
 #: A full commit sha, as GitHub reports a pull request's head.
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
+#: TOLD BEFORE ITS TURN ENDS (issue 472, task_3162ecbd, 2026-11-25). Set to "1"
+#: by `Worker._build_child_env` for a repository step that publishes onto an
+#: existing pull request's branch (`Worker._onto_pr_target`: no `single-pr`
+#: role, the step opens the pull request, a signed `publish_to_pr`), and unset
+#: for every other step. Such a step's change may not touch `.github/workflows`
+#: or `.github/actions`: the tenant token has no `workflow` scope and swarm-api's
+#: `git_push_branch` pushes only a task's own branch, so `_publish_git` refuses
+#: the whole publish (`publish_to_pr_workflow_files`). Measured: task_3162ecbd
+#: worked 40 minutes on pull request 356, deleted one line of
+#: `.github/workflows/terraform.yml`, and learnt of the refusal only after its
+#: turn was over. The runner reads this to tell the agent in its prompt and the
+#: pre-publish gate to fail while the change still touches those paths. Set by
+#: the worker from the signed dispatch block, never from `input` (invariant 10).
+ONTO_PR_ENV = "SWARM_PUBLISH_ONTO_PR"
+
+#: The publish result's flag for an onto-PR step whose commits were FOLDED into
+#: one worker commit because one of them touched a workflow path (issue 472,
+#: task_3162ecbd, 2026-11-25). `_workflow_paths` lists a path for EVERY new
+#: commit that touches it (`git log --name-only`), and the replay keeps each
+#: agent commit (archived issue 242), so a commit that changed a workflow file
+#: and a later one restoring it were both listed and the publish was refused
+#: although the net change left the file alone. Folded, only a NET workflow
+#: change is listed, and that is still refused exactly as before. Recorded so
+#: the result says why the agent's commits were not kept.
+WORKFLOW_TOUCH_FOLDED = "workflow_touch_folded"
+
+
+def folds_for_workflow_touch(target: Target | None, workflow_paths: list[str]) -> bool:
+    """True when a step's commits are folded rather than replayed: it publishes
+    onto a pull request (`target`) and its new commits list a workflow path.
+
+    A step that is not onto a pull request is untouched: its commits are
+    replayed and a workflow change goes to swarm-api's broker as before.
+    """
+    return target is not None and bool(workflow_paths)
+
+
 #: The words a moved head is refused with; the issue (archived issue 2183) and the
 #: owner's brief name them, so a reader can grep a run's record for them.
 HEAD_MOVED = "head moved"

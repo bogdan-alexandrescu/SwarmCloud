@@ -377,6 +377,12 @@ repository does not get it, and neither does a resumed session, which already
 holds it. In a claude-code prompt the context-ceiling note (below) sits
 between the questions sentence and the time-limit line. It goes to every step with a repository, a review included: the
 worker's strategy, not the agent, decides whether anything is pushed.
+A step that publishes onto an existing pull request's branch
+(`SWARM_PUBLISH_ONTO_PR=1`, set by the worker from the signed
+`publish_to_pr`) is told right after it, in `cliagent.ONTO_PR_WORKFLOW_PARAGRAPH`,
+to leave .github/workflows and .github/actions exactly as they are at the
+commit it started on (issue 472; see the pre-publish gate's
+`onto-pr-workflow-files` check below).
 
 **The no-change sentence** names the file the worker reads as
 "nothing to change, and here is why": an agent that finds its work already
@@ -667,6 +673,7 @@ the repair turns, while the session can still be continued
 
    | the diff touches | check |
    |---|---|
+   | anything, on a step that publishes onto an existing pull request (`SWARM_PUBLISH_ONTO_PR=1`), first | `onto-pr-workflow-files`: does the one commit the publish folds the step into differ from every parent under .github/workflows or .github/actions? (below) |
    | anything | `scripts/changed-guards.sh --base <base>` |
    | `terraform/**/*.tf` | `checkov --framework terraform -f <files>`; `tflint` as CI runs it, failing only on an issue in a changed file |
    | `kubernetes/` | the manifests rendered as `make security` renders them, then `checkov --framework kubernetes` |
@@ -716,6 +723,30 @@ the repair turns, while the session can still be continued
    file invalid; `error`, advisory only and never sent to the agent, when the
    base branch's file is invalid or a declared service did not start, and
    the tests then run as if nothing were declared.
+   **The workflow paths of an onto-PR step** (issue 472, task_3162ecbd,
+   2026-11-25). A step that publishes onto an existing pull request's branch
+   is refused at publish, WHOLE, when its change touches `.github/workflows`
+   or .github/actions (`publish_to_pr_workflow_files`): the tenant token
+   has no `workflow` scope, and that refusal stays. Measured: task_3162ecbd
+   worked 40 minutes on pull request 356, deleted one line of
+   `.github/workflows/terraform.yml`, and lost the whole branch after its turn
+   was over, because nothing had told it. The prompt now says so
+   (above), and `onto-pr-workflow-files` asks the publish's own question while
+   a fix turn can still put the paths back: the worker folds such a step's
+   commits into one when any touches a workflow path, so the check builds that
+   one commit with `git commit-tree` -- the tree the publish would commit
+   (HEAD plus uncommitted and untracked files), parented on the clone base
+   and, after a merge of the default branch, on that merge's base -- and lists
+   the workflow paths it changes with `git log --diff-merges=combined`; HEAD,
+   the index and the branch never move. It reads that folded result, NOT the
+   round's changed files: after a merge of main the gate diffs from the merge
+   base, where the pull request's OWN earlier workflow change (pull request
+   356 added a line to terraform.yml) shows as changed and would fail every
+   such step falsely. A path listed fails the check, and the fix turn is
+   given, per path (up to 20), `git checkout <clone base> -- <path>` or, for
+   a path the clone base lacks, `git rm -f --ignore-unmatch <path>`; a touch
+   the agent restored in a later commit passes, as the fold makes it no
+   change. git unable to answer is `error`, never `passed`.
 4. **One fix turn**, with each failing check's output, then the set runs
    again.
 5. **What still fails is published anyway.** No work is dropped. The runner
