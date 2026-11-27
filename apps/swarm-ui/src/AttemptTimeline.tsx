@@ -8,6 +8,7 @@ import { isTerminalEvent } from './events'
 import { backendWord, eventWord, stateWord } from './words'
 import { num, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
+import { InfoTip } from './InfoTip'
 import { Screen, timeAgo } from './Shell'
 import { REASON_COPY, TERMINAL_STATES, bytesLabel, newestHeartbeat, pluralise, type AttemptRow, type Task, type TaskEvent } from './types'
 
@@ -597,8 +598,12 @@ function AttemptCard({
             {errorWords(a.error)}
           </pre>
         )}
+        {/* TWO WORDS ON THE SURFACE, THE REASON'S COPY BEHIND ITS (i) (issue
+            439): it is two sentences, drawn again on every folded re-check. */}
         {a !== null && isParked(a) && a.error != null && REASON_COPY[a.error] !== undefined && (
-          <p className="blocker-copy">{REASON_COPY[a.error]}</p>
+          <p className="blocker-copy">
+            why parked <InfoTip about="why it parked" tip={REASON_COPY[a.error] ?? ''} />
+          </p>
         )}
 
         {g.events.length > 0 && (

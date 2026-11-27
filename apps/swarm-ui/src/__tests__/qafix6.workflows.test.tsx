@@ -35,6 +35,7 @@ import type { Result } from '../fetch'
 import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
 import type { CascadeEnv } from './cssgate'
 import { build, painted } from './marks'
+import { helpIn } from './proseruns'
 import { attempt } from './runfixture'
 import { ownFromBoard } from './workflowsById'
 
@@ -632,7 +633,8 @@ describe('g. the policy chip reads as configuration', () => {
     const details = within(ov).getByText('Policy').closest('details')!
     // MUTATION: drop the "configuration, not an outcome" sentence -- the
     // policy reads as what happened again, exactly the bug this guards.
-    expect(flat(details)).toMatch(/A failed step stops the workflow: no step after it starts\. This is what the workflow was submitted with: configuration, not an outcome\./)
+    // Behind the fold's (i), word for word (issue 439).
+    expect(helpIn(details)).toMatch(/A failed step stops the workflow: no step after it starts\. This is what the workflow was submitted with: configuration, not an outcome\./)
   })
 
   it('says a workflow submitted to continue keeps going when a step fails', async () => {

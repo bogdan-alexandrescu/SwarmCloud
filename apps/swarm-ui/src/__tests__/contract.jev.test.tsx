@@ -83,12 +83,14 @@ function expectJevRefusal(root: HTMLElement) {
   expect(panel, 'no Jev refusal panel').not.toBeNull()
   expect(visible(panel)).toContain('Jev’s review')
   const rows = [...panel!.querySelectorAll<HTMLElement>('[data-requirement]')]
+  // Each requirement's review is its (i) (issue 439), word for word.
+  const tip = (row: HTMLElement) => visible(row.querySelector('[data-help-description]'))
   // MUTATION: draw only the message, and the person cannot tell which requirement to rewrite.
   expect(rows.map((r) => r.getAttribute('data-requirement'))).toEqual(['REQ-2', 'REQ-4'])
-  expect(visible(rows[0]!)).toContain('nothing observable when the step ends decides it')
-  expect(visible(rows[0]!)).toContain('the outcome it asks for is vague')
+  expect(tip(rows[0]!)).toContain('Jev’s review nothing observable when the step ends decides it')
+  expect(tip(rows[0]!)).toContain('the outcome it asks for is vague')
   expect(visible(rows[0]!)).toContain('83%')
-  expect(visible(rows[1]!)).toContain('it depends on something that happens after the step')
+  expect(tip(rows[1]!)).toContain('it depends on something that happens after the step')
   expect(visible(rows[1]!)).toContain('71%')
   // Never the detail as JSON or as raw facts.
   expect(root.textContent).not.toContain('"requirements"')

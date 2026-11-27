@@ -1,4 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { InfoTip } from './InfoTip'
 import { usePhoneTables, tableMode } from './capacityPoll'
 import { HatchDef, useHatchId, VALUE_LABEL_GAP_PX } from './charts/parts'
 import { linearScale, ValueAxis } from './charts/TimeSeries'
@@ -266,6 +267,9 @@ export function PlatformOverTime({
  * THE BREAKDOWN PICKER (F6): a menu whose every option says what it groups by
  * and what it does with an agent that has no value yet. Picking reads nothing.
  */
+/** What the menu once said under its items: the breakdowns come with the read. */
+const MENU_FOOT = 'Picking one reads nothing: every breakdown comes with the read.'
+
 function BreakdownMenu({ value, onPick }: { value: Breakdown; onPick: (b: Breakdown) => void }) {
   const [open, setOpen] = useState(false)
   const host = useRef<HTMLSpanElement | null>(null)
@@ -289,7 +293,11 @@ function BreakdownMenu({ value, onPick }: { value: Breakdown; onPick: (b: Breakd
       </Button>
       {open && (
         <div className="pot-menu" role="menu" aria-label="Break agents down by">
-          <p className="pot-menu-head" aria-hidden>Break agents down by</p>
+          {/* WHAT EACH BREAKDOWN COUNTS, BEHIND THE HEAD'S (i) (issue 439): two of them were a paragraph each in the menu. */}
+          <p className="pot-menu-head">
+            Break agents down by{' '}
+            <InfoTip about="Breakdowns" tip={[...BREAKDOWNS.map((b) => b.label + ': ' + b.says), MENU_FOOT].join(' ')} />
+          </p>
           {BREAKDOWNS.map((b) => (
             <button
               key={b.key}
@@ -303,10 +311,8 @@ function BreakdownMenu({ value, onPick }: { value: Breakdown; onPick: (b: Breakd
               }}
             >
               <span className="pot-menu-name">{b.label}</span>
-              <span className="pot-menu-says">{b.says}</span>
             </button>
           ))}
-          <p className="pot-menu-foot">Picking one reads nothing: every breakdown comes with the read.</p>
         </div>
       )}
     </span>

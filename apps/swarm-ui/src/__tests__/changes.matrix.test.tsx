@@ -340,7 +340,7 @@ describe('the matrix: which step changed which file', () => {
     const integ = stepTask('t_fix', { ...FIX_GIT, role: 'integrator', pull_request: pr } as GitSummary)
     render(<Tab steps={THREE} tasks={[THREE_TASKS[0]!, THREE_TASKS[1]!, integ]} />)
     await waitFor(() => expect(head('fix').textContent).toMatch(/integrate · fix/))
-    expect(within(head('implement')).getByRole('link', { name: 'Agent’s changes ›' }).getAttribute('href')).toMatch(/\/t_impl\/changes$/)
+    expect(within(head('implement')).getByRole('link', { name: 'Agent’s changes' }).getAttribute('href')).toMatch(/\/t_impl\/changes$/)
     // In the bar, and in the viewer's bar once the open file's hunks are drawn.
     expect(within(document.querySelector<HTMLElement>('.chg-mx-bar')!).getByRole('link', { name: 'PR #553 ↗' }).getAttribute('href')).toBe(pr.url)
     await waitFor(() => expect(document.querySelector<HTMLAnchorElement>('a.diff-pr')?.getAttribute('href')).toBe(pr.url))
@@ -524,8 +524,8 @@ describe("WG-7: a step column's link names its scope, and a filtered page carrie
     for (const key of ['implement', 'review', 'fix']) {
       // MUTATION: label the column link 'Changes ›' again -- the tab's own
       // name, for a link that leaves the tab for the agent's -- and this is red.
-      expect(within(head(key)).queryByRole('link', { name: 'Changes ›' }), key).toBeNull()
-      expect(within(head(key)).getByRole('link', { name: 'Agent’s changes ›' }), key).toBeTruthy()
+      expect(within(head(key)).queryByRole('link', { name: 'Changes' }), key).toBeNull()
+      expect(within(head(key)).getByRole('link', { name: 'Agent’s changes' }), key).toBeTruthy()
     }
   })
 
@@ -536,8 +536,8 @@ describe("WG-7: a step column's link names its scope, and a filtered page carrie
     expect(table().querySelector('th[data-step="implement"]')).toBeNull()
     // MUTATION: draw the link on every column whatever the filter and the
     // filtered page repeats it three times, two of them on dimmed steps.
-    expect(within(table()).getAllByRole('link', { name: 'Agent’s changes ›' })).toHaveLength(1)
-    expect(within(head('fix')).getByRole('link', { name: 'Agent’s changes ›' }).getAttribute('href')).toMatch(/\/t_fix\/changes$/)
+    expect(within(table()).getAllByRole('link', { name: 'Agent’s changes' })).toHaveLength(1)
+    expect(within(head('fix')).getByRole('link', { name: 'Agent’s changes' }).getAttribute('href')).toMatch(/\/t_fix\/changes$/)
   })
 })
 

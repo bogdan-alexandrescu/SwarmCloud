@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 
 import { createAdminWorkspace, loadAdminWorkspace, type FirstAdminAnswer } from './api'
 import { Button, Dash, Dialog, Tabs, ToneMark } from './components'
 import type { ApiError } from './fetch'
+import { InfoTip } from './InfoTip'
 import { ApprovedWaiting, WORKSPACE_POLL_MS, waitingOf } from './OnboardingWorkspace'
 import { usePoll } from './Shell'
 import type { AdminWorkspaceView, WorkspaceJobStep, WorkspaceKind } from './types'
@@ -103,35 +104,45 @@ function str(v: unknown): string | null {
   return typeof v === 'string' && v !== '' ? v : null
 }
 
-/** What the kind will get, shown before submit (§4.2.4). `who` is the address as typed, or the kind's placeholder. */
+/** What each kind gets, word for word, behind the tab's (i) (issue 439). `who` is the address as typed, or the kind's placeholder. */
+function getsTip(kind: WorkspaceKind, who: string): string {
+  switch (kind) {
+    case 'personal':
+      return `${who} gets its own tenant, worker account, storage prefix and namespace. It is approved at once, because you are an admin, and is ready when they first sign in. It runs nothing until a Claude account is lent to them or they add their own.`
+    case 'group':
+      return `${who} gets its own tenant, worker account, storage prefix and namespace, shared by the group's members, and an empty team forge slot. The API first checks that the group can be read in the directory. It is approved at once, because you are an admin.`
+    case 'service':
+      return `${who} gets its own tenant, worker account, storage prefix and namespace, and is admitted at the API’s front door. The platform owner approves it. It runs nothing until a Claude account is lent to it or added.`
+  }
+}
+
+/**
+ * What the kind will get, shown before submit (§4.2.4). ISSUE 439: who
+ * approves stays one line on the surface; what the kind gets is behind the
+ * (i), word for word.
+ */
 function Gets({ kind, who }: { kind: WorkspaceKind; who: string }) {
-  const address = <code>{who}</code>
+  const tip = <InfoTip about={`a ${kind} workspace`} tip={getsTip(kind, who)} />
   let body: ReactNode
   switch (kind) {
     case 'personal':
       body = (
         <>
-          <b>Personal</b> · {address} gets its own tenant, worker account, storage prefix and namespace. It is approved at
-          once, because you are an admin, and is ready when they first sign in. It runs nothing until a Claude account is
-          lent to them or they add their own.
+          <b>Personal</b> · approved at once {tip}
         </>
       )
       break
     case 'group':
       body = (
         <>
-          <b>Group</b> · {address} gets its own tenant, worker account, storage prefix and namespace, shared by the
-          group&apos;s members, and an empty team forge slot. The API first checks that the group can be read in the
-          directory. It is approved at once, because you are an admin.
+          <b>Group</b> · approved at once {tip}
         </>
       )
       break
     case 'service':
       body = (
         <>
-          <b>Service</b> · {address} gets its own tenant, worker account, storage prefix and namespace, and is admitted at
-          the API’s front door. <b>The platform owner approves it.</b> It runs nothing until a Claude account is lent to
-          it or added.
+          <b>Service</b> · <b>The platform owner approves it.</b> {tip}
         </>
       )
       break
@@ -273,32 +284,37 @@ function Progress({ record, now }: { record: AdminWorkspaceView; now: number }) 
 /** What `first_admin` came to, after filing: granted, and whether the group holds them yet; or why not. */
 function FirstAdminOutcome({ answer, group }: { answer: FirstAdminAnswer; group: string | null }) {
   const who = <code>{answer.email}</code>
-  const inGroup = group !== null ? <code>{group}</code> : 'the group'
+  const inGroup = group ?? 'the group'
+  // Issue 439: what the outcome means is the line's (i), word for word; the line says only who and what.
   if (!answer.granted) {
+    const exists = answer.reason === 'workspace_exists'
     return (
       <p className="ur-small ob-issue" role="status" data-first-admin="refused" data-code={answer.reason ?? undefined}>
-        {who} was not made its admin
-        {answer.reason === 'workspace_exists' ? (
-          <>: this workspace already existed. Name its admins on People and roles.</>
-        ) : (
-          <>
-            {' '}
-            ({answer.reason ?? 'no reason given'}). Send the form again while it is being created, or name them on People and roles.
-          </>
-        )}
+        {who} was not made its admin{exists ? '' : ` (${answer.reason ?? 'no reason given'})`}{' '}
+        <InfoTip
+          about="why they were not made its admin"
+          tip={
+            exists
+              ? 'This workspace already existed. Name its admins on People and roles.'
+              : 'Send the form again while it is being created, or name them on People and roles.'
+          }
+        />
       </p>
     )
   }
   return (
     <p className="ur-small" role="status" data-first-admin={answer.member === true ? 'member' : 'pending'}>
-      {who} is its first admin.{' '}
-      {answer.member === true ? (
-        <>They are in {inGroup}, so the role applies now.</>
-      ) : answer.member === false ? (
-        <>They are not in {inGroup} yet: the role takes effect once they are, because membership stays the group’s.</>
-      ) : (
-        <>Whether they are in {inGroup} could not be checked; the role takes effect once they are in it.</>
-      )}
+      {who} is its first admin{answer.member === null || answer.member === undefined ? '; membership not checked' : '.'}{' '}
+      <InfoTip
+        about="when the role applies"
+        tip={
+          answer.member === true
+            ? `They are in ${inGroup}, so the role applies now.`
+            : answer.member === false
+              ? `They are not in ${inGroup} yet: the role takes effect once they are, because membership stays the group’s.`
+              : `Whether they are in ${inGroup} could not be checked; the role takes effect once they are in it.`
+        }
+      />
     </p>
   )
 }

@@ -1491,7 +1491,12 @@ function AccountLinkForm({ onChanged, onePerson, installer, waitingFor }: { onCh
           {self ? 'Sign in my Claude account' : 'Make a sign-in link'}
         </Button>
       </span>
-      {opened !== null && <p className="c-hint" role="status">{`Your sign-in for ${opened} opened in a new tab: sign in to Claude there, and this page sees the account at its next read.`}</p>}
+      {opened !== null && (
+        <p className="c-hint" role="status">
+          Sign-in for {opened} opened in a new tab{' '}
+          <InfoTip about="the sign-in tab" tip={`Your sign-in for ${opened} opened in a new tab: sign in to Claude there, and this page sees the account at its next read.`} />
+        </p>
+      )}
       {shown !== null && minted !== null && (
         <CodeBlock
           title={`One-time link for ${minted.owner}, shown once: send it to them`}

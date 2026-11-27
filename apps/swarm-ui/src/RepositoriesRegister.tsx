@@ -5,6 +5,7 @@ import { Banner, Button, Card, EmptyState } from './components'
 import { normRepo, triggerLabel, TRIGGER_OPTIONS, WEBHOOK_NOTE, WORKFLOW_FILES_LINE, WORKFLOW_FILES_WHY, type ChangeTrigger, type Readable, type ReadableList } from './RepositoriesData'
 import { LIST, UrCrumb, UrNavButton, UrRadio, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
 import { useRoleGate } from './roleGate'
+import { WriteRefusal } from './WriteRefusal'
 import { PageHead } from './Shell'
 import { timeAgo } from './types'
 
@@ -497,7 +498,7 @@ function ScheduleStep({
             ) : undefined
           }
         >
-          {refused}
+          <WriteRefusal text={refused} />
         </Banner>
       )}
       <div className="ur-formacts">

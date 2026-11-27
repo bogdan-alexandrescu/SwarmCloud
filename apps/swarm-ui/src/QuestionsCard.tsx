@@ -51,6 +51,7 @@ import { answerQuestion, loadQuestions, type AgentQuestion, type OwnerAnswer, ty
 import { Button, buttonClass, Chip, Tooltip } from './components'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { humanReady, ownerQuestionsHold, type HeldQuestion } from './Handoff'
+import { InfoTip } from './InfoTip'
 import { feedData, markRead, notificationsSnapshot, subscribeNotifications } from './notificationFeed'
 import { addressToPath } from './paths'
 import { useRoleGate } from './roleGate'
@@ -443,13 +444,18 @@ function AskedCard({ task, count, id }: { task: Task; count: number; id: string 
       </div>
       {data?.status === 'ok' && data.waiting && <WaitingNote wait={data.waiting} taskId={task.id} />}
       {count === 0 ? (
+        // ONE SHORT LINE EACH (issue 439): the sentence that explains it is behind the (i), word for word.
         <p className="dt-note" data-questions-rejected="">
-          {who} wrote questions.json and the platform did not take it, so nothing in it can be answered here.
+          questions.json not taken{' '}
+          <InfoTip about="the questions file" tip={`${who} wrote questions.json and the platform did not take it, so nothing in it can be answered here.`} />
         </p>
       ) : (
         <p className="dt-note">
-          {who} asked you {count === 1 ? 'this' : 'these'} instead of guessing. Pick an option or write your own: the
-          answer is stored on this agent, where {launcher(task)} reads it with swarm_result.
+          Asked instead of guessing{' '}
+          <InfoTip
+            about="these questions"
+            tip={`${who} asked you ${count === 1 ? 'this' : 'these'} instead of guessing. Pick an option or write your own: the answer is stored on this agent, where ${launcher(task)} reads it with swarm_result.`}
+          />
         </p>
       )}
       {data !== null && data.status === 'ok' && roleGate !== null && (
@@ -459,19 +465,21 @@ function AskedCard({ task, count, id }: { task: Task; count: number; id: string 
       )}
       {data !== null && data.status === 'ok' && data.may_answer !== true && (
         <p className="dt-note qc-why-not">
-          You can read these but not answer them: {data.may_answer_because ?? 'the API did not say you may answer'}.
+          Read only{' '}
+          <InfoTip about="answering" tip={`You can read these but not answer them: ${data.may_answer_because ?? 'the API did not say you may answer'}.`} />
         </p>
       )}
       {state.status === 'loading' ? (
         <p className="dt-note">Reading the questions…</p>
       ) : state.status === 'error' ? (
-        <p className="dt-note">The questions could not be read: {errorHeading(state.error)}</p>
+        // COULD-NOT-CHECK, ONE SHORT LINE (issue 439): the fact, then why, as facts.
+        <p className="dt-note">Questions not read · {errorHeading(state.error)}</p>
       ) : data === null || data.status === 'none' ? (
         <p className="dt-note">
-          The questions could not be read: {count === 0 ? questionsRejected(task) : 'the API served none'}.
+          Questions not read · {count === 0 ? questionsRejected(task) : 'the API served none'}
         </p>
       ) : data.status === 'unavailable' ? (
-        <p className="dt-note">The questions could not be read: {data.unavailable_because ?? 'the API did not say why'}.</p>
+        <p className="dt-note">Questions not read · {data.unavailable_because ?? 'the API did not say why'}</p>
       ) : (
         <ol className="qc-list">
           {questions.map((q, i) => (
@@ -570,7 +578,8 @@ function AskedBy({ taskId, rows, roleGate }: { taskId: string; rows: HeldQuestio
       </p>
       {data !== null && data.status === 'ok' && data.may_answer !== true && (
         <p className="dt-note qc-why-not">
-          You can read these but not answer them: {data.may_answer_because ?? 'the API did not say you may answer'}.
+          Read only{' '}
+          <InfoTip about="answering" tip={`You can read these but not answer them: ${data.may_answer_because ?? 'the API did not say you may answer'}.`} />
         </p>
       )}
       {state.status === 'loading' && data === null ? (

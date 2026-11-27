@@ -93,7 +93,7 @@ describe('chrome-C18: the Submit hub’s foot names the sidebar', () => {
   it('says the Submit button in the sidebar opens the page', () => {
     serve()
     render(<SubmitChooser go={() => {}} />)
-    const foot = document.querySelector('.sb-foot')!
+    const foot = document.querySelector('.sb-foot [data-help-description]')!
     // MUTATION: restore "The spine’s Submit button" in SubmitChooser.tsx.
     expect(foot.textContent).toContain('The Submit button in the sidebar opens this page')
     expect(foot.textContent).not.toMatch(/spine/i)

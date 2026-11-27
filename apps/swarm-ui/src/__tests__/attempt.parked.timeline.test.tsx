@@ -20,6 +20,7 @@ import { render, waitFor } from '@testing-library/react'
 
 import type { Result } from '../fetch'
 import type { AttemptRow, Task } from '../types'
+import { helpIn } from './proseruns'
 import { at, attempt, task } from './runfixture'
 
 const api = vi.hoisted(() => ({
@@ -77,7 +78,8 @@ describe('a parked attempt on the timeline', () => {
   it('keeps the park reason out of the red stderr block and says it in words', async () => {
     const el = await mount(task({ state: 'PARKED', started_at: at(1) }), [parked])
     expect(el.querySelector('.att-card pre.err'), 'the park reason printed as a failure').toBeNull()
-    expect(el.querySelector('.att-card .blocker-copy')?.textContent).toBe(
+    // Behind the line's (i), word for word (issue 439).
+    expect(helpIn(el.querySelector('.att-card .blocker-copy'))).toBe(
       'The provider quota is spent. Parked until it resets.',
     )
   })

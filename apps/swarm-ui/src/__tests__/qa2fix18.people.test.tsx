@@ -15,6 +15,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
+import { helpIn } from './proseruns'
 
 const WAIT = { timeout: 4000 }
 
@@ -142,7 +143,8 @@ describe('People Manage sheet says account states and lenders in words (admin2-0
     const confirm = await screen.findByRole('dialog', { name: 'Reclaim this account' }, WAIT)
     // MUTATION: the confirmation's `name` and hint back to `chosen.owner_tenant`.
     expect(visible(confirm)).toContain('Reclaim primary (Bo’s workspace) from bob@example.com?')
-    expect(visible(confirm)).toContain('Bo’s workspace stops lending it to them')
+    // Issue 439: what a reclaim does is the question's (i), word for word.
+    expect(helpIn(confirm)).toContain('Bo’s workspace stops lending it to them')
   })
 })
 

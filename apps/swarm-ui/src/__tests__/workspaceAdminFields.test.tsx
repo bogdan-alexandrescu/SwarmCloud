@@ -20,6 +20,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
+import { helpIn } from './proseruns'
 
 type Json = Record<string, unknown>
 type Calls = { method: string; url: string; body: unknown }[]
@@ -274,7 +275,8 @@ describe('First admin (S6c): a platform admin’s field, on the group tab', () =
     })
     const said = await within(dialog).findByText(/is its first admin/, {}, WAIT)
     expect(visible(said)).toContain('frank@example.com is its first admin.')
-    expect(visible(said)).toContain('not in research@example.com yet: the role takes effect once they are')
+    // Issue 439: when the role applies is the line's (i), word for word.
+    expect(helpIn(said)).toContain('They are not in research@example.com yet: the role takes effect once they are')
   })
 
   it('sends no first_admin when it is left empty, and offers none on the personal or service tab', async () => {
@@ -300,7 +302,8 @@ describe('First admin (S6c): a platform admin’s field, on the group tab', () =
     fireEvent.change(within(dialog).getByRole('textbox', { name: 'First admin’s email address (optional)' }), { target: { value: 'frank@example.com' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create workspace' }))
     const said = await within(dialog).findByText(/was not made its admin/, {}, WAIT)
-    expect(visible(said)).toContain('this workspace already existed')
+    // Issue 439: why is the line's (i), word for word.
+    expect(helpIn(said)).toContain('This workspace already existed. Name its admins on People and roles.')
   })
 
   it('is not there for a member, who reaches no form at all', async () => {

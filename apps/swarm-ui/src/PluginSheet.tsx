@@ -80,7 +80,19 @@ export const MODE_MEANS: Readonly<Record<string, string>> = {
 }
 const MODE_ORDER = ['unattended', 'planner', 'designer']
 
+// The guided sheet's notes (issue 439): each behind its part's (i), word for word.
+const ALLOWED_TIP = 'Only plugins this workspace allows can be picked (Config › Plugins).'
+const SKILLS_TIP = 'What each skill does is not served yet; the catalogue names them only.'
+
 const modeWord = (m: string) => MODE_WORDS[m] ?? m
+
+/** A mode's meaning behind its (i), or, when it does not run, a short line with the refusal behind the (i) (issue 439). */
+function ModeNote({ mode, available, refusal }: Readonly<{ mode: string; available: boolean; refusal: string }>) {
+  const about = `${modeWord(mode)} mode`
+  if (!available) return <span className="psh-dim psh-small">Not yet <InfoTip about={about} tip={refusal} /></span>
+  const means = MODE_MEANS[mode]
+  return means === undefined ? <span className="psh-dim psh-small">what it means: <Dash why="The console has no words for this mode" /></span> : <InfoTip about={about} tip={means} />
+}
 
 /** The served modes in the platform's order, then any the console has no word for. */
 function modesOf(entry: PluginCatalogueEntry): string[] {
@@ -892,7 +904,7 @@ export function PluginSheet({ stepId, profile, pick, ctx, onUse, onClose }: {
       ) : (
         <>
           <section className="psh-part" aria-labelledby={`psh-${uid}-p1`}>
-            <h3 id={`psh-${uid}-p1`}><span className="psh-n">1</span>Plugin</h3>
+            <h3 id={`psh-${uid}-p1`}><span className="psh-n">1</span>Plugin <InfoTip about="which plugins" tip={ALLOWED_TIP} /></h3>
             {view.catalogue.length === 0 ? (
               <p className="psh-dim">The platform's catalogue lists no plugin.</p>
             ) : (
@@ -919,7 +931,6 @@ export function PluginSheet({ stepId, profile, pick, ctx, onUse, onClose }: {
                 })}
               </ul>
             )}
-            <p className="psh-dim psh-small">Only plugins this workspace allows can be picked (Config › Plugins).</p>
           </section>
 
           <section className="psh-part" aria-labelledby={`psh-${uid}-p2`}>
@@ -935,12 +946,8 @@ export function PluginSheet({ stepId, profile, pick, ctx, onUse, onClose }: {
                       <label className={`psh-choice${m === mode ? ' is-on' : ''}${o.available ? '' : ' is-off'}`}>
                         <input type="radio" name={`psh-${uid}-mode`} checked={m === mode} disabled={!o.available}
                           onChange={() => { setMode(m); setTicked([]) }} />
-                        <span><b>{modeWord(m)}</b><br />
-                          <span className="psh-dim psh-small">
-                            {o.available
-                              ? MODE_MEANS[m] ?? <>what it means: <Dash why="The console has no words for this mode" /></>
-                              : `Not yet: ${refusalWords.mode(entry.name, m, o.reason ?? 'does not run yet')}.`}
-                          </span>
+                        <span><b>{modeWord(m)}</b>{' '}
+                          <ModeNote mode={m} available={o.available} refusal={`Not yet: ${refusalWords.mode(entry.name, m, o.reason ?? 'does not run yet')}.`} />
                         </span>
                       </label>
                     </li>
@@ -952,13 +959,12 @@ export function PluginSheet({ stepId, profile, pick, ctx, onUse, onClose }: {
 
           <section className="psh-part" aria-labelledby={`psh-${uid}-p3`}>
             <h3 id={`psh-${uid}-p3`}>
-              <span className="psh-n">3</span>Skills it may use
+              <span className="psh-n">3</span>Skills it may use <InfoTip about="skills" tip={SKILLS_TIP} />
               {offer !== undefined && <span className="psh-count">{draft?.skills.length ?? 0} of {offered.length}</span>}
             </h3>
             {offer === undefined || !offer.available ? (
               <p className="psh-dim psh-small">Pick a mode that runs first.</p>
             ) : (
-              <>
                 <ul className="psh-ticks" role="list">
                   {offered.map((s) => (
                     <li key={s}>
@@ -970,8 +976,6 @@ export function PluginSheet({ stepId, profile, pick, ctx, onUse, onClose }: {
                     </li>
                   ))}
                 </ul>
-                <p className="psh-dim psh-small">What each skill does is not served yet; the catalogue names them only.</p>
-              </>
             )}
           </section>
         </>

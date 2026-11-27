@@ -23,10 +23,6 @@
 .hm-head > :last-child:not(h2):not(.hm-why) { margin-left: auto; }
 .hm-count { font-style: normal; font-size: var(--t-micro); font-weight: 600; min-width: 22px; padding: 1px 7px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line); text-align: center; font-variant-numeric: tabular-nums; }
 .hm-why { position: relative; font-size: var(--t-micro); }
-.hm-why > summary { list-style: none; cursor: pointer; width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--line); display: inline-grid; place-items: center; color: var(--text-dim); font-size: var(--t-micro); }
-.hm-why > summary::-webkit-details-marker { display: none; }
-.hm-why[open] > p { position: absolute; z-index: 5; top: 24px; left: 0; width: min(340px, 80vw); margin: 0; padding: 10px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--ctl-radius-sm); box-shadow: var(--ctl-shadow-pop); color: var(--text); line-height: var(--lh-micro); }
-
 .hm-meta { color: var(--text-dim); font-size: var(--t-micro); }
 .hm-dash { color: var(--text-faint); font-size: var(--t-micro); }
 .hm-age { color: var(--text-dim); font-size: var(--t-micro); white-space: nowrap; font-variant-numeric: tabular-nums; }

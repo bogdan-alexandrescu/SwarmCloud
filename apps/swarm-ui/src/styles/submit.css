@@ -512,6 +512,9 @@ form.sbf:not(.in-form) .sbf-send > .ctl-facts > .ctl-fact.is-absent > .ctl-em { 
 .sbf-addset > .sbf-addset-list { width: min(420px, 100%); scroll-margin-bottom: 12px; }
 .sbf-addset-list > .sbf-addset-item { flex-direction: column; align-items: flex-start; gap: 2px; }
 .sbf-addset-list > .sbf-addset-item em { text-align: left; }
+/* A key and its (i) on one line: the note is the tip (issue 439). */
+.sbf-addset-list > .sbf-addset-row { display: flex; align-items: center; gap: 4px; }
+.sbf-addset-row > .sbf-addset-item { flex: 1 1 auto; flex-direction: column; align-items: flex-start; }
 
 /* A SETTING'S "remove" IS ON ITS NAME'S LINE AND AFTER ITS FIELD IN TAB ORDER
    (live QA SUB-17). The button follows the value in the DOM, so a keyboard

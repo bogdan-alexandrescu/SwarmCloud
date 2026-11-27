@@ -277,7 +277,9 @@ describe('Lanes: every honest state', () => {
   it('filtered to nothing: says which filters, over how many attempts read, and clears them', async () => {
     const onView = vi.fn()
     render(<TimelineLanesScreen view="state=DEAD_LETTERED" onView={onView} />)
-    const none = await screen.findByText(/No lane matches/)
+    const none = await screen.findByText(/No lane matches state/)
+    // The sentence sits in the empty state's (i) (issue 439).
+    expect(none.closest('[data-help-description]')).not.toBeNull()
     expect(none.textContent).toContain('4 attempts read')
     fireEvent.click(within(none.closest('.tl-state') as HTMLElement).getByRole('button', { name: /clear filters/i }))
     expect(onView).toHaveBeenCalledWith('')

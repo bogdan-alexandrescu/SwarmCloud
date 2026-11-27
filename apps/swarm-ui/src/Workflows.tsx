@@ -208,6 +208,7 @@ import { NeedsYou, StepRetryButton, mergeHeldBecause, type MergeNeed } from './w
 import { StageGrid, chipKindOf, chipTimeOf, parkReasonsOf, pullRequestOf, stageGridOf, tallyOf, walkStage } from './work/StageGrid'
 import { LineageStrip, lineageOf } from './work/Lineage'
 import { WorkflowNeedsCard, WorkflowQuestions, jumpToQuestions } from './WorkflowQuestions'
+import { InfoTip } from './InfoTip'
 import {
   anyRunning,
   bucketCounts,
@@ -7252,12 +7253,17 @@ function WorkflowOverview({
       </dl>
       <details className="wfp-details">
         <summary>Policy</summary>
+        {/* ONE SHORT LINE (issue 439): the policy in full is behind the (i), word for word. */}
         <p>
-          A step runs once every step it depends on is done.{' '}
-          {keepGoing
-            ? 'A failed step does not stop the others; the steps that depend on it wait on it.'
-            : 'A failed step stops the workflow: no step after it starts.'}{' '}
-          This is what the workflow was submitted with: configuration, not an outcome.
+          Configuration, not an outcome{' '}
+          <InfoTip
+            about="the policy"
+            tip={`A step runs once every step it depends on is done. ${
+              keepGoing
+                ? 'A failed step does not stop the others; the steps that depend on it wait on it.'
+                : 'A failed step stops the workflow: no step after it starts.'
+            } This is what the workflow was submitted with: configuration, not an outcome.`}
+          />
         </p>
       </details>
       <details className="wfp-details">
@@ -7440,19 +7446,22 @@ function CopyLink() {
 }
 
 /** What cancelling would do, step by step, from the states on this read. */
-function cancelConsequence(workflow: Workflow, taskById: ReadonlyMap<string, Task> | null): string {
-  let live = 0
-  let waiting = 0
-  let unstarted = 0
-  let unread = 0
+/** The steps a stop would touch, by what it does to them: never started, waiting, running, or not read. */
+function cancelCounts(workflow: Workflow, taskById: ReadonlyMap<string, Task> | null): { unstarted: number; waiting: number; live: number; unread: number } {
+  const c = { unstarted: 0, waiting: 0, live: 0, unread: 0 }
   for (const s of workflow.steps) {
     const st = stepState(s, taskById)
-    if (st.kind === 'unstarted') unstarted += 1
-    else if (st.kind === 'unknown') unread += 1
+    if (st.kind === 'unstarted') c.unstarted += 1
+    else if (st.kind === 'unknown') c.unread += 1
     else if (TERMINAL_STATES.has(st.state)) continue
-    else if (STATE_MARK[st.state].hue === 'live') live += 1
-    else waiting += 1
+    else if (STATE_MARK[st.state].hue === 'live') c.live += 1
+    else c.waiting += 1
   }
+  return c
+}
+
+function cancelConsequence(workflow: Workflow, taskById: ReadonlyMap<string, Task> | null): string {
+  const { live, waiting, unstarted, unread } = cancelCounts(workflow, taskById)
   const n = (k: number, one: string) => `${k} ${one}${k === 1 ? '' : 's'}`
   const parts: string[] = []
   if (unstarted > 0) parts.push(`${n(unstarted, 'step')} not started will never start`)
@@ -7465,6 +7474,27 @@ function cancelConsequence(workflow: Workflow, taskById: ReadonlyMap<string, Tas
   if (unread > 0) parts.push(`${n(unread, 'step')} whose state was not read ${unread === 1 ? 'is' : 'are'} asked to stop too`)
   const head = parts.length === 0 ? 'Every step has already ended; nothing is left to cancel.' : `${parts.join('; ')}.`
   return `${head} Steps that finished keep their results.`
+}
+
+/**
+ * THE STOP'S CONSEQUENCE, AS ONE SHORT LINE (issue 439: a write to a live
+ * system stays visible): what stops, what is cancelled and what is kept, as
+ * facts; `cancelConsequence`'s sentence says it in full behind the (i), word
+ * for word.
+ */
+function CancelConsequence({ workflow, taskById }: Readonly<{ workflow: Workflow; taskById: ReadonlyMap<string, Task> | null }>) {
+  const facts: string[] = []
+  const { live, waiting, unstarted, unread } = cancelCounts(workflow, taskById)
+  if (unstarted > 0) facts.push(`${unstarted} unstarted cancelled`)
+  if (waiting > 0) facts.push(`${waiting} waiting cancelled`)
+  if (live > 0) facts.push(`${live} running ${live === 1 ? 'stops' : 'stop'}`)
+  if (unread > 0) facts.push(`${unread} not read ${unread === 1 ? 'stops' : 'stop'}`)
+  facts.push(facts.length === 0 ? 'nothing left to cancel' : 'results kept')
+  return (
+    <p className="wfp-confirm-line">
+      {facts.join(' · ')} <InfoTip about="stopping" tip={cancelConsequence(workflow, taskById)} />
+    </p>
+  )
 }
 
 /**
@@ -7560,7 +7590,7 @@ export function CancelWorkflow({
             busy={phase === 'sending' ? 'Stopping…' : false}
             error={phase === 'failed' && error !== null ? `The stop was not recorded: ${error}` : undefined}
           >
-            <p>{cancelConsequence(workflow, taskById)}</p>
+            <CancelConsequence workflow={workflow} taskById={taskById} />
           </TypedConfirm>
         )}
       </>
@@ -7568,7 +7598,7 @@ export function CancelWorkflow({
   }
   return (
     <div className="wfp-confirm" role="group" aria-label="Confirm cancelling this workflow">
-      <p>{cancelConsequence(workflow, taskById)}</p>
+      <CancelConsequence workflow={workflow} taskById={taskById} />
       {phase === 'failed' && error !== null && (
         <p className="wfp-confirm-err" role="alert">
           The stop was not recorded: {error}

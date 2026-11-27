@@ -55,6 +55,7 @@ import { PageHead, Screen, timeAgo } from './Shell'
 import { pluralise } from './types'
 import { useNow } from './useNow'
 import { InApp } from './InApp'
+import { InfoTip } from './InfoTip'
 import { ALL_TENANTS_SCHEDULES, NEW_SCHEDULE, SCHEDULES_ADDRESS, scheduleAddress } from './schedulePaths'
 import { rememberScheduleNames } from './scheduleNames'
 import { ScheduleSources, SourcesSwitch, proposesOf } from './ScheduleSources'
@@ -469,11 +470,14 @@ export function ScheduleActions({
             </>
           }
         >
+          {/* ONE LINE, THE REST BEHIND ITS (i) (issue 439): the run's cost and the dry run, word for word. */}
           <p>
-            This fires the schedule once, now, outside its timetable. Its firing creates work at once, which takes capacity like any other run.
-            {runCost(s)}
+            Creates work now, outside its timetable{' '}
+            <InfoTip
+              about="Run now"
+              tip={`This fires the schedule once, now, outside its timetable. Its firing creates work at once, which takes capacity like any other run.${runCost(s)} A dry run creates nothing and runs no agent.`}
+            />
           </p>
-          <p>A dry run creates nothing and runs no agent.</p>
         </Dialog>
       )}
       {asking === 'pause' && (
@@ -491,9 +495,12 @@ export function ScheduleActions({
             </>
           }
         >
-          <p>No new firings until it is resumed. Work it already made carries on.</p>
+          <p>
+            No new firings until resumed{' '}
+            <InfoTip about="Pause" tip="No new firings until it is resumed. Work it already made carries on. Why, in one line (optional; shown in the list and on this sheet)." />
+          </p>
           <label className="c-field">
-            <span className="c-lbl">Why, in one line (optional; shown in the list and on this sheet)</span>
+            <span className="c-lbl">Why (optional)</span>
             <input className="c-inp" maxLength={PAUSE_REASON_MAX} value={reason} onChange={(e) => setReason(e.target.value)} />
           </label>
         </Dialog>
@@ -523,8 +530,11 @@ export function ScheduleActions({
           }
         >
           <p>
-            The schedule stops firing for good and cannot be brought back. Its history and audit are kept, and work it already made is ordinary
-            work that is not cancelled.
+            Stops firing for good; cannot be undone{' '}
+            <InfoTip
+              about="Delete"
+              tip="The schedule stops firing for good and cannot be brought back. Its history and audit are kept, and work it already made is ordinary work that is not cancelled."
+            />
           </p>
           <label className="c-field">
             <span className="c-lbl">

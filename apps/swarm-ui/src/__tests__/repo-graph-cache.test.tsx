@@ -405,7 +405,7 @@ describe('the served answer latency', () => {
     expect(t.getAttribute('data-form')).toBe('partial')
     expect(t.querySelector('b')?.textContent).toBe('4 ms / 9 ms')
     expect(t.textContent).toMatch(/1 of 2 replicas; not read: swarm-graph-1/)
-    expect(panel('swarm-graph-0').querySelector('[data-row="replica-latency"]')?.textContent).toBe('Answer latency: middle 4 ms, slow 9 ms, slowest 12 ms over 5 answers · cold slow 12 ms')
+    expect(panel('swarm-graph-0').querySelector('[data-row="replica-latency"]')?.textContent).toBe('Latency: middle 4 ms, slow 9 ms, slowest 12 ms, 5 answers · cold slow 12 ms')
     expect(panel('swarm-graph-1').textContent).not.toMatch(/latency|0 ms/i)
   })
 

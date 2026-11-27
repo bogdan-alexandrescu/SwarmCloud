@@ -343,6 +343,17 @@ describe("a schedule's page head", () => {
     expect(posts(calls, '/v1/schedules/sch_a:run')).toHaveLength(0)
   })
 
+  it("opens the Run now dialog with focus on its first action, not on the help mark whose tip would cover the buttons", async () => {
+    await mountActing('schedule=sch_a', ONE(), () => null)
+    await screen.findByRole('heading', { name: 'Schedule sch_a', level: 1 }, WAIT)
+    fireEvent.click(within(head()).getByRole('button', { name: 'Run now' }))
+    const dialog = await findModal()
+    const mark = within(dialog).getByRole('button', { name: 'About Run now' })
+    expect(document.activeElement).not.toBe(mark)
+    expect(dialog.contains(document.activeElement)).toBe(true)
+    expect(within(dialog).getByRole('tooltip', { hidden: true }).hasAttribute('hidden')).toBe(true)
+  })
+
   it('deletes only with the name typed, through DELETE with confirm, and goes back to the list', async () => {
     // MUTATION: drop the `disabledReason` on Delete schedule and it sends with any text.
     const { calls, go } = await mountActing('schedule=sch_a', ONE(), (m, url) =>

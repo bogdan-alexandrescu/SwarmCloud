@@ -14,6 +14,7 @@ import type { ApprovalItem, TaskQuestions } from '../api'
 import type { Result } from '../fetch'
 import type { Task } from '../types'
 import { task as runTask } from './runfixture'
+import { helpIn } from './proseruns'
 
 const api = vi.hoisted(() => ({
   answerQuestion: vi.fn(),
@@ -299,7 +300,8 @@ describe('the other rows act as the console does today', () => {
     // MUTATION: send on the first press and one stray click re-runs a workflow.
     expect(api.rerunWorkflowStep).not.toHaveBeenCalled()
     const ask = screen.getByRole('group', { name: 'Re-run step build?' })
-    expect(ask.textContent).toContain('Re-run step build inside its workflow')
+    // Behind the question's (i), word for word (issue 439).
+    expect(helpIn(ask)).toContain('Re-run step build inside its workflow')
     fireEvent.click(within(ask).getByRole('button', { name: 'Keep it' }))
     expect(screen.queryByRole('group', { name: 'Re-run step build?' })).toBeNull()
     expect(screen.getByRole('button', { name: 'Retry agent step' })).toBeTruthy()

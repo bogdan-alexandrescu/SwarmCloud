@@ -35,6 +35,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
+import { helpIn, shownIn } from './proseruns'
 import { SECTIONS } from '../App'
 
 const WAIT = { timeout: 4000 }
@@ -239,7 +240,10 @@ describe('the people table', () => {
     fireEvent.click(within(drawer).getByRole('button', { name: 'Approve' }))
     const dialog = await screen.findByRole('dialog', { name: 'Approve this workspace' }, WAIT)
     // Nothing beside the drawer's Approve says what it creates, so it asks in §6.4's words.
-    expect(visible(dialog)).toContain('Create a workspace for fay@example.com with 8 agents? A CI job will create its identity and namespace.')
+    expect(shownIn(dialog)).toContain('Create a workspace for fay@example.com with 8 agents?')
+    // Issue 439: what it creates is the question's (i), word for word.
+    expect(helpIn(dialog)).toContain('A CI job will create its identity and namespace.')
+    expect(shownIn(dialog)).not.toContain('A CI job will create')
     expect(writesOf(calls), 'it posted before the confirmation').toHaveLength(0)
     fireEvent.click(within(dialog).getByRole('button', { name: 'Approve' }))
     await waitFor(() => expect(writesOf(calls)).toHaveLength(1), WAIT)
@@ -396,7 +400,9 @@ describe('live QA admin: nothing writes on the first click', () => {
     fireEvent.click(within(row).getByRole('button', { name: 'Lend' }))
     const dialog = await screen.findByRole('dialog', { name: 'Lend this account' }, WAIT)
     // In words, not the broker's enum (QA2-FIX-18, admin2-04).
-    expect(within(dialog).getByTestId('pp-loan-idle').textContent).toContain('This account is paused:')
+    expect(shownIn(within(dialog).getByTestId('pp-loan-idle'))).toBe('Starts no new agent')
+    // Issue 439: the sentence is the line's (i), word for word.
+    expect(helpIn(within(dialog).getByTestId('pp-loan-idle'))).toContain('This account is paused: it starts no new agent until its owner makes it available again.')
   })
 
   it('ADM-3: a ceiling Save asks first with old → new and the change, and an unchanged value has nothing to save', async () => {

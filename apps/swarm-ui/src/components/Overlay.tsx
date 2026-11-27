@@ -19,9 +19,11 @@
  * ONLY on an exact match of the name it asks for -- no trimming, no case
  * folding, because "close enough" is what the confirm exists to refuse.
  */
-import { Fragment, useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Button } from './Button'
+import { InfoTip } from '../InfoTip'
+import { placeTipIn } from '../tipPlacement'
 
 export const TOOLTIP_DELAY_MS = 120
 
@@ -39,8 +41,14 @@ export function Tooltip({ tip, children }: { tip: string; children: ReactNode })
     setOpen(false)
   }
   useEffect(() => () => hide(), [])
+  const host = useRef<HTMLSpanElement | null>(null)
+  const tipEl = useRef<HTMLSpanElement | null>(null)
+  useLayoutEffect(() => {
+    if (open && host.current !== null && tipEl.current !== null) placeTipIn(host.current, tipEl.current, false)
+  }, [open])
   return (
     <span
+      ref={host}
       className="c-tip-host"
       aria-describedby={id}
       onMouseEnter={() => show(false)}
@@ -56,7 +64,7 @@ export function Tooltip({ tip, children }: { tip: string; children: ReactNode })
           shown; hidden until hover or focus. `data-help-description` marks it
           as help, not surface prose, so the prose ratchet (proseapp.tsx) does
           not count it, as People's InfoTip and Profile's AboutTip are kept. */}
-      <span role="tooltip" id={id} className="c-tip" data-help-description="" hidden={!open}>
+      <span ref={tipEl} role="tooltip" id={id} className="c-tip" data-help-description="" hidden={!open}>
         {tip}
       </span>
     </span>
@@ -189,8 +197,12 @@ export function Dialog({
     const opener = openerNow()
     const el = box.current
     // The first field if there is one, else the first control: a typed
-    // confirm opens with its field focused.
-    const first = el?.querySelector<HTMLElement>('input:not([disabled])') ?? el?.querySelector<HTMLElement>(FOCUSABLE) ?? null
+    // confirm opens with its field focused. Never a help mark: focus opens
+    // its tip, and a tip drawn at once covers the dialog's own buttons.
+    const first =
+      el?.querySelector<HTMLElement>('input:not([disabled])') ??
+      Array.from(el?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []).find((n) => n.closest('.info-tip') === null) ??
+      null
     first?.focus()
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -368,9 +380,15 @@ export function CancelWorkflowConfirm({
       busy={busy === true ? 'Cancelling…' : busy}
       error={error}
     >
+      {/* THE DISCLOSURE STAYS, AS ONE SHORT LINE (issue 439: a write to a
+          live system): what stops, what is cancelled, what is kept, as facts.
+          The sentence that says it in full is behind the (i), word for word. */}
       <p>
-        {steps(running, 'running step is', 'running steps are')} asked to stop at their next heartbeat;{' '}
-        {steps(notStarted, 'step not yet started is', 'steps not yet started are')} cancelled. Steps that finished keep their results.
+        {steps(running, 'running step', 'running steps')} stop · {steps(notStarted, 'unstarted step', 'unstarted steps')} cancelled · results kept{' '}
+        <InfoTip
+          about="cancelling"
+          tip={`${steps(running, 'running step is', 'running steps are')} asked to stop at their next heartbeat; ${steps(notStarted, 'step not yet started is', 'steps not yet started are')} cancelled. Steps that finished keep their results.`}
+        />
       </p>
     </TypedConfirm>
   )

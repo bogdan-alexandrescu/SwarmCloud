@@ -3916,7 +3916,7 @@
   },
   "src/__tests__/artifacts.rawpatch.fixture.test.tsx": {
     "testing-library/no-node-access": {
-      "count": 6
+      "count": 8
     }
   },
   "src/__tests__/artifacts.rawpatch.test.tsx": {
@@ -4761,7 +4761,7 @@
       "count": 3
     },
     "testing-library/no-node-access": {
-      "count": 12
+      "count": 13
     }
   },
   "src/__tests__/contrast.config-lead.test.tsx": {
@@ -6317,7 +6317,7 @@
       "count": 2
     },
     "testing-library/no-node-access": {
-      "count": 8
+      "count": 9
     },
     "testing-library/no-unnecessary-act": {
       "count": 1
@@ -7441,6 +7441,41 @@
       "count": 20
     }
   },
+  "src/__tests__/prose.states.admin.test.tsx": {
+    "sonarjs/no-empty-test-file": {
+      "count": 1
+    }
+  },
+  "src/__tests__/prose.states.agent.test.tsx": {
+    "sonarjs/no-empty-test-file": {
+      "count": 1
+    }
+  },
+  "src/__tests__/prose.states.config.test.tsx": {
+    "sonarjs/no-empty-test-file": {
+      "count": 1
+    }
+  },
+  "src/__tests__/prose.states.overview.test.tsx": {
+    "sonarjs/no-empty-test-file": {
+      "count": 1
+    }
+  },
+  "src/__tests__/prose.states.shell.test.tsx": {
+    "sonarjs/no-empty-test-file": {
+      "count": 1
+    }
+  },
+  "src/__tests__/prose.states.work.test.tsx": {
+    "sonarjs/no-empty-test-file": {
+      "count": 1
+    }
+  },
+  "src/__tests__/prose.states.workflows.test.tsx": {
+    "sonarjs/no-empty-test-file": {
+      "count": 1
+    }
+  },
   "src/__tests__/proseapp.tsx": {
     "sonarjs/no-nested-template-literals": {
       "count": 1
@@ -7454,6 +7489,31 @@
   },
   "src/__tests__/prosebase.ts": {
     "sonarjs/no-os-command-from-path": {
+      "count": 2
+    }
+  },
+  "src/__tests__/prosestates.agent.tsx": {
+    "testing-library/no-node-access": {
+      "count": 1
+    }
+  },
+  "src/__tests__/prosestates.overview.tsx": {
+    "testing-library/no-node-access": {
+      "count": 2
+    }
+  },
+  "src/__tests__/prosestates.shell.tsx": {
+    "testing-library/no-node-access": {
+      "count": 2
+    }
+  },
+  "src/__tests__/prosestates.work.tsx": {
+    "testing-library/no-node-access": {
+      "count": 15
+    }
+  },
+  "src/__tests__/prosestates.workflows.tsx": {
+    "testing-library/no-node-access": {
       "count": 2
     }
   },
@@ -8168,10 +8228,10 @@
       "count": 1
     },
     "testing-library/no-container": {
-      "count": 8
+      "count": 9
     },
     "testing-library/no-node-access": {
-      "count": 22
+      "count": 24
     }
   },
   "src/__tests__/qa.u10b.timeline.test.tsx": {
@@ -12114,7 +12174,7 @@
       "count": 12
     },
     "testing-library/no-node-access": {
-      "count": 68
+      "count": 71
     }
   },
   "src/__tests__/submit.rebrand.test.tsx": {
@@ -12122,7 +12182,7 @@
       "count": 24
     },
     "testing-library/no-node-access": {
-      "count": 51
+      "count": 53
     }
   },
   "src/__tests__/submit.room.test.tsx": {
@@ -12339,7 +12399,7 @@
       "count": 2
     },
     "testing-library/no-node-access": {
-      "count": 8
+      "count": 11
     }
   },
   "src/__tests__/tenants.test.tsx": {
@@ -12558,7 +12618,7 @@
       "count": 1
     },
     "testing-library/no-node-access": {
-      "count": 142
+      "count": 143
     },
     "testing-library/render-result-naming-convention": {
       "count": 1
@@ -13346,10 +13406,10 @@
       "count": 2
     },
     "testing-library/no-container": {
-      "count": 8
+      "count": 9
     },
     "testing-library/no-node-access": {
-      "count": 16
+      "count": 17
     }
   },
   "src/__tests__/vq.timeline.outcomes.test.tsx": {

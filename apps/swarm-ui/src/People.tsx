@@ -401,7 +401,8 @@ function Approve({ row, reload, confirm, onSaid }: { row: PersonRow; reload: () 
           }
         >
           <p>
-            Create a workspace for {row.email} with {ceiling} agents? A CI job will create its identity and namespace.
+            Create a workspace for {row.email} with {ceiling} agents?{' '}
+            <InfoTip about="what approving creates" tip="A CI job will create its identity and namespace." />
           </p>
         </Dialog>
       )}
@@ -771,15 +772,24 @@ function LoanPicker({
             </>
           }
         >
-          <p>{lend ? `Lend ${name} to ${row.email}?` : `Reclaim ${name} from ${row.email}?`}</p>
-          <p className="ur-hint">
-            {lend
-              ? `Their work may then run on an account ${lender(chosen.owner_tenant)} owns.`
-              : `${lender(chosen.owner_tenant)} stops lending it to them; their new work is no longer offered it.`}
+          <p>
+            {lend ? `Lend ${name} to ${row.email}?` : `Reclaim ${name} from ${row.email}?`}{' '}
+            <InfoTip
+              about={lend ? 'what lending does' : 'what reclaiming does'}
+              tip={
+                lend
+                  ? `Their work may then run on an account ${lender(chosen.owner_tenant)} owns.`
+                  : `${lender(chosen.owner_tenant)} stops lending it to them; their new work is no longer offered it.`
+              }
+            />
           </p>
           {lend && idle && (
             <p className="ur-hint" role="note" data-testid="pp-loan-idle">
-              This account is {accountStateWord(chosen.state ?? '')}: it starts no new agent until its owner makes it available again.
+              Starts no new agent{' '}
+              <InfoTip
+                about="an account that starts no new agent"
+                tip={`This account is ${accountStateWord(chosen.state ?? '')}: it starts no new agent until its owner makes it available again.`}
+              />
             </p>
           )}
         </Dialog>
@@ -1791,13 +1801,17 @@ function AdminSwitch({ row, doc, reload }: { row: PersonRow; doc: PeopleDoc; rel
   const holder = holderOf(doc, row.email)
   const on = holder !== undefined
   const locked = !read || holder?.role === 'owner'
-  const why = !read
-    ? `The admin roles were not read (${doc.admins_error ?? 'not served'}), so this cannot be switched here.`
+  // The switch's state is one short line; why it is so is the (i) beside it (the owner's no-prose rule, issue 439).
+  const why: { line: string; tip: string } = !read
+    ? { line: 'Not read', tip: `The admin roles were not read (${doc.admins_error ?? 'not served'}), so this cannot be switched here.` }
     : holder?.role === 'owner'
-      ? 'Platform owner: set in the deployment’s configuration, so it is not switched here.'
+      ? { line: 'Platform owner', tip: 'Platform owner: set in the deployment’s configuration, so it is not switched here.' }
       : on
-        ? `Granted by ${holder.granted_by ?? 'unknown'}${holder.granted_at !== null ? ` ${timeAgo(holder.granted_at)}` : ''}. The last admin cannot be removed; the API says so when it refuses.`
-        : 'Off. An admin through a group is an admin but has no role recorded here, so they show as off.'
+        ? {
+            line: `Granted by ${holder.granted_by ?? 'unknown'}${holder.granted_at !== null ? ` ${timeAgo(holder.granted_at)}` : ''}`,
+            tip: 'The last admin cannot be removed; the API says so when it refuses.',
+          }
+        : { line: 'Off', tip: 'An admin through a group is an admin but has no role recorded here, so they show as off.' }
   const go = async () => {
     if (busy) return
     setBusy(true)
@@ -1824,7 +1838,9 @@ function AdminSwitch({ row, doc, reload }: { row: PersonRow; doc: PeopleDoc; rel
         >
           <span className="pp-switch-knob" aria-hidden="true" />
         </button>
-        <span className="ur-hint">{why}</span>
+        <span className="ur-hint">
+          {why.line} <InfoTip about="the Admin switch" tip={why.tip} />
+        </span>
       </div>
       {asking && (
         <Dialog
@@ -1840,11 +1856,7 @@ function AdminSwitch({ row, doc, reload }: { row: PersonRow; doc: PeopleDoc; rel
           }
         >
           <p>{on ? `Remove admin from ${row.email}?` : `Make ${row.email} a platform admin?`}</p>
-          {!on && (
-            <p className="ur-hint">
-              An admin can approve workspaces, change every ceiling and pool limit, lend accounts and grant admin to others.
-            </p>
-          )}
+          {!on && <GrantGives />}
         </Dialog>
       )}
       <SaidLine said={said} />
@@ -1997,6 +2009,15 @@ function AdminList({ admins, onRemove }: { admins: AdminHolder[]; onRemove: (ema
 /** What a grant gives, in both places Grant admin asks before it grants. */
 const GRANT_GIVES = 'An admin can approve workspaces, change every ceiling and pool limit, lend accounts and grant admin to others.'
 
+/** What a grant gives, as the grant dialogs say it: one line, the powers in its (i) (the owner's no-prose rule, issue 439). */
+function GrantGives() {
+  return (
+    <p className="ur-hint">
+      Full platform admin powers <InfoTip about="what an admin can do" tip={GRANT_GIVES} />
+    </p>
+  )
+}
+
 function granted(d: { email: string; changed: boolean }): string {
   return d.changed ? `${d.email} is now an admin.` : `${d.email} was already an admin.`
 }
@@ -2066,7 +2087,7 @@ function GrantDialog({ reload, onClose, onSaid }: { reload: () => void; onClose:
       ) : (
         <>
           <p>Make {asking} a platform admin?</p>
-          <p className="ur-hint">{GRANT_GIVES}</p>
+          <GrantGives />
         </>
       )}
     </Dialog>
@@ -2172,7 +2193,7 @@ function Admins({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
           }
         >
           <p>Make {granting} a platform admin?</p>
-          <p className="ur-hint">{GRANT_GIVES}</p>
+          <GrantGives />
         </Dialog>
       )}
       {target !== null && (

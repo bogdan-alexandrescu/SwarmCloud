@@ -22,6 +22,7 @@ import { interviewAddress, proposalAddress } from './interviewPaths'
 import { Absent } from './primitives'
 import { RunChangesTab, changesAtOf, withChangesAt } from './WorkflowChanges'
 import { Markdown } from './ArtifactViewer'
+import { InfoTip } from './InfoTip'
 import { EMPTY_PLAN, PlanEditor } from './PlanEditor'
 import { approvalAddress } from './approvalPaths'
 import './styles/intake.css'
@@ -398,8 +399,11 @@ export function RunsScreen({ view, go }: { view: string | null; go: (to: string)
   const runId = runOf(view)
   const tab = runTabOf(view)
   const [reloads, setReloads] = useState(0)
-  /** Why the run was re-read, when a refusal made this page do it. */
-  const [notice, setNotice] = useState<string | null>(null)
+  /**
+   * Why the run was re-read, when a refusal made this page do it: one short
+   * line on the surface, the sentence behind its (i), word for word (issue 439).
+   */
+  const [notice, setNotice] = useState<{ line: string; tip: string } | null>(null)
   useEffect(() => setNotice(null), [runId])
   /** The issue's title, once the run is read: the page's title (item 4). */
   const [heading, setHeading] = useState<{ run: string; title: string } | null>(null)
@@ -413,8 +417,8 @@ export function RunsScreen({ view, go }: { view: string | null; go: (to: string)
     // literal below as the tab's heading and skips a per-run title. Until the
     // run is read, the id is all this page knows to call it.
     const pageTitle = heading !== null && heading.run === runId ? heading.title : runId
-    const reread = (why: string) => {
-      setNotice(why)
+    const reread = (line: string, tip: string) => {
+      setNotice({ line, tip })
       setReloads((n) => n + 1)
     }
     // A heading with no space is a reference or an id: one line, cut, never
@@ -429,7 +433,9 @@ export function RunsScreen({ view, go }: { view: string | null; go: (to: string)
         {notice !== null && (
           <div className="rn-notice" role="status">
             <WarnMark />
-            <span>{notice}</span>
+            <span>
+              {notice.line} <InfoTip about="why the run was read again" tip={notice.tip} />
+            </span>
           </div>
         )}
         <Screen
@@ -950,7 +956,8 @@ export function planMovedUnder(shown: IssueRun, served: IssueRun): boolean {
 
 function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
   run: IssueRun
-  reread: (why: string) => void
+  /** Re-read the run, saying why: `line` on the surface, `tip` behind its (i). */
+  reread: (line: string, tip: string) => void
   go: (to: string) => void
   /** Told the page's title: the issue's, or its reference when the run kept none. */
   onHeading: (title: string) => void
@@ -1043,7 +1050,7 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
       setHeld(null)
       if (what !== 'edit') setDecided({ what, digest: on, at })
       if (next !== undefined && next !== null && typeof next.id === 'string') setRun(next)
-      else reread('The API accepted this and did not echo the run, so it was read again.')
+      else reread('Done; the run was read again', 'The API accepted this and did not echo the run, so it was read again.')
       return
     }
     if (r.status !== 'error') return
@@ -1051,6 +1058,7 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
       setActing({ kind: 'idle' })
       close()
       reread(
+        'The plan changed; nothing was done',
         'The plan changed since you opened it, so nothing was done. This is the plan now: read it, then act on it again.',
       )
       return
@@ -1058,7 +1066,7 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
     if (r.error.code === 'invalid_run_transition' || r.error.kind === 'conflict') {
       setActing({ kind: 'idle' })
       close()
-      reread(`The run moved on since you opened it, so nothing was done: ${r.error.message}`)
+      reread('The run moved on; nothing was done', `The run moved on since you opened it, so nothing was done: ${r.error.message}`)
       return
     }
     setActing({ kind: 'failed', error: r.error })
@@ -1109,9 +1117,10 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
     if (decided === null || decided.at !== at || run.state === 'PLANNED') return null
     return (
       <p className="rn-decided sb-note" role="status">
+        {/* THE ANSWER IS ONE WORD (issue 439): what it did to the run is behind the (i), word for word. */}
         {decided.what === 'approve'
-          ? <><b>Approved.</b> The run is {runStateWord(run.state)} now{run.workflow_id === null ? '.' : ', with its workflow created.'}</>
-          : <><b>Rejected.</b> The run is {runStateWord(run.state)} now; nothing ran.</>}
+          ? <><b>Approved.</b> <InfoTip about="the approval" tip={`The run is ${runStateWord(run.state)} now${run.workflow_id === null ? '.' : ', with its workflow created.'}`} /></>
+          : <><b>Rejected.</b> <InfoTip about="the rejection" tip={`The run is ${runStateWord(run.state)} now; nothing ran.`} /></>}
       </p>
     )
   }
@@ -1182,11 +1191,13 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
         {held !== null && (
           <div className="rn-notice rn-held" role="status">
             <WarnMark />
+            {/* ONE SHORT LINE (issue 439): who edited it beside it, why the
+                actions are refused behind the (i), word for word. */}
             <span>
-              The plan changed since this page drew it
-              {held.plan_edited_by !== null && <> (edited by {held.plan_edited_by})</>}. The summary below is the plan
-              this page drew; the decision page reads the newest.
+              The plan changed since this page drew it{' '}
+              <InfoTip about="the changed plan" tip="The summary below is the plan this page drew; the decision page reads the newest." />
             </span>
+            {held.plan_edited_by !== null && <span className="ctl-sub">edited by {held.plan_edited_by}</span>}
             <Button disabled={busy} onClick={showHeld}>Show the plan now</Button>
           </div>
         )}
@@ -1906,15 +1917,23 @@ function Overlaps({ plan, openWork, folded, ended }: { plan: RunPlan; openWork: 
     <>
       {overlaps === undefined || overlaps === null ? (
         <p className="sb-note">
-          This plan does not say: it was written without the planner&rsquo;s read of the repository&rsquo;s open issues
-          and pull requests, so nothing here rules overlaps out.
+          Not checked{' '}
+          <InfoTip
+            about="overlaps"
+            tip="This plan does not say: it was written without the planner’s read of the repository’s open issues and pull requests, so nothing here rules overlaps out."
+          />
         </p>
       ) : overlaps.length === 0 ? (
         <p className="sb-note">
+          {/* What was read is facts, the sentence that says it behind the (i) (issue 439). */}
           None found{openWork === null ? '.' : <>
-            {' '}in {pluralise(openWork.issues.length, 'open issue')} and{' '}
-            {pluralise(openWork.pull_requests.length, 'open pull request')} read when the run was created
-            {openWork.issues_truncated || openWork.pull_requests_truncated ? ' (the list was cut, so not every one was read)' : ''}.
+            {' · '}{pluralise(openWork.issues.length, 'open issue')} · {pluralise(openWork.pull_requests.length, 'pull request')} read{' '}
+            {openWork.issues_truncated || openWork.pull_requests_truncated ? '· list cut ' : ''}
+            <InfoTip
+              about="the overlaps read"
+              tip={`None found in ${pluralise(openWork.issues.length, 'open issue')} and ${pluralise(openWork.pull_requests.length, 'open pull request')} read when the run was created${
+                openWork.issues_truncated || openWork.pull_requests_truncated ? ' (the list was cut, so not every one was read)' : ''}.`}
+            />
           </>}
         </p>
       ) : (

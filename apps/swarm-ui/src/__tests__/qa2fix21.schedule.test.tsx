@@ -15,6 +15,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import { serve, visible } from './repofixture'
+import { helpIn } from './proseruns'
 import { Routed } from './screenroute'
 import { holdScheduleClock, minutesAgo } from './scheduleclock'
 
@@ -212,7 +213,8 @@ describe('automate2-10: a type that never merges', () => {
     const s = schedule('sch_a', { type: 'cost-report', name: 'Weekly cost report', gate: { run: 'auto' } })
     await open(s, [firing(1)], [{ name: 'cost-report', description: 'A cost report.', floor_gate: { merge: 'off' }, default_gate: { merge: 'off' } }])
     const note = () => document.querySelector<HTMLElement>('[data-testid="sc-merge-switch"]')!
-    await waitFor(() => expect(visible(note())).toContain('never merges'), WAIT)
+    // The why is behind the note's (i) since issue 439.
+    await waitFor(() => expect(helpIn(note())).toContain('never merges'), WAIT)
     // MUTATION: drop the `floor === 'off'` branch and this still tells the
     // reader to edit the gate to approve each merge.
     expect(visible(note())).toContain('This schedule does not merge.')
@@ -222,6 +224,6 @@ describe('automate2-10: a type that never merges', () => {
   it('keeps the edit-the-gate route for a type that may merge', async () => {
     await open(schedule('sch_a', { gate: { run: 'auto' } }), [firing(1)])
     const note = () => document.querySelector<HTMLElement>('[data-testid="sc-merge-switch"]')!
-    await waitFor(() => expect(visible(note())).toContain('Edit its gate'), WAIT)
+    await waitFor(() => expect(helpIn(note())).toContain('Edit its gate'), WAIT)
   })
 })

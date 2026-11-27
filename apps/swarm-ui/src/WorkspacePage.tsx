@@ -300,7 +300,8 @@ function RolesCards({ data, canManage, reload }: { data: WorkspaceRoles; canMana
           {!personal && (
             <details className="wpg-why">
               <summary>Why the default is never admin</summary>
-              <p>
+              {/* ISSUE 439: a folded body is help copy, as Access's rule folds are. */}
+              <p data-help-description="">
                 Admin is given person by person, so nobody gains it by being added to the Google group. A platform admin is admin in every group
                 workspace; a personal workspace&rsquo;s person is its fixed admin.
               </p>

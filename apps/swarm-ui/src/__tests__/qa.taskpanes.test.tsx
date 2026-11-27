@@ -106,7 +106,7 @@ describe('QA-115: the Failed card on a task’s Details', () => {
       .getAllByRole('link')
       .filter((a) => (a.getAttribute('href') ?? '').endsWith('/attempts'))
     // MUTATION: put the `Attempts ›` DtMore back in DtFailure's head -- two links, one place.
-    expect(toAttempts.map((a) => a.textContent)).toEqual(['Attempts tab ›'])
+    expect(toAttempts.map((a) => a.textContent)).toEqual(['Attempts tab'])
     // MUTATION: drop the Progress card's link instead -- the one left is not the tab's.
     expect(toAttempts[0]!.closest('.dt-progress')).not.toBeNull()
   })

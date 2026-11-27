@@ -44,7 +44,8 @@ describe('VQ-026: Submit draws a state in words, never the enum in capitals', ()
   it('the chooser says where an agent lands in lower case', () => {
     const { container } = render(<SubmitChooser go={() => {}} />)
     expect(visible(container)).not.toMatch(RAW_STATE)
-    expect(visible(container)).toContain('It lands ready or parked and costs nothing until the scheduler admits it.')
+    // Behind the card's (i) (issue 439), word for word.
+    expect([...container.querySelectorAll('[data-help-description]')].map((t) => visible(t))).toContain('One agent, one runner. It lands ready or parked and costs nothing until the scheduler admits it.')
   })
 
   it('the task summary says "ready or parked"', async () => {

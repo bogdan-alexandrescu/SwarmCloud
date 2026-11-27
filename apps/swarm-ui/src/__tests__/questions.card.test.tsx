@@ -18,6 +18,7 @@ import type { TaskQuestions } from '../api'
 import type { Result } from '../fetch'
 import type { NotificationFeed } from '../api'
 import { cascade } from './cssgate'
+import { helpIn } from './proseruns'
 import { task as runTask } from './runfixture'
 
 const api = vi.hoisted(() => ({
@@ -143,8 +144,9 @@ describe('the Questions for you card', () => {
     render(<QuestionsCard task={asked()} />)
 
     const card = await screen.findByRole('region', { name: 'Questions for you' })
-    expect(card.textContent).toContain('This agent (step design) asked you this')
-    expect(card.textContent).toContain('whoever launched workflow wf_studio (owner@example.com)')
+    // Behind the card's (i), word for word (issue 439).
+    expect(helpIn(card)).toContain('This agent (step design) asked you this')
+    expect(helpIn(card)).toContain('whoever launched workflow wf_studio (owner@example.com)')
     expect(card.textContent).not.toContain('no answer box')
   })
 

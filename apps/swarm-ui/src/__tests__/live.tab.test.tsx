@@ -174,7 +174,8 @@ describe('QA12-11: member control goes both ways, and asks once when turned on',
     expect(ask.textContent).toMatch(/later attempts/)
     expect(ask.textContent).toMatch(/turn it off/)
     // VQ-056: the console speaks of workspaces, never tenants.
-    expect(ask.textContent).toContain('any member of this workspace can take control of its browser')
+    // The sentence is the (i)'s tip (issue 439); the dialog keeps one line.
+    expect(ask.querySelector('[data-help-description]')?.textContent).toContain('any member of this workspace can take control of its browser')
     expect(ask.textContent).not.toMatch(/\btenant/i)
     fireEvent.click(within(ask).getByRole('button', { name: 'Let any member take control' }))
     expect(api.openLiveToMembers).toHaveBeenCalledWith(ID)

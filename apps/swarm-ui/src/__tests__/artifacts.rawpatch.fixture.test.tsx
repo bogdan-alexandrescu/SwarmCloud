@@ -99,7 +99,9 @@ describe("the fixture console shows the raw patch both ways", () => {
     const row = await listed()
     await waitFor(() => expect(links(row, 'Download raw patch')).toHaveLength(1), { timeout: LONG })
     expect(links(row, 'download')).toHaveLength(1)
-    expect(row.textContent).toMatch(/not redacted: the patch as stored, for you as its submitter/)
+    // The disclosure is one short line; its sentence is the (i)'s tip (issue 439).
+    expect(row.querySelector('.art-rawpatch .ctl-sub')?.textContent).toMatch(/^not redacted/)
+    expect(row.querySelector('.art-rawpatch [data-help-description]')?.textContent).toMatch(/not redacted: the patch as stored, for you as its submitter/)
   }, 30_000)
 
   it("another user's agent offers only the redacted download, without the raw patch or its note", async () => {

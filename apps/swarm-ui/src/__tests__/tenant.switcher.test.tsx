@@ -28,6 +28,7 @@ import STYLES from '../styles.css?raw'
 import { TENANT_HEADER, TENANT_PREF, apiHeaders, chooseTenant, chosenTenant, read, route, write, type Result } from '../fetch'
 import { artifactRawUrl } from '../api'
 import { checkpointDownloadHref } from '../CheckpointBrowser'
+import { helpIn, shownIn } from './proseruns'
 
 const JSON_HEADERS = { 'content-type': 'application/json' }
 const ok = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: JSON_HEADERS })
@@ -451,7 +452,9 @@ describe('the default workspace in the tenant block (§4.5)', () => {
     fireEvent.click(switcher()!)
     expect(rowFor('eng')?.textContent).toContain('default')
     expect(rowFor('Research')?.textContent).not.toContain('default')
-    expect(picker()?.textContent).toContain('Kept for this tab’s session')
+    // The line on the surface, the sentence behind its (i) (issue 439).
+    expect(shownIn(picker())).toContain('This tab only')
+    expect(helpIn(picker())).toContain('Kept for this tab’s session')
     fireEvent.keyDown(document, { key: 'Escape' })
 
     expect(backButton(), 'no way back to the default over a switch').toBeDefined()

@@ -8,6 +8,8 @@ import {
 import { LIST, PERMISSIONS, GT_PAGE, UrCap, UrCrumb, UrNavButton, UrRadio, UrRefresh, UrRegion, useUrRead, writeFailure, type UrRead } from './RepositoriesParts'
 import { CountNote, PageHead } from './Shell'
 import { GitHubSetupCard } from './GitHubConnect'
+import { InfoTip } from './InfoTip'
+import { WriteRefusal } from './WriteRefusal'
 import { timeAgo, type OnboardingDoc } from './types'
 
 /**
@@ -45,6 +47,15 @@ const NO_EXPIRY = 'No expiry recorded for this token'
 
 /** The terminal path's disclosure, and the team token's (GT-GUIDE). */
 const PAT_TOGGLE = 'Use a personal access token instead (advanced)'
+
+// A token entry's explanations (issue 439): each behind its step's (i), word for word.
+const PAT_TIP = 'For when Connect GitHub above is not an option. A personal access token does not renew itself: you store a new one before it expires.'
+const ENTRY_TIP = 'SwarmCloud names the secret that will hold the token; the name is not a credential.'
+const NO_ENTRY_TIP = "Create the token entry, or press Rotate on a token above, to see its secret's name and the command that stores its value."
+const STORE_TIP = 'Store the token from your terminal; the command reads it from stdin.'
+const NO_COMMAND_TIP = "The command needs the entry's tenant and provider suffix, which the answer did not carry."
+const CHECK_TIP =
+  "SwarmCloud sees the new version, keeps the last 4 characters, checks the token's permissions and shows them here. The token itself is never shown here: it goes from your terminal to Secret Manager."
 
 /** The scopes as the register card offers them: who the token is for, not the API's word. */
 const SCOPE_CHOICE: Readonly<Record<TokenScope, string>> = { user: 'Me', repository: 'One repository', tenant: 'Team' }
@@ -351,14 +362,10 @@ function RegisterToken({
 
   return (
     <Card id={id} className={className} title={title} action={<Chip>value never enters the console</Chip>}>
-      {scopes.includes('user') && (
-        <p className="ur-hint">
-          For when Connect GitHub above is not an option. A personal access token does not renew itself: you store a new
-          one before it expires.
-        </p>
-      )}
+      {/* ISSUE 439: the step's explanations sit behind its (i)s, word for word. */}
       <p className="ur-sub">
-        1. Create the token entry. SwarmCloud names the secret that will hold the token; the name is not a credential.
+        1. Create the token entry <InfoTip about="the token entry" tip={ENTRY_TIP} />
+        {scopes.includes('user') && <InfoTip about="personal access tokens" tip={PAT_TIP} />}
       </p>
       <div className="ur-slot">
         {scopes.length > 1 && (
@@ -389,11 +396,13 @@ function RegisterToken({
       </div>
       {refused !== null && (
         <Banner tone="bad" title="The token entry was not created">
-          {refused}
+          <WriteRefusal text={refused} />
         </Banner>
       )}
       {slot === null ? (
-        <p className="ur-hint">Create the token entry, or press Rotate on a token above, to see its secret's name and the command that stores its value.</p>
+        <p className="ur-hint">
+          No token entry yet <InfoTip about="the token entry" tip={NO_ENTRY_TIP} />
+        </p>
       ) : (
         <>
           <div className="ur-secret">
@@ -409,11 +418,12 @@ function RegisterToken({
               </span>
             )}
           </div>
-          <p className="ur-sub">2. Store the token from your terminal; the command reads it from stdin:</p>
+          <p className="ur-sub">
+            2. Store it from your terminal <InfoTip about="storing the token" tip={STORE_TIP} />
+          </p>
           {command === null ? (
             <p className="ur-hint">
-              <Dash why="The answer did not name its tenant or provider suffix" /> The command needs the entry's tenant and
-              provider suffix, which the answer did not carry.
+              <Dash why="The answer did not name its tenant or provider suffix" /> <InfoTip about="the command" tip={NO_COMMAND_TIP} />
             </p>
           ) : (
             <pre className="ur-term">
@@ -421,8 +431,7 @@ function RegisterToken({
             </pre>
           )}
           <p className="ur-sub">
-            3. SwarmCloud sees the new version, keeps the last 4 characters, checks the token's permissions and shows
-            them here. The token itself is never shown here: it goes from your terminal to Secret Manager.
+            3. SwarmCloud checks it <InfoTip about="checking the token" tip={CHECK_TIP} />
           </p>
         </>
       )}

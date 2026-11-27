@@ -86,8 +86,8 @@ describe('"+ Add setting ▾" is one menu, and it adds a setting', () => {
     expect(add.getAttribute('aria-expanded')).toBe('true')
     const menu = screen.getByRole('group', { name: 'settings to add' })
     const item = within(menu).getByRole('button', { name: /^sleep_seconds/ })
-    // The runner's own note travels with the key.
-    expect(visible(item)).toContain('interruptible sleep')
+    // The runner's own note travels with the key, behind its (i) (issue 439).
+    expect(visible(item.parentElement!.querySelector('[data-help-description]'))).toContain('interruptible sleep')
     expect(within(menu).getByRole('button', { name: /a setting of your own/ })).toBeTruthy()
 
     const before = container.querySelectorAll('.sbf-input .sbf-field').length

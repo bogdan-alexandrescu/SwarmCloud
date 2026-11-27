@@ -322,7 +322,7 @@ describe('#101: Details carries the compact timeline and a link to the full one'
     // The agent's own path, under the list a finished agent is in (live QA
     // WA-21): it was the legacy `#work/task/<id>/attempts` hash.
     const link = section.querySelector<HTMLAnchorElement>('a[href="/agents/recent/tsk_charts/attempts"]')
-    expect(link?.textContent).toBe('Attempts tab ›')
+    expect(link?.textContent).toBe('Attempts tab')
   })
 })
 

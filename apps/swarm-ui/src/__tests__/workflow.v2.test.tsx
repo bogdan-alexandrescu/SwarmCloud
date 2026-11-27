@@ -12,6 +12,7 @@ import type { Result } from '../fetch'
 import type { CancelWorkflowResult, WorkflowBoard, WorkflowUsage } from '../api'
 import type { Task, TaskDispatch, TaskState, Workflow, WorkflowStep } from '../types'
 import { painted } from './marks'
+import { helpIn } from './proseruns'
 
 const api = vi.hoisted(() => ({
   loadWorkflowBoard: vi.fn(),
@@ -371,9 +372,11 @@ describe('Cancel workflow', () => {
     // A step runs, so the ask is the canonical typed-confirm dialog (Overlay.tsx).
     const ask = screen.getByRole('dialog')
     // It names what it cancels and what keeps running.
-    expect(ask.textContent).toContain('1 step not started will never start')
-    expect(ask.textContent).toContain('1 running step is asked to stop and keeps its slot until its worker exits')
-    expect(ask.textContent).toContain('Steps that finished keep their results.')
+    // Behind the dialog's (i), word for word (issue 439); the line says it as facts.
+    expect(helpIn(ask)).toContain('1 step not started will never start')
+    expect(helpIn(ask)).toContain('1 running step is asked to stop and keeps its slot until its worker exits')
+    expect(helpIn(ask)).toContain('Steps that finished keep their results.')
+    expect(ask.textContent).toContain('1 unstarted cancelled · 1 running stops · results kept')
   })
 
   it('calls cancelWorkflow on confirm, then re-reads', async () => {

@@ -31,7 +31,14 @@ import STYLES from '../styles.css?raw'
 import { flatRules, gate } from './cssgate'
 
 const WAIT = { timeout: 4000 }
-const visible = (el: Element | null) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim()
+// What is drawn on the surface: an (i)'s hidden sentence is not (issue 439).
+const visible = (el: Element | null) => {
+  if (el === null) return ''
+  const shown = el.cloneNode(true) as Element
+  for (const tip of shown.querySelectorAll('[data-help-description]')) tip.remove()
+  return (shown.textContent ?? '').replace(/\s+/g, ' ').trim()
+}
+const tipOf = (el: Element | null) => el?.querySelector('[data-help-description]')?.textContent ?? ''
 const rules = (css: string) => css.replace(/\/\*[\s\S]*?\*\//g, '')
 /** The retired chooser's classes, joined at runtime: `sk-` and a long tail
  *  reads as a key to the worker's credential scan. */
@@ -93,6 +100,8 @@ describe('the chooser draws the three picked cards', () => {
     for (const c of cards) expect(c.querySelector('h2 svg'), 'a chooser card has no icon').not.toBeNull()
     expect(visible(task.querySelector('h2'))).toBe('Start an agent')
     expect(visible(wf.querySelector('h2'))).toBe('Submit a workflow')
+    // Each card's sentence is in its heading's (i).
+    expect(tipOf(task.querySelector('h2'))).toBe('One agent, one runner. It lands ready or parked and costs nothing until the scheduler admits it.')
     expect(visible(task.querySelector('kbd'))).toBe('T')
     expect(visible(wf.querySelector('kbd'))).toBe('W')
     expect(visible(issue.querySelector('h2'))).toBe('From a GitHub issue')

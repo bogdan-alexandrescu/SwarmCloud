@@ -177,10 +177,12 @@ describe('each tab says what the kind will get before submit', () => {
     answer(() => ({ status: 202, body: record() }))
     await mount()
     fireEvent.click(within(dialog()).getByRole('tab', { name: 'Service' }))
-    const what = visible(within(dialog()).getByTestId('new-workspace-gets'))
-    expect(what).toContain('admitted at the API’s front door')
-    expect(what).toContain('The platform owner approves it.')
-    expect(what).toContain('It runs nothing until a Claude account is lent to it or added.')
+    const gets = within(dialog()).getByTestId('new-workspace-gets')
+    // Who approves stays on the surface; what the kind gets is behind its (i) (issue 439).
+    const tip = visible(gets.querySelector('[data-help-description]'))
+    expect(tip).toContain('admitted at the API’s front door')
+    expect(visible(gets)).toContain('The platform owner approves it.')
+    expect(tip).toContain('It runs nothing until a Claude account is lent to it or added.')
   })
 
   it('the personal and group tabs say an admin’s request is approved at once, and never that the owner approves', async () => {
@@ -188,8 +190,9 @@ describe('each tab says what the kind will get before submit', () => {
     await mount()
     for (const tab of ['Personal', 'Group']) {
       fireEvent.click(within(dialog()).getByRole('tab', { name: tab }))
-      const what = visible(within(dialog()).getByTestId('new-workspace-gets'))
-      expect(what).toContain('gets its own tenant, worker account, storage prefix and namespace')
+      const gets = within(dialog()).getByTestId('new-workspace-gets')
+      const what = visible(gets)
+      expect(visible(gets.querySelector('[data-help-description]'))).toContain('gets its own tenant, worker account, storage prefix and namespace')
       expect(what).toContain('approved at once')
       expect(what).not.toContain('platform owner approves')
     }

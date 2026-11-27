@@ -1080,7 +1080,10 @@ export function HelpCardView({
       <strong id={titleId} style={CARD_TITLE}>
         {t.title}
       </strong>
-      <span style={CARD_BODY}>{t.short}</span>
+      {/* The card is the `?`'s help copy (issue 439), as an (i)'s tip is. */}
+      <span style={CARD_BODY} data-help-description="">
+        {t.short}
+      </span>
       {values.length > 0 && (
         <ul style={CARD_VALUES}>
           {values.map((v) => (
@@ -1091,7 +1094,7 @@ export function HelpCardView({
         </ul>
       )}
       <a href={`#${t.anchor}`} style={CARD_LINK} {...bridge.stop}>
-        Full explanation &rarr;
+        Full explanation
       </a>
     </span>
   )

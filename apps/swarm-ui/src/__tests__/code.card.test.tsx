@@ -108,7 +108,7 @@ describe('the card opens with one sentence, then the base pin, then the diff', (
     expect(first.nextElementSibling).toBe(pin)
     expect(pin.textContent).toBe('Base pinned to 9c4e0b2abc, from plan')
     // Then the way to the diff: the Changes tab, which replaced `Show the diff`.
-    expect(pin.nextElementSibling?.querySelector('a.dt-more')?.textContent).toBe('Changes ›')
+    expect(pin.nextElementSibling?.querySelector('a.dt-more')?.textContent).toBe('Changes')
   })
 
   it('links to the Changes tab, switches the split to it, and reads no patch here', () => {
@@ -116,7 +116,7 @@ describe('the card opens with one sentence, then the base pin, then the diff', (
     const links = { logs: vi.fn(), attempts: vi.fn(), artifacts: vi.fn(), changes }
     const t = finished({ base: 'abc', published: false, publish_reason: 'collect', strategy: 'collect', patch: 'change.diff' })
     render(<Run run={run(t)} links={links} />)
-    const link = screen.getByRole('link', { name: 'Changes ›' })
+    const link = screen.getByRole('link', { name: 'Changes' })
     // The agent's own path, under the list a finished agent is in (live QA
     // WA-21): it was the legacy `#work/task/<id>/changes` hash.
     expect(link.getAttribute('href')).toBe(`/agents/recent/${encodeURIComponent(t.id)}/changes`)
@@ -133,7 +133,7 @@ describe('the card opens with one sentence, then the base pin, then the diff', (
       { path: 'b.ts', old_path: null, status: 'A' as const, insertions: 2, deletions: 0, binary: false },
     ]
     render(<Run run={run(finished({ base: 'abc', published: false, publish_reason: 'collect', strategy: 'collect', patch: 'change.diff', files }))} />)
-    expect(screen.getByRole('link', { name: 'Changes ›' }).parentElement?.textContent).toMatch(/2 files · change\.diff/)
+    expect(screen.getByRole('link', { name: 'Changes' }).parentElement?.textContent).toMatch(/2 files · change\.diff/)
   })
 
   it('says a base that was not pinned, with its reason', () => {
@@ -202,7 +202,7 @@ describe('PUBLISH_REFUSED', () => {
     expect(items[0]).toMatch(/config\/test\.env/)
     expect(items[0]).toMatch(/content is never shown/)
     expect(items[1]).toMatch(/Attempt 2 · gen 2 · an unusable pr-title\.txt/)
-    expect(screen.queryByRole('link', { name: 'Changes ›' }), 'the refused file could be read through the diff').toBeNull()
+    expect(screen.queryByRole('link', { name: 'Changes' }), 'the refused file could be read through the diff').toBeNull()
   })
 
   it('withholds the diff on a FAILED task whose last attempt was refused for a credential', () => {
@@ -216,7 +216,7 @@ describe('PUBLISH_REFUSED', () => {
     render(<Run run={run(t, [attempt(1, { error: credential('config/test.env') })])} />)
     expect(lead().textContent).toMatch(/Publish refused\. Nothing was pushed\./)
     expect(code().querySelector('.ag-basepin'), 'the base pin follows the lead here too').not.toBeNull()
-    expect(screen.queryByRole('link', { name: 'Changes ›' }), 'the refused file could be read through the diff').toBeNull()
+    expect(screen.queryByRole('link', { name: 'Changes' }), 'the refused file could be read through the diff').toBeNull()
   })
 
   it('reads every attempt, then the task’s own last error, then the end cause', () => {

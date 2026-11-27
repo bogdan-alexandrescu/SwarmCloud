@@ -16,6 +16,7 @@ import { Banner, Button } from './components'
 import { chosenTenant, errorHeading, errorReassurance, isWriteFailure, pageReads, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, writeRefused, type ApiError, type ApiErrorKind, type Result } from './fetch'
 import { type TopicId } from './help'
 import { HelpCard, type HelpTopicsLead } from './HelpCard'
+import { InfoTip } from './InfoTip'
 import { Absent, type LinkOut } from './primitives'
 import { timeAgo } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
@@ -1134,6 +1135,23 @@ function StaleBanner({ error, fetchedAt, now }: { error: ApiError; fetchedAt: nu
  * read renders no figure, and the absence of a figure is not a thing a reader
  * can see. Everything else on this panel was cut; this stays.
  */
+/**
+ * `errorReassurance` cut to the line that stays visible (issue 439), each
+ * branch as that sentence says it: a write says whether the change happened,
+ * a read that nothing about the platform is known from it.
+ */
+function reassuranceLine(e: ApiError): string {
+  if (isWriteFailure(e)) {
+    if (writeRefused(e)) return 'Refused · nothing was changed'
+    if (e.kind === 'unreachable') return 'The change may not have arrived'
+    return 'The change was not confirmed'
+  }
+  if (e.kind === 'not_found' && e.template !== undefined && !e.template.includes('{')) return 'Not served by this deployment'
+  if (e.kind === 'not_found') return 'Not found, or another tenant’s'
+  if (e.kind === 'unreachable') return 'Never reached the platform'
+  return 'Says nothing about what is running'
+}
+
 export function FailedPanel({
   error,
   onRetry,
@@ -1206,7 +1224,12 @@ export function FailedPanel({
         {errorHeading(error)}
       </h3>
       <p>{error.message}</p>
-      <p className="state-invariant">{errorReassurance(error)}</p>
+      {/* THE INVARIANT STAYS, AS ONE SHORT LINE (issue 439: a could-not-check
+          disclosure): what the failure does and does not say, in a few words;
+          the sentence that says it in full is behind the (i), word for word. */}
+      <p className="state-invariant">
+        {reassuranceLine(error)} <InfoTip about="this failure" tip={errorReassurance(error)} />
+      </p>
       {error.httpStatus !== null && (
         <p className="checked-at">
           HTTP {error.httpStatus}

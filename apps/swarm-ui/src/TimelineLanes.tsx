@@ -1392,7 +1392,10 @@ export function TimelineLanesScreen({
         </div>
       ) : lanes.length === 0 ? (
         <div className="tl-state">
-          <p>{`No lane matches ${filterWords(view)} among the ${rows.length} attempts read.`}</p>
+          {/* ONE SHORT LINE (issue 439): which filters, over how many attempts read, is in its (i). */}
+          <p>
+            No lane matches <InfoTip about="the filters" tip={`No lane matches ${filterWords(view)} among the ${rows.length} attempts read.`} />
+          </p>
           <Button size="sm" onClick={() => setView({ ...view, state: [], profile: [], wf: null, kind: 'all', lane: null })}>
             Clear filters
           </Button>
@@ -2723,7 +2726,7 @@ function LaneDetail({
         </dl>
         <p className="tl-acts">
           <ButtonLink kind="primary" href={href}>
-            Open in Agents ›
+            Open in Agents
           </ButtonLink>
         </p>
       </div>
