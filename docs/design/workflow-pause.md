@@ -1,21 +1,34 @@
 # Workflow pause and resume
 
-**Status:** being built, lane by lane (section 11). The owner decided to design
-pause first, before the reconciler's pause-overdue rule. That rule (part of
-issue 7) needs a pause to act on. Section 7's frozen-contract change was
-**ACCEPTED by the owner on 2026-11-24** (request 160 in
-[`docs/contract-change-requests.md`](../contract-change-requests.md)), and
+**Status:** built and merged on main, every lane of section 11. Section 7's
+frozen-contract change was **ACCEPTED by the owner on 2026-11-24** (request 160
+in [`docs/contract-change-requests.md`](../contract-change-requests.md)) and
 applied by the first lane. Section 10 records the owner's decisions of the same
 day; none is open.
 
-**Built by the first lane (P0, P1's routes, P2):** the contract change; the
-`pause` and `resume` routes with their store transactions; the scheduler's
-admission gate and promotion sweep. **Not yet built:** the worker's pause park
-(P3), the refunds (Q1, in P1's `AttemptState.park` and P4), `fence_view`'s
-flag, the waiting line, the reconciler's rule (P4), the console and CLI (P5).
+**Built and merged:**
 
-Today's behaviour is cited by file and symbol, never by line number, so a
-citation survives the code moving. Everything about pause itself is a proposal.
+* the contract change (P0);
+* the `pause` and `resume` routes with their store transactions, `fence_view`'s
+  flag and the waiting line (P1);
+* the scheduler's admission gate and promotion sweep (P2);
+* the worker's pause park and the refund in `AttemptState.park` and the
+  worker's `ControlPlane.park` (P3);
+* the reconciler's pause-overdue rule, its refund and its bound (P4);
+* the console's Pause and Resume buttons, the `swarm workflow-pause` and
+  `workflow-resume` commands and the two MCP tools (P5).
+
+**Still to prove:** P2 and P4 change dispatch and reconciliation, so the unit
+tests are not the whole gate. `make smoke concurrency-test race-test` must pass
+against a deployed environment, then the checklist, as the last pull request of
+the issue names it. Until that run is recorded, nothing here has been seen
+working on a deployed environment, and the three deployed checks of the issue
+(pause a running step, an overdue worker, resume) are open.
+
+Section 1 is the baseline from before the lanes: it describes the code the
+design started from, and where a lane has since changed a fact there, the line
+says so. Everything after section 1 describes the merged code, and cites it by
+file and symbol, never by line number, so a citation survives the code moving.
 
 ---
 
@@ -63,7 +76,8 @@ The workflow routes are in `apps/swarm-api/swarm_api/routes/workflows.py`:
 | `POST /{workflow_id}/steps/{step_id}/rerun` | `rerun_workflow_step` |
 | `PUT /{workflow_id}/mcp-credentials` | `restore_mcp_credentials` |
 
-There is no pause or resume route.
+There was no pause or resume route. `pause_workflow` and `resume_workflow` now
+sit beside `cancel_workflow` (section 3).
 
 ### 1.2 How cancel is recorded
 
@@ -204,7 +218,8 @@ leaves the step READY with a `MANUAL_PAUSE` blocker
   between-passes delta.
 * The reconciler reads workflows only in `ControlStore.workflows_for_stall_check`
   (non-terminal by state, paged).
-* Nothing in `apps/reconciler/reconciler` mentions a pause.
+* Nothing in `apps/reconciler/reconciler` mentioned a pause. `detect_pause_overdue`
+  and `ControlStore.paused_workflows` now do (section 6).
 
 ### 1.6 The frozen contract
 
@@ -215,9 +230,10 @@ leaves the step READY with a `MANUAL_PAUSE` blocker
   READY.
 * Only RUNNING may go to PARKED by a worker. LEASED to PARKED is the scheduler's
   `PLATFORM_REFUSED` edge alone. See `states.py::WORKER_TRANSITIONS`.
-* `models.py::Workflow` has `cancel_requested` and no pause field.
-* `states.py::EventType` has `CANCEL_REQUESTED` (contract request 17) and no
-  pause event.
+* `models.py::Workflow` had `cancel_requested` and no pause field, and
+  `states.py::EventType` had `CANCEL_REQUESTED` (contract request 17) and no
+  pause event. Request 160 added `ParkReason.WORKFLOW_PAUSED`, the three
+  `Workflow` fields and the two events (section 7).
 
 ## 2. The model
 
@@ -303,14 +319,18 @@ contention.
    * 409 `workflow_terminal`: `state` is in `TERMINAL_STATES`.
    * 409 `workflow_cancel_requested`: `cancel_requested` is set. Cancel wins,
      and pausing a workflow being cancelled would only delay the cancel.
-3. If already `paused`: write nothing and answer 200 with
-   `{"already_paused": true, "paused_at": <the first time>}`. This is the
-   idempotency rule: a repeat pause **never moves `paused_at`**, so it cannot
-   extend the overdue bound.
+3. If already `paused`: write nothing to the workflow and answer 200 with the
+   same body as a first pause, plus `"already_paused": true` and the first
+   `paused_at`. This is the idempotency rule: a repeat pause **never moves
+   `paused_at`**, so it cannot extend the overdue bound. Stage 2 still runs, so
+   a repeat finishes the mirrors a contended first call left
+   (`Store.pause_workflow`).
 4. Otherwise write `paused: true`, `paused_at: now`, `paused_by`, the optional
    `pause_reason`, and `updated_at`.
 
-Note: `pause_reason`, `resumed_at` and `resumed_by`, like `paused_by`, are raw
+Note: `pause_reason`, `resumed_at`, `resumed_by` and `resumed_paused_at` (the
+   `paused_at` a resume lifted, kept so a retried stage 2 can still match the
+   mirrors), unlike `paused_by`, are raw
    fields, as `superseded_task_ids` is: request 160 does not type them, and
    `codec.workflow_to_firestore` and every full-document workflow write must
    preserve them.
@@ -334,7 +354,11 @@ Note: `pause_reason`, `resumed_at` and `resumed_by`, like `paused_by`, are raw
  "steps_signalled", "steps_already_terminal"}
 ```
 
-The route then rings the waker (a `"workflow_paused"` ring on `ctx.waker`, as
+The two step fields are lists of task ids. The route rings the waker after a
+first pause, and after a repeat only when a step stayed contended, so a repeat
+that changed nothing wakes nothing.
+
+The route rings the waker (a `"workflow_paused"` ring on `ctx.waker`, as
 cancel rings `workflow_cancelled`). The next drain then parks READY steps
 promptly.
 
@@ -355,10 +379,14 @@ promptly.
    * 404 `NotFound`.
    * 409 `workflow_cancel_requested`: nothing is left to resume.
    * 409 `workflow_terminal`.
-2. If not `paused`: write nothing and answer 200 with `{"already_running": true}`.
-3. Otherwise write `paused: false`, `resumed_at`, `resumed_by`, and
-   `paused_at: null`. Clearing `paused_at` lets a later pause start a fresh
-   clock.
+2. If not `paused`: write nothing and answer 200 with the answer below plus
+   `"already_running": true`.
+3. Otherwise write `paused: false`, `resumed_at`, `resumed_by`,
+   `resumed_paused_at` and `paused_at: null`. Clearing `paused_at` lets a later
+   pause start a fresh clock.
+
+The answer is `{"workflow_id", "paused": false, "resumed_at", "steps_cleared",
+"steps_already_terminal"}`, the two step fields being lists of task ids.
 
 **Stage 2: per step, clear the mirror,** but only where it equals the
 `paused_at` being lifted. The guard stops a resume from clearing a later pause's
@@ -372,14 +400,12 @@ the route dies after stage 1, or the caller never retries, the scheduler is the
 backstop (next paragraph), so a stale mirror is bounded and never loops.
 
 **The scheduler clears a stale mirror.** `Scheduler._promote_workflow_pauses`
-and `Scheduler._park_for_workflow_pause` both see steps whose raw
-`pause_requested_at` is set but is not equal to the workflow's current
-`paused_at` (the workflow is not paused, or was paused again later). They clear
-the mirror in the same guarded write that promotes the step, or, in
-`_park_for_workflow_pause`, when it finds the workflow not paused and so does
-not park. A stale mirror therefore costs a step at most one worker park, never
-a loop. **As built (first lane):** only the promotion's guarded write clears
-it (`loop._clear_pause_mirror`). Admission does not: the scheduler's `Task` does
+sees steps whose raw `pause_requested_at` is still set after the workflow was
+resumed. It clears the mirror in the same guarded write that promotes the step
+(`loop._clear_pause_mirror`, passed as `patch_from` to `_promote`). A stale
+mirror therefore costs a step at most one worker park, never a loop.
+**Only the promotion clears it.** Admission does not
+(`_park_for_workflow_pause` writes nothing when the workflow is not paused): the scheduler's `Task` does
 not carry the raw mirror, and the lease that follows is the frozen admission
 transaction, so clearing there would cost an extra write per admitted step. A
 stale mirror on a step admitted after a resume still costs that step one worker
@@ -435,8 +461,8 @@ Add `Scheduler._promote_workflow_pauses`, run in the drain beside
    `state == PARKED` and `park_reason == "WORKFLOW_PAUSED"`, paged by id.
 2. For each step, call `_stop_for_failed_workflow` first, so a failed
    workflow's paused steps are cancelled, not promoted.
-3. Promote with `_promote(task, kind="workflow_pause",
-   detail={"reason": "workflow_resumed"})` once `workflow_pause(...)` says it is
+3. Promote with `_promote(task, kind="workflow_pause", detail={"reason":
+   "workflow_resumed", "park_reason", "workflow_id"})` once `workflow_pause(...)` says it is
    no longer paused.
 4. Promotion only returns the step to READY. Admission then asks every other
    question again: tenant, pools, credentials, dependencies.
@@ -464,9 +490,12 @@ through RUNNING at the pause holds its reservation only until the worker parks,
 or at most until the overdue bound plus one reconciler pass. After that the
 paused workflow holds nothing.
 
-The waiting line in `swarm_api/waiting_detail.py` gains a `WORKFLOW_PAUSED`
-branch beside `_pause`: "Paused by {paused_by}", resumes when "the workflow is
-resumed".
+The waiting line in `swarm_api/waiting_detail.py` has a `_workflow_pause`
+branch beside `_pause`: the summary "Workflow paused by {paused_by}" (without
+"by ..." when nobody was recorded), resuming when "the workflow is resumed". It
+reads only the park's detail. The scheduler's park names the workflow, who and
+when; the worker's park names neither, so those show as null rather than a
+guess.
 
 ## 5. Worker
 
@@ -475,7 +504,8 @@ resumed".
 * `ControlSignals` gains `pause_requested: bool`.
 * `ControlPlane.poll` reads `bool(task.get("pause_requested_at"))`.
   `RemoteControlPlane.poll` reads it from `fence_view`, which gains
-  `"pause_requested": bool(task.get("pause_requested_at"))`.
+  `"pause_requested"`: true when the step's raw mirror is set and the caller
+  owns the attempt.
 * No new read anywhere.
 
 ### 5.2 The path, `Worker._park_for_pause`
@@ -485,15 +515,24 @@ before quota. A cancel outranks a pause, and a fenced worker writes nothing.
 
 When the pause is set, the worker:
 
-1. If a live-browser hand-off is held, ends it with `outcome="paused"`, as the
-   cancel branch does.
+1. If a live-browser hand-off is held, ends it with `outcome="unavailable"` and
+   cause `workflow_paused`, as the cancel branch ends its own. The outcome is
+   `unavailable` because swarm-api's `handoff.OUTCOMES` is `returned`,
+   `expired`, `cancelled` and `unavailable`, with no `paused`: the agent's wait
+   exits refused and its next attempt asks again.
 2. Calls `child.terminate(cfg.termination_grace_seconds, reason="workflow paused")`,
    then `child.finish()` and `_child_ended()`.
 3. Calls `self._checkpoint("workflow-pause")`. This is not the `periodic` label,
    so it is always written (`checkpointing.py::CheckpointMixin._checkpoint`).
 4. Calls `self._upload_outputs()`.
 5. Calls `self.control.park(reason=ParkReason.WORKFLOW_PAUSED,
-   detail={"park_phase": "workflow_pause", "paused_at": ...})`. This is the same
+   next_eligible_at=<now>, detail=...)`. The detail holds `park_phase:
+   "workflow_pause"`, `runner_started` and the upload summary. It holds **no
+   `paused_at`**: nothing needs it, because the workflow document is the
+   authority for when the pause began (section 2.1), the scheduler's own park
+   records it for the waiting line, and the park's wake condition is the
+   workflow's state, not a time. `next_eligible_at` is now for the same
+   reason. This is the same
    single fenced transaction the quota park uses: PARKED, the attempt's end and
    the lease release (`ControlPlane.park`). Through swarm-api it is
    `AttemptState.park`.
@@ -508,8 +547,10 @@ sleeping through that would hold its lease and its pool units the whole time
 
 ### 5.3 Before the runner starts
 
-A worker in LEASED, DISPATCHED or STARTING that reads the mirror at
-`state/open` or at its first poll does the following:
+A worker in LEASED, DISPATCHED or STARTING that reads the mirror at the quota
+preflight's poll, its first (`Worker._paused_before_runner`), does the
+following. A cancel is left to the supervision loop's first poll, and a fenced
+attempt is never parked (it exits writing nothing):
 
 1. Walks to RUNNING. `WORKER_TRANSITIONS` has no pre-running edge into PARKED,
    and STARTING to READY is not a worker edge.
@@ -521,18 +562,22 @@ capacity for the whole bound.
 
 ### 5.4 Refunds
 
-`AttemptState.park` decides refunds by reason. `WORKFLOW_PAUSED` joins the
-refunded reasons, with a bound. Whether, and how far, is decision Q1.
+`AttemptState.park` (and `ControlPlane.park` for the worker's direct path)
+decides refunds by reason. `WORKFLOW_PAUSED` refunds the attempt on its own
+counter, `metadata.pause_refunds`, while fewer than `PAUSE_MAX_REFUNDS` (5) are
+used: decision Q1.
 
 ## 6. Reconciler: the pause-overdue rule (issue 7)
 
 ### 6.1 Selection
 
 **The set stays small: paused is cleared when a workflow ends.**
-`Store.cancel_workflow` writes `paused: false` and `paused_at: null` in the same
-update as `cancel_requested` (cancel is allowed on a paused workflow, 3.3), and
-every write that makes a workflow terminal (including the failure path) clears
-both too. Resume refuses a cancelled or terminal workflow (3.2), so without
+`Store.cancel_workflow` writes `paused: false` in the same update as
+`cancel_requested` (cancel is allowed on a paused workflow, 3.3). It leaves
+`paused_at` as the record of the last pause. Every write that makes a workflow
+terminal adds `swarm_rollup.settled_unpause`, which writes `paused: false` and
+`paused_at: null`: `Store`'s state write and the reconciler's
+`ControlStore` workflow settle both call it. Resume refuses a cancelled or terminal workflow (3.2), so without
 this nothing could ever clear them and `paused == true` would grow into a scan
 of history. A cancelled paused workflow therefore drops out of
 `paused_workflows`.
@@ -541,8 +586,11 @@ of history. A cancelled paused workflow therefore drops out of
 `ControlStore.paused_workflows(limit, after)` runs `workflows where paused ==
 true`, paged by id. It is an equality query, never a full scan, and it is
 answered from the automatic single-field index. Both `ControlStore.snapshot`
-and `incremental_snapshot` attach the result, as `snapshot.paused_workflows`:
-`{workflow_id: (tenant_id, paused_at)}`.
+and `incremental_snapshot` attach every page of the result, as
+`snapshot.paused_workflows`: `{workflow_id: (tenant_id, paused_at)}`. If the
+read fails, the pass records `paused_workflows_error` and only the pause rule
+stands down, so a failed read never blinds the other rules and never reads as
+"nothing is paused". A workflow with no readable `paused_at` is left out.
 
 **`detect.py::detect_pause_overdue` sits beside `detect_cancel_overdue`.** It
 follows the same rules:
@@ -555,7 +603,8 @@ follows the same rules:
    attempt.
 4. The lease must be unreleased, of the same attempt and generation, and the
    execution's generation must match if set.
-5. The reference is `max(paused_at, lease.created_at)`. A step leased after the
+5. A pause with no `paused_at` is left to the worker. The reference is
+   `max(paused_at, lease.created_at)`. A step leased after the
    pause (the admission race in section 8) gets the full bound from its own
    lease, not from a pause it never saw.
 6. A finding is emitted when `now - reference >= pause_enforce_after_seconds`.
@@ -617,13 +666,15 @@ LEASED/`PLATFORM_REFUSED` edge. READY then meets the admission gate (section
 paused step becomes.
 
 After the transaction, `_repair` emits `GENERATION_FENCED` and `LEASE_RELEASED`
-as today, plus a `READY` event with `{"finding": "pause_overdue", "paused_at"}`.
+as today, plus a `READY` event whose detail carries `finding: "pause_overdue"`,
+`paused_at`, `workflow_id`, `pause_lifted`, and `pause_refunds` with its limit.
 
 ### 6.4 The bound
 
-The bound is `ReconcilerConfig.pause_enforce_after_seconds`, or
-`cancel_enforce_after_seconds` if the owner prefers. That is decision Q2. Its
-default is explained next to its value.
+The bound is `ReconcilerConfig.pause_enforce_after_seconds` (env
+`PAUSE_ENFORCE_AFTER_SECONDS`, default 600), its own setting, not
+`cancel_enforce_after_seconds` (decision Q2). Its default is explained next to
+its value in `config.py`.
 
 ### 6.5 What makes the issue's checks pass
 
@@ -741,6 +792,8 @@ it.
 * **Console:** Pause and Resume buttons sit beside Cancel in the workflow
   board's header in `apps/swarm-ui/src/Workflows.tsx`, where `cancelWorkflow` is
   used. A paused step's waiting line comes from swarm-api.
+* The console sends no reason; the CLI's `--reason` does (at most 500
+  characters, as the route checks).
 * **Plugin and CLI:** `swarm workflow-pause` and `swarm workflow-resume` sit
   beside `cmd_workflow_cancel` in `apps/swarm-mcp/swarm_mcp/cli.py`. The MCP
   tools `swarm_workflow_pause` and `swarm_workflow_resume` sit beside
@@ -855,6 +908,9 @@ the waiting line.
 
 ## 11. The build, as lanes
 
+All six lanes are merged. The lists below are what each lane changed and the
+red tests it started from.
+
 Each lane is red first: the failing tests are pushed alone, then the fix. No two
 parallel lanes share a file. They run in dependency order.
 
@@ -943,7 +999,7 @@ parallel lanes share a file. They run in dependency order.
   `apps/swarm-mcp/swarm_mcp/cli.py`, `server.py`.
 * **Red tests:** the buttons' calls, and the CLI's argument parse.
 
-### Deployed check
+### Deployed check (not yet run)
 
 Because P2 and P4 change dispatch and reconciliation, CLAUDE.md requires
 `make smoke concurrency-test race-test` against a deployed environment
