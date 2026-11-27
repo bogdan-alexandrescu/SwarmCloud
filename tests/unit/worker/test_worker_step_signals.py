@@ -22,9 +22,11 @@ drop a fact from `step_servers` (its parametrized case fails).
 
 from __future__ import annotations
 
+import secrets
+
 import pytest
 
-from agent_worker import lifecycle, stepservers
+from agent_worker import lifecycle, publishpr, stepservers
 from agent_worker import workspace as workspace_mod
 from agent_worker.runners import cliagent
 
@@ -101,3 +103,43 @@ def test_render_and_parse_round_trip():
     assert stepservers.render(()) == stepservers.NONE
     assert stepservers.parse({stepservers.ENV: stepservers.render((GIT, STATE))}) == {GIT, STATE}
     assert stepservers.parse({}) is None
+
+
+# -- SWARM_PUBLISH_ONTO_PR (issue 472, task_3162ecbd, 2026-11-25) -------------
+#
+# A step that publishes onto an existing pull request's branch is refused at
+# publish when its change touches .github/workflows or .github/actions; the
+# worker tells the runner it is such a step, so the agent can be told before
+# its turn ends. MUTATION: drop the assignment -> the first test fails; set it
+# for every repository step -> the controls fail.
+
+#: A signed `publish_to_pr`, its task id built at runtime.
+ONTO = {"number": 356, "task_id": "task_" + secrets.token_hex(10)}
+
+
+def _dispatch(**block):
+    return {"step_id": "fix", "metadata": {"dispatch": block}}
+
+
+def test_the_onto_pr_name_is_the_one_issue_472_names():
+    assert publishpr.ONTO_PR_ENV == "SWARM_PUBLISH_ONTO_PR"
+
+
+def test_a_step_that_opens_the_pull_request_onto_one_is_told(
+    db, worker_factory, tmp_path, monkeypatch
+):
+    env = _env(db, worker_factory, tmp_path, monkeypatch,
+               task=_dispatch(strategy="direct-pr", publish_to_pr=ONTO))
+    assert env[publishpr.ONTO_PR_ENV] == "1"
+
+
+@pytest.mark.parametrize("task, repo", [
+    (_dispatch(strategy="direct-pr"), True),
+    (_dispatch(strategy="single-pr", pr_role="author", publish_to_pr=ONTO), True),
+    (_dispatch(strategy="integrate", role="contributor", publish_to_pr=ONTO), True),
+    (_dispatch(strategy="direct-pr", publish_to_pr={"number": 0, "task_id": "x"}), True),
+    (_dispatch(strategy="direct-pr", publish_to_pr=ONTO), False),
+], ids=["no-publish-to-pr", "single-pr-role", "contributor", "unsignable", "no-repository"])
+def test_every_other_step_is_not_told(db, worker_factory, tmp_path, monkeypatch, task, repo):
+    env = _env(db, worker_factory, tmp_path, monkeypatch, task=task, repo=repo)
+    assert publishpr.ONTO_PR_ENV not in env
