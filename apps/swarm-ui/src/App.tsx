@@ -15,6 +15,7 @@ import { createPortal } from 'react-dom'
 import { agentList, agentListPath, agentListQuery, parseAgentList, useAgentName, type AgentList, type AgentTab } from './agentlist'
 import { AgentSplit } from './AgentSplit'
 import { tellEmbedderReady } from './embedHandshake'
+import { watchEmbedderEdgeColour } from './embedEdgeColour'
 import { ChunkBoundary } from './ChunkBoundary'
 import { HostedAgent, hostsAgent, type HostedAgentView } from './work/hostedAgent'
 import { Dock } from './Dock'
@@ -1559,6 +1560,8 @@ export function App() {
   const [at, setAt] = useState<Route>(fromLocation)
   // A dashboard framing the console hears it rendered, once per load (embedHandshake.ts).
   useEffect(() => tellEmbedderReady(window), [])
+  // A hub framing the console hears its left edge's colour, and again on each change (embedEdgeColour.ts).
+  useEffect(() => watchEmbedderEdgeColour(window), [])
 
   // THE LIST ADDRESS THE AGENT WAS OPENED FROM (OV-10). Opening an agent
   // replaces the list address with the agent's, so without this the agent
