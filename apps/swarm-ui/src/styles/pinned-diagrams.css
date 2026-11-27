@@ -1,0 +1,43 @@
+/* The "Pinned to the plan" strip above the plan document, the line in its
+   place when diagrams were off for the run, and a message's link to a tab
+   (PinnedDiagrams.tsx, docs/design/plans-pipeline.md §2.5, DC:D1a, DC:D6c,
+   DC:D7a). Every colour is a console token, so light and dark follow the
+   theme. Nothing is wider than the document: the tabs wrap, and at 640px and
+   under the strip draws its diagram in a tall layout of the same source
+   (DC:D7a) whose box scrolls on its own rather than widening the page. */
+
+.pp-strip { display: grid; gap: 8px; min-width: 0; padding: 12px 18px; background: var(--surface-2); border-bottom: 1px solid var(--line-soft); }
+.pp-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.pp-title { font-weight: 600; }
+.pp-chip {
+  display: inline-flex; align-items: center; gap: 4px; padding: 0 7px;
+  font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim);
+  border: 1px solid var(--line); border-radius: var(--r-pill);
+}
+.pp-head > .pp-large { margin-left: auto; }
+
+.pp-tabs { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.pp-tab {
+  display: inline-grid; gap: 0; min-width: 0; max-width: 100%; padding: 4px 10px; cursor: pointer; text-align: left;
+  font: inherit; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text);
+  background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+}
+.pp-tab.is-on { border-color: var(--info); background: color-mix(in srgb, var(--info) 12%, var(--surface)); }
+.pp-tab:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.pp-tab-t { font-weight: 600; overflow-wrap: anywhere; }
+.pp-tab-x { color: var(--text-dim); overflow-wrap: anywhere; }
+
+.pp-draw { min-width: 0; max-width: 100%; }
+
+.pp-off { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin: 0; padding: 10px 18px; min-width: 0; font-size: var(--t-meta); line-height: var(--lh-meta); border-bottom: 1px solid var(--line-soft); }
+.pp-link { color: var(--info-ink); overflow-wrap: anywhere; }
+
+@media (max-width: 640px) {
+  .pp-strip { padding: 10px 14px; }
+  .pp-off { padding: 8px 14px; }
+  .pp-head > .pp-large { margin-left: 0; }
+  .pp-tab { flex: 1 1 100%; }
+  /* The tall layout: the whole drawing at the column's width, its box scrolling on its own. */
+  .pp-draw .dg.is-strip .dg-img { max-height: 70vh; }
+  .pp-draw .dg.is-strip .dg-img img { max-height: none; width: 100%; }
+}
