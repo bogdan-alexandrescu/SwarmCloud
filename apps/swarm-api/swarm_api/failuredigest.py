@@ -52,6 +52,9 @@ under its name in `skipped`. No rule exists that the agent can add:
   person_ready_removal   a merge step whose train-parked pull request a person
                          took `ready` off (archived issue 3602), and a workflow failed only
                          because of one
+  person_close           a merge step CANCELLED because a person closed its own pull
+                         request unmerged outside the workflow (issue 473), and a
+                         workflow failed only because of one
 
 WHAT AN ENTRY CARRIES (§3). For every tenant, only what the platform wrote:
 state, end cause, codes, exit codes, timings, memory figures, event types and
@@ -155,8 +158,9 @@ QUESTION_UNANSWERED = "question_unanswered"
 FIX_ROUND_LIVE = "fix_round_live"
 PERSON_PUSH = "person_push"
 PERSON_READY_REMOVAL = "person_ready_removal"
+PERSON_CLOSE = "person_close"
 SKIP_RULES = (SELF, ACCEPTANCE_DELIBERATE, VERIFY_FENCE, PERSON_CANCEL, QUESTION_UNANSWERED,
-              FIX_ROUND_LIVE, PERSON_PUSH, PERSON_READY_REMOVAL)
+              FIX_ROUND_LIVE, PERSON_PUSH, PERSON_READY_REMOVAL, PERSON_CLOSE)
 
 #: `scripts/acceptance/lib.sh` marks every acceptance submission with this source.
 ACCEPTANCE_SOURCE = "acceptance"
@@ -192,6 +196,14 @@ SUPERSEDED_BY_PERSON_PUSH = "superseded_by_person_push"
 #: matched too. The platform's own removal (the gate's or the train's) is
 #: `train_ejected`, and reviewed.
 READY_REMOVED_BY_PERSON = "ready_removed_by_person"
+#: §2 `person_close` (issue 473): a merge step whose own pull request a person
+#: closed unmerged, outside the workflow -- a decision, not a defect. The
+#: worker ends it CANCELLED merge_refused (`agent_worker.merge._closed_outside`)
+#: with this refusal code in `result_summary.merge.refusal.code`
+#: (`agent_worker.merge.PULL_REQUEST_CLOSED`, held equal by a test). The same
+#: code on a FAILED step is `run.refuse` on a pull request that was closed
+#: before the step ever held it, and is reviewed.
+PULL_REQUEST_CLOSED = "pull_request_closed"
 
 #: The events whose `detail.requested_by` names who cancelled.
 CANCEL_EVENTS = frozenset({EventType.CANCELLED.value, EventType.CANCEL_REQUESTED.value})
@@ -701,6 +713,15 @@ def _person_ready_removal(task: Mapping[str, Any]) -> bool:
     return _mapping(merge.get("refusal")).get("code") == READY_REMOVED_BY_PERSON
 
 
+def _person_close(task: Mapping[str, Any]) -> bool:
+    # CANCELLED only: the frozen `EndCause` has no member for this, so the
+    # string is never matched as an end cause, and a FAILED refusal is a defect.
+    if task.get("state") != TaskState.CANCELLED.value:
+        return False
+    merge = _mapping(_mapping(task.get("result_summary")).get("merge"))
+    return _mapping(merge.get("refusal")).get("code") == PULL_REQUEST_CLOSED
+
+
 def skip_rule(task: Mapping[str, Any], docs: Documents) -> str | None:
     """The first of §2's rules that skips `task`, by name; None when it is reviewed."""
     if _is_self(task, docs):
@@ -719,6 +740,8 @@ def skip_rule(task: Mapping[str, Any], docs: Documents) -> str | None:
         return PERSON_PUSH
     if _person_ready_removal(task):
         return PERSON_READY_REMOVAL
+    if _person_close(task):
+        return PERSON_CLOSE
     return None
 
 
