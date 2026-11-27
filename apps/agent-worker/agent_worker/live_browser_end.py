@@ -32,6 +32,10 @@ class LiveBrowserEndMixin:
     _fenced_exit: bool
     _writes_forbidden: bool
     _control_plane_down: bool
+    _checkpoint: Any
+    _child_ended: Any
+    _emit_startup_mark: Any
+    _metrics_after_the_record: Any
 
     def _hand_off_tick(self, child: ChildProcess, work: Any) -> Outcome | None:
         """One hand-off tick in the run loop: park, stop for a lost browser, or None."""

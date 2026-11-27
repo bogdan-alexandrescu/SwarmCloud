@@ -1243,7 +1243,7 @@ class PlanSpec(_PlanModel):
         for index, step in enumerate(self.steps):
             for dep in step.depends_on or []:
                 where = f"step {step.step_id!r} depends_on {dep!r}"
-                if step.depends_on.count(dep) > 1:
+                if deps[step.step_id].count(dep) > 1:
                     raise ValueError(f"step {step.step_id!r} depends_on names {dep!r} twice")
                 if dep not in position:
                     raise ValueError(
@@ -5882,7 +5882,8 @@ def served_thread_entry(document: Mapping[str, Any]) -> dict[str, Any]:
     row = {key: document.get(key) for key in _SERVED_THREAD_KEYS}
     text = row.get("text")
     row["text"] = redact_detail(text, limit=MAX_THREAD_TEXT_CHARS) if isinstance(text, str) else ""
-    anchor = row.get("anchor") if isinstance(row.get("anchor"), Mapping) else {}
+    stored = row.get("anchor")
+    anchor = stored if isinstance(stored, Mapping) else {}
     part, ref = anchor.get("part"), anchor.get("ref")
     row["anchor"] = {
         "part": redact_detail(part, limit=32) if isinstance(part, str) else part,
@@ -5942,7 +5943,8 @@ def plan_thread_events(run: IssueRun, revisions: Sequence[Mapping[str, Any]],
     for row in sorted(revisions, key=lambda r: r.get("revision") or 0):
         number = row.get("revision")
         by_digest[str(row.get("digest"))] = number
-        author = row.get("author") if isinstance(row.get("author"), Mapping) else {}
+        stored = row.get("author")
+        author = stored if isinstance(stored, Mapping) else {}
         add("planned" if number == 1 else "revised", row.get("at"), None,
             revision=number, digest=row.get("digest"), by=author.get("by"),
             made_by=row.get("made_by"))
@@ -6144,7 +6146,8 @@ def _comment_line(entry: Mapping[str, Any], fences: Sequence[str]) -> str:
     """One comment as one JSON line: its id, anchor, author's local part and
     text. JSON escapes every newline, so a comment is one line whatever it
     holds; the fences are stripped from it anyway."""
-    anchor = entry.get("anchor") if isinstance(entry.get("anchor"), Mapping) else {}
+    stored = entry.get("anchor")
+    anchor = stored if isinstance(stored, Mapping) else {}
     by = str(entry.get("by") or "")
     text = str(entry.get("text") or "")
     for marker in fences:

@@ -84,3 +84,20 @@ def test_every_setup_kubectl_names_a_pinned_version():
                     version = str({**scope, **(step.get("env") or {})}.get(m.group(1), ""))
                 assert SEMVER.fullmatch(version), f"{path.relative_to(REPO)}: setup-kubectl version {version!r}"
     assert seen, "no setup-kubectl step read"
+
+
+def test_pyright_runs_only_through_the_pinned_script():
+    """pyright is pinned once, PYRIGHT_VERSION in scripts/typecheck.sh
+    (test_typecheck.py holds it exact and equal to the baseline's). A workflow
+    step that installs or runs pyright itself would bypass that pin and the
+    baseline. MUTATION: add `npx pyright` or `pip install pyright` to a step,
+    or drop the `pyright` job's `scripts/typecheck.sh` step."""
+    runs = 0
+    for path, doc in _documents().items():
+        for step in _steps(doc):
+            text = str(step.get("run", ""))
+            if "scripts/typecheck.sh" in text:
+                runs += 1
+            elif re.search(r"\bpyright\b", text) or "pyright" in str(step.get("uses", "")):
+                raise AssertionError(f"{path.relative_to(REPO)}: runs pyright outside scripts/typecheck.sh: {text or step}")
+    assert runs >= 1, "no workflow step runs scripts/typecheck.sh"

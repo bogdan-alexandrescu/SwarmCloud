@@ -579,6 +579,7 @@ JUDGE = "judge"
 KEEPER = "keeper"
 SUMMARY = "summary"
 GUARD = "guard"
+OFFPOOL = "offpool"
 
 REASONS = {
     CLOUD: (
@@ -599,6 +600,11 @@ REASONS = {
         "guard over the change checked out as data (docs/design/generic-repository.md, "
         "section 4.3): read-only, every step before the guard is a credential-less "
         "checkout, and the list is its only secret"
+    ),
+    OFFPOOL: (
+        "is a read-only check kept off the pool so it queues no shard (issue 55, "
+        "pyright): `contents: read` only, no secret, every checkout without "
+        "persisted credentials -- a fork's code there reaches nothing"
     ),
     SUMMARY: (
         "only writes a fixed step summary -- no action, no checkout, no `needs`, "
@@ -662,6 +668,9 @@ HOSTED_JOBS: dict[str, str] = {
     "terraform.yml:validate": KEEPER,
     "terraform.yml:test": KEEPER,
     "terraform.yml:plan-not-run": SUMMARY,
+    # Beside the unit shards on a hosted runner so it adds no pool queue to
+    # the merge path (docs/ci.md "pyright runs beside the unit shards").
+    "application.yml:pyright": OFFPOOL,
 }
 
 #: Jobs only the operator-pushed workflow patch adds (docs/ci.md): listed in
@@ -707,6 +716,17 @@ def _reason_holds(reason: str, job: dict, workflow_permissions: object) -> bool:
         if reason == KEEPER:
             return bare and bool(job.get("needs"))
         return bare and not job.get("needs") and all("GITHUB_STEP_SUMMARY" in s["run"] for s in steps)
+    if reason == OFFPOOL:
+        steps = job.get("steps") or []
+        return (
+            job.get("permissions") == {"contents": "read"}
+            and not _secrets(job)
+            and all(
+                (s.get("with") or {}).get("persist-credentials") is False
+                for s in steps
+                if str(s.get("uses", "")).startswith("actions/checkout@")
+            )
+        )
     if reason == GUARD:
         steps = job.get("steps") or []
         runs = [i for i, s in enumerate(steps) if "run" in s]

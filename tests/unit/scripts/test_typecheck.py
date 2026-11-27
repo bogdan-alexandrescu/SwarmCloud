@@ -26,9 +26,17 @@ SCRIPT = REPO / "scripts" / "typecheck.sh"
 BASELINE = REPO / "scripts" / "lib" / "pyright-baseline.json"
 COMPARE = REPO / "scripts" / "lib" / "pyright_baseline.py"
 
-# The baseline's error count when it was generated (2026-11-22, pyright
-# 1.1.414). It may only shrink: lower this when errors are fixed, never raise it.
-BASELINE_CEILING = 1245
+# The baseline's error count when it was generated. It may only shrink: lower
+# this when errors are fixed, never raise it. Written 2026-11-22 at 1,245; set
+# ONCE to 1,364 on 2026-11-24 (issue 55) when CI began to run the check: until
+# then nothing ran it, and the code merged in between had added 131 errors
+# (mostly reportAttributeAccessIssue in agent_worker's heartbeat/checkpointing
+# mixins), less the 12 dead `# type: ignore` pruned with
+# reportUnnecessaryTypeIgnoreComment. From here CI fails any error over it.
+# Lowered to 1,354 on 2026-11-26, when the baseline was regenerated against the
+# main merged since: 26 more errors than allowed, 36 fixed, 8 left baselined
+# (wire_types.py's runtime-built enums and "optional, never null" defaults).
+BASELINE_CEILING = 1354
 
 _spec = importlib.util.spec_from_file_location("pyright_baseline", COMPARE)
 assert _spec and _spec.loader
@@ -55,6 +63,23 @@ def test_pyright_is_configured_once_in_basic_mode_for_the_python_apps():
     assert not (REPO / "pyrightconfig.json").exists(), (
         "one config: a pyrightconfig.json silently wins over [tool.pyright]"
     )
+
+
+def test_a_dead_type_ignore_is_an_error():
+    """MUTATION: drop reportUnnecessaryTypeIgnoreComment, or make it a warning
+    (the comparison gates errors only)."""
+    pyright = tomllib.loads((REPO / "pyproject.toml").read_text())["tool"]["pyright"]
+    assert pyright.get("reportUnnecessaryTypeIgnoreComment") == "error"
+    assert pyright.get("enableTypeIgnoreComments", True) is True
+
+
+def test_pyright_runs_a_fixed_number_of_threads():
+    """The set of errors depends on how pyright splits the files over its
+    workers, so the count is fixed, not the runner's cores. MUTATION: drop
+    `--threads`, or set it from nproc."""
+    text = SCRIPT.read_text()
+    assert re.search(r"^PYRIGHT_THREADS=[1-9][0-9]*$", text, re.M), "PYRIGHT_THREADS=<a literal count>"
+    assert 'pyright --threads "${PYRIGHT_THREADS}" ' in text
 
 
 def test_pyright_is_pinned_exactly_and_the_baseline_was_written_by_that_version():

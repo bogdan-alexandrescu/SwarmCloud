@@ -2156,7 +2156,7 @@ def detect_evicted(
 #: same way.
 def _same_id(a: str | None, b: str | None) -> bool:
     """Two identifiers name the same document, one possibly through a label."""
-    return bool(a) and bool(b) and sanitised(a) == sanitised(b)  # type: ignore[arg-type]
+    return bool(a) and bool(b) and sanitised(a) == sanitised(b)
 
 
 def _live_for(execution: ExecutionView, task_id: str, attempt: AttemptView) -> bool:

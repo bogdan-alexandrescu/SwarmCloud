@@ -147,6 +147,22 @@ def test_a_runner_that_raises_is_a_failure_not_a_crash(tmp_path: Path) -> None:
     assert events[0]["reason"].startswith("OSError")
 
 
+@pytest.mark.parametrize("result", [Synced(2, "error: lock is invalid\n"), OSError("no uv")])
+def test_the_workers_own_redaction_hands_the_warm_up_text(
+        tmp_path: Path, worker_factory, result: Synced | Exception) -> None:
+    """The other tests inject a redact; this one keeps the one `Worker` builds.
+    MUTATION: drop `.text` there, and `redact` hands back a `Redacted`: a TypeError
+    when uv cannot start, and an object in the event after a failed sync."""
+    worker, _, _ = worker_factory()
+    events: list[dict[str, Any]] = []
+    worker._python_env._emit = events.append
+    worker._python_env._runner = Recorder(result)
+    got = worker._python_env.warm(_checkout(tmp_path), ENV, may_start=lambda: True)
+    assert got is not None and got.status == pythonenv.FAILED
+    assert isinstance(events[0]["reason"], str)
+    assert isinstance(events[0].get("output_tail", ""), str)
+
+
 def test_a_second_session_in_the_same_attempt_does_not_run_it_again(tmp_path: Path) -> None:
     repo = _checkout(tmp_path)
     runner, events = Recorder(), []

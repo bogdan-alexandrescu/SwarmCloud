@@ -487,12 +487,12 @@ class _ConnectBounded:
     """
 
     def __init__(self, *args: Any, connect_bound: ConnectBound, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)  # type: ignore[call-arg]
+        super().__init__(*args, **kwargs)
         self._connect_bound = connect_bound
 
     def connect(self) -> None:
         bound = self._connect_bound
-        read_timeout = self.timeout  # type: ignore[has-type]
+        read_timeout = self.timeout
         if read_timeout is socket._GLOBAL_DEFAULT_TIMEOUT:  # type: ignore[attr-defined]
             read_timeout = socket.getdefaulttimeout()
         attempt = 1
@@ -519,7 +519,7 @@ class _ConnectBounded:
         # The socket only, never `close()`: http.client connects lazily inside
         # `send()`, after the request line is queued, and `close()` would reset
         # that request's state and fail the try that does connect.
-        sock, self.sock = self.sock, None  # type: ignore[has-type]
+        sock, self.sock = self.sock, None
         if sock is not None:
             sock.close()
 
