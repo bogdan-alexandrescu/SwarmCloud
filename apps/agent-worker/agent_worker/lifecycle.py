@@ -6283,10 +6283,7 @@ class Worker(
         # onto the existing one's branch instead, derived from the signed
         # task id. A contributor still pushes its own branch: the
         # integrator merges it, as without the field.
-        onto_pr = (
-            self._publish_to_pr()
-            if not pr_role and self._opens_pull_request() else None
-        )
+        onto_pr = self._publish_to_pr() if not pr_role and self._opens_pull_request() else None
         if onto_pr is not None:
             branch = onto_pr.branch(self.cfg.git_branch_prefix)
         return branch, onto_pr
@@ -10146,6 +10143,8 @@ class Worker(
         # (`cliagent.step_publishes`). Set by the worker, never from `input`.
         if self._repo_url:
             base[STEP_PUBLISHES_ENV] = "1" if self._deliverable_branch() else "0"
+            if self._onto_pr_target() is not None:  # why: publishpr.ONTO_PR_ENV, issue 472
+                base[publishpr_mod.ONTO_PR_ENV] = "1"
         # WHICH OF swarm-git AND swarm-state THIS STEP'S AGENT IS HANDED
         # (ONE-PLACE, 2026-11-03; the owner's `explicit-list` on archived pull request 3113),
         # from the signed step facts `stepservers.step_servers` reads. Set on
