@@ -2422,7 +2422,7 @@ function isEditable(pool: Pool): boolean {
 function FoldCard({ fold, className, title, action, children }: {
   fold: boolean
   className: string
-  title: string
+  title: ReactNode
   action?: ReactNode
   children: ReactNode
 }) {
@@ -3007,6 +3007,9 @@ const PLAN_CAPS = [
 type PlanCapKey = (typeof PLAN_CAPS)[number]['key']
 type PlanCap = (typeof PLAN_CAPS)[number]
 
+/** One drawn word ("Plan" is the page's own context); "Plan review" stays the accessible name. The prose ratchet counts whitespace-separated words. */
+const PLAN_REVIEW_TITLE = <span aria-label="Plan review">Review</span>
+
 /** "0 to 20", or "$0 to $500.00" for dollars. */
 function capRange(c: PlanCap): string {
   return c.cents ? `$0 to $${c.high.toFixed(2)}` : `0 to ${c.high}`
@@ -3071,7 +3074,7 @@ export function PlanReviewSettingsCard({ admin, fold = false }: { admin: boolean
   const served = data !== null && data.plan_diagrams_default !== null && data.plan_chat_model_class !== null && data.plan_review_caps !== null
   if (data === null || !served) {
     return (
-      <FoldCard fold={fold} className="adm-plan-review" title="Plan review">
+      <FoldCard fold={fold} className="adm-plan-review" title={PLAN_REVIEW_TITLE}>
         <p className="warn-text" role="alert"
           title={settings.status === 'error' ? `${errorHeading(settings.error)}: ${settings.error.message}` : 'This API serves no plan-review settings.'}>
           Not read
@@ -3120,7 +3123,7 @@ export function PlanReviewSettingsCard({ admin, fold = false }: { admin: boolean
   }
 
   return (
-    <FoldCard fold={fold} className="adm-plan-review" title="Plan review">
+    <FoldCard fold={fold} className="adm-plan-review" title={PLAN_REVIEW_TITLE}>
       <form className="as-fields" data-testid="adm-plan-review" onSubmit={(e) => void save(e)}>
         <div className="as-field">
           <span className="as-k">
