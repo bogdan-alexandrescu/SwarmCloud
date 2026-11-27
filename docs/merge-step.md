@@ -713,7 +713,9 @@ The rule, in three places, each for the reason given:
   never a fact. Merged, by anyone: SUCCEEDED, the summary saying "merged
   outside the workflow" with the merge commit, who merged it and when;
   nothing is merged and no question is asked again. Closed unmerged:
-  CANCELLED (`MERGE_REFUSED`, `pull_request_closed`). Still open (a forged or
+  CANCELLED (`MERGE_REFUSED`, `pull_request_closed`), which failure-review's
+  `person_close` rule skips ([design/failure-review.md](design/failure-review.md)).
+  Still open (a forged or
   stale mark), not this workflow's branch, or unreadable: it parks on the
   hold again exactly as before. An unmarked hold reads no credential, as
   the unmarked-hold credential fix made it.
