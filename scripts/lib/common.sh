@@ -1060,6 +1060,7 @@ CI_RELEASE_TEST_JOBS=(
   "swarm-ui typecheck / build"
   "swarm-ui component tests"
   "integration tests (emulator)"
+  "pyright (basic, baseline)"
   "kubernetes manifests"
   "build changed images without pushing"
   "build images"

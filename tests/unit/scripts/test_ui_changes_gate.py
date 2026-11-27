@@ -107,6 +107,8 @@ def test_each_job_runs_only_on_the_gates_output():
         "workflows": "needs.changes.outputs.app == 'true' && " + REUSED % "workflows",
         "ruff": "needs.changes.outputs.app == 'true' && " + REUSED % "ruff",
         "integration": FULL + "needs.changes.outputs.app == 'true' && " + REUSED % "integration",
+        # pyright (issue 55): Python reached whole, never docs- or swarm-ui-only.
+        "pyright": FULL + "needs.changes.outputs.python == 'all' && " + REUSED % "pyright",
         "manifests": "needs.changes.outputs.app == 'true' && " + REUSED % "manifests",
         # `images` is false when app is (the images step says so first), and
         # test_build_images_local.py runs that step against the plan's answer.

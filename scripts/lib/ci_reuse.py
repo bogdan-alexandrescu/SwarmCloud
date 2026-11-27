@@ -90,6 +90,7 @@ REUSABLE = {
     "ui-build": "swarm-ui typecheck / build",
     "ui-tests": "swarm-ui component tests (",
     "integration": "integration tests (emulator)",
+    "pyright": "pyright (basic, baseline)",
     "manifests": "kubernetes manifests",
 }
 MATRIX = {"python-unit", "ui-tests"}
@@ -107,6 +108,7 @@ REACH = {
     "ui-build": ("ui", "==", "true"),
     "ui-tests": ("ui", "==", "true"),
     "integration": ("app", "==", "true"),
+    "pyright": ("python", "==", "all"),
     "manifests": ("app", "==", "true"),
 }
 # The heavy jobs, run on a lane's pull request only when the `changes` job's
@@ -115,7 +117,7 @@ REACH = {
 # condition, so with `full` = `false` the change does not reach them and a
 # skip is a pass. An absent `full` reads as `true`: a skip it cannot explain
 # still fails the gate.
-HEAVY = ("python-unit", "ui-build", "ui-tests", "integration")
+HEAVY = ("python-unit", "ui-build", "ui-tests", "integration", "pyright")
 FULL_IF = "needs.changes.outputs.full == 'true'"
 # The branches whose push runs a pull request may reuse: the lanes' (CI-EARLY).
 LANE_PREFIX = "swarm/"

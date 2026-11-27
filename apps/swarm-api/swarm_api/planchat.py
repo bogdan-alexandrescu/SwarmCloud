@@ -49,7 +49,7 @@ import json
 import logging
 import os
 from datetime import datetime
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any, Iterator, Mapping, Sequence, TypeGuard
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -286,7 +286,7 @@ def turn_id() -> str:
     return f"{TURN_ID_PREFIX}_{os.urandom(10).hex()}"
 
 
-def _mine(document: Mapping[str, Any] | None, run: IssueRun) -> bool:
+def _mine(document: Mapping[str, Any] | None, run: IssueRun) -> TypeGuard[dict[str, Any]]:
     return (isinstance(document, Mapping) and document.get("tenant_id") == run.tenant_id
             and document.get("run_id") == run.id)
 
@@ -549,7 +549,8 @@ def text_deltas(tail: str) -> list[str]:
         if kind == "stream_event":
             inner = event.get("event")
             delta = inner.get("delta") if isinstance(inner, dict) else None
-            if (isinstance(delta, dict) and inner.get("type") == "content_block_delta"
+            if (isinstance(inner, dict) and isinstance(delta, dict)
+                    and inner.get("type") == "content_block_delta"
                     and delta.get("type") == "text_delta" and isinstance(delta.get("text"), str)):
                 partial.append(delta["text"])
         elif kind == "assistant":
