@@ -1524,7 +1524,7 @@ def _unavailable_cause(exc: BaseException) -> BaseException | None:
     try:
         from google.auth import exceptions as auth
     except ImportError:
-        auth = None  # type: ignore[assignment]
+        auth = None
     auth_transient: tuple[type[BaseException], ...] = ()
     if auth is not None:
         auth_transient = tuple(

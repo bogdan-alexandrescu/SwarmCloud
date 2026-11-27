@@ -29,7 +29,9 @@
 # resolves imports through the project venv, synced as CI's Python jobs sync it
 # (`--frozen --all-extras --dev`); a different venv would resolve a different
 # set of imports and report a different set of errors than the baseline holds.
-# A full run takes about 3 minutes on 4 cores; named files take seconds.
+# A full run takes about 3 minutes in one thread; with PYRIGHT_THREADS below
+# it took 73-82 s on 6 cores and 89-91 s on 4 (measured 2026-11-24, issue 55);
+# named files take seconds.
 #
 # stdout: one line per error of a (file, rule) over its allowance,
 # `path:line:col: rule: message`, redacted (common.sh's redact). stderr: the
@@ -51,6 +53,14 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # Exact pin; tests/unit/scripts/test_typecheck.py holds it equal to the
 # baseline's "pyright", so a bump regenerates the baseline in the same change.
 PYRIGHT_VERSION="1.1.414"
+# pyright's own `--threads`: the files are checked by this many workers. A
+# FIXED count, not the runner's cores: a worker infers a symbol it reaches from
+# another file on its own, so the set of errors can depend on how the files are
+# split -- measured 2026-11-24, one `# type: ignore` (swarm_api/roles.py) is
+# needed in one thread and dead in four, the only difference in 1,364 errors,
+# and three four-thread runs agreed exactly. The baseline is written with the
+# same count, and CI's runners have 4 vCPUs (docs/ci.md).
+PYRIGHT_THREADS=4
 BASELINE="${REPO_ROOT}/scripts/lib/pyright-baseline.json"
 COMPARE="${REPO_ROOT}/scripts/lib/pyright_baseline.py"
 
@@ -85,10 +95,10 @@ uv run --frozen --all-extras --dev --quiet \
   || { err "could not sync the project venv from uv.lock"; exit 2; }
 python_bin="$(cat "${work}/python")"
 
-info "pyright ${PYRIGHT_VERSION} (basic, [tool.pyright] in pyproject.toml) on ${#files[@]} named file(s), 0 meaning the configured tree"
+info "pyright ${PYRIGHT_VERSION} (basic, ${PYRIGHT_THREADS} threads, [tool.pyright] in pyproject.toml) on ${#files[@]} named file(s), 0 meaning the configured tree"
 rc=0
 uv tool run --quiet --from "pyright[nodejs]==${PYRIGHT_VERSION}" \
-  pyright --outputjson --pythonpath "${python_bin}" ${files[@]+"${files[@]}"} \
+  pyright --threads "${PYRIGHT_THREADS}" --outputjson --pythonpath "${python_bin}" ${files[@]+"${files[@]}"} \
   >"${work}/report.json" 2>"${work}/pyright.err" || rc=$?
 # pyright: 0 no errors, 1 errors reported; anything else is a failure to run.
 if [[ "${rc}" -gt 1 ]]; then

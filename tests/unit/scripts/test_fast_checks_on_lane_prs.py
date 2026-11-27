@@ -68,6 +68,7 @@ HEAVY_GATED = {
         "ui-build": "swarm-ui typecheck / build",
         "ui-tests": "swarm-ui component tests (${{ matrix.shard }}/${{ strategy.job-total }})",
         "integration": "integration tests (emulator)",
+        "pyright": "pyright (basic, baseline)",
         "build-check": "build changed images without pushing",
     },
     "terraform.yml": {},

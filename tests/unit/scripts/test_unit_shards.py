@@ -59,6 +59,7 @@ NAMES_BEFORE = {
     "format / unit tests",
     "swarm-ui typecheck / component tests",
     "integration tests (emulator)",
+    "pyright (basic, baseline)",
     "kubernetes manifests",
     "build changed images without pushing",
     "build images",

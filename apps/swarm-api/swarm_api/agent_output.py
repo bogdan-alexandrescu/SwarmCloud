@@ -199,8 +199,9 @@ class AgentOutputService:
         }
         rows: list[dict[str, Any]] = []
         for entry in manifest.artifacts[:limit]:
-            name = entry.get("name")
-            usable = isinstance(name, str) and bool(name)
+            raw_name = entry.get("name")
+            name = raw_name if isinstance(raw_name, str) else ""
+            usable = bool(name)
             kind, content_type = artifact_kind(name) if usable else ("binary", None)
             # A re-review's pointer entry (contract request 157) lies under its
             # REVIEW's prefix: its attempt is the review's when the content
