@@ -29,6 +29,7 @@ Once per deployment, roughly in the order they are done.
 - [Turn the forge-credential broker on](forge-broker-on.md): the owner, once per environment (dev first), to set `forge_broker = true` so a person's GitHub slot reaches only that person's attempts through swarm-api; its impact, preconditions, live-run check and rollback, with `forge_slot_reader` kept as the undo.
 - [Retire the judgment-key file fallback and the tenant TypeSafe key grants](key-file-fallback-retirement.md): the owner, once the TypeSafe forwarder serves every workspace that judges on TypeSafe, to remove the worker's key file, swarm-api's per-secret worker grants and the bootstrap `typesafe_user_key_readers` rows (SEC-RETIRE); again to roll it back.
 - [Prove the destroy guard against a real terraform plan](destroy-guard-real-plan-proof.md): before trusting `make destroy` in an environment for the first time; again after changing the destroy guard, the plan guard, the deny-list or the unlabelable types, or when the recorded plan no longer matches the real infrastructure.
+- [The recording-runner spike: measure Docker inside a sandboxed pod](recording-runner-spike.md): an operator, once, after the owner approves its cost and names a dev tenant namespace, to answer the recording-runner design's three option C checks (admission, the daemon, the gVisor speed bar) before contract request 159 is decided.
 
 ## Day-to-day
 
