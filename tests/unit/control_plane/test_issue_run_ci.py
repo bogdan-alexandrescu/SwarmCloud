@@ -26,9 +26,11 @@ token is built at runtime. No credentials, no network, no emulator.
 
 from __future__ import annotations
 
+import json
 import re
 import urllib.error
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
 import pytest
 from agent_worker import merge as worker_merge
@@ -67,9 +69,41 @@ def clock():
     return Clock()
 
 
+class _Writes(forge_fakes.GitHubWrites):
+    """The shared fake, able to serve one commit's whole body.
+
+    `commit_bodies`: sha -> the JSON `GET commits/<sha>` answers (its
+    parents, committer, linked accounts and message), for the issue run's
+    read of who pushed a head no task of the run pushed (archived issue
+    474). `on_base`: the commits `compare/<base>...<sha>` says are on the
+    base (`behind`), so a test can make one of GitHub's base merges. Both
+    empty, every request is the shared fake's, as before.
+    """
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.commit_bodies: dict[str, dict] = {}
+        self.on_base: set[str] = set()
+
+    def __call__(self, method, url, headers, body, timeout):
+        path = urlparse(url).path
+        parts = path.strip("/").split("/")
+        if (method == "GET" and parts[3:4] == ["commits"] and len(parts) == 5
+                and parts[4] in self.commit_bodies
+                and (method, path) not in self.refuse
+                and not any(k in self.raise_for for k in (method, (method, path)))):
+            self.calls.append((method, url, dict(headers), body))
+            return 200, json.dumps(self.commit_bodies[parts[4]]).encode()
+        if (method == "GET" and parts[3:4] == ["compare"] and len(parts) == 5
+                and parts[4].rpartition("...")[2] in self.on_base):
+            self.calls.append((method, url, dict(headers), body))
+            return 200, json.dumps({"status": "behind"}).encode()
+        return super().__call__(method, url, headers, body, timeout)
+
+
 @pytest.fixture
 def writes():
-    fake = forge_fakes.GitHubWrites()
+    fake = _Writes()
     fake.require("unit")
     return fake
 
