@@ -437,6 +437,9 @@
             "python-checks-format": {
               "run": "uv run python -m compileall -q apps tests\n# Fail on syntax-level problems and obviously dead imports without\n# imposing a formatter this repository has not adopted.\nuv run python - <<'PY'\nimport pathlib, ast, sys\nbad = []\nfor path in pathlib.Path(\"apps\").rglob(\"*.py\"):\n    src = path.read_text()\n    try:\n        ast.parse(src)\n    except SyntaxError as exc:\n        bad.append(f\"{path}: {exc}\")\n    if \"\\t\" in src:\n        bad.append(f\"{path}: literal tab in source\")\nif bad:\n    print(\"\\n\".join(bad)); sys.exit(1)\nprint(\"ok\")\nPY\n"
             },
+            "python-checks-generated": {
+              "run": "uv run python scripts/gen_api_types.py --check"
+            },
             "python-checks-lock": {
               "run": "uv lock --check"
             },
