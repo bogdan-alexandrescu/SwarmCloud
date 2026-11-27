@@ -114,7 +114,7 @@ function runOf(over: Json = {}): Json {
 
 /** A fake EventSource: the test sends each server-sent event by hand. */
 class FakeSource {
-  static made: FakeSource[] = []
+  static readonly made: FakeSource[] = []
   url: string
   closed = false
   onmessage: ((ev: MessageEvent) => void) | null = null
@@ -134,7 +134,7 @@ class FakeSource {
 const open = () => FakeSource.made.filter((s) => !s.closed)
 
 beforeEach(() => {
-  FakeSource.made = []
+  FakeSource.made.length = 0
   vi.stubGlobal('EventSource', FakeSource)
 })
 afterEach(() => {
@@ -187,8 +187,9 @@ describe('the transcript', () => {
     expect(visible(one!)).toContain('claude-sonnet-x-1')
     // Text from the agent is drawn as text, never as markup.
     expect(visible(two!)).toContain('<img src=x onerror="alert(1)"> **bold**')
-    expect(two!.querySelector('img')).toBeNull()
-    expect(two!.querySelector('strong')).toBeNull()
+    expect(within(two!).queryByRole('img')).toBeNull()
+    expect(two!.innerHTML).not.toContain('<strong')
+    expect(two!.innerHTML).not.toContain('<img')
   })
 
   it('names the class and the reason when the attempt recorded no model', async () => {
@@ -272,7 +273,7 @@ describe('asking and streaming', () => {
     source.send({ delta: 'Yes, by the <b>plan</b> ' })
     source.send({ delta: 'digest.' })
     expect(visible(live)).toContain('Yes, by the <b>plan</b> digest.')
-    expect(live.querySelector('b')).toBeNull()
+    expect(live.innerHTML).not.toContain('<b>')
     expect((askButton() as HTMLButtonElement).disabled).toBe(true) // one turn in flight
     source.send({ state: 'answered', turn: turn({ turn_id: 'pct_bb01', ask: 'Is the cache keyed by digest?', answer: { text: 'Yes: by the plan digest.', diagrams: [], proposal: null, dropped: [] }, cost: { usd: 0.37, task_id: 'task_chat2', model_class: 'sonnet', why_none: null } }) })
     await waitFor(() => expect(visible(within(column).getAllByTestId('pc-turn').at(-1)!)).toContain('Yes: by the plan digest.'), WAIT)
@@ -294,7 +295,7 @@ describe('asking and streaming', () => {
 
   it('shows a busy chat in the server\'s words', async () => {
     const { column } = await chat({
-      extra: (m, url) => (m === 'POST' && url.split('?')[0] === LIST ? { status: 409, body: { code: 'chat_busy', detail: 'run already has a chat turn in flight: pct_zz09' } } : null),
+      extra: (m, url) => (m === 'POST' && url.split('?')[0] === LIST ? { status: 409, body: { code: 'chat_busy', message: 'run already has a chat turn in flight: pct_zz09', detail: { turn_id: 'pct_zz09' } } } : null),
     })
     fireEvent.change(askBox(), { target: { value: 'Again?' } })
     fireEvent.click(askButton())
@@ -305,7 +306,7 @@ describe('asking and streaming', () => {
   it('a cap refused by the server disables the ask with its sentence', async () => {
     const sentence = 'This run has had its 40 chat turns. The cap is a platform setting (Admin › Settings); comment, ask for changes, or edit the plan by hand.'
     const { column } = await chat({
-      extra: (m, url) => (m === 'POST' && url.split('?')[0] === LIST ? { status: 429, body: { code: 'chat_cap', cap: 'chat_turns', used: 40, limit: 40, detail: sentence } } : null),
+      extra: (m, url) => (m === 'POST' && url.split('?')[0] === LIST ? { status: 429, body: { code: 'chat_cap', cap: 'chat_turns', used: 40, limit: 40, detail: sentence, message: sentence, set_in: 'Admin › Settings' } } : null),
     })
     fireEvent.change(askBox(), { target: { value: 'Again?' } })
     fireEvent.click(askButton())
@@ -375,9 +376,9 @@ describe('a proposal', () => {
   it('shows its diff against the plan on screen', async () => {
     const { column } = await chat({ turns: [proposing()] })
     const diff = await within(column).findByTestId('pr-diff', {}, WAIT)
-    const row = diff.querySelector('[data-path="summary"]')
-    expect(row).not.toBeNull()
-    expect(visible(row as Element)).toContain(PROPOSED.summary)
+    const row = within(diff).getAllByRole('listitem').find((li) => li.getAttribute('data-path') === 'summary')
+    expect(row).toBeDefined()
+    expect(visible(row!)).toContain(PROPOSED.summary)
     expect(visible(within(column).getByTestId('pc-proposal'))).toContain('A cache keyed by run misses a new revision.')
   })
 
