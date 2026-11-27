@@ -128,6 +128,20 @@ describe('the console tells the hub framing it the colour of its left edge', () 
     expect(reported(postMessage)).toEqual([[42, 30, 92]])
   })
 
+  it('takes the gradient over the colour under it, since a background image paints above its colour', async () => {
+    const { win, postMessage } = framedConsole({
+      stack: [
+        layer({
+          backgroundColor: 'rgb(0, 0, 0)',
+          backgroundImage: 'linear-gradient(rgb(255, 255, 255), rgb(255, 255, 255))',
+        }),
+      ],
+    })
+    dispose = watchEmbedderEdgeColour(win)
+    await settle()
+    expect(reported(postMessage)).toEqual([[255, 255, 255]])
+  })
+
   it("falls back to the page's own background when nothing at the edge has one", async () => {
     const { win, postMessage } = framedConsole()
     document.body.style.backgroundColor = 'rgb(12, 26, 46)'
@@ -152,6 +166,16 @@ describe('the console tells the hub framing it the colour of its left edge', () 
       [255, 255, 255],
       [16, 16, 16],
     ])
+  })
+
+  it('still posts while the page keeps changing faster than the settle time', async () => {
+    const { win, postMessage } = framedConsole({ stack: [layer({ backgroundColor: 'rgb(11, 58, 122)' })] })
+    dispose = watchEmbedderEdgeColour(win)
+    for (let i = 0; i < 5; i++) {
+      document.body.append(document.createElement('div'))
+      await vi.advanceTimersByTimeAsync(100)
+    }
+    expect(reported(postMessage)).toEqual([[11, 58, 122]])
   })
 
   it('reads the edge again after a colour-scheme change and after a resize', async () => {
