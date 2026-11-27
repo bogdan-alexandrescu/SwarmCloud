@@ -18,7 +18,11 @@
 //
 // WHEN. Once on start, then again after the DOM changes (a theme switch, a
 // page with another layout), the colour scheme changes or the window resizes,
-// read SETTLE_MS after the first of a burst. The wait is not restarted by
+// and after any transition ends, anything scrolls or anything loads, none of
+// which need change the DOM: a colour read mid-transition is corrected once it
+// ends, a scrolled container can bring another background under the edge, and
+// a late stylesheet repaints. Those three are heard on the document in the
+// capture phase, since they do not all bubble. Each is read SETTLE_MS after the first of a burst. The wait is not restarted by
 // later changes, so a page that never stops changing is still read. Posted
 // only when the colour differs from the last one posted.
 //
@@ -36,6 +40,9 @@ export const EMBED_EDGE_MESSAGE_TYPE = 'hub:edge'
 const EDGE_X = 4
 /** DOM changes come in bursts; the edge is read this long after the first change of one. */
 const SETTLE_MS = 200
+/** Events that can repaint the edge without a DOM change, heard on the document in the capture phase. */
+const REPAINT_EVENTS = ['transitionend', 'scroll', 'load'] as const
+const REPAINT_LISTENER = { capture: true, passive: true } as const
 /** A background at least this opaque counts as the edge's colour. */
 const OPAQUE = 0.5
 
@@ -47,7 +54,10 @@ export interface EdgeWindow extends EmbedWindow {
   top: unknown
   innerHeight: number
   document: EmbedWindow['document'] &
-    Pick<Document, 'body' | 'documentElement' | 'createElement' | 'elementsFromPoint'>
+    Pick<
+      Document,
+      'body' | 'documentElement' | 'createElement' | 'elementsFromPoint' | 'addEventListener' | 'removeEventListener'
+    >
   getComputedStyle(element: Element): CSSStyleDeclaration
   /** Absent in jsdom. */
   matchMedia?: (query: string) => MediaQueryList
@@ -138,6 +148,7 @@ export function watchEmbedderEdgeColour(win: EdgeWindow): () => void {
   const scheme = typeof win.matchMedia === 'function' ? win.matchMedia('(prefers-color-scheme: dark)') : null
   scheme?.addEventListener('change', reportSoon)
   win.addEventListener('resize', reportSoon)
+  for (const type of REPAINT_EVENTS) win.document.addEventListener(type, reportSoon, REPAINT_LISTENER)
   reportSoon()
 
   return () => {
@@ -145,5 +156,6 @@ export function watchEmbedderEdgeColour(win: EdgeWindow): () => void {
     observer.disconnect()
     scheme?.removeEventListener('change', reportSoon)
     win.removeEventListener('resize', reportSoon)
+    for (const type of REPAINT_EVENTS) win.document.removeEventListener(type, reportSoon, REPAINT_LISTENER)
   }
 }
