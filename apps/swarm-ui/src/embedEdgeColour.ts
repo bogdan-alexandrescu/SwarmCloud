@@ -8,8 +8,9 @@
 // the hub takes the opposite tone.
 //
 // WHAT IS READ. The elements under a point just inside the left edge, topmost
-// first: the first whose background colour, or failing that its background
-// gradient's first colour, is at least half opaque. A see-through overlay is
+// first: the first whose background gradient's first colour, or failing that
+// its background colour, is at least half opaque (a background image paints
+// above the element's background colour). A see-through overlay is
 // looked past. When nothing there has one, the page's own background (body,
 // then html). A colour the browser serialises as something other than
 // `rgb()`/`rgba()` (oklch, a hex in a gradient) is painted on a 1x1 canvas and
@@ -17,8 +18,9 @@
 //
 // WHEN. Once on start, then again after the DOM changes (a theme switch, a
 // page with another layout), the colour scheme changes or the window resizes,
-// read once a burst of those has settled. Posted only when the colour differs
-// from the last one posted.
+// read SETTLE_MS after the first of a burst. The wait is not restarted by
+// later changes, so a page that never stops changing is still read. Posted
+// only when the colour differs from the last one posted.
 //
 // WHO HEARS IT. The same page and only the same page the ready message goes to
 // (embedHandshake.ts): the framing page on the console's scheme under its
@@ -32,7 +34,7 @@ export const EMBED_EDGE_MESSAGE_TYPE = 'hub:edge'
 
 /** How far in from the left edge the colour is read: under the hub's strip and handle. */
 const EDGE_X = 4
-/** DOM changes come in bursts; the edge is read once a burst settles. */
+/** DOM changes come in bursts; the edge is read this long after the first change of one. */
 const SETTLE_MS = 200
 /** A background at least this opaque counts as the edge's colour. */
 const OPAQUE = 0.5
@@ -79,11 +81,11 @@ function toRgba(doc: EdgeWindow['document'], color: string): Rgba | undefined {
   return [Number(r), Number(g), Number(b), a]
 }
 
-/** The element's background as rgb: its colour, else its gradient's first; undefined when see-through. */
+/** The element's background as rgb: its gradient's first colour, else its colour; undefined when see-through. */
 function backgroundOf(win: EdgeWindow, element: Element): Rgb | undefined {
   const style = win.getComputedStyle(element)
   const gradient = FIRST_COLOR.exec(style.backgroundImage)?.[0]
-  for (const color of [style.backgroundColor, gradient]) {
+  for (const color of [gradient, style.backgroundColor]) {
     const rgba = color ? toRgba(win.document, color) : undefined
     if (rgba && rgba[3] >= OPAQUE) return [Math.round(rgba[0]), Math.round(rgba[1]), Math.round(rgba[2])]
   }
@@ -120,8 +122,10 @@ export function watchEmbedderEdgeColour(win: EdgeWindow): () => void {
     win.parent.postMessage({ type: EMBED_EDGE_MESSAGE_TYPE, rgb }, origin)
   }
   const reportSoon = () => {
-    clearTimeout(timer)
-    timer = setTimeout(report, SETTLE_MS)
+    timer ??= setTimeout(() => {
+      timer = undefined
+      report()
+    }, SETTLE_MS)
   }
 
   const observer = new win.MutationObserver(reportSoon)
