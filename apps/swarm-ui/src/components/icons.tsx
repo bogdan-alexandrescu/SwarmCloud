@@ -22,9 +22,11 @@ const PATHS: Readonly<Record<CIconName, ReactNode>> = {
   ),
   out: <path d="M14 5h5v5M19 5l-8 8M18 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h4" />,
   swap: <path d="M7 7h11l-3-3M17 17H6l3 3" />,
+  // An arrow into a tray: save. Never the check, which is a "saved" tick.
+  save: <path d="M12 4v10M7.5 9.5 12 14l4.5-4.5M5 19h14" />,
 }
 
-export type CIconName = 'chevron' | 'up' | 'down' | 'sort' | 'close' | 'check' | 'copy' | 'out' | 'swap'
+export type CIconName = 'chevron' | 'up' | 'down' | 'sort' | 'close' | 'check' | 'copy' | 'out' | 'swap' | 'save' | 'save'
 
 export function CIcon({ name, className = 'c-ic' }: { name: CIconName; className?: string }) {
   return (
