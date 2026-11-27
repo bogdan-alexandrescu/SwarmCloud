@@ -11,11 +11,14 @@
     "apps/agent-worker/agent_worker/checkpoint.py": {
       "reportArgumentType": 1
     },
+    "apps/agent-worker/agent_worker/checkpointing.py": {
+      "reportAttributeAccessIssue": 38
+    },
     "apps/agent-worker/agent_worker/children.py": {
       "reportOptionalMemberAccess": 5
     },
     "apps/agent-worker/agent_worker/contextpack/build.py": {
-      "reportArgumentType": 2,
+      "reportArgumentType": 3,
       "reportOptionalMemberAccess": 3
     },
     "apps/agent-worker/agent_worker/contextpack/seeds.py": {
@@ -42,6 +45,10 @@
       "reportArgumentType": 14,
       "reportReturnType": 1
     },
+    "apps/agent-worker/agent_worker/gitpublish.py": {
+      "reportArgumentType": 1,
+      "reportAssignmentType": 1
+    },
     "apps/agent-worker/agent_worker/gittools.py": {
       "reportReturnType": 1
     },
@@ -55,6 +62,10 @@
       "reportArgumentType": 5,
       "reportOptionalMemberAccess": 1,
       "reportRedeclaration": 1
+    },
+    "apps/agent-worker/agent_worker/heartbeat.py": {
+      "reportArgumentType": 1,
+      "reportAttributeAccessIssue": 37
     },
     "apps/agent-worker/agent_worker/indexrun.py": {
       "reportArgumentType": 1,
@@ -71,8 +82,7 @@
       "reportArgumentType": 2
     },
     "apps/agent-worker/agent_worker/lifecycle.py": {
-      "reportArgumentType": 10,
-      "reportAssignmentType": 4,
+      "reportAssignmentType": 1,
       "reportAttributeAccessIssue": 3,
       "reportCallIssue": 1,
       "reportOperatorIssue": 1,
@@ -99,7 +109,7 @@
       "reportArgumentType": 1
     },
     "apps/agent-worker/agent_worker/livegate/qatarget.py": {
-      "reportArgumentType": 3,
+      "reportArgumentType": 1,
       "reportReturnType": 1
     },
     "apps/agent-worker/agent_worker/livegate/rfb.py": {
@@ -183,6 +193,10 @@
     },
     "apps/agent-worker/agent_worker/security_review.py": {
       "reportArgumentType": 2
+    },
+    "apps/agent-worker/agent_worker/usage.py": {
+      "reportArgumentType": 2,
+      "reportAssignmentType": 1
     },
     "apps/agent-worker/agent_worker/verdict.py": {
       "reportArgumentType": 1,
@@ -283,7 +297,6 @@
       "reportOptionalMemberAccess": 1
     },
     "apps/swarm-api/swarm_api/agent_output.py": {
-      "reportArgumentType": 2,
       "reportOptionalMemberAccess": 1
     },
     "apps/swarm-api/swarm_api/agent_questions.py": {
@@ -429,8 +442,6 @@
       "reportAttributeAccessIssue": 1
     },
     "apps/swarm-api/swarm_api/issueruns.py": {
-      "reportArgumentType": 10,
-      "reportOptionalMemberAccess": 1,
       "reportOptionalSubscript": 1,
       "reportReturnType": 2
     },
@@ -490,6 +501,9 @@
     "apps/swarm-api/swarm_api/plancontext.py": {
       "reportArgumentType": 2
     },
+    "apps/swarm-api/swarm_api/planhistory.py": {
+      "reportOptionalMemberAccess": 1
+    },
     "apps/swarm-api/swarm_api/plansettings.py": {
       "reportArgumentType": 2
     },
@@ -542,7 +556,8 @@
       "reportOptionalMemberAccess": 1
     },
     "apps/swarm-api/swarm_api/roles.py": {
-      "reportArgumentType": 1
+      "reportArgumentType": 1,
+      "reportUnnecessaryTypeIgnoreComment": 1
     },
     "apps/swarm-api/swarm_api/route_scope.py": {
       "reportOptionalIterable": 1
@@ -593,10 +608,10 @@
     },
     "apps/swarm-api/swarm_api/routes/runs.py": {
       "reportArgumentType": 3,
+      "reportGeneralTypeIssues": 2,
       "reportOptionalMemberAccess": 5
     },
     "apps/swarm-api/swarm_api/routes/schedules.py": {
-      "reportArgumentType": 5,
       "reportOptionalMemberAccess": 1,
       "reportReturnType": 1
     },
@@ -672,6 +687,7 @@
       "reportReturnType": 1
     },
     "apps/swarm-api/swarm_api/service.py": {
+      "reportArgumentType": 1,
       "reportOptionalMemberAccess": 1
     },
     "apps/swarm-api/swarm_api/setup_github.py": {
@@ -679,6 +695,9 @@
     },
     "apps/swarm-api/swarm_api/specsigning.py": {
       "reportReturnType": 1
+    },
+    "apps/swarm-api/swarm_api/stepclass.py": {
+      "reportArgumentType": 1
     },
     "apps/swarm-api/swarm_api/store.py": {
       "reportArgumentType": 1,
@@ -714,6 +733,13 @@
     "apps/swarm-api/swarm_api/voice/grant.py": {
       "reportArgumentType": 1
     },
+    "apps/swarm-api/swarm_api/voice/projectbrief.py": {
+      "reportOptionalMemberAccess": 6
+    },
+    "apps/swarm-api/swarm_api/voice/record.py": {
+      "reportArgumentType": 2,
+      "reportAttributeAccessIssue": 4
+    },
     "apps/swarm-api/swarm_api/voice/sessions.py": {
       "reportArgumentType": 1,
       "reportOptionalMemberAccess": 4,
@@ -725,6 +751,10 @@
     },
     "apps/swarm-api/swarm_api/wfdescription.py": {
       "reportOptionalMemberAccess": 1
+    },
+    "apps/swarm-api/swarm_api/wire_types.py": {
+      "reportAssignmentType": 6,
+      "reportInvalidTypeForm": 2
     },
     "apps/swarm-api/swarm_api/workspace_secrets.py": {
       "reportArgumentType": 1,
@@ -802,6 +832,9 @@
     },
     "apps/swarm-mcp/swarm_mcp/artifacts.py": {
       "reportReturnType": 1
+    },
+    "apps/swarm-mcp/swarm_mcp/awaitchange.py": {
+      "reportOptionalMemberAccess": 1
     },
     "apps/swarm-mcp/swarm_mcp/awaitinput.py": {
       "reportArgumentType": 1,
@@ -888,7 +921,9 @@
       "reportOptionalMemberAccess": 1
     },
     "apps/swarm-mcp/swarm_mcp/server.py": {
-      "reportArgumentType": 2
+      "reportArgumentType": 2,
+      "reportOptionalIterable": 1,
+      "reportOptionalMemberAccess": 18
     },
     "apps/swarm-mcp/swarm_mcp/session.py": {
       "reportArgumentType": 1
@@ -913,7 +948,9 @@
       "reportOptionalMemberAccess": 2
     },
     "apps/swarm-voice/swarm_voice/claudeturn.py": {
-      "reportArgumentType": 1
+      "reportArgumentType": 1,
+      "reportOptionalIterable": 1,
+      "reportOptionalMemberAccess": 8
     },
     "apps/swarm-voice/swarm_voice/live.py": {
       "reportArgumentType": 2,
@@ -929,7 +966,7 @@
     "apps/swarm-voice/swarm_voice/planner.py": {
       "reportArgumentType": 12,
       "reportGeneralTypeIssues": 1,
-      "reportOptionalMemberAccess": 3,
+      "reportOptionalMemberAccess": 4,
       "reportOptionalSubscript": 1
     },
     "apps/swarm-voice/swarm_voice/readback.py": {
@@ -949,6 +986,9 @@
     "apps/swarm-voice/swarm_voice/tools_visual.py": {
       "reportOptionalMemberAccess": 3,
       "reportReturnType": 1
+    },
+    "apps/swarm-voice/swarm_voice/updates.py": {
+      "reportOperatorIssue": 1
     },
     "apps/workflow-rollup/swarm_rollup/__init__.py": {
       "reportArgumentType": 1

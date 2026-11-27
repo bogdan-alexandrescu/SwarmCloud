@@ -58,7 +58,7 @@ import json
 import logging
 import os
 from datetime import datetime
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any, Iterator, Mapping, Sequence, TypeGuard
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -386,7 +386,8 @@ def planner_class(run: IssueRun, class_models: Mapping[str, str] | None) -> str:
     named = (run.readiness or {}).get("planner_model_class")
     choice = stepclass.choose(stepclass.ROLE_PLANNER, PLANNER_PROFILE, class_models,
                               explicit=named if isinstance(named, str) and named else None)
-    return choice.model_class or RUNNER_PROFILES[PLANNER_PROFILE].default_model_class
+    # The planner profile runs a Claude model, so both are set; "" only types it.
+    return choice.model_class or RUNNER_PROFILES[PLANNER_PROFILE].default_model_class or ""
 
 
 def _and(words: Sequence[str]) -> str:
@@ -399,7 +400,8 @@ def _plan_reasons(plan: Mapping[str, Any], risk: Mapping[str, Any] | None) -> li
     E1 (four or more steps) or E2 (three or more components)."""
     steps = [s for s in plan.get("steps") or () if isinstance(s, Mapping)]
     reasons: list[str] = []
-    by_step = (risk or {}).get("steps") if isinstance((risk or {}).get("steps"), Mapping) else {}
+    risk_steps = (risk or {}).get("steps")
+    by_step: Mapping[str, Any] = risk_steps if isinstance(risk_steps, Mapping) else {}
     risky: list[str] = []
     for number, step in enumerate(steps, start=1):
         rows = by_step.get(str(step.get("step_id"))) or ()
@@ -530,7 +532,7 @@ def turn_id() -> str:
     return f"{TURN_ID_PREFIX}_{os.urandom(10).hex()}"
 
 
-def _mine(document: Mapping[str, Any] | None, run: IssueRun) -> bool:
+def _mine(document: Mapping[str, Any] | None, run: IssueRun) -> TypeGuard[dict[str, Any]]:
     return (isinstance(document, Mapping) and document.get("tenant_id") == run.tenant_id
             and document.get("run_id") == run.id)
 
@@ -793,7 +795,8 @@ def text_deltas(tail: str) -> list[str]:
         if kind == "stream_event":
             inner = event.get("event")
             delta = inner.get("delta") if isinstance(inner, dict) else None
-            if (isinstance(delta, dict) and inner.get("type") == "content_block_delta"
+            if (isinstance(inner, dict) and isinstance(delta, dict)
+                    and inner.get("type") == "content_block_delta"
                     and delta.get("type") == "text_delta" and isinstance(delta.get("text"), str)):
                 partial.append(delta["text"])
         elif kind == "assistant":

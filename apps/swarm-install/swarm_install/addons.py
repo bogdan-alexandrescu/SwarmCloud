@@ -1053,7 +1053,7 @@ class RealWorld:
             guard(found)
             return found
 
-        tf.plan = plan  # type: ignore[method-assign]
+        tf.plan = plan
         guards = bootstrap.guards_for(self.gcp, lambda: self.deps.as_deployer(
             bootstrap.deployer_email(self.project)), self.project)
         return run_pass(tf, pass_name, inputs, project=self.project, bucket=self.ctx.bucket, guards=guards,
