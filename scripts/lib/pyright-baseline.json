@@ -45,6 +45,10 @@
       "reportArgumentType": 14,
       "reportReturnType": 1
     },
+    "apps/agent-worker/agent_worker/gitpublish.py": {
+      "reportArgumentType": 1,
+      "reportAssignmentType": 1
+    },
     "apps/agent-worker/agent_worker/gittools.py": {
       "reportReturnType": 1
     },
@@ -78,8 +82,7 @@
       "reportArgumentType": 2
     },
     "apps/agent-worker/agent_worker/lifecycle.py": {
-      "reportArgumentType": 6,
-      "reportAssignmentType": 4,
+      "reportAssignmentType": 1,
       "reportAttributeAccessIssue": 3,
       "reportCallIssue": 1,
       "reportOperatorIssue": 1,

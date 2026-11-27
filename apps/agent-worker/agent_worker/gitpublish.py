@@ -53,6 +53,84 @@ class GitPublishMixin:
     """`Worker`'s git harvest and publish (`Worker._harvest_git`,
     `Worker._publish_git`), moved from `lifecycle.py` by issue 68."""
 
+    # What `lifecycle.Worker` (or another mixin) supplies to these methods;
+    # annotations only (no value, so nothing is bound at runtime), so the type
+    # checker resolves them, as `publish_retry.PublishRetryMixin` does.
+    _adopt_rebase_base: Any
+    _adopt_tool_pushed_tip: Any
+    _agent_pull_request_text: Any
+    _auto_commit_undid: Any
+    _base_pin: Any
+    _carrier_fold_onto_tip: Any
+    _check_pull_before_push: Any
+    _clone_base: Any
+    _clone_commit: Any
+    _conflict_round: Any
+    _default_branch_tip: Any
+    _dispatch_carrier: Any
+    _dispatch_integrates: Any
+    _dispatch_role: Any
+    _dispatch_strategy: Any
+    _fetch_incomplete_marker: Any
+    _forge_holder: Any
+    _forge_retry: Any
+    _forge_write_refusal: Any
+    _generated_pull_request_title: Any
+    _git_token: Any
+    _git_token_refusal: Any
+    _head_moved: Any
+    _hidden_checkout_names: Any
+    _integrates_with_changes: Any
+    _is_default_title: Any
+    _keep_moved_head: Any
+    _leaks_in_added_text: Any
+    _moved_head_result: Any
+    _no_change_contributors: Any
+    _open_pull_request_reading_again: Any
+    _opens_pull_request: Any
+    _origin_object_prober: Any
+    _post_territory_comment: Any
+    _pr_role: Any
+    _pr_start_head: Any
+    _prepublish_advisory: Any
+    _prepublish_section: Any
+    _probe_reading_again: Any
+    _publish_config_seals: Any
+    _publish_continues_a_branch: Any
+    _publish_identity: Any
+    _publish_is_ancestor: Any
+    _publish_rev: Any
+    _pull_request_amendment: Any
+    _pull_request_body: Any
+    _push_branch: Any
+    _push_reading_again: Any
+    _push_through_broker: Any
+    _push_unreachable_marker: Any
+    _read_clone_base: Any
+    _read_only_contributors: Any
+    _read_publish_remote_tip: Any
+    _record_forge_credential: Any
+    _record_pushed_branch: Any
+    _repo_url: Any
+    _scan_floor: Any
+    _scan_overlap: Any
+    _scrub: Any
+    _task: Any
+    _territory_warning: Any
+    _title_carries_task_id: Any
+    _unreachable_marker: Any
+    _verdict: Any
+    _worker_commit_message: Any
+    _workflow_broker: Any
+    _workflow_paths: Any
+    _workflow_push_refused: Any
+    cfg: Any
+    checkpoints: Any
+    control: Any
+    log: Any
+    reap_before_publish: Any
+    ws: Any
+
     # -- git: harvest, and publish when the forge allows it -----------------
     def _harvest_git(
         self, *, publish: bool, withheld: str = "", defer: bool = False
